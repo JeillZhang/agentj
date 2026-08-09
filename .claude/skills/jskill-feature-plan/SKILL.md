@@ -1,5 +1,5 @@
 ---
-name: jcmd-feature-plan
+name: jskill-feature-plan
 description: Use when a feature design has been approved and a detailed implementation plan with TDD task breakdown is needed. Triggers on "write implementation plan", "break this into tasks", "create a plan", or after design approval.
 ---
 
@@ -11,15 +11,15 @@ Orchestrates the Superpowers planning workflow with a **Plan Validation Gate** �
 
 | Parameter | Required | Description |
 |-----------|----------|-------------|
-| `spec-path` | ✅ | Path to the design document (DESIGN.md) from `jcmd-feature-design`. Must be a valid file path. |
+| `spec-path` | ✅ | Path to the design document (DESIGN.md) from `jskill-feature-design`. Must be a valid file path. |
 
 **Language:** Implementation plan (`PLAN.md`) must be written in **English**.
 
 **Modeling:** Dependency graphs, task flow diagrams, and architecture models must use **PlantUML** or **Mermaid**. No ASCII art.
 
-**Example:** `jcmd-feature-plan docs/superpowers/specs/2026-08-09-oauth2-auth-design.md`
+**Example:** `jskill-feature-plan docs/superpowers/specs/2026-08-09-oauth2-auth-design.md`
 
-## Entry: writing-plans → Plan Validation Gate → Exit: prompt user to run `jcmd-feature-dev`
+## Entry: writing-plans → Plan Validation Gate → Exit: prompt user to run `jskill-feature-dev`
 
 ```dot
 digraph {
@@ -35,7 +35,7 @@ digraph {
     "Main agent revises plan" [shape=box];
     "Save PLAN.md" [shape=box];
     "User approves?" [shape=diamond];
-    "Prompt: run jcmd-feature-dev" [shape=doublecircle];
+    "Prompt: run jskill-feature-dev" [shape=doublecircle];
 
     "Design doc ready" -> "writing-plans";
     "writing-plans" -> "Write implementation plan";
@@ -49,7 +49,7 @@ digraph {
     "Issues found?" -> "Save PLAN.md" [label="no"];
     "Save PLAN.md" -> "User approves?";
     "User approves?" -> "Main agent revises plan" [label="no"];
-    "User approves?" -> "Prompt: run jcmd-feature-dev" [label="yes"];
+    "User approves?" -> "Prompt: run jskill-feature-dev" [label="yes"];
 }
 ```
 
@@ -129,10 +129,10 @@ The reviewer produces a structured report:
    Tasks: <N> total, <P> parallelizable, <S> sequential
    Validation: all checks passed
 
-Next: Run `jcmd-feature-dev` to start development on a feature branch.
+Next: Run `jskill-feature-dev` to start development on a feature branch.
 ```
 
-Do NOT invoke `jcmd-feature-dev` automatically — let the user start it when ready.
+Do NOT invoke `jskill-feature-dev` automatically — let the user start it when ready.
 
 ## Plan Document Structure
 
@@ -184,7 +184,7 @@ graph TD
 | Condition | Action |
 |-----------|--------|
 | `spec-path` parameter empty or missing | Ask user to provide the DESIGN.md path |
-| `spec-path` file does not exist | Report "File not found: `<path>`. Has `jcmd-feature-design` been run?" |
+| `spec-path` file does not exist | Report "File not found: `<path>`. Has `jskill-feature-design` been run?" |
 | `docs/superpowers/plans/` doesn't exist | Create it before saving PLAN.md |
 | Oracle validation fails 3 rounds | Stop iterating; present unresolved concerns to user for decision |
 
@@ -201,7 +201,7 @@ graph TD
 
 ## HARD GATE
 
-Do NOT write any code, create feature branches, or invoke any implementation skill. This command produces a validated plan only. When complete, prompt the user to run `jcmd-feature-dev` — do NOT invoke it automatically.
+Do NOT write any code, create feature branches, or invoke any implementation skill. This command produces a validated plan only. When complete, prompt the user to run `jskill-feature-dev` — do NOT invoke it automatically.
 
 ## Quick Reference
 
@@ -211,4 +211,4 @@ Do NOT write any code, create feature branches, or invoke any implementation ski
 | 2 | Spawn oracle reviewer | Validation report |
 | 3 | Revise plan | Addressed issues |
 | 4 | Save PLAN.md | `docs/superpowers/plans/<date>-<topic>-plan.md` |
-| 5 | User approves → prompt | "Next: Run `jcmd-feature-dev`" |
+| 5 | User approves → prompt | "Next: Run `jskill-feature-dev`" |

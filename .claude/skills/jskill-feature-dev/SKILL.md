@@ -1,5 +1,5 @@
 ---
-name: jcmd-feature-dev
+name: jskill-feature-dev
 description: Use when an implementation plan has been approved and development needs to begin. Triggers on "start development", "execute the plan", "begin implementation", or after plan approval. Covers the full development cycle from feature branch creation through code review and branch finishing.
 ---
 
@@ -11,9 +11,9 @@ Orchestrates the full Superpowers development cycle: feature branch, TDD, parall
 
 | Parameter | Required | Description |
 |-----------|----------|-------------|
-| `plan-path` | ✅ | Path to the implementation plan (PLAN.md) from `jcmd-feature-plan`. Must be a valid file path. |
+| `plan-path` | ✅ | Path to the implementation plan (PLAN.md) from `jskill-feature-plan`. Must be a valid file path. |
 
-**Example:** `jcmd-feature-dev docs/superpowers/plans/2026-08-09-oauth2-auth-plan.md`
+**Example:** `jskill-feature-dev docs/superpowers/plans/2026-08-09-oauth2-auth-plan.md`
 
 ## Entry: Feature Branch → TDD → Execute → Review → Finish
 
@@ -136,7 +136,7 @@ After branch finishing is resolved, you MUST output:
 The feature pipeline (design → plan → dev) is finished.
 ```
 
-`jcmd-feature-dev` is the terminal stage of the feature pipeline. No further handoff.
+`jskill-feature-dev` is the terminal stage of the feature pipeline. No further handoff.
 
 ## Task Delegation Template
 
@@ -178,7 +178,7 @@ CONTEXT: Part of plan at `plan-path`. Depends on: [dependencies]. Files: [scope]
 | Condition | Action |
 |-----------|--------|
 | `plan-path` parameter empty or missing | Ask user to provide the PLAN.md path |
-| `plan-path` file does not exist | Report "File not found: `<path>`. Has `jcmd-feature-plan` been run?" |
+| `plan-path` file does not exist | Report "File not found: `<path>`. Has `jskill-feature-plan` been run?" |
 | Not inside a git repository | Report "This command requires a git repository. Initialize one first." |
 | Uncommitted changes on base branch | Warn user and ask whether to stash, commit, or abort |
 | Feature branch name already exists | Ask user for a different branch name |

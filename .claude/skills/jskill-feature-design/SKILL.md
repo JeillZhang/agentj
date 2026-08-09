@@ -1,5 +1,5 @@
 ---
-name: jcmd-feature-design
+name: jskill-feature-design
 description: Use when starting a new feature, requesting creative work, or before any implementation. Triggers on "I want to build X", "design a feature", "add Y functionality", feature ideation, or product design requests.
 ---
 
@@ -17,9 +17,9 @@ Orchestrates the Superpowers brainstorming workflow for feature ideation and des
 
 **Modeling:** Flowcharts, architecture diagrams, and software models must use **PlantUML** or **Mermaid**. No ASCII art.
 
-**Example:** `jcmd-feature-design "Add user authentication with OAuth2 support for Google and GitHub"`
+**Example:** `jskill-feature-design "Add user authentication with OAuth2 support for Google and GitHub"`
 
-## Entry: brainstorming → Exit: prompt user to run `jcmd-feature-plan`
+## Entry: brainstorming → Exit: prompt user to run `jskill-feature-plan`
 
 ```dot
 digraph {
@@ -34,7 +34,7 @@ digraph {
     "Write DESIGN.md" [shape=box];
     "Spec self-review" [shape=box];
     "User reviews spec?" [shape=diamond];
-    "Prompt: run jcmd-feature-plan" [shape=doublecircle];
+    "Prompt: run jskill-feature-plan" [shape=doublecircle];
 
     "Request feature" -> "brainstorming";
     "brainstorming" -> "Explore project context";
@@ -47,7 +47,7 @@ digraph {
     "Write DESIGN.md" -> "Spec self-review";
     "Spec self-review" -> "User reviews spec?";
     "User reviews spec?" -> "Write DESIGN.md" [label="changes"];
-    "User reviews spec?" -> "Prompt: run jcmd-feature-plan" [label="approved"];
+    "User reviews spec?" -> "Prompt: run jskill-feature-plan" [label="approved"];
 }
 ```
 
@@ -72,10 +72,10 @@ After user approves the design spec, you MUST output this exact prompt:
 ```
 ✅ Design complete and saved to `docs/superpowers/specs/<date>-<topic>-design.md`.
 
-Next: Run `jcmd-feature-plan` to write the implementation plan with TDD task breakdown.
+Next: Run `jskill-feature-plan` to write the implementation plan with TDD task breakdown.
 ```
 
-Do NOT invoke `jcmd-feature-plan` automatically — let the user start it when ready.
+Do NOT invoke `jskill-feature-plan` automatically — let the user start it when ready.
 
 ## Design Document Structure
 
@@ -118,7 +118,7 @@ Do NOT invoke `jcmd-feature-plan` automatically — let the user start it when r
 
 ## HARD GATE
 
-Do NOT write any code, create implementation plans, scaffold projects, or invoke any implementation skill. This command handles design ONLY. When complete, prompt the user to run `jcmd-feature-plan` — do NOT invoke it automatically.
+Do NOT write any code, create implementation plans, scaffold projects, or invoke any implementation skill. This command handles design ONLY. When complete, prompt the user to run `jskill-feature-plan` — do NOT invoke it automatically.
 
 ## Anti-Patterns
 
@@ -156,4 +156,4 @@ Do NOT write any code, create implementation plans, scaffold projects, or invoke
 | 2 | Explore + questions + approaches | Design clarity |
 | 3 | Write DESIGN.md (中文) | `docs/superpowers/specs/<date>-<topic>-design.md` |
 | 4 | Self-review + user gate | Approved design |
-| 5 | Prompt: "Next: Run `jcmd-feature-plan`" | User starts next stage |
+| 5 | Prompt: "Next: Run `jskill-feature-plan`" | User starts next stage |

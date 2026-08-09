@@ -1,5 +1,5 @@
 ---
-name: jcmd-bug-fix
+name: jskill-bug-fix
 description: Use when debugging and fixing bugs, crashes, silent failures, or unexpected behavior. Triggers on "X is broken", "fix this bug", "debug this", "why is Y happening", error reports, or regression issues. Enforces hypothesis-driven debugging with TDD fix cycle.
 ---
 
@@ -13,7 +13,7 @@ Orchestrates the Superpowers debugging and fix workflow: fix branch, hypothesis-
 |-----------|----------|-------------|
 | `description` | ✅ | User's bug report in natural language. What's broken, observed behavior, expected behavior, steps to reproduce. |
 
-**Example:** `jcmd-bug-fix "Login returns 500 after password reset — user can't sign in with new password"`
+**Example:** `jskill-bug-fix "Login returns 500 after password reset — user can't sign in with new password"`
 
 ## Entry: Fix Branch → systematic-debugging → TDD Fix → Review → Finish
 
@@ -131,7 +131,7 @@ After branch finishing is resolved, you MUST output:
    Result: <merged/PR created/kept/discarded>
 ```
 
-`jcmd-bug-fix` is an independent entry point. No further pipeline handoff.
+`jskill-bug-fix` is an independent entry point. No further pipeline handoff.
 
 ## Bug Fix Discipline (NON-NEGOTIABLE)
 
