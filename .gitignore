@@ -1,0 +1,119 @@
+# ── OS / general ─────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+Desktop.ini
+.directory
+*~
+*.swp
+*.swo
+*.tmp
+*.temp
+*.bak
+*.orig
+*.rej
+*.log
+
+# ── Rust ─────────────────────────────────────────────────────
+/target/
+
+# Cargo.lock is committed for this application workspace (reproducible builds).
+# If this becomes a library published to crates.io, ignore it instead:
+#   Cargo.lock
+
+# ── OhMyOpenCode (omo) ───────────────────────────────────────
+# Runtime state (session continuation, plans, boulder state) — machine-local.
+.omo/
+# CodeGraph index — a symlink to a machine-local cache. Never commit.
+.codegraph
+
+# ── Claude Code ──────────────────────────────────────────────
+# NOTE: `.claude/summary/summary_and_next.md` IS a tracked deliverable
+# (see AGENTS.md) — do not ignore `.claude/` wholesale. Only local settings.
+.claude/settings.local.json
+
+# ── VS Code ─────────────────────────────────────────────────
+# Ignore everything except the shareable workspace files below.
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+!.vscode/*.code-snippets
+# Remote-SSH / dev-container server state — machine-local.
+.vscode-server/
+
+# ── Zed ──────────────────────────────────────────────────────
+# `.zed/settings.json` is shareable and stays tracked; only local overrides
+# are ignored.
+.zed/settings.local.json
+
+# ── Editors / IDEs ───────────────────────────────────────────
+.idea/
+.fleet/
+*.iml
+
+# ── Build artifacts (generic) ────────────────────────────────
+/build/
+/dist/
+/out/
+
+# ── Node.js ──────────────────────────────────────────────────
+node_modules/
+.npm/
+.yarn/
+.pnpm-store/
+.next/
+.nuxt/
+.svelte-kit/
+.astro/
+.turbo/
+.parcel-cache/
+.eslintcache
+*.tsbuildinfo
+
+# ── Python ───────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+*.egg-info/
+htmlcov/
+
+# ── Go ───────────────────────────────────────────────────────
+*.test
+coverage.out
+
+# ── Coverage ─────────────────────────────────────────────────
+coverage/
+.coverage
+*.profraw
+*.profdata
+lcov.info
+
+# ── Local databases ──────────────────────────────────────────
+*.sqlite
+*.sqlite3
+*.db
+
+# ── Secrets / keys ───────────────────────────────────────────
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+id_ed25519
+
+# ── Env ──────────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+
+# ── Docker ───────────────────────────────────────────────────
+docker-compose.override.yml
+
+# ── remember plugin state ────────────────────────────────────
+.remember/
