@@ -181,6 +181,63 @@ pub struct ModuleRegister {
                               └── Module      → init() + 回调注册到 ModuleRegister
 ```
 
+### 模块生命周期状态机
+
+模块生命周期状态由 **Kernel 维护**（`HashMap<ModuleId, ModuleState>`），`Module` trait 不携带状态字段——保持 §7「能力接口与通道分离」原则：状态是编排者（Kernel）的职责，不是能力实现者（模块）的职责。
+
+```mermaid
+stateDiagram-v2
+    [*] --> Unloaded
+    Unloaded --> Initializing: register_module() 开始
+    Initializing --> Ready: init() 成功，插入注册表
+    Initializing --> Failed: init() 失败（不插入注册表，内核继续运行）
+    Ready --> Stopping: Kernel 收到 Shutdown
+    Stopping --> Stopped: shutdown() 成功
+    Stopping --> Failed: shutdown() 失败或超时（记录错误，继续关闭其余模块）
+    Failed --> [*]
+    Stopped --> [*]
+```
+
+**状态语义**：
+
+| 状态 | 含义 |
+|------|------|
+| `Unloaded` | 未注册（默认） |
+| `Initializing` | `register_module()` 正在执行 `init()` |
+| `Ready` | 初始化成功，已插入注册表，可接收消息 |
+| `Stopping` | 已收到 Shutdown，正在执行 `shutdown()` |
+| `Stopped` | 优雅关闭完成 |
+| `Failed` | `init()`/`shutdown()` 失败或超时（记录原因，可查询） |
+
+**查询与事件**：
+
+- `Kernel::module_state(id) -> Option<ModuleState>` 查询任意模块状态——调用方（IPC/CLI/未来 Web Dashboard）可感知哪些模块可用
+- 状态转换触发点记录 `tracing` 日志；`EventType` 预留 `ModuleLoaded` / `ModuleFailed` / `ModuleStopped` 生命周期变体（v0.1 仅定义契约，v0.2 Hook System 消费，见 §7 预留接口）
+
+**优雅关闭链路**：
+
+`KernelMessage::Shutdown` 的处理不再只是 break 循环：
+
+1. **Shutdown 优先检测**：事件循环在广播消息前先检查 `Shutdown`，它不经过 `handle()` 广播——修复"阻塞模块饿死关闭信号"问题（若某模块 `handle()` 长时间阻塞，其余消息包括 Shutdown 都无法到达）
+2. 对全部 `Ready` 模块置 `Stopping`
+3. **逆序调用 `shutdown()`**：按注册顺序倒序遍历（后注册的先关闭，依赖倒置——被依赖方最后退出）
+4. **每模块关闭超时**（默认 2s，可配置）：`tokio::time::timeout` 包裹，超时产生 `KernelError::ShutdownTimeout`
+5. 单个模块失败/超时：记录日志 + 状态置 `Failed`，**继续关闭其余模块**，不阻断整体退出
+6. 全部完成后 JoinHandle 返回结果
+
+**init 失败语义**：
+
+- `register_module` 返回 `Result<(), KernelError>`，`init()` 失败返回 `Err(KernelError::ModuleInitFailed)`——调用方（IPC/CLI）可感知失败
+- 失败模块状态置 `Failed`，**不插入注册表**（不会收到任何消息）
+- 内核继续运行——保留"单模块失败不拖垮内核"的隔离意图
+
+**生产路径接线（v0.1 轻量接入）**：
+
+- CLI 创建 `Kernel`，将 AgentLoop 包装为 `AgentLoopModule`（实现 `Module`）注册 → `init()` 在真实进程内执行
+- `Kernel::start()` 启动事件循环
+- IPC `shutdown` 方法真实发送 `KernelMessage::Shutdown` 并等待 Kernel JoinHandle 完成（不再假返回）
+- session/new、session/run 保持直接调用 AgentLoop（符合"编排直接调 trait 对象"决策），但**生命周期（init/shutdown/状态）经由 Kernel**
+
 ### 消息枚举
 
 ```rust
@@ -195,7 +252,7 @@ pub enum KernelMessage {
     ModelResponse(ModelResponseChunk),
     ToolCallRequest(ToolCall),
     ToolCallResult(ToolCallResult),
-    // 生命周期
+    // 生命周期：优先于消息广播检测，触发逆序优雅关闭（见"模块生命周期状态机"）
     Shutdown,
 }
 ```
@@ -325,6 +382,7 @@ impl KernelContext {
 //    v0.1 封闭枚举不动；v0.2 加变体时，只要匹配处有通配臂即无破坏
 
 // 4. EventType / EventHandler —— v0.1 的 on_event 注册即未来事件总线的订阅者
+//    v0.1 已定义 ModuleLoaded / ModuleFailed / ModuleStopped 生命周期变体（契约先行）
 //    v0.2 publish(event) 广播给所有已注册 handler，复用现有定义
 ```
 
@@ -348,6 +406,20 @@ flowchart LR
 
 **边界说明**：唯一无法通过接口预留消除的，是未来若模块内部状态用裸字段 + `&mut self` 组织，转共享时需包 `Mutex`。v0.1 模块按"内部持有 `Arc` 注册表"方式组织状态（与 `ToolRegistry`/`ProviderRegistry` 同风格）即可将此成本降至近乎为零。
 
+### 8. 模块生命周期状态机由 Kernel 维护，且生产路径真实接入
+
+**决策**：模块生命周期状态（`Unloaded/Initializing/Ready/Stopping/Stopped/Failed`）由 Kernel 注册表持有，`Module` trait 不增加状态字段；v0.1 生产路径（CLI）创建 Kernel 并将 AgentLoop 包装为 `AgentLoopModule` 注册，使 init/shutdown 在真实进程内执行。IPC `shutdown` 方法真实发送 `KernelMessage::Shutdown` 并等待优雅关闭完成。
+
+**理由**：状态属于编排者而非能力实现者，符合 §7「能力接口与通道分离」原则——未来 v0.2 插件动态加载/卸载复用同一状态机，模块代码零改动。生产路径接入 Kernel 使生命周期机制从"仅测试存在"变为"真实运行"，避免 v0.1 交付时 shutdown 仍是死代码。
+
+**取舍**：session/run 仍直接调用 AgentLoop（编排不经过消息路由），仅在生命周期层经过 Kernel——在保持"编排直接调 trait 对象"决策的同时补上生命周期闭环，改动面可控（T4/T13/T14）。
+
+### 9. Shutdown 优先于消息广播处理
+
+**决策**：事件循环收到消息时**先检查** `Shutdown`，再广播其余消息。关闭信号不经过 `handle()` 广播，避免某模块 `handle()` 阻塞导致 Shutdown 永远轮不到（饿死）。
+
+**理由**：模块 `handle()` 是同步 `&mut self` 调用，若模块实现有阻塞操作（如等待子进程），串行广播会把 Shutdown 排在队尾。生命周期信号优先是内核关闭可靠性的底线保证。
+
 ## 错误处理
 
 ### 错误类型层次
@@ -361,6 +433,9 @@ pub enum KernelError {
 
     #[error("module '{0}' initialization failed: {1}")]
     ModuleInitFailed(ModuleId, #[source] anyhow::Error),
+
+    #[error("module '{0}' shutdown failed: {1}")]
+    ModuleShutdownFailed(ModuleId, #[source] anyhow::Error),
 
     #[error("message routing failed for {msg:?}: {reason}")]
     MessageRouteFailed { msg: String, reason: String },
@@ -405,15 +480,18 @@ pub enum ToolError {
 
 ### 错误传播策略
 
-- **内核层**：模块 init/消息处理失败 → 记录日志，不拖垮其他模块。致命错误（如 IPC 断开）→ 触发全局 shutdown
+- **内核层**：模块 init 失败 → 返回 `ModuleInitFailed`、状态置 `Failed`、不插入注册表，内核继续运行（单模块失败不拖垮内核）。模块关闭失败/超时 → 记录日志、状态置 `Failed`、继续关闭其余模块。致命错误（如 IPC 断开）→ 触发全局 shutdown
+- **生命周期层**：`Shutdown` 触发逆序优雅关闭，每模块超时（默认 2s）→ `ShutdownTimeout`；单模块关闭失败不阻断整体退出
 - **模型层**：网络/API 错误 → 自动重试（最多 3 次，指数退避）。Token 超限 → 触发上下文压缩后重试
 - **工具层**：执行失败 → 返回错误给模型（让模型自行修复）。超时 → 强制终止并通知模型
+- **子进程层**：MCP 客户端子进程 `kill_on_drop(true)`，transport 被 drop 时终止子进程，避免孤儿进程泄漏；每次调用新建 MCP server 进程为 v0.1 简化，连接复用/长驻 server 属 v0.2
 
 ## 测试策略
 
 | 层级 | 范围 | 工具 | 目标 |
 |------|------|------|------|
 | **单元测试** | 每个 crate 的内部逻辑 | `#[cfg(test)]` + tokio test | 覆盖率 > 80% |
+| **生命周期测试** | Kernel 状态机转换、逆序关闭、关闭超时、init 失败隔离 | `#[tokio::test]` 构造迷你 Kernel + spy 模块 | 状态转换正确、Shutdown 触发全部模块 shutdown、单模块失败不阻断
 | **集成测试** | 模块→内核消息通信 | `tests/` 目录，启动迷你内核 | 验证模块间协作 |
 | **E2E 测试** | CLI → 完整流水线 | Mock LLM 服务器 | 核心链路正确性 |
 | **契约测试** | IPC JSON-RPC 协议 | 固定请求/响应 snapshot | 协议不退化 |
