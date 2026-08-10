@@ -13,73 +13,85 @@ Orchestrates the Superpowers brainstorming workflow for feature ideation and des
 |-----------|----------|-------------|
 | `description` | ✅ | User's feature requirement in natural language. What to build, why, and any constraints. |
 
-**Language:** Design document (`DESIGN.md`) must be written in **Chinese** (中文).
+**Language:** Design document (`DESIGN.md`) must be written in **Chinese** (中文) if the project convention mandates it (per AGENTS.md, `docs/superpowers/specs/` docs in Chinese).
 
-**Modeling:** Flowcharts, architecture diagrams, and software models must use **PlantUML** or **Mermaid**. No ASCII art.
+**Modeling:** Flowcharts, architecture diagrams, and software models must use **Mermaid** or **PlantUML**. No ASCII art.
 
 **Example:** `jskill-feature-design "Add user authentication with OAuth2 support for Google and GitHub"`
 
-## Entry: brainstorming → Exit: prompt user to run `jskill-feature-plan`
+## Entry: Intake → Research → brainstorming → Exit: prompt user to run `/jskill-feature-plan <design-spec>`
 
-```dot
-digraph {
-    rankdir=TB;
-    "Request feature" [shape=box];
-    "brainstorming" [shape=doublecircle];
-    "Explore project context" [shape=box];
-    "Ask clarifying questions" [shape=box];
-    "Propose approaches" [shape=box];
-    "Present design sections" [shape=box];
-    "User approves?" [shape=diamond];
-    "Write DESIGN.md" [shape=box];
-    "Spec self-review" [shape=box];
-    "User reviews spec?" [shape=diamond];
-    "Prompt: run jskill-feature-plan" [shape=doublecircle];
-
-    "Request feature" -> "brainstorming";
-    "brainstorming" -> "Explore project context";
-    "Explore project context" -> "Ask clarifying questions";
-    "Ask clarifying questions" -> "Propose approaches";
-    "Propose approaches" -> "Present design sections";
-    "Present design sections" -> "User approves?";
-    "User approves?" -> "Present design sections" [label="no"];
-    "User approves?" -> "Write DESIGN.md" [label="yes"];
-    "Write DESIGN.md" -> "Spec self-review";
-    "Spec self-review" -> "User reviews spec?";
-    "User reviews spec?" -> "Write DESIGN.md" [label="changes"];
-    "User reviews spec?" -> "Prompt: run jskill-feature-plan" [label="approved"];
-}
+```mermaid
+flowchart TB
+    A["Request feature"] --> B["Phase 0: Intake & Classify"]
+    B --> C["Phase 1: Research (standard/large only)"]
+    C --> D["brainstorming"]
+    D --> E["Explore project context"]
+    E --> F["Ask clarifying questions"]
+    F --> G["Propose approaches"]
+    G --> H["Present design sections"]
+    H --> I{"User approves?"}
+    I -- "no" --> H
+    I -- "yes" --> J["Write DESIGN.md"]
+    J --> K["Spec self-review"]
+    K --> L{"User reviews spec?"}
+    L -- "changes" --> J
+    L -- "approved" --> M["Prompt: /jskill-feature-plan <design-spec>"]
 ```
 
 ## Workflow
 
-### Phase 1: Brainstorming (Socratic Design)
+### Phase 0: Intake & Classify
+
+1. Read the project summary file (per AGENTS.md, e.g. `.claude/summary/summary_and_next.md`) to understand current project state and pending features.
+2. Read `docs/superpowers/specs/` for any relevant existing design docs.
+3. Restate the feature request in your own words. **Classify its size:**
+
+| Tier | Criteria | Phases | Research |
+|------|----------|--------|----------|
+| trivial | single endpoint/component, known pattern | 0 → 2 → 3 | Skip Phase 1 |
+| standard | multi-file, new module, new DB migration | 0 → 1 → 2 → 3 | 2-3 parallel explore agents |
+| large | cross-cutting, new storage backend, new auth flow | 0 → 1 → 2 → 3 | 3+ explore + librarian |
+
+### Phase 1: Research
+
+For **standard** and **large** features:
+1. Fire 2-3 parallel `explore` agents (run in background) to find existing patterns:
+   - One for core/backend patterns (routes, services, models, DB queries)
+   - One for frontend patterns if the feature touches a UI (components, hooks, API client)
+   - One for config/middleware/storage patterns
+2. If unfamiliar libraries/APIs are involved, fire a `librarian` agent for external docs.
+3. Collect the results and use them to ground the brainstorming — do NOT start designing before research returns.
+
+### Phase 2: Brainstorming (Socratic Design)
 
 **REQUIRED SUB-SKILL:** Load `superpowers:brainstorming` and follow it exactly.
 
-1. **Explore project context** — check files, docs, recent commits, existing patterns
+1. **Explore project context** — check files, docs, recent commits, existing patterns (plus Phase 1 research results)
 2. **Ask clarifying questions** — one at a time. Each question MUST present 2-4 concrete options with a clear recommendation (标注"推荐") for the most suitable one. Never leave questions open-ended — guide the user with well-reasoned choices.
 3. **Propose 2-3 approaches** — with trade-offs and your recommendation
 4. **Present design sections** — scale each to complexity, get approval after each section
-5. **Write design doc** — save to `docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md`. **Must be written in Chinese (中文).**
+5. **Write design doc** — save to `docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md`. Written in Chinese if the project convention requires it (per AGENTS.md).
 6. **Spec self-review** — check placeholders, contradictions, scope, ambiguity
 7. **User gate** — user reviews and approves the written spec file
 
-### Phase 2: Handoff
+The design doc describes WHAT and WHY (architecture, decisions, trade-offs). The plan (next stage) describes HOW — per-task TDD breakdown using the **Task Template Specification** defined in `jskill-feature-plan`.
 
-After user approves the design spec, you MUST output this exact prompt:
+### Phase 3: Handoff
+
+After user approves the design spec, output this exact prompt:
 
 ```
 ✅ Design complete and saved to `docs/superpowers/specs/<date>-<topic>-design.md`.
 
-Next: Run `jskill-feature-plan` to write the implementation plan with TDD task breakdown.
+Next: Run `/jskill-feature-plan docs/superpowers/specs/<date>-<topic>-design.md` to write the implementation plan with TDD task breakdown.
 ```
 
 Do NOT invoke `jskill-feature-plan` automatically — let the user start it when ready.
 
 ## Design Document Structure
 
-**Language: Chinese only (中文). All sections, descriptions, and decisions must be written in Chinese.**
+**Language: Chinese if the project convention mandates it (per AGENTS.md: `docs/superpowers/specs/` docs in Chinese).**
 
 ```markdown
 # 设计文档：<特性名称>
@@ -101,7 +113,7 @@ Do NOT invoke `jskill-feature-plan` automatically — let the user start it when
 | B    |      |      |           |
 
 ## 架构
-<组件图、数据流、接口定义 — 使用 PlantUML 或 Mermaid 编写>
+<组件图、数据流、接口定义 — 使用 Mermaid 或 PlantUML 编写>
 
 ## 关键设计决策
 <每项决策的上下文、选项、选择理由>
@@ -118,7 +130,7 @@ Do NOT invoke `jskill-feature-plan` automatically — let the user start it when
 
 ## HARD GATE
 
-Do NOT write any code, create implementation plans, scaffold projects, or invoke any implementation skill. This command handles design ONLY. When complete, prompt the user to run `jskill-feature-plan` — do NOT invoke it automatically.
+Do NOT write any code, create implementation plans, scaffold projects, or invoke any implementation skill. This command handles design ONLY. When complete, prompt the user to run `/jskill-feature-plan docs/superpowers/specs/<date>-<topic>-design.md` — do NOT invoke it automatically.
 
 ## Anti-Patterns
 
@@ -127,6 +139,8 @@ Do NOT write any code, create implementation plans, scaffold projects, or invoke
 | "This is simple enough to skip design" | Simple projects hide the most assumptions. Design it. |
 | "I'll design while I code" | Design-first prevents wasted implementation. |
 | "One quick question then I'll start" | Follow the full brainstorming flow. |
+| "I'll skip research for this standard feature" | Without parallel exploration the design misses existing patterns. |
+| "I'll ask all my questions at once to save time" | Batch questions overwhelm the user. One per message. |
 
 ## Error Handling
 
@@ -136,6 +150,7 @@ Do NOT write any code, create implementation plans, scaffold projects, or invoke
 | `docs/superpowers/specs/` directory doesn't exist | Create it before writing DESIGN.md |
 | Ambiguous requirements | Ask clarifying questions one at a time — provide concrete options with a recommended choice, do NOT guess |
 | Design scope too large | Flag to user and suggest decomposition into sub-features |
+| Research agents return nothing useful | Report what was found (even if empty) and proceed — do not block design on empty exploration |
 
 ## Common Mistakes
 
@@ -147,13 +162,16 @@ Do NOT write any code, create implementation plans, scaffold projects, or invoke
 | Only proposing one approach | No alternatives = no trade-off analysis. Always 2-3. |
 | Writing code snippets in DESIGN.md | Design doc is architecture, not implementation. |
 | Using ASCII art for diagrams | Use Mermaid or PlantUML for all flowcharts and models. |
+| Designing HOW instead of WHAT | Task-level TDD breakdown belongs to the plan stage, not the design. |
 
 ## Quick Reference
 
 | Step | Action | Output |
 |------|--------|--------|
-| 1 | Load brainstorming skill | Workflow context |
-| 2 | Explore + questions + approaches | Design clarity |
-| 3 | Write DESIGN.md (中文) | `docs/superpowers/specs/<date>-<topic>-design.md` |
-| 4 | Self-review + user gate | Approved design |
-| 5 | Prompt: "Next: Run `jskill-feature-plan`" | User starts next stage |
+| 0 | Intake + size classification | Tier: trivial/standard/large |
+| 1 | Parallel research (standard/large) | Pattern knowledge |
+| 2 | Load brainstorming skill | Design clarity |
+| 3 | Explore + questions + approaches | Design clarity |
+| 4 | Write DESIGN.md (中文) | `docs/superpowers/specs/<date>-<topic>-design.md` |
+| 5 | Self-review + user gate | Approved design |
+| 6 | Prompt: "Next: Run `/jskill-feature-plan docs/superpowers/specs/<date>-<topic>-design.md`" | User starts next stage |

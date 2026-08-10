@@ -5,7 +5,7 @@ description: Use when debugging and fixing bugs, crashes, silent failures, or un
 
 # JCMD Bug Fix
 
-Orchestrates the Superpowers debugging and fix workflow: fix branch, hypothesis-driven root cause analysis, TDD-gated minimal fix, verification, code review, and branch finishing.
+Orchestrates the Superpowers debugging and fix workflow: fix branch, hypothesis-driven root cause analysis, TDD-gated minimal fix, verification with regression guard, version bump, code review, and branch finishing.
 
 ## Parameters
 
@@ -15,45 +15,29 @@ Orchestrates the Superpowers debugging and fix workflow: fix branch, hypothesis-
 
 **Example:** `jskill-bug-fix "Login returns 500 after password reset — user can't sign in with new password"`
 
-## Entry: Fix Branch → systematic-debugging → TDD Fix → Review → Finish
+## Entry: Fix Branch → systematic-debugging → TDD Fix → Verify → Review → Finish
 
-```dot
-digraph {
-    rankdir=TB;
-    "Bug reported" [shape=box];
-    "Create fix branch" [shape=doublecircle];
-    "systematic-debugging" [shape=doublecircle];
-    "Form 3+ hypotheses" [shape=box];
-    "Investigate in parallel" [shape=box];
-    "Root cause found?" [shape=diamond];
-    "test-driven-development" [shape=doublecircle];
-    "Spawn Oracle\n(orthogonal angles)" [shape=box,style=filled,fillcolor=lightyellow];
-    "Write failing test\nfor bug" [shape=box];
-    "Implement minimal fix" [shape=box];
-    "Verify tests pass" [shape=box];
-    "All tests pass?" [shape=diamond];
-    "requesting-code-review" [shape=doublecircle];
-    "finishing-a-development-branch" [shape=doublecircle];
-    "Merge / PR / Keep / Discard" [shape=box];
-
-    "Bug reported" -> "Create fix branch";
-    "Create fix branch" -> "systematic-debugging";
-    "systematic-debugging" -> "Form 3+ hypotheses";
-    "Form 3+ hypotheses" -> "Investigate in parallel";
-    "Investigate in parallel" -> "Root cause found?";
-    "Root cause found?" -> "Investigate in parallel" [label="no, <2 rounds"];
-    "Root cause found?" -> "Spawn Oracle\n(orthogonal angles)" [label="no, 2+ rounds"];
-    "Spawn Oracle\n(orthogonal angles)" -> "Form 3+ hypotheses" [label="new insights"];
-    "Root cause found?" -> "test-driven-development" [label="yes"];
-    "test-driven-development" -> "Write failing test\nfor bug";
-    "Write failing test\nfor bug" -> "Implement minimal fix";
-    "Implement minimal fix" -> "Verify tests pass";
-    "Verify tests pass" -> "All tests pass?";
-    "All tests pass?" -> "Implement minimal fix" [label="no"];
-    "All tests pass?" -> "requesting-code-review" [label="yes"];
-    "requesting-code-review" -> "finishing-a-development-branch";
-    "finishing-a-development-branch" -> "Merge / PR / Keep / Discard";
-}
+```mermaid
+flowchart TB
+    A["Bug reported"] --> B["Phase 0: Create fix branch"]
+    B --> C["systematic-debugging"]
+    C --> D["Form 3+ hypotheses"]
+    D --> E["Investigate in parallel"]
+    E --> F{"Root cause found?"}
+    F -- "no, <2 rounds" --> E
+    F -- "no, 2+ rounds" --> G["Spawn Oracle (orthogonal angles)"]
+    G --> D
+    F -- "yes" --> H["test-driven-development"]
+    H --> I["Write failing test for bug"]
+    I --> J["Implement minimal fix"]
+    J --> K["Verify tests pass"]
+    K --> L{"All tests pass?"}
+    L -- "no" --> J
+    L -- "yes" --> M["Phase 3: Verification + Regression Guard"]
+    M --> N["Phase 4: Version Bump (patch)"]
+    N --> O["requesting-code-review"]
+    O --> P["finishing-a-development-branch"]
+    P --> Q["Merge / PR / Keep / Discard"]
 ```
 
 ## Workflow
@@ -100,28 +84,34 @@ Confirm you are on the correct branch before proceeding. The `finishing-a-develo
 | Line width ≤ 120 characters | All code |
 | Frontend (JS/TS/TSX) no strict function limit | Excl. from 50-line rule |
 
-### Phase 3: Verification
+### Phase 3: Verification + Regression Guard
 
 - Run the failing test — must now pass
-- Run the full test suite — no regressions
+- Run the full test suite — no regressions. The failing test you wrote becomes a **regression guard**: it must keep passing in future runs and is never deleted.
 - Run diagnostics on changed files — clean
 - If any step fails, return to Phase 2
 
-### Phase 4: Code Review
+### Phase 4: Version Bump (patch)
+
+Per AGENTS.md / project convention, a bugfix bumps the **patch** version (e.g. `0.1.0` → `0.1.1`):
+- Bump the project's version manifest(s); keep multiple manifests in sync if present.
+- Include the bump in the fix branch so it ships with the fix.
+
+### Phase 5: Code Review
 
 **REQUIRED SUB-SKILL:** Load `superpowers:requesting-code-review`
 
 Run pre-review checklist. The change should be minimal: one fix, one test. If the diff is large, the fix is too broad.
 
-### Phase 5: Branch Finishing
+### Phase 6: Branch Finishing
 
 **REQUIRED SUB-SKILL:** Load `superpowers:finishing-a-development-branch`
 
 Present merge/PR/keep/discard options. Bug fixes should typically be merged or PR'd immediately.
 
-### Phase 6: Pipeline Complete
+### Phase 7: Pipeline Complete
 
-After branch finishing is resolved, you MUST output:
+After branch finishing is resolved, output:
 
 ```
 ✅ Bug fix complete.
@@ -142,8 +132,10 @@ After branch finishing is resolved, you MUST output:
 | **Never shotgun debug** | Random changes hoping to fix it. Each change must map to a hypothesis. |
 | **Never delete failing tests** | If a test fails after your fix, the fix is wrong — not the test. |
 | **Prove before fixing** | If you can't reproduce the bug in a test, you haven't found the root cause. |
+| **Keep the regression guard** | The new test stays. It protects against this bug returning. |
 | **Keep functions short** | Backend functions ≤ 50 lines. Long functions hide bugs. |
 | **Limit line width** | Max 120 characters per line, all languages. |
+| **Bump patch version** | Bugfixes bump the patch version per AGENTS.md. |
 
 ## Anti-Patterns
 
@@ -177,16 +169,18 @@ After branch finishing is resolved, you MUST output:
 | Fixing the symptom, not the cause | "Add null check" when the real issue is upstream data corruption. |
 | Writing a 200-line fix function | Split into helpers. Even fixes should be ≤ 50 lines for backend. |
 | Lines exceeding 120 characters | Break long expressions across multiple lines. |
+| Forgetting the patch version bump | AGENTS.md mandates bump on every bugfix. |
 
 ## Quick Reference
 
-| Step | Skill | Output |
-|------|-------|--------|
+| Step | Skill / Action | Output |
+|------|----------------|--------|
 | 0 | Create fix branch | `fix/<name>` branch |
 | 1 | systematic-debugging | Confirmed root cause |
 | 2 | Oracle escalation (if 2+ fails) | Unblocked investigation |
 | 3 | test-driven-development | Failing test + minimal fix |
-| 4 | Verify | Passing tests, clean diagnostics |
-| 5 | requesting-code-review | Pre-review checklist |
-| 6 | finishing-a-development-branch | Merge/PR/Keep/Discard |
-| 7 | Pipeline complete | Terminal — no further stage |
+| 4 | Verify + regression guard | Passing tests, clean diagnostics |
+| 5 | Version bump (patch) | Bumped manifest(s) |
+| 6 | requesting-code-review | Pre-review checklist |
+| 7 | finishing-a-development-branch | Merge/PR/Keep/Discard |
+| 8 | Pipeline complete | Terminal — no further stage |
