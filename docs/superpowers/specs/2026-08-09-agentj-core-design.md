@@ -290,6 +290,64 @@ opencode/claude 插件 manifest
 
 v0.2 优先支持 **manifest 级兼容**（识别插件配置、Skills、MCP 服务器声明），行为级兼容（脚本执行、钩子触发）后续迭代。
 
+### 7. 预留接口：为 v0.2+ Kernel 服务定位通道预留扩展（接口契约先行）
+
+**决策**：v0.1 完全保持消息总线架构（`Box<dyn KernelModule>` + `&mut self handle()`），但**现在定义好未来 Kernel 服务定位通道所需的接口契约**，v0.2+ 仅做增量实现，避免届时大量模块重写。
+
+**核心原则：能力接口与通道分离。** 模块实现的是能力接口（capability traits，`&self` + Send + Sync），内核通过通道（v0.1 消息总线 / v0.2+ 服务定位）到达这些接口。未来更换或叠加通道时，模块实现不感知——因为模块挂在能力接口上，不挂在通道上。
+
+**能力接口现状盘点**：
+
+| 能力接口 | v0.1 现状 | 是否满足"未来可共享" |
+|---|---|---|
+| `ModelProvider` / `SessionStore` / `ConfigProvider` | `&self` + Send + Sync | ✅ 天然可 `Arc` 共享，Kernel 通道直接 resolve |
+| `ToolRegistry` / `ProviderRegistry` | 内部即 `Arc` 共享注册表 | ✅ 本身就是共享结构 |
+| `ToolSystem` / `ContextPipeline` | v0.1 实现中保持 `&self` + Send + Sync | ⚠️ 实现时注意，勿写 `&mut self` |
+
+**预留契约（v0.1 仅定义/文档化，v0.2 实现）**：
+
+```rust
+// 1. ModuleResolver —— v0.2 服务定位的核心契约（v0.1 仅文档化，不实现）
+pub trait ModuleResolver: Send + Sync {
+    fn resolve<T: 'static + Send + Sync>(&self, id: &ModuleId) -> Option<Arc<T>>;
+}
+
+// 2. KernelContext 访问器方法（纯加性：加方法，保留字段，零破坏）
+impl KernelContext {
+    pub fn session(&self) -> Arc<dyn SessionStore>;
+    pub fn tools(&self) -> Arc<ToolRegistry>;
+    pub fn providers(&self) -> Arc<ProviderRegistry>;
+    pub fn config(&self) -> Arc<dyn ConfigProvider>;
+}
+// 未来：方法内部从"硬编码字段"换成 ModuleResolver::resolve()，模块代码零改动
+
+// 3. KernelMessage::ServiceCall —— v0.2 增加（加性变更，非破坏）
+//    v0.1 封闭枚举不动；v0.2 加变体时，只要匹配处有通配臂即无破坏
+
+// 4. EventType / EventHandler —— v0.1 的 on_event 注册即未来事件总线的订阅者
+//    v0.2 publish(event) 广播给所有已注册 handler，复用现有定义
+```
+
+**演进路线**：
+
+```mermaid
+flowchart LR
+    subgraph v01["v0.1（仅消息总线，架构不变）"]
+        A1["Box + &mut self handle()"]
+        A2["KernelContext 访问器方法"]
+        A3["ToolRegistry / ProviderRegistry"]
+    end
+    subgraph v02["v0.2+（增量叠加 Kernel 通道）"]
+        B1["ModuleResolver::resolve&lt;T&gt;()"]
+        B2["Kernel 对象门面"]
+        B3["KernelMessage::ServiceCall 变体"]
+        B4["事件总线 publish/subscribe"]
+    end
+    v01 --> v02
+```
+
+**边界说明**：唯一无法通过接口预留消除的，是未来若模块内部状态用裸字段 + `&mut self` 组织，转共享时需包 `Mutex`。v0.1 模块按"内部持有 `Arc` 注册表"方式组织状态（与 `ToolRegistry`/`ProviderRegistry` 同风格）即可将此成本降至近乎为零。
+
 ## 错误处理
 
 ### 错误类型层次

@@ -629,6 +629,15 @@
         pub config: Arc<dyn ConfigProvider>,
     }
 
+    // 预留访问器方法（v0.2+ Kernel 服务定位通道的契约，纯加性，零破坏）：
+    // 未来方法内部可从"硬编码字段"换成 ModuleResolver::resolve()，模块代码零改动。
+    impl KernelContext {
+        pub fn session(&self) -> Arc<dyn SessionStore> { self.session.clone() }
+        pub fn tools(&self) -> Arc<ToolRegistry> { self.tools.clone() }
+        pub fn providers(&self) -> Arc<ProviderRegistry> { self.providers.clone() }
+        pub fn config(&self) -> Arc<dyn ConfigProvider> { self.config.clone() }
+    }
+
     // ---- Kernel Message ----
 
     #[derive(Debug, Clone)]
