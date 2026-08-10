@@ -1,11 +1,11 @@
 ---
 name: jskill-feature-dev
-description: Use when an implementation plan has been approved and development needs to begin. Triggers on "start development", "execute the plan", "begin implementation", or after plan approval. Covers the full development cycle from feature branch creation through code review and branch finishing.
+description: Use when an implementation plan has been approved and development needs to begin. Triggers on "start development", "execute the plan", "begin implementation", or after plan approval. Covers the full development cycle from plan intake validation through feature branch, TDD execution, code review, verification, doc sync, and branch finishing.
 ---
 
 # JCMD Feature Development
 
-Orchestrates the full Superpowers development cycle: feature branch, TDD, parallel/subagent execution with two-phase review, code review, and branch finishing.
+Orchestrates the full Superpowers development cycle: **plan intake validation** → feature branch → TDD → subagent execution → code review → system verification → version bump + doc auto-sync → branch finishing.
 
 ## Parameters
 
@@ -15,70 +15,85 @@ Orchestrates the full Superpowers development cycle: feature branch, TDD, parall
 
 **Example:** `jskill-feature-dev docs/superpowers/plans/2026-08-09-oauth2-auth-plan.md`
 
-## Entry: Feature Branch → TDD → Execute → Review → Finish
+## Entry: Intake → Branch → TDD → Execute → Review → Verify → Sync → Finish
 
-```dot
-digraph {
-    rankdir=TB;
-    "Plan approved" [shape=box];
-    "Create feature branch" [shape=doublecircle];
-    "test-driven-development" [shape=doublecircle];
-    "Task dependencies?" [shape=diamond];
-    "dispatching-parallel-agents\n+ subagent-driven-development" [shape=box];
-    "executing-plans" [shape=box];
-    "Two-phase review per task" [shape=box,style=filled,fillcolor=lightyellow];
-    "All tasks complete?" [shape=diamond];
-    "requesting-code-review" [shape=doublecircle];
-    "finishing-a-development-branch" [shape=doublecircle];
-    "Merge / PR / Keep / Discard" [shape=box];
-
-    "Plan approved" -> "Create feature branch";
-    "Create feature branch" -> "test-driven-development";
-    "test-driven-development" -> "Task dependencies?";
-    "Task dependencies?" -> "dispatching-parallel-agents\n+ subagent-driven-development" [label="independent tasks"];
-    "Task dependencies?" -> "executing-plans" [label="sequential"];
-    "dispatching-parallel-agents\n+ subagent-driven-development" -> "Two-phase review per task";
-    "executing-plans" -> "Two-phase review per task";
-    "Two-phase review per task" -> "All tasks complete?";
-    "All tasks complete?" -> "Two-phase review per task" [label="no"];
-    "All tasks complete?" -> "requesting-code-review" [label="yes"];
-    "requesting-code-review" -> "finishing-a-development-branch";
-    "finishing-a-development-branch" -> "Merge / PR / Keep / Discard";
-}
+```mermaid
+flowchart TB
+    A["Plan approved"] --> B["Phase 0: Intake & Validate"]
+    B --> C["Phase 1: Create feature branch"]
+    C --> D["Phase 2: TDD Execution"]
+    D --> E{"Task dependencies?"}
+    E -- "independent tasks" --> F["Phase 4: dispatching-parallel-agents + subagent-driven-development"]
+    E -- "sequential" --> G["Phase 4: executing-plans"]
+    F --> H["Phase 4: Two-phase review per task"]
+    G --> H
+    H --> I{"All tasks complete?"}
+    I -- "no" --> H
+    I -- "yes" --> J["Phase 5: Code Review"]
+    J --> K["Phase 6: System Verification (conditional)"]
+    K --> L["Phase 7: Final Verification + Version Bump"]
+    L --> M["Phase 8: Doc Auto-Sync"]
+    M --> N["Phase 9: Branch Finishing"]
+    N --> O["Phase 10: Pipeline Complete"]
 ```
 
 ## Workflow
 
+### Phase 0: Intake & Validate the Plan
+
+Read the plan file at `plan-path`. If the file does not exist, abort and ask the user to run `/jskill-feature-plan docs/superpowers/specs/<spec-file>.md` first.
+
+Read the project summary file (per AGENTS.md, e.g. `.claude/summary/summary_and_next.md`) for current state and version — AGENTS.md requires reading it before developing.
+
+**Validate the plan against the Task Template Specification (defined in `jskill-feature-plan`):**
+
+- Every task has all required fields: `id`, `title`, `files`, `depends_on`, `breaking`, `ac`, `regression`, `test_code`, `impl_code`, `verify`.
+- No task has >3 `files` entries. If it does, reject: "Task {id} has {N} files. Split into smaller tasks (max 3)."
+- No task has `impl_code` appearing before `test_code` in the plan. Reject: "Task {id} lists implementation before test. TDD order must be: test first."
+- All `depends_on` values reference existing task IDs. Reject circular or dangling dependencies.
+- Any task touching `migrations/` or DB schema has `migration_verify` steps.
+- Every `ac.then` is observable: it describes a specific output, state change, HTTP status, or exit code. Reject vague AC: "Task {id} AC 'then: {text}' is not observable. Rewrite as a concrete assertion."
+- Every task has ≥1 `regression` entry naming an existing test. If no existing tests cover the area: `regression: ["<full project test command> (full suite — no existing tests for this module)"]`.
+
+If any validation fails, present the findings to the user and pause — do NOT start implementation on a malformed plan.
+
+**Restate the plan scope:** what will be built, files to touch, estimated effort.
+
+**Classify the feature size:**
+
+| Tier | Criteria | Execution |
+|------|----------|-----------|
+| trivial | 1 task, 1 file | Inline execution (no subagent) |
+| standard | 2-5 tasks | Subagent per task (sequential) |
+| large | 5+ tasks, cross-cutting | Subagent per task (parallel independent, sequential dependent) |
+
 ### Phase 1: Create Feature Branch
 
-Create a feature branch from the latest base branch (typically `main` or `master`):
+**Do NOT use git worktrees or isolated workspaces** unless the project convention says otherwise — create a feature branch directly in the current repository.
 
 ```bash
 git checkout main 2>/dev/null || git checkout master
 git pull
-git checkout -b feature/<feature-name>
+git checkout -b feature/<plan-name>      # from the plan file, kebab-case
 ```
 
 Branch naming: `feature/<short-description>` — lowercase, hyphens for spaces.
 
-Confirm you are on the correct branch before proceeding. All development work happens on this branch. The `finishing-a-development-branch` step (Phase 6) will handle merge/PR/cleanup.
+**Verify clean baseline before starting:** the project's test + lint commands must pass. If they fail on baseline, abort and report — do NOT proceed.
 
 ### Phase 2: TDD Execution
 
 **REQUIRED SUB-SKILL:** Load `superpowers:test-driven-development` and follow it exactly.
 
-Read the plan from `plan-path` (e.g. `docs/superpowers/plans/*-plan.md`).
+Every task in the plan follows the TDD cycle. **TDD is NON-NEGOTIABLE:**
 
-Every task in the plan follows the TDD cycle:
-1. **RED** — Write a failing test
-2. **GREEN** — Write minimal code to pass
-3. **REFACTOR** — Clean up while tests stay green
+1. **RED** — Write the failing test FIRST. Verify it fails (a passing test without implementation = false green, reject it).
+2. **GREEN** — Write MINIMAL code to pass. No extras, no future-proofing, no unrelated refactoring.
+3. **REFACTOR** — Clean up while tests stay green. Change NO behavior.
 
 No code before tests. No exceptions.
 
 ### Phase 3: Code Standards
-
-All code written during development must follow these constraints:
 
 | Rule | Scope | Rationale |
 |------|-------|-----------|
@@ -88,20 +103,66 @@ All code written during development must follow these constraints:
 
 These constraints apply to ALL subagents. Include them in every delegation prompt.
 
-### Phase 4: Strategy Selection
+### Phase 4: Strategy Selection & Execution
 
 Read the plan's dependency graph and parallel execution groups. Choose:
 
 **Independent tasks → `dispatching-parallel-agents` + `subagent-driven-development`:**
-- Each task dispatched to an independent subagent in parallel
-- `subagent-driven-development` enforces two-phase review per task:
+- **REQUIRED SUB-SKILLS:** Load both `superpowers:dispatching-parallel-agents` and `superpowers:subagent-driven-development`
+- Each task dispatched to an independent subagent
+- Two-phase review per task:
   - Phase 1: Spec compliance (does it match the plan?)
   - Phase 2: Code quality (does it follow patterns, handle errors, have tests?)
-- **REQUIRED SUB-SKILLS:** Load both `superpowers:dispatching-parallel-agents` and `superpowers:subagent-driven-development`
 
 **Sequential tasks → `executing-plans`:**
-- Execute tasks in order with human checkpoints between batches
 - **REQUIRED SUB-SKILL:** Load `superpowers:executing-plans`
+- Execute tasks in order with human checkpoints between batches
+
+**Key rules:**
+- Sequential execution for interdependent tasks — do NOT fan out parallel implementers for dependent tasks.
+- Fresh subagent per task — never reuse a subagent across tasks (context pollution).
+- Task briefs must be self-contained — the subagent should need zero additional context.
+
+**Generate each task brief from the template fields:**
+
+```text
+TASK: {id} — {title}
+FILES: {files list}
+DEPENDS_ON: {depends_on} (already completed: T0, T1)
+BREAKING: {breaking} — if true, reviewer MUST flag this task for extra scrutiny
+
+ACCEPTANCE CRITERIA:
+  GIVEN {ac.given}
+  WHEN {ac.when}
+  THEN {ac.then}
+
+REGRESSION GUARD: {regression commands — must keep passing}
+
+MIGRATION VERIFY (if applicable): {migration_verify steps}
+
+TDD ORDER:
+  1. FIRST: Write test code → {test_code}
+  2. Verify test FAILS → <test command> --exact (expect FAIL)
+  3. SECOND: Write minimal implementation → {impl_code}
+  4. Verify test PASSES → <test command> --exact (expect PASS)
+
+FINAL VERIFY:
+  {verify commands}
+```
+
+**TDD enforcement rules for the orchestrator (YOU):**
+- Before dispatching any implementer subagent, confirm the task brief includes explicit test code.
+- If the subagent returns implementation without test code → **REJECT**. Re-dispatch with: "Write the test first. Do NOT write implementation code until the test exists and fails."
+- After the subagent returns, personally verify the test was written first by checking the commit/diff order.
+- If a task in the plan does NOT specify test code, pause and ask the user to update the plan before continuing.
+
+**Verification after every task:**
+- Project lint command must be clean (zero warnings).
+- Project test command must pass (except pre-existing ignored/skipped tests).
+- If the task touches frontend, the frontend build must pass.
+- If any step fails, fix the failing task before proceeding. Do NOT skip.
+
+**Progress persistence:** Track progress in `.superpowers/sdd/progress.md` (task id, status, brief, review outcome). If the session is interrupted, read this file on resume and continue from the last completed task.
 
 ### Phase 5: Code Review
 
@@ -114,19 +175,67 @@ Run the pre-review checklist before submitting:
 - Changed files follow existing patterns
 - No scope creep beyond the plan
 
-### Phase 6: Branch Finishing
+**Review findings handling:**
+- **CRITICAL** — fix immediately, re-verify, re-review.
+- **HIGH** — fix before proceeding to the next phase.
+- **MEDIUM** — document, fix if time permits.
+- **LOW** — acknowledge, optional fix.
+
+### Phase 6: System Verification (Conditional)
+
+Run ONLY the verification layers the project actually has — nothing more. Determine what exists from `AGENTS.md` and the repo root:
+
+- **If the project has integration tests requiring external services** (e.g. a database via a compose file or local setup): run the full integration suite with the documented connection configuration. If the environment cannot provide the services, note the skip and rely on the unit suite.
+- **If the project has an end-to-end / browser test suite** (e.g. Playwright): run it for any feature that touches user-facing behavior. Failing specs are adjusted to the intended behavior — do NOT delete or paper over them. New user-facing options require new e2e coverage.
+- **If the project has neither**: skip this phase with a note — the unit suite is the correctness gate.
+
+**Cleanup:** after any system-level test run, remove test-created containers, temp storage, and report artifacts immediately. Nothing test-created may survive to the finish phase. Follow the cleanup commands documented in the project's AGENTS.md.
+
+**Failure handling:** if any integration/e2e test fails, treat it as CRITICAL. Diagnose the root cause, fix it, re-run until green. Do NOT proceed while system tests fail (unless they are documented as pre-existing failures).
+
+### Phase 7: Final Verification + Version Bump
+
+**Run ALL project gates — if any fails, DO NOT proceed until fixed:**
+
+```bash
+<project lint command>    # zero warnings required
+<project test command>    # all non-ignored must pass
+<project build command>   # if the build is part of the project's gates
+```
+
+**Version bump (per AGENTS.md / project convention):**
+- Feature → **minor** bump (e.g. `0.1.0` → `0.2.0`)
+- Bugfix → **patch** bump (e.g. `0.1.0` → `0.1.1`)
+- Bump the project's version manifest(s). If multiple manifests carry a version (e.g. workspace + subpackage), keep them in sync.
+
+### Phase 8: Doc Auto-Sync (BEFORE finish options)
+
+Run this **before** presenting any finish options. The doc sync commits must be included in the branch so a PR captures them.
+
+1. Update `AGENTS.md` — sync version, migrations count, new API routes, architecture notes, config vars, crate/module boundaries — any structural change introduced in the phase.
+2. Update `README.md` — sync version tagline, features checklist, project structure tree, API endpoint tables, migrations count, config var table — any user-facing change.
+3. Update the project summary file (per AGENTS.md, e.g. `.claude/summary/summary_and_next.md`). **REPLACE, don't append:** rewrite it to retain ONLY the currently-developing feature's content — write a "## {phase}: {title} ✅ (本次完成)" section documenting what was built and verification results, list remaining issues and next steps, and update the "## 待实施" table. Remove any content belonging to previously completed or non-current features. Do NOT accumulate old feature sections.
+4. Update the target spec doc in `docs/superpowers/specs/` — refresh its TODO list to reflect this phase's completion (per AGENTS.md: "Update docs/superpowers/specs target spec doc TODO list after each phase").
+5. Commit the four files together: `docs: auto-sync AGENTS.md, README.md, summary, spec TODO after {phase} completion`.
+6. Do NOT skip this step — it is mandatory before proceeding to finish options.
+
+### Phase 9: Branch Finishing
 
 **REQUIRED SUB-SKILL:** Load `superpowers:finishing-a-development-branch`
 
-Present structured options:
-1. **Merge** — directly merge into target branch
-2. **PR** — create a pull request for review
-3. **Keep** — keep the branch as-is for later
-4. **Discard** — delete the branch and clean up
+**Verify working directory is clean** — all changes (including doc sync) must be committed.
 
-### Phase 7: Pipeline Complete
+Present the 4 options:
+1. **Merge** — merge into base branch, delete the feature branch
+2. **Create PR** — push branch (if not pushed), create GitHub PR, share link. **PR will include doc sync commits from Phase 8.**
+3. **Keep as-is** — leave branch for later.
+4. **Discard** — delete branch (requires explicit "discard" confirmation).
 
-After branch finishing is resolved, you MUST output:
+**CRITICAL:** Do NOT offer "Create PR" if the working directory is dirty or doc sync hasn't been committed yet. Go back and complete Phase 8 first.
+
+### Phase 10: Pipeline Complete
+
+After branch finishing is resolved, output:
 
 ```
 ✅ Feature development complete.
@@ -138,28 +247,21 @@ The feature pipeline (design → plan → dev) is finished.
 
 `jskill-feature-dev` is the terminal stage of the feature pipeline. No further handoff.
 
-## Task Delegation Template
+## Failure Recovery
 
-When dispatching tasks, use this template for each subagent prompt:
+### If a task implementer subagent fails:
+- Failed once: investigate the error, provide more context to the subagent, retry.
+- Failed twice: re-read the relevant files, adjust the task brief with more specific instructions, retry.
+- Failed 3 times: **Consult Oracle** with full failure context. Do NOT continue blindly.
+- If Oracle cannot resolve: report to user with what's been tried.
 
-```text
-TASK: [Single atomic task from plan]
-EXPECTED OUTCOME: [Concrete deliverable with success criteria]
-REQUIRED TOOLS: read, edit, write, bash
-MUST DO:
-  - Write failing test FIRST (TDD cycle)
-  - Implement minimal code to pass
-  - Refactor only after tests pass
-  - Follow patterns in [reference files]
-  - Backend: keep functions ≤ 50 lines; all code: max 120 chars per line
-  - Run tests before marking complete
-MUST NOT DO:
-  - Touch files outside scope: [file list]
-  - Modify unrelated code
-  - Suppress type errors with as any or @ts-ignore
-  - Skip the test phase
-CONTEXT: Part of plan at `plan-path`. Depends on: [dependencies]. Files: [scope].
-```
+### If tests break after a task:
+- Do NOT proceed to the next task. The current task must pass verification.
+- If the breakage is in code the task didn't touch, report as a pre-existing issue.
+
+### If the session is interrupted:
+- Read `.superpowers/sdd/progress.md` on resume.
+- Continue from the last completed task. Task briefs are self-contained — no lost context.
 
 ## Anti-Patterns
 
@@ -171,7 +273,8 @@ CONTEXT: Part of plan at `plan-path`. Depends on: [dependencies]. Files: [scope]
 | "I'll fix this unrelated issue while I'm here" | Scope creep introduces new bugs. Separate PR. |
 | "Code review can wait until the PR" | Pre-review catches issues BEFORE they reach the reviewer. |
 | "I'll skip the two-phase review for this one subagent" | Unreviewed subagent output propagates errors downstream. |
-| "It's just one long function, I'll refactor later" | Long functions hide bugs. Keep backend functions ≤ 50 lines. |
+| "The plan is slightly off-template, I'll just start" | Intake validation exists to catch this. Fix the plan first. |
+| "Doc sync can wait, the user didn't ask" | AGENTS.md mandates it. Skip only if the user explicitly says so. |
 
 ## Error Handling
 
@@ -183,6 +286,7 @@ CONTEXT: Part of plan at `plan-path`. Depends on: [dependencies]. Files: [scope]
 | Uncommitted changes on base branch | Warn user and ask whether to stash, commit, or abort |
 | Feature branch name already exists | Ask user for a different branch name |
 | Task execution fails (test or compile error) | Fix the failing task before proceeding to next. Do NOT skip. |
+| Plan fails intake validation | Present findings to user, pause. Do NOT start implementation. |
 
 ## Common Mistakes
 
@@ -191,20 +295,26 @@ CONTEXT: Part of plan at `plan-path`. Depends on: [dependencies]. Files: [scope]
 | Working on `main` without creating a branch | Contaminates the base branch. Always `feature/<name>`. |
 | Writing implementation before tests | TDD requires RED first. Code before test = untested code. |
 | Ignoring the dependency graph | Running dependent tasks out of order creates broken state. |
-| Delegating with vague prompts | Subagents need explicit scope, MUST DO, MUST NOT DO. Use the template. |
+| Delegating with vague prompts | Subagents need explicit scope, MUST DO, MUST NOT DO. Use the brief template. |
 | Treating parallel groups as suggestions | The plan's groups are deterministic — follow them exactly. |
 | Merging without running the full test suite | A passing unit test doesn't mean no regressions. |
 | Backend functions exceeding 50 lines | Split into smaller helpers. Each function = one responsibility. |
 | Lines exceeding 120 characters | Break long expressions, chains, or string literals across multiple lines. |
+| Forgetting the version bump | AGENTS.md mandates bump on every feature/bugfix. |
+| Forgetting doc auto-sync | The branch must carry AGENTS.md/README.md/summary sync before finish. |
 
 ## Quick Reference
 
-| Step | Skill | Output |
-|------|-------|--------|
+| Step | Skill / Action | Output |
+|------|----------------|--------|
+| 0 | Validate plan vs Task Template Specification | Approved intake |
 | 1 | Create feature branch | `feature/<name>` branch |
 | 2 | test-driven-development | TDD discipline |
 | 3 | dispatching-parallel-agents OR executing-plans | Executed tasks |
 | 4 | subagent-driven-development review | Two-phase verified code |
 | 5 | requesting-code-review | Pre-review checklist pass |
-| 6 | finishing-a-development-branch | Merge/PR/Keep/Discard |
-| 7 | Pipeline complete | Terminal — no further stage |
+| 6 | System verification (conditional) | Integration/e2e green or noted skip |
+| 7 | Final verification + version bump | Clean gates, bumped version |
+| 8 | Doc auto-sync | AGENTS.md/README.md/summary committed |
+| 9 | finishing-a-development-branch | Merge/PR/Keep/Discard |
+| 10 | Pipeline complete | Terminal — no further stage |
