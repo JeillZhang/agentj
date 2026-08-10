@@ -1,5 +1,6 @@
 ---
-description: (user - Skill) Use when an implementation plan has been approved and development needs to begin. Triggers on "start development", "execute the plan", "begin implementation", or after plan approval. Covers the full development cycle from feature branch creation through code review and branch finishing.
+description: (user - Skill) Use when an implementation plan has been approved and development needs to begin. Triggers on "start development", "execute the plan", "begin implementation", or after plan approval. Covers the full development cycle from plan intake validation through feature branch, TDD execution, code review, verification, doc sync, and branch finishing.
+argument-hint: "[plan-file-path]"
 ---
 
 /jskill-feature-dev $ARGUMENTS
