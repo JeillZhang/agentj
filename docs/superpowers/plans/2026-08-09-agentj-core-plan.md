@@ -25,7 +25,8 @@
 
 ## Architecture Notes
 
-- **Message Bus vs Direct Orchestration**: for v0.1, the kernel module registry + `KernelMessage` bus handles IPC ingress and module lifecycle. The agent loop orchestration (`run_turn_stream`) directly calls `SessionStore` / `ModelProvider` / `ToolRegistry` / `ContextPipeline` via trait objects — NOT through `KernelMessage` routing. This is intentional: the full `KernelMessage`-routed pipeline is needed for the v0.2 Sub-Agent Dispatcher.
+- **Message Bus vs Direct Orchestration**: for v0.1, the kernel module registry + `KernelMessage` bus handles IPC ingress and **module lifecycle** (init/shutdown/state machine). The agent loop orchestration (`run_turn_stream`) directly calls `SessionStore` / `ModelProvider` / `ToolRegistry` / `ContextPipeline` via trait objects — NOT through `KernelMessage` routing. This is intentional: the full `KernelMessage`-routed pipeline is needed for the v0.2 Sub-Agent Dispatcher. **Production wiring (T13/T14)**: CLI creates a `Kernel`, registers `AgentLoopModule` (AgentLoop wrapped as a `Module`) so init/shutdown run in the real process; IPC `shutdown` sends `KernelMessage::Shutdown` and awaits the kernel's graceful shutdown chain (reverse-order, per-module timeout).
+- **Lifecycle state machine**: `ModuleState` (Unloaded/Initializing/Ready/Stopping/Stopped/Failed) is tracked by the Kernel registry, NOT by the Module trait — state belongs to the orchestrator. `Kernel::module_state(id)` exposes queries; `Shutdown` is checked BEFORE message broadcast so a blocked module cannot starve the shutdown signal; graceful shutdown runs in reverse registration order with a per-module timeout (`KernelError::ShutdownTimeout`).
 - **AgentLoop in agentj-core with trait-only dependencies**: `AgentLoop` lives in `agentj-core/src/agent_loop.rs` and depends ONLY on traits defined in `agentj-core` (`SessionStore`, `ModelProvider`, `Tool`, `ContextPipeline`, `ConfigProvider`). **`ContextPipeline` is a trait in `agentj-core::module`**; `agentj-context` implements it. `AgentLoop` never imports from domain crates. Unit tests define inline mock implementations; the workspace integration test wires real implementations from domain crates via dev-dependencies.
 - **Streaming API**: `AgentLoop` exposes `run_turn_stream()` returning a `tokio::sync::mpsc::Receiver<AgentEvent>` so IPC/CLI consumers receive incremental deltas — matching the design spec's "流式返回" requirement. `run_turn()` is a convenience collector for non-streaming callers.
 - **Transport-agnostic core**: `ModelError::Network(String)` carries the message — `agentj-core` does NOT depend on `reqwest`.
@@ -201,6 +202,12 @@
         }
 
         #[test]
+        fn kernel_error_shutdown_failed_display() {
+            let err = KernelError::ModuleShutdownFailed("m".into(), anyhow::anyhow!("boom"));
+            assert!(err.to_string().contains("m"));
+        }
+
+        #[test]
         fn model_error_network_carries_message() {
             let err = ModelError::Network("conn refused".into());
             assert!(matches!(err, ModelError::Network(_)));
@@ -316,6 +323,8 @@
         ModuleNotFound(String),
         #[error("module '{0}' initialization failed: {1}")]
         ModuleInitFailed(String, #[source] anyhow::Error),
+        #[error("module '{0}' shutdown failed: {1}")]
+        ModuleShutdownFailed(String, #[source] anyhow::Error),
         #[error("message routing failed for {msg:?}: {reason}")]
         MessageRouteFailed { msg: String, reason: String },
         #[error("shutdown timeout after {0:?}")]
@@ -433,6 +442,16 @@
             let registry = ProviderRegistry::new();
             assert!(registry.get_default().is_none());
         }
+
+        #[test]
+        fn event_type_lifecycle_variants_exist() {
+            let loaded = EventType::ModuleLoaded("cfg".into());
+            let failed = EventType::ModuleFailed("cfg".into());
+            let stopped = EventType::ModuleStopped("cfg".into());
+            assert_ne!(loaded, failed);
+            assert_ne!(failed, stopped);
+            assert_eq!(loaded, EventType::ModuleLoaded("cfg".into()));
+        }
     }
   impl_code: |
     # agentj-core/src/module.rs
@@ -488,6 +507,10 @@
         Shutdown,
         ToolStart(String),
         ToolEnd(String),
+        // 生命周期事件（v0.1 契约先行，v0.2 Hook System 消费）
+        ModuleLoaded(ModuleId),
+        ModuleFailed(ModuleId),
+        ModuleStopped(ModuleId),
     }
 
     pub trait EventHandler: Send + Sync {
@@ -501,6 +524,18 @@
         pub version: String,
         pub description: String,
         pub author: String,
+    }
+
+    /// Lifecycle state of a registered module. Tracked by the Kernel registry (NOT by
+    /// the module itself) — state belongs to the orchestrator (see design §模块生命周期状态机).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum ModuleState {
+        Unloaded,
+        Initializing,
+        Ready,
+        Stopping,
+        Stopped,
+        Failed,
     }
 
     // ---- Module & KernelModule ----
@@ -660,11 +695,11 @@
     - "cargo clippy --workspace -- -D warnings"
 ```
 
-### T4: Add the Kernel module registry and event loop [P0] [Sequential]
+### T4: Add the Kernel module registry, event loop, and lifecycle state machine [P0] [Sequential]
 
 ```yaml
 - id: T4
-  title: "Add the Kernel module registry and event loop"
+  title: "Add the Kernel module registry, event loop, and lifecycle state machine"
   files:
     - agentj-core/src/kernel.rs
     - agentj-core/src/lib.rs
@@ -673,7 +708,12 @@
   ac:
     - given: module traits from T3
       when: running `cargo test -p agentj-core`
-      then: kernel routing test passes (spy module receives 1 message, Shutdown terminates the loop, JoinHandle resolves Ok)
+      then: >-
+        kernel routing test passes (spy module receives 1 message, Shutdown triggers
+        reverse-order graceful shutdown, JoinHandle resolves Ok); shutdown timeout
+        produces KernelError::ShutdownTimeout; init failure returns Err and marks
+        the module Failed without crashing the kernel; module_state reflects
+        Ready/Stopped/Failed transitions
   regression:
     - "cargo test -p agentj-core (T2 + T3 tests must keep passing)"
   test_code: |
@@ -685,6 +725,7 @@
         use crate::module::*;
         use crate::types::*;
         use std::sync::{Arc, Mutex as StdMutex};
+        use std::time::Duration;
 
         struct NoopSession;
         impl SessionStore for NoopSession {
@@ -711,16 +752,26 @@
         }
 
         struct SpyModule {
+            id: &'static str,
             handled: Arc<StdMutex<Vec<KernelMessage>>>,
+            shutdowns: Arc<StdMutex<Vec<String>>>,
+            shutdown_delay: Option<Duration>,
+            init_fails: bool,
         }
 
         impl Module for SpyModule {
-            fn id(&self) -> ModuleId { "spy".into() }
+            fn id(&self) -> ModuleId { self.id.to_string() }
             fn metadata(&self) -> ModuleMetadata {
-                ModuleMetadata { id: "spy".into(), name: "Spy".into(), version: "0.1".into(), description: "".into(), author: "".into() }
+                ModuleMetadata { id: self.id.to_string(), name: self.id.to_string(), version: "0.1".into(), description: "".into(), author: "".into() }
             }
-            fn init(&mut self, _ctx: &KernelContext, _r: &mut ModuleRegister) -> Result<(), ModuleError> { Ok(()) }
-            fn shutdown(&mut self) -> Result<(), ModuleError> { Ok(()) }
+            fn init(&mut self, _ctx: &KernelContext, _r: &mut ModuleRegister) -> Result<(), ModuleError> {
+                if self.init_fails { Err(ModuleError::Init("boom".into())) } else { Ok(()) }
+            }
+            fn shutdown(&mut self) -> Result<(), ModuleError> {
+                self.shutdowns.lock().unwrap().push(self.id.to_string());
+                if let Some(d) = self.shutdown_delay { std::thread::sleep(d); }
+                Ok(())
+            }
         }
 
         impl KernelModule for SpyModule {
@@ -730,39 +781,108 @@
             }
         }
 
+        fn spy(
+            id: &'static str,
+            handled: Arc<StdMutex<Vec<KernelMessage>>>,
+            shutdowns: Arc<StdMutex<Vec<String>>>,
+            shutdown_delay: Option<Duration>,
+            init_fails: bool,
+        ) -> SpyModule {
+            SpyModule { id, handled, shutdowns, shutdown_delay, init_fails }
+        }
+
         #[tokio::test]
         async fn kernel_routes_message_and_shuts_down() {
             let handled = Arc::new(StdMutex::new(vec![]));
+            let shutdowns = Arc::new(StdMutex::new(vec![]));
             let mut register = ModuleRegister::new(Arc::new(ToolRegistry::new()), Arc::new(ProviderRegistry::new()));
             let mut kernel = Kernel::new();
             kernel.register_module(
-                Box::new(SpyModule { handled: handled.clone() }),
+                Box::new(spy("spy", handled.clone(), shutdowns.clone(), None, false)),
                 &dummy_kernel_context(),
                 &mut register,
             ).unwrap();
+            assert_eq!(kernel.module_state("spy"), Some(ModuleState::Ready));
 
             let handle = kernel.start();
             kernel.sender().send(KernelMessage::UserRequest {
                 session_id: "s1".into(), content: "hello".into(), attachments: vec![],
             }).unwrap();
 
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            tokio::time::sleep(Duration::from_millis(50)).await;
             assert_eq!(handled.lock().unwrap().len(), 1);
 
             kernel.sender().send(KernelMessage::Shutdown).unwrap();
             handle.await.unwrap().unwrap();
+            assert_eq!(*shutdowns.lock().unwrap(), vec!["spy".to_string()]);
+            assert_eq!(kernel.module_state("spy"), Some(ModuleState::Stopped));
+        }
+
+        #[tokio::test]
+        async fn shutdown_runs_in_reverse_registration_order() {
+            let shutdowns = Arc::new(StdMutex::new(vec![]));
+            let mut register = ModuleRegister::new(Arc::new(ToolRegistry::new()), Arc::new(ProviderRegistry::new()));
+            let mut kernel = Kernel::new();
+            kernel.register_module(
+                Box::new(spy("a", Arc::new(StdMutex::new(vec![])), shutdowns.clone(), None, false)),
+                &dummy_kernel_context(), &mut register,
+            ).unwrap();
+            kernel.register_module(
+                Box::new(spy("b", Arc::new(StdMutex::new(vec![])), shutdowns.clone(), None, false)),
+                &dummy_kernel_context(), &mut register,
+            ).unwrap();
+
+            let handle = kernel.start();
+            kernel.sender().send(KernelMessage::Shutdown).unwrap();
+            handle.await.unwrap().unwrap();
+            assert_eq!(*shutdowns.lock().unwrap(), vec!["b".to_string(), "a".to_string()]);
+        }
+
+        #[tokio::test]
+        async fn init_failure_is_reported_and_isolated() {
+            let mut register = ModuleRegister::new(Arc::new(ToolRegistry::new()), Arc::new(ProviderRegistry::new()));
+            let mut kernel = Kernel::new();
+            let err = kernel.register_module(
+                Box::new(spy("bad", Arc::new(StdMutex::new(vec![])), Arc::new(StdMutex::new(vec![])), None, true)),
+                &dummy_kernel_context(), &mut register,
+            );
+            assert!(matches!(err, Err(KernelError::ModuleInitFailed(ref id, _)) if id == "bad"));
+            assert_eq!(kernel.module_state("bad"), Some(ModuleState::Failed));
+
+            // kernel survives and still shuts down cleanly
+            let handle = kernel.start();
+            kernel.sender().send(KernelMessage::Shutdown).unwrap();
+            handle.await.unwrap().unwrap();
+        }
+
+        #[tokio::test]
+        async fn shutdown_timeout_yields_shutdown_timeout() {
+            let mut register = ModuleRegister::new(Arc::new(ToolRegistry::new()), Arc::new(ProviderRegistry::new()));
+            let mut kernel = Kernel::with_shutdown_timeout(Duration::from_millis(10));
+            kernel.register_module(
+                Box::new(spy("slow", Arc::new(StdMutex::new(vec![])), Arc::new(StdMutex::new(vec![])), Some(Duration::from_millis(200)), false)),
+                &dummy_kernel_context(), &mut register,
+            ).unwrap();
+
+            let handle = kernel.start();
+            kernel.sender().send(KernelMessage::Shutdown).unwrap();
+            let result = handle.await.unwrap();
+            assert!(matches!(result, Err(KernelError::ShutdownTimeout(_))));
+            assert_eq!(kernel.module_state("slow"), Some(ModuleState::Failed));
         }
     }
   impl_code: |
     # agentj-core/src/kernel.rs
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
+    use std::time::Duration;
     use tokio::task::JoinHandle;
     use crate::error::KernelError;
-    use crate::module::{KernelContext, KernelMessage, KernelModule, KernelResponse, ModuleRegister};
+    use crate::module::{KernelContext, KernelMessage, KernelModule, ModuleRegister, ModuleState};
     use crate::types::*;
 
     const CHANNEL_SIZE: usize = 128;
+    const DEFAULT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 
     #[derive(Clone)]
     pub struct KernelSender {
@@ -778,22 +898,48 @@
         }
     }
 
+    /// Kernel: message bus + module registry + lifecycle state machine.
+    ///
+    /// Module lifecycle states (Unloaded/Initializing/Ready/Stopping/Stopped/Failed) are
+    /// tracked here, NOT on the Module trait — state belongs to the orchestrator.
     pub struct Kernel {
         modules: Arc<Mutex<HashMap<String, Box<dyn KernelModule>>>>,
+        order: Arc<Mutex<Vec<String>>>, // registration order, for reverse shutdown
+        states: Arc<Mutex<HashMap<String, ModuleState>>>,
         sender: KernelSender,
         rx: Option<tokio::sync::mpsc::Receiver<KernelMessage>>,
+        shutdown_timeout: Duration,
     }
 
     impl Kernel {
         pub fn new() -> Self {
+            Self::with_shutdown_timeout(DEFAULT_SHUTDOWN_TIMEOUT)
+        }
+
+        pub fn with_shutdown_timeout(timeout: Duration) -> Self {
             let (tx, rx) = tokio::sync::mpsc::channel(CHANNEL_SIZE);
-            Self { modules: Arc::new(Mutex::new(HashMap::new())), sender: KernelSender { tx }, rx: Some(rx) }
+            Self {
+                modules: Arc::new(Mutex::new(HashMap::new())),
+                order: Arc::new(Mutex::new(Vec::new())),
+                states: Arc::new(Mutex::new(HashMap::new())),
+                sender: KernelSender { tx },
+                rx: Some(rx),
+                shutdown_timeout: timeout,
+            }
         }
 
         pub fn sender(&self) -> KernelSender {
             self.sender.clone()
         }
 
+        /// Query a module's lifecycle state (None if never registered).
+        pub fn module_state(&self, id: &str) -> Option<ModuleState> {
+            self.states.lock().unwrap().get(id).copied()
+        }
+
+        /// Register a module: init() runs synchronously; on failure the module is marked
+        /// Failed (NOT inserted into the registry) and the error is returned — the kernel
+        /// keeps running (one module's failure must not crash the kernel).
         pub fn register_module(
             &mut self,
             mut module: Box<dyn KernelModule>,
@@ -801,27 +947,43 @@
             register: &mut ModuleRegister,
         ) -> Result<(), KernelError> {
             let id = module.id();
+            self.set_state(&id, ModuleState::Initializing);
             match module.init(ctx, register) {
                 Ok(()) => {
-                    self.modules.lock().unwrap().insert(id, module);
+                    self.modules.lock().unwrap().insert(id.clone(), module);
+                    self.order.lock().unwrap().push(id.clone());
+                    self.set_state(&id, ModuleState::Ready);
                     Ok(())
                 }
                 Err(e) => {
+                    self.set_state(&id, ModuleState::Failed);
                     tracing::warn!(module_id = %id, error = %e, "module init failed, continuing without it");
-                    Ok(()) // design: one module's failure must not crash the kernel
+                    Err(KernelError::ModuleInitFailed(id, anyhow::Error::from(e)))
                 }
             }
         }
 
+        fn set_state(&self, id: &str, state: ModuleState) {
+            self.states.lock().unwrap().insert(id.to_string(), state);
+        }
+
+        /// Start the event loop. Shutdown is checked BEFORE broadcast (so a blocked
+        /// module cannot starve the shutdown signal). On Shutdown (or channel close) all
+        /// Ready modules are shut down in REVERSE registration order, each with a timeout.
         pub fn start(&mut self) -> JoinHandle<Result<(), KernelError>> {
             let modules = Arc::clone(&self.modules);
+            let order = Arc::clone(&self.order);
+            let states = Arc::clone(&self.states);
+            let shutdown_timeout = self.shutdown_timeout;
             let rx = self.rx.take().unwrap_or_else(|| {
                 let (_, rx) = tokio::sync::mpsc::channel(1);
                 rx
             });
             tokio::spawn(async move {
                 while let Some(msg) = rx.recv().await {
-                    if matches!(msg, KernelMessage::Shutdown) { break; }
+                    if matches!(msg, KernelMessage::Shutdown) {
+                        break; // graceful shutdown handled below — NOT broadcast via handle()
+                    }
                     let mut guard = modules.lock().unwrap();
                     for (_, module) in guard.iter_mut() {
                         if let Err(e) = module.handle(&msg) {
@@ -829,12 +991,58 @@
                         }
                     }
                 }
-                Ok(())
+                Self::shutdown_all(&modules, &order, &states, shutdown_timeout).await
             })
+        }
+
+        /// Reverse-order graceful shutdown. A single module's failure/timeout is logged
+        /// and recorded (state = Failed), but does NOT block shutting down the rest.
+        async fn shutdown_all(
+            modules: &Mutex<HashMap<String, Box<dyn KernelModule>>>,
+            order: &Mutex<Vec<String>>,
+            states: &Mutex<HashMap<String, ModuleState>>,
+            timeout: Duration,
+        ) -> Result<(), KernelError> {
+            let ids: Vec<String> = order.lock().unwrap().iter().rev().cloned().collect();
+            let mut first_error: Option<KernelError> = None;
+            for id in &ids {
+                states.lock().unwrap().insert(id.clone(), ModuleState::Stopping);
+                let module = {
+                    let mut guard = modules.lock().unwrap();
+                    guard.remove(id) // remove while shutting down: no more messages after this
+                };
+                let Some(mut module) = module else { continue };
+                // shutdown() is a sync fn that may block (e.g. killing a subprocess); run it on
+                // the blocking pool so the per-module timeout can still fire.
+                let shutdown_task = tokio::task::spawn_blocking(move || module.shutdown());
+                let result = tokio::time::timeout(timeout, shutdown_task).await;
+                let (state, err) = match result {
+                    Ok(Ok(Ok(()))) => (ModuleState::Stopped, None),
+                    Ok(Ok(Err(e))) => {
+                        tracing::error!(module_id = %id, error = %e, "module shutdown failed");
+                        (ModuleState::Failed, Some(KernelError::ModuleShutdownFailed(id.clone(), anyhow::Error::from(e))))
+                    }
+                    Ok(Err(e)) => {
+                        tracing::error!(module_id = %id, error = %e, "module shutdown task panicked");
+                        (ModuleState::Failed, Some(KernelError::ModuleShutdownFailed(id.clone(), anyhow::Error::from(anyhow::anyhow!(e.to_string())))))
+                    }
+                    Err(_) => {
+                        tracing::error!(module_id = %id, ?timeout, "module shutdown timeout");
+                        (ModuleState::Failed, Some(KernelError::ShutdownTimeout(timeout)))
+                    }
+                };
+                states.lock().unwrap().insert(id.clone(), state);
+                if first_error.is_none() { first_error = err; }
+            }
+            match first_error {
+                Some(e) => Err(e),
+                None => Ok(()),
+            }
         }
     }
 
     // agentj-core/src/lib.rs — add `pub mod kernel;`
+    // agentj-core/src/module.rs — ModuleState enum lives in module.rs next to Module trait
   verify:
     - "cargo test -p agentj-core"
     - "cargo clippy --workspace -- -D warnings"
@@ -2015,6 +2223,7 @@
         Error(String),
     }
 
+    #[derive(Clone)]
     pub struct AgentLoop {
         ctx: KernelContext,
         pipeline: Arc<dyn ContextPipeline>,
@@ -2237,6 +2446,7 @@
                 .stdin(std::process::Stdio::piped())
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::inherit())
+                .kill_on_drop(true) // lifecycle: kill the server subprocess when transport drops
                 .spawn()?;
             let stdin = child.stdin.take().unwrap();
             let stdout = child.stdout.take().unwrap();
@@ -2311,6 +2521,7 @@
                     .stdin(std::process::Stdio::piped())
                     .stdout(std::process::Stdio::piped())
                     .stderr(std::process::Stdio::inherit())
+                    .kill_on_drop(true) // lifecycle: no orphan MCP server processes on drop
                     .spawn()
                     .map_err(|e| ToolError::ExecutionFailed { name: self.name.clone(), reason: e.to_string() })?;
                 let stdin = child.stdin.take().unwrap();
@@ -2341,9 +2552,12 @@
   depends_on: [T11]
   breaking: false
   ac:
-    - given: "an IpcServer backed by a real AgentLoop stub (dev-deps: session/model/context)"
+    - given: "an IpcServer backed by a real AgentLoop stub + a started Kernel (dev-deps: session/model/context)"
       when: running `cargo test -p agentj-ipc`
-      then: 'all contract tests pass — session/new returns a session_id, session/run streams "hello", unknown method → -32601, invalid JSON → -32700, shutdown → status ok'
+      then: >-
+        all contract tests pass — session/new returns a session_id, session/run streams "hello",
+        unknown method → -32601, invalid JSON → -32700, shutdown → status ok AND the Kernel
+        JoinHandle resolves (graceful shutdown actually ran, module_state reflects it)
   regression:
     - "cargo test -p agentj-core -- agent_loop (T11 AgentLoop tests must keep passing)"
   test_code: |
@@ -2352,6 +2566,7 @@
     mod tests {
         use super::*;
         use agentj_core::agent_loop::AgentLoop;
+        use agentj_core::kernel::Kernel;
         use agentj_core::module::*;
         use agentj_core::types::*;
         use agentj_context::ContextPipeline;
@@ -2384,7 +2599,7 @@
 
         #[tokio::test]
         async fn session_new_returns_valid_id() {
-            let server = IpcServer::new(stub_agent_loop());
+            let mut server = IpcServer::new(stub_agent_loop(), Kernel::new());
             let resp = server.handle_request(r#"{"jsonrpc":"2.0","id":1,"method":"session/new"}"#).await.unwrap();
             let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
             assert!(v["result"]["session_id"].is_string());
@@ -2393,7 +2608,7 @@
 
         #[tokio::test]
         async fn session_run_streams_delta() {
-            let server = IpcServer::new(stub_agent_loop());
+            let mut server = IpcServer::new(stub_agent_loop(), Kernel::new());
             let resp = server.handle_request(r#"{"jsonrpc":"2.0","id":2,"method":"session/run","params":{"session_id":"s1","content":"hi"}}"#).await.unwrap();
             let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
             assert_eq!(v["result"]["response"], "hello");
@@ -2401,7 +2616,7 @@
 
         #[tokio::test]
         async fn unknown_method_returns_error() {
-            let server = IpcServer::new(stub_agent_loop());
+            let mut server = IpcServer::new(stub_agent_loop(), Kernel::new());
             let resp = server.handle_request(r#"{"jsonrpc":"2.0","id":3,"method":"bad/method"}"#).await.unwrap();
             let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
             assert!(v["error"].is_object());
@@ -2409,16 +2624,19 @@
         }
 
         #[tokio::test]
-        async fn shutdown_returns_ok() {
-            let server = IpcServer::new(stub_agent_loop());
+        async fn shutdown_runs_kernel_graceful_shutdown() {
+            let mut server = IpcServer::new(stub_agent_loop(), Kernel::new());
             let resp = server.handle_request(r#"{"jsonrpc":"2.0","id":4,"method":"shutdown"}"#).await.unwrap();
             let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
             assert_eq!(v["result"]["status"], "ok");
+
+            // the kernel loop must actually terminate (graceful shutdown ran)
+            server.await_shutdown().await.unwrap();
         }
 
         #[tokio::test]
         async fn invalid_json_returns_parse_error() {
-            let server = IpcServer::new(stub_agent_loop());
+            let mut server = IpcServer::new(stub_agent_loop(), Kernel::new());
             let resp = server.handle_request("not json").await.unwrap();
             let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
             assert_eq!(v["error"]["code"], -32700); // Parse error
@@ -2444,13 +2662,17 @@
     agentj-context = { path = "../agentj-context" }
 
     # agentj-ipc/src/lib.rs
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
     use agentj_core::agent_loop::{AgentEvent, AgentLoop};
     use agentj_core::error::{IpcError, KernelError, ModuleError};
+    use agentj_core::kernel::Kernel;
+    use agentj_core::module::KernelMessage;
     use agentj_core::types::SessionId;
     use serde::{Deserialize, Serialize};
     use serde_json::Value;
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use tokio::task::JoinHandle;
 
     #[derive(Debug, Deserialize)]
     struct JsonRpcRequest {
@@ -2479,11 +2701,22 @@
 
     pub struct IpcServer {
         agent_loop: Arc<AgentLoop>,
+        kernel: Kernel,
+        kernel_handle: Option<JoinHandle<Result<(), KernelError>>>,
+        shutdown_requested: AtomicBool,
     }
 
     impl IpcServer {
-        pub fn new(agent_loop: AgentLoop) -> Self {
-            Self { agent_loop: Arc::new(agent_loop) }
+        pub fn new(agent_loop: AgentLoop, mut kernel: Kernel) -> Self {
+            // kernel owns module lifecycle: start() spawns the event loop; its JoinHandle
+            // completes only after the graceful shutdown chain has run.
+            let kernel_handle = kernel.start();
+            Self {
+                agent_loop: Arc::new(agent_loop),
+                kernel,
+                kernel_handle: Some(kernel_handle),
+                shutdown_requested: AtomicBool::new(false),
+            }
         }
 
         pub fn create_session(&self) -> Result<SessionId, ModuleError> {
@@ -2492,6 +2725,26 @@
 
         pub async fn run_turn(&self, sid: &SessionId, input: &str) -> Result<String, KernelError> {
             self.agent_loop.run_turn(sid, input).await
+        }
+
+        pub fn shutdown_requested(&self) -> bool {
+            self.shutdown_requested.load(Ordering::SeqCst)
+        }
+
+        /// Send the Shutdown message to the kernel (idempotent — safe to call repeatedly).
+        pub fn signal_shutdown(&self) -> Result<(), IpcError> {
+            self.kernel.sender().send(KernelMessage::Shutdown)
+                .map_err(|e| IpcError::InvalidRequest(e.to_string()))
+        }
+
+        /// Wait for the kernel's graceful shutdown (modules' shutdown() chain) to finish.
+        pub async fn await_shutdown(&mut self) -> Result<(), KernelError> {
+            if let Some(handle) = self.kernel_handle.take() {
+                handle.await.map_err(|e| KernelError::MessageRouteFailed {
+                    msg: "kernel loop".into(), reason: format!("join failed: {e}"),
+                })??;
+            }
+            Ok(())
         }
 
         /// Handle a single JSON-RPC request, returning a JSON-RPC response string.
@@ -2531,7 +2784,12 @@
                     }
                     Ok(serde_json::json!({ "response": text, "tool_calls": tc_list }))
                 }
-                "shutdown" => Ok(serde_json::json!({ "status": "ok" })),
+                "shutdown" => {
+                    // real shutdown: signal the kernel, graceful teardown happens in serve loop
+                    self.signal_shutdown()?;
+                    self.shutdown_requested.store(true, Ordering::SeqCst);
+                    Ok(serde_json::json!({ "status": "ok" }))
+                }
                 _ => Err(IpcError::InvalidRequest(format!("unknown method: {}", req.method))),
             };
 
@@ -2551,7 +2809,8 @@
         }
 
         /// Run the server in stdio mode: read JSON-RPC lines from stdin, write responses to stdout.
-        pub async fn serve_stdio(&self) -> Result<(), IpcError> {
+        /// On EOF or after a shutdown request, signal the kernel and await its graceful shutdown.
+        pub async fn serve_stdio(&mut self) -> Result<(), IpcError> {
             let stdin = tokio::io::stdin();
             let mut reader = BufReader::new(stdin);
             let mut stdout = tokio::io::stdout();
@@ -2559,7 +2818,7 @@
             loop {
                 line.clear();
                 let n = reader.read_line(&mut line).await?;
-                if n == 0 { break; }
+                if n == 0 { break; } // EOF (client closed stdin)
                 let trimmed = line.trim();
                 if trimmed.is_empty() { continue; }
                 let response = self.handle_request(trimmed).await.unwrap_or_else(|e| {
@@ -2568,7 +2827,15 @@
                 stdout.write_all(response.as_bytes()).await?;
                 stdout.write_all(b"\n").await?;
                 stdout.flush().await?;
+                if self.shutdown_requested() { break; } // graceful shutdown requested
             }
+            // graceful teardown: signal the kernel (idempotent — the shutdown RPC may have
+            // already sent it), then wait for the modules' shutdown() chain to finish.
+            if !self.shutdown_requested() {
+                self.kernel.sender().send(KernelMessage::Shutdown)
+                    .map_err(|e| IpcError::InvalidRequest(e.to_string()))?;
+            }
+            self.await_shutdown().await.map_err(|e| IpcError::InvalidRequest(e.to_string()))?;
             Ok(())
         }
     }
@@ -2591,7 +2858,9 @@
   ac:
     - given: the compiled agentj binary
       when: running `cargo test -p agentj-cli`
-      then: the e2e serve test spawns the binary, sends session/new over stdin, and the stdout contains a "session_id"
+      then: >-
+        the e2e serve test spawns the binary, sends session/new over stdin, and the stdout
+        contains a "session_id"; the process exits 0 after stdin EOF (graceful shutdown ran)
   regression:
     - "cargo test -p agentj-ipc (T13 contract tests must keep passing)"
   test_code: |
@@ -2618,7 +2887,7 @@
         {
             let mut stdin = child.stdin.take().unwrap();
             writeln!(stdin, r#"{{"jsonrpc":"2.0","id":1,"method":"session/new"}}"#).unwrap();
-        } // drop closes stdin → serve_stdio exits on EOF
+        } // drop closes stdin → serve_stdio exits on EOF → kernel graceful shutdown
 
         let output = child.wait_with_output().unwrap();
         assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
@@ -2648,18 +2917,46 @@
     anyhow = "1"
     clap = { version = "4", features = ["derive"] }
     tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+    tracing = "0.1"
     tracing-subscriber = "0.3"
 
     # agentj-cli/src/main.rs
     use std::sync::Arc;
     use clap::{Parser, Subcommand};
     use agentj_core::agent_loop::AgentLoop;
-    use agentj_core::module::{KernelContext, ProviderRegistry, ToolRegistry};
+    use agentj_core::kernel::Kernel;
+    use agentj_core::module::{KernelContext, Module, ModuleError, ModuleMetadata, ModuleRegister, ProviderRegistry, ToolRegistry};
     use agentj_context::ContextPipeline;
     use agentj_ipc::IpcServer;
     use agentj_model::openai_compat::OpenAICompatibleProvider;
     use agentj_session::InMemoryStore;
     use agentj_tools::builtins::register_builtins;
+
+    /// Wraps the AgentLoop as a kernel Module so init/shutdown run in the production process.
+    struct AgentLoopModule {
+        agent_loop: AgentLoop,
+    }
+
+    impl Module for AgentLoopModule {
+        fn id(&self) -> agentj_core::types::ModuleId { "agent_loop".into() }
+        fn metadata(&self) -> ModuleMetadata {
+            ModuleMetadata {
+                id: "agent_loop".into(),
+                name: "AgentLoop".into(),
+                version: env!("CARGO_PKG_VERSION").into(),
+                description: "Agent orchestration loop".into(),
+                author: "AgentJ".into(),
+            }
+        }
+        fn init(&mut self, _ctx: &KernelContext, _register: &mut ModuleRegister) -> Result<(), ModuleError> {
+            tracing::info!("agent_loop module initialized");
+            Ok(())
+        }
+        fn shutdown(&mut self) -> Result<(), ModuleError> {
+            tracing::info!("agent_loop module shutting down");
+            Ok(())
+        }
+    }
 
     #[derive(Parser)]
     #[command(name = "agentj", version, about = "AgentJ — AI coding agent")]
@@ -2697,20 +2994,41 @@
         }
 
         let ctx = KernelContext { session, tools, providers, config: Arc::new(config) };
-        let agent_loop = AgentLoop::new(ctx, Arc::new(ContextPipeline::new()), "You are AgentJ, an AI coding assistant.".into());
-        let ipc_server = IpcServer::new(agent_loop);
+
+        // Lifecycle wiring: AgentLoop registers into the Kernel, so init/shutdown run in
+        // the real process. session/run still calls AgentLoop directly (orchestration stays
+        // direct per architecture note); the Kernel owns module lifecycle + graceful shutdown.
+        let mut kernel = Kernel::new();
+        let mut register = ModuleRegister::new(
+            Arc::clone(&ctx.tools),
+            Arc::clone(&ctx.providers),
+        );
+        let agent_loop = AgentLoop::new(ctx.clone(), Arc::new(ContextPipeline::new()), "You are AgentJ, an AI coding assistant.".into());
+        kernel.register_module(
+            Box::new(AgentLoopModule { agent_loop: agent_loop.clone() }),
+            &ctx,
+            &mut register,
+        )?;
+
+        let mut ipc_server = IpcServer::new(agent_loop, kernel);
 
         match cli.command {
             Some(Commands::Run { prompt }) => {
                 let sid = ipc_server.create_session()?;
                 let response = ipc_server.run_turn(&sid, &prompt).await?;
                 println!("{response}");
+                // graceful shutdown: signal the kernel and wait for modules' shutdown()
+                ipc_server.signal_shutdown()?;
+                ipc_server.await_shutdown().await?;
             }
             Some(Commands::Serve) => {
+                // serve_stdio exits on EOF or shutdown request; kernel graceful shutdown runs after
                 ipc_server.serve_stdio().await?;
             }
             None => {
                 println!("Use `agentj run \"your prompt\"` or `agentj serve`");
+                ipc_server.signal_shutdown()?;
+                ipc_server.await_shutdown().await?;
             }
         }
         Ok(())
