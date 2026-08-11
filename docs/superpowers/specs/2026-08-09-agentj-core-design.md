@@ -185,6 +185,8 @@ pub struct ModuleRegister {
 
 模块生命周期状态由 **Kernel 维护**（`HashMap<ModuleId, ModuleState>`），`Module` trait 不携带状态字段——保持 §7「能力接口与通道分离」原则：状态是编排者（Kernel）的职责，不是能力实现者（模块）的职责。
 
+> v0.2 插件在此状态机基础上扩展 Disabled/Reloading/Loading 等状态与转移，见「插件生命周期（v0.2）」章节。
+
 ```mermaid
 stateDiagram-v2
     [*] --> Unloaded
@@ -238,6 +240,86 @@ stateDiagram-v2
 - IPC `shutdown` 方法真实发送 `KernelMessage::Shutdown` 并等待 Kernel JoinHandle 完成（不再假返回）
 - session/new、session/run 保持直接调用 AgentLoop（符合"编排直接调 trait 对象"决策），但**生命周期（init/shutdown/状态）经由 Kernel**
 
+### MCP 连接生命周期（v0.2）
+
+**背景**：v0.1 每次调用新建 MCP server 子进程（`kill_on_drop(true)` 防泄漏），无连接生命周期概念。v0.2 引入长驻连接复用（决策 #11），需要完整的连接状态机与工具级联清理。
+
+**连接状态机**（由 `McpConnectionManager` 维护，`agentj-mcp` crate 内）：
+
+```mermaid
+stateDiagram-v2
+    [*] --> Connecting
+    Connecting --> Connected: initialize + list_tools 成功
+    Connecting --> Failed: 握手失败/超时
+    Connected --> Ready: 工具注册完成
+    Ready --> Disconnected: 进程退出/IO 错误/心跳超时
+    Disconnected --> Reconnecting: 退避延迟结束
+    Reconnecting --> Connected: 重连成功，重新 list_tools
+    Reconnecting --> Failed: 超过 max_retries
+    Ready --> Closing: 显式 shutdown / 引用归零
+    Closing --> Closed: MCP shutdown 通知 + exit 确认
+    Failed --> Closed: 资源清理
+    Closed --> [*]
+```
+
+**连接管理语义**：
+
+- `McpConnectionManager` 持 `HashMap<McpServerId, McpConnection>`；`McpConnection` 含状态 + `Arc<AtomicUsize>` 引用计数 + `idle_since` 时间戳
+- **引用计数共享**：多个 session/模块复用同一长驻连接；引用归零 → 空闲计时 → 超时（默认 60s，可配置）优雅关闭（`Closing → Closed`）
+- **重连策略**：指数退避 500ms ×2、上限 30s、最多 5 次 → `Failed`
+- **级联反注册**：连接进入 `Disconnected`/`Failed`/`Closed` 时执行 `ToolRegistry::unregister_by_source(Mcp{server_id})`——幽灵工具即时清除，模型不再拿到失效 tool definition（M2 缺口闭环）
+- **工具刷新**：重连成功后重新 `list_tools` 并 diff 注册/反注册（M3 缺口闭环）
+- **优雅关闭**：`Closing` 态发送 MCP 协议 `shutdown` 通知并等待 `exit` 确认，超时后强制终止子进程（复用 v0.1 的 `kill_on_drop` 兜底）
+- **调用中崩溃**：返回 `ToolError::ServerUnavailable{server_id}`，工具移除，连接转 `Reconnecting`
+
+### 插件生命周期（v0.2）
+
+**背景**：v0.2 引入动态插件加载（决策 #12），模块生命周期状态机扩展出插件专用状态与转移（P1/P2/P3/P4/P5 缺口闭环）。
+
+**插件状态机**（由 `PluginManager` 维护，`agentj-plugin` crate 内，语义与 Kernel 状态机对齐）：
+
+```mermaid
+stateDiagram-v2
+    [*] --> Unloaded
+    Unloaded --> Loading: 发现 manifest
+    Loading --> Initializing: manifest 解析+校验通过
+    Loading --> Failed: manifest 无效
+    Initializing --> Ready: init() 成功，注册能力
+    Initializing --> Failed: init() 失败
+    Ready --> Disabled: disable()（临时禁用，保留注册）
+    Disabled --> Ready: enable()
+    Ready --> Reloading: 文件变更/手动 reload
+    Reloading --> Initializing: 新版本 init
+    Reloading --> Failed: 新版本 init 失败（回滚旧版本）
+    Ready --> Stopping: Kernel Shutdown / 动态卸载
+    Disabled --> Stopping
+    Stopping --> Stopped
+    Stopping --> Failed
+    Stopped --> [*]
+    Failed --> [*]
+```
+
+**新增语义**：
+
+- **Disabled/Enabled**：临时禁用不卸载——禁用期间工具不进模型 tool list、事件 handler 不触发，注册表条目保留但标记停用；`enable()` 恢复（P1 缺口闭环）
+- **Reloading（热重载）**：新版本 `init()` 成功 → 原子切换；失败 → 回滚旧版本并记录 `PluginError::ReloadFailed`。触发源：插件目录文件监视（watch）或 IPC 手动 reload（P2 缺口闭环）
+- **依赖图**：manifest 显式声明 `dependencies: [PluginId]`；init 按拓扑序（依赖先 init），shutdown 逆拓扑序——替代"注册顺序"（P3 缺口闭环）；循环依赖 → `PluginError::DependencyCycle`
+- **Failed 恢复**：`Failed` 为终态，但允许从 `Unloaded` 重新 Loading 重试 init，不做永久锁死（P2 缺口部分闭环）
+- **工具冲突策略**：`register_tool_with_source` 默认 `ReplacePolicy::Reject`——同名工具已注册时返回 `PluginError::ToolConflict`（含既有来源）；插件可显式声明 `Replace` 意图覆盖（P5 缺口闭环）
+
+**加载器抽象**：
+
+```rust
+pub trait PluginLoader: Send + Sync {
+    fn load(&self, manifest: &PluginManifest) -> Result<Box<dyn PluginInstance>, PluginError>;
+    fn unload(&self, instance: Box<dyn PluginInstance>) -> Result<(), PluginError>;
+}
+```
+
+- `LibloadingLoader`：原生 .so/.dylib，v0.2 首载，信任模型 = 用户自装
+- `WasmLoader`：WASM 沙箱 + 能力白名单 + 内存/执行超时资源上限（P4 缺口闭环），可选
+- `PluginInstance` 桥接为内核 `Module`，复用 Kernel 状态机与 Shutdown 链路
+
 ### 消息枚举
 
 ```rust
@@ -267,9 +349,9 @@ pub enum KernelMessage {
 | `agentj-tools` | 工具引擎：内置工具注册/调用/沙箱 | v0.1 |
 | `agentj-session` | 会话管理：对话历史、token 计数、压缩 | v0.1 |
 | `agentj-context` | 上下文管线：组装、注入、回流 | v0.1 |
-| `agentj-mcp` | MCP 协议客户端 | v0.1 |
+| `agentj-mcp` | MCP 协议客户端；v0.1 每次调用新建子进程；v0.2 引入 McpConnectionManager 长驻连接状态机 | v0.1 |
 | `agentj-config` | 多级配置合并 | v0.1 |
-| `agentj-plugin` | 插件管理：加载、生命周期、沙箱，支持 Module 注册 | v0.2 |
+| `agentj-plugin` | 插件管理：PluginLoader 抽象（libloading/WASM）、插件状态机、依赖图拓扑排序、沙箱资源上限 | v0.2 |
 | `agentj-skills` | Skills 加载：多路径 | v0.2 |
 | `agentj-cli` | CLI 前端（clap），唯一二进制入口 | v0.1 |
 
@@ -383,6 +465,8 @@ impl KernelContext {
 
 // 4. EventType / EventHandler —— v0.1 的 on_event 注册即未来事件总线的订阅者
 //    v0.1 已定义 ModuleLoaded / ModuleFailed / ModuleStopped 生命周期变体（契约先行）
+//    v0.2 扩展：ModuleLoading / ModuleDisabled / ModuleEnabled / ModuleReloaded
+//            + McpConnecting / McpConnected / McpDisconnected / McpReconnecting / McpClosed
 //    v0.2 publish(event) 广播给所有已注册 handler，复用现有定义
 ```
 
@@ -419,6 +503,50 @@ flowchart LR
 **决策**：事件循环收到消息时**先检查** `Shutdown`，再广播其余消息。关闭信号不经过 `handle()` 广播，避免某模块 `handle()` 阻塞导致 Shutdown 永远轮不到（饿死）。
 
 **理由**：模块 `handle()` 是同步 `&mut self` 调用，若模块实现有阻塞操作（如等待子进程），串行广播会把 Shutdown 排在队尾。生命周期信号优先是内核关闭可靠性的底线保证。
+
+### 10. ToolRegistry 归属元数据与反注册契约（v0.1 固化，v0.2 消费）
+
+**决策**：v0.1 的 `ToolRegistry` 即固化 `ToolSource` 归属元数据与 `unregister`/`unregister_by_source` 接口（纯加性，不破坏现有调用）；v0.2 MCP 长驻连接与插件卸载直接消费，无需改签名重写。
+
+**理由**：幽灵工具（M2 缺口）根因是工具注册表无来源、无反注册。v0.1 内置工具标注 `ToolSource::Builtin`、每次新建的 MCP 进程标注 `ToolSource::Mcp{server_id}`，字段即就位。符合 §7「接口契约先行、避免 v0.2 重写」哲学；实现成本仅几行。
+
+**契约定义（v0.1 固化，纯加性）**：
+
+```rust
+pub enum ToolSource {
+    Builtin,
+    Mcp { server_id: String },
+    Plugin { plugin_id: String },
+}
+
+pub struct ToolEntry { pub tool: Arc<dyn Tool>, pub source: ToolSource }
+
+pub enum ReplacePolicy { Reject, Replace } // 默认 Reject
+
+impl ToolRegistry {
+    // 保留原签名（委托 Builtin，不破坏现有调用）
+    pub fn register_tool(&mut self, tool: Arc<dyn Tool>) -> Result<(), ModuleError>;
+    // 新增：带来源注册 + 冲突策略
+    pub fn register_tool_with_source(
+        &mut self, tool: Arc<dyn Tool>, source: ToolSource, policy: ReplacePolicy,
+    ) -> Result<(), ModuleError>;
+    pub fn unregister_tool(&mut self, name: &str) -> Option<Arc<dyn Tool>>;
+    pub fn unregister_by_source(&mut self, source: &ToolSource) -> usize; // 级联清理，返回移除数量
+    pub fn tools(&self) -> Vec<ToolEntry>; // 返回带来源信息
+}
+```
+
+### 11. MCP 长驻连接：McpConnectionManager + 引用计数 + 级联反注册
+
+**决策**：v0.2 由 `McpConnectionManager`（agentj-mcp）管理长驻连接状态机；多 session 引用计数共享同一连接；空闲超时回收；断连指数退避重连；`Disconnected`/`Failed`/`Closed` 时级联 `unregister_by_source`。
+
+**理由**：v0.1 每次调用新建进程虽简单，但无法支撑 v0.2 的 MCP 连接复用与工具生命周期闭环。引用计数是"多消费者共享资源"的标准答案；级联反注册保证模型永远不会拿到失效 tool definition。与 v0.1 的 `kill_on_drop(true)` 兜底策略兼容（`Closing` 超时后强制 kill）。
+
+### 12. 插件加载器抽象与生命周期扩展
+
+**决策**：`PluginLoader` trait（`load`/`unload`）抽象加载机制——`LibloadingLoader` 为 v0.2 首载（原生 .so/.dylib，信任=用户自装），`WasmLoader` 可选（沙箱+能力白名单+资源上限）；插件状态机在 Kernel 六态基础上扩展 `Loading`/`Disabled`/`Reloading` 状态；依赖经 manifest 显式声明 + 拓扑排序。
+
+**理由**：加载机制与生命周期语义解耦——内核只需面向 `PluginInstance`（桥接 `Module`）工作。Disabled 满足"临时禁用不卸载"的标准插件需求；Reloading 支持热重载且失败回滚；依赖拓扑排序替代注册顺序，保证 init/shutdown 顺序正确。libloading 优先于 WASM 是因为 v0.2 聚焦生态适配，沙箱属增强项（阻塞项：libloading ABI 稳定性、WASM runtime 选型）。
 
 ## 错误处理
 
@@ -475,6 +603,25 @@ pub enum ToolError {
 
     #[error("tool timeout after {0:?}")]
     Timeout(Duration),
+
+    #[error("MCP server '{server_id}' unavailable: {reason}")]
+    ServerUnavailable { server_id: String, reason: String },
+}
+
+// agentj-plugin 中的错误定义
+#[derive(Debug, thiserror::Error)]
+pub enum PluginError {
+    #[error("plugin '{id}' manifest invalid: {reason}")]
+    ManifestInvalid { id: String, reason: String },
+
+    #[error("plugin dependency cycle: {0:?}")]
+    DependencyCycle(Vec<String>),
+
+    #[error("plugin '{id}' reload failed, rolled back to previous version")]
+    ReloadFailed { id: String },
+
+    #[error("tool '{name}' already registered by {existing:?}")]
+    ToolConflict { name: String, existing: ToolSource },
 }
 ```
 
@@ -483,15 +630,18 @@ pub enum ToolError {
 - **内核层**：模块 init 失败 → 返回 `ModuleInitFailed`、状态置 `Failed`、不插入注册表，内核继续运行（单模块失败不拖垮内核）。模块关闭失败/超时 → 记录日志、状态置 `Failed`、继续关闭其余模块。致命错误（如 IPC 断开）→ 触发全局 shutdown
 - **生命周期层**：`Shutdown` 触发逆序优雅关闭，每模块超时（默认 2s）→ `ShutdownTimeout`；单模块关闭失败不阻断整体退出
 - **模型层**：网络/API 错误 → 自动重试（最多 3 次，指数退避）。Token 超限 → 触发上下文压缩后重试
-- **工具层**：执行失败 → 返回错误给模型（让模型自行修复）。超时 → 强制终止并通知模型
-- **子进程层**：MCP 客户端子进程 `kill_on_drop(true)`，transport 被 drop 时终止子进程，避免孤儿进程泄漏；每次调用新建 MCP server 进程为 v0.1 简化，连接复用/长驻 server 属 v0.2
+- **工具层**：执行失败 → 返回错误给模型（让模型自行修复）。超时 → 强制终止并通知模型。MCP server 不可用（断连/崩溃）→ 返回 `ToolError::ServerUnavailable`，工具从注册表移除（`unregister_by_source`），连接进入 `Reconnecting`（v0.2）
+- **子进程层**：MCP 客户端子进程 `kill_on_drop(true)`，transport 被 drop 时终止子进程，避免孤儿进程泄漏；每次调用新建 MCP server 进程为 v0.1 简化，连接复用/长驻 server 属 v0.2（`McpConnectionManager` 状态机，见「MCP 连接生命周期」章节）
+- **插件层**：manifest 无效/依赖循环/工具冲突 → `PluginError` 对应变体；重载失败回滚旧版本；单插件失败不拖垮 PluginManager 与内核
 
 ## 测试策略
 
 | 层级 | 范围 | 工具 | 目标 |
 |------|------|------|------|
 | **单元测试** | 每个 crate 的内部逻辑 | `#[cfg(test)]` + tokio test | 覆盖率 > 80% |
-| **生命周期测试** | Kernel 状态机转换、逆序关闭、关闭超时、init 失败隔离 | `#[tokio::test]` 构造迷你 Kernel + spy 模块 | 状态转换正确、Shutdown 触发全部模块 shutdown、单模块失败不阻断
+| **生命周期测试** | Kernel 状态机转换、逆序关闭、关闭超时、init 失败隔离 | `#[tokio::test]` 构造迷你 Kernel + spy 模块 | 状态转换正确、Shutdown 触发全部模块 shutdown、单模块失败不阻断 |
+| **MCP 连接测试**（v0.2） | McpConnectionManager 状态机、引用计数回收、退避重连、级联反注册 | mock MCP server（stdio 子进程模拟） | 断连→工具移除、重连→工具刷新、空闲→优雅关闭 |
+| **插件生命周期测试**（v0.2） | 插件状态机、Disabled/Reloading、依赖拓扑排序、工具冲突 | 测试插件（libloading） | 依赖先 init 逆序 shutdown、重载失败回滚、冲突 Reject |
 | **集成测试** | 模块→内核消息通信 | `tests/` 目录，启动迷你内核 | 验证模块间协作 |
 | **E2E 测试** | CLI → 完整流水线 | Mock LLM 服务器 | 核心链路正确性 |
 | **契约测试** | IPC JSON-RPC 协议 | 固定请求/响应 snapshot | 协议不退化 |
@@ -533,3 +683,5 @@ clap = { version = "4", features = ["derive"] }
 
 - DeepSeek API 的 tool-calling 能力验证（需实际测试流式 tool_call 支持情况）
 - opencode / claude code 插件 manifest 格式调研（v0.2 前置）
+- libloading 跨平台 ABI 稳定性验证与版本兼容策略（v0.2 前置）
+- WASM runtime 选型调研（wasmtime 等）与沙箱资源上限基准（v0.2 可选）
