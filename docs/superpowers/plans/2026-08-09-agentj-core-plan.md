@@ -26,7 +26,11 @@
 ## Architecture Notes
 
 - **Message Bus vs Direct Orchestration**: for v0.1, the kernel module registry + `KernelMessage` bus handles IPC ingress and **module lifecycle** (init/shutdown/state machine). The agent loop orchestration (`run_turn_stream`) directly calls `SessionStore` / `ModelProvider` / `ToolRegistry` / `ContextPipeline` via trait objects — NOT through `KernelMessage` routing. This is intentional: the full `KernelMessage`-routed pipeline is needed for the v0.2 Sub-Agent Dispatcher. **Production wiring (T13/T14)**: CLI creates a `Kernel`, registers `AgentLoopModule` (AgentLoop wrapped as a `Module`) so init/shutdown run in the real process; IPC `shutdown` sends `KernelMessage::Shutdown` and awaits the kernel's graceful shutdown chain (reverse-order, per-module timeout).
-- **Lifecycle state machine**: `ModuleState` (Unloaded/Initializing/Ready/Stopping/Stopped/Failed) is tracked by the Kernel registry, NOT by the Module trait — state belongs to the orchestrator. `Kernel::module_state(id)` exposes queries; `Shutdown` is checked BEFORE message broadcast so a blocked module cannot starve the shutdown signal; graceful shutdown runs in reverse registration order with a per-module timeout (`KernelError::ShutdownTimeout`).
+- **Lifecycle state machine**: `ModuleState` (Unloaded/Initializing/Ready/Stopping/Stopped/Failed) is tracked by the Kernel registry, NOT by the Module trait — state belongs to the orchestrator. `Kernel::module_state(id)` exposes queries; `Shutdown` is checked BEFORE message broadcast so a blocked module cannot starve the shutdown signal; graceful shutdown runs in reverse registration order with a per-module timeout (`KernelError::ShutdownTimeout`), wrapped in an overall budget (`DEFAULT_OVERALL_TIMEOUT` = 10s, design #13) so a hung module cannot block process exit forever.
+- **ToolRegistry ownership contract (T16)**: every tool carries a `ToolSource` (Builtin/Mcp/Plugin); `register_tool_with_source` + `ReplacePolicy`, `unregister_tool`, `unregister_by_source` (ghost-tool cleanup primitive), `tools()` return entries with source. Contract-first v0.1 (design #10), consumed by v0.2 MCP long-lived connections and plugin unload.
+- **Session lifecycle contract (T17)**: `SessionStore` gains `status`/`archive`/`delete` with default impls (contract-first, zero-break); `InMemoryStore` implements real semantics — archived/deleted sessions reject append/get with `SessionError::InactiveSession`, delete removes data. `SessionError` + `ModuleError::Session(#[from])` added in `agentj-core::error`.
+- **ToolExecutor (T18)**: unified tool-execution lifecycle (design #15) — process-group isolation on Unix, timeout kills the whole group (`kill(-pgid, SIGKILL)`), drop reclaims orphans. BashTool and friends wire through it; Windows process-group kill is a known limitation (design 遗留问题).
+- **CLI signal handling (T13/T14)**: SIGINT/SIGTERM → `KernelMessage::Shutdown` (same chain as stdin EOF); `serve_stdio`'s read loop is interrupted when the kernel finishes; overall graceful-shutdown timeout (design #13) is enforced in `Kernel::start`.
 - **AgentLoop in agentj-core with trait-only dependencies**: `AgentLoop` lives in `agentj-core/src/agent_loop.rs` and depends ONLY on traits defined in `agentj-core` (`SessionStore`, `ModelProvider`, `Tool`, `ContextPipeline`, `ConfigProvider`). **`ContextPipeline` is a trait in `agentj-core::module`**; `agentj-context` implements it. `AgentLoop` never imports from domain crates. Unit tests define inline mock implementations; the workspace integration test wires real implementations from domain crates via dev-dependencies.
 - **Streaming API**: `AgentLoop` exposes `run_turn_stream()` returning a `tokio::sync::mpsc::Receiver<AgentEvent>` so IPC/CLI consumers receive incremental deltas — matching the design spec's "流式返回" requirement. `run_turn()` is a convenience collector for non-streaming callers.
 - **Transport-agnostic core**: `ModelError::Network(String)` carries the message — `agentj-core` does NOT depend on `reqwest`.
@@ -214,6 +218,13 @@
         }
 
         #[test]
+        fn tool_error_server_unavailable_display() {
+            let err = ToolError::ServerUnavailable { server_id: "srv1".into(), reason: "crashed".into() };
+            assert!(err.to_string().contains("srv1"));
+            assert!(matches!(err, ToolError::ServerUnavailable { server_id, .. } if server_id == "srv1"));
+        }
+
+        #[test]
         fn ipc_from_io_error() {
             let io: std::io::Error = std::io::ErrorKind::BrokenPipe.into();
             let err = IpcError::from(io);
@@ -367,6 +378,10 @@
         PermissionDenied { name: String, reason: String },
         #[error("tool timeout after {0:?}")]
         Timeout(Duration),
+        // v0.1 contract-first (design error section): MCP server crash/disconnect mid-call.
+        // Consumed by the v0.2 McpConnectionManager; defined now so the contract is stable.
+        #[error("MCP server '{server_id}' unavailable: {reason}")]
+        ServerUnavailable { server_id: String, reason: String },
     }
 
     // agentj-core/src/lib.rs — add module declarations
@@ -452,6 +467,34 @@
             assert_ne!(failed, stopped);
             assert_eq!(loaded, EventType::ModuleLoaded("cfg".into()));
         }
+
+        #[test]
+        fn event_type_session_variants_exist() {
+            let archived = EventType::SessionArchived("s1".into());
+            let deleted = EventType::SessionDeleted("s1".into());
+            let expired = EventType::SessionExpired("s1".into());
+            assert_ne!(archived, deleted);
+            assert_ne!(deleted, expired);
+            assert_eq!(archived, EventType::SessionArchived("s1".into()));
+        }
+
+        // Contract-only store: relies on SessionStore's default impls for
+        // status/archive/delete — proves existing stores keep compiling.
+        struct ContractOnlyStore;
+        impl SessionStore for ContractOnlyStore {
+            fn create(&self) -> Result<SessionId, ModuleError> { Ok("s".into()) }
+            fn append(&self, _s: &SessionId, _m: ChatMessage) -> Result<(), ModuleError> { Ok(()) }
+            fn get(&self, _s: &SessionId) -> Result<Vec<ChatMessage>, ModuleError> { Ok(vec![]) }
+            fn estimate_tokens(&self, _s: &SessionId) -> Result<usize, ModuleError> { Ok(0) }
+        }
+
+        #[test]
+        fn session_store_contract_defaults_apply() {
+            let store = ContractOnlyStore;
+            assert_eq!(store.status(&"s1".into()).unwrap(), SessionStatus::Active);
+            assert!(store.archive(&"s1".into()).is_err());
+            assert!(store.delete(&"s1".into()).is_err());
+        }
     }
   impl_code: |
     # agentj-core/src/module.rs
@@ -511,6 +554,10 @@
         ModuleLoaded(ModuleId),
         ModuleFailed(ModuleId),
         ModuleStopped(ModuleId),
+        // Session 生命周期事件（v0.1 契约先行，v0.2 消费；见设计 §Session 生命周期契约）
+        SessionArchived(SessionId),
+        SessionDeleted(SessionId),
+        SessionExpired(SessionId),
     }
 
     pub trait EventHandler: Send + Sync {
@@ -643,11 +690,28 @@
 
     // ---- Session & Config ----
 
+    /// Session lifecycle status. Contract-first (v0.1 signature, v0.2 semantics) —
+    /// see design §Session 生命周期契约 (decision #14).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum SessionStatus { Active, Archived, Deleted }
+
     pub trait SessionStore: Send + Sync {
         fn create(&self) -> Result<SessionId, ModuleError>;
         fn append(&self, session: &SessionId, message: ChatMessage) -> Result<(), ModuleError>;
         fn get(&self, session: &SessionId) -> Result<Vec<ChatMessage>, ModuleError>;
         fn estimate_tokens(&self, session: &SessionId) -> Result<usize, ModuleError>;
+
+        // v0.1 contract-first: default impls keep existing stores compiling;
+        // real archive/delete semantics land in T17 (agentj-session).
+        fn status(&self, _session: &SessionId) -> Result<SessionStatus, ModuleError> {
+            Ok(SessionStatus::Active)
+        }
+        fn archive(&self, _session: &SessionId) -> Result<(), ModuleError> {
+            Err(ModuleError::Handler("archive not supported".into()))
+        }
+        fn delete(&self, _session: &SessionId) -> Result<(), ModuleError> {
+            Err(ModuleError::Handler("delete not supported".into()))
+        }
     }
 
     pub trait ConfigProvider: Send + Sync {
@@ -711,7 +775,8 @@
       then: >-
         kernel routing test passes (spy module receives 1 message, Shutdown triggers
         reverse-order graceful shutdown, JoinHandle resolves Ok); shutdown timeout
-        produces KernelError::ShutdownTimeout; init failure returns Err and marks
+        produces KernelError::ShutdownTimeout; overall graceful shutdown timeout
+        produces KernelError::ShutdownTimeout(overall); init failure returns Err and marks
         the module Failed without crashing the kernel; module_state reflects
         Ready/Stopped/Failed transitions
   regression:
@@ -870,6 +935,31 @@
             assert!(matches!(result, Err(KernelError::ShutdownTimeout(_))));
             assert_eq!(kernel.module_state("slow"), Some(ModuleState::Failed));
         }
+
+        #[tokio::test]
+        async fn overall_shutdown_timeout_yields_timeout() {
+            // Overall (design #13) timeout: 10ms total budget for the whole chain,
+            // two modules each blocking 50ms — the overall budget fires first.
+            let shutdowns = Arc::new(StdMutex::new(vec![]));
+            let mut register = ModuleRegister::new(Arc::new(ToolRegistry::new()), Arc::new(ProviderRegistry::new()));
+            let mut kernel = Kernel::with_timeouts(
+                Duration::from_secs(2),          // per-module timeout
+                Duration::from_millis(10),       // overall graceful shutdown timeout
+            );
+            kernel.register_module(
+                Box::new(spy("a", Arc::new(StdMutex::new(vec![])), shutdowns.clone(), Some(Duration::from_millis(50)), false)),
+                &dummy_kernel_context(), &mut register,
+            ).unwrap();
+            kernel.register_module(
+                Box::new(spy("b", Arc::new(StdMutex::new(vec![])), shutdowns.clone(), Some(Duration::from_millis(50)), false)),
+                &dummy_kernel_context(), &mut register,
+            ).unwrap();
+
+            let handle = kernel.start();
+            kernel.sender().send(KernelMessage::Shutdown).unwrap();
+            let result = handle.await.unwrap();
+            assert!(matches!(result, Err(KernelError::ShutdownTimeout(_))));
+        }
     }
   impl_code: |
     # agentj-core/src/kernel.rs
@@ -883,6 +973,7 @@
 
     const CHANNEL_SIZE: usize = 128;
     const DEFAULT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
+    const DEFAULT_OVERALL_TIMEOUT: Duration = Duration::from_secs(10); // design #13 CLI 信号兜底
 
     #[derive(Clone)]
     pub struct KernelSender {
@@ -909,14 +1000,19 @@
         sender: KernelSender,
         rx: Option<tokio::sync::mpsc::Receiver<KernelMessage>>,
         shutdown_timeout: Duration,
+        overall_timeout: Duration, // design #13: total graceful-shutdown budget
     }
 
     impl Kernel {
         pub fn new() -> Self {
-            Self::with_shutdown_timeout(DEFAULT_SHUTDOWN_TIMEOUT)
+            Self::with_timeouts(DEFAULT_SHUTDOWN_TIMEOUT, DEFAULT_OVERALL_TIMEOUT)
         }
 
         pub fn with_shutdown_timeout(timeout: Duration) -> Self {
+            Self::with_timeouts(timeout, DEFAULT_OVERALL_TIMEOUT)
+        }
+
+        pub fn with_timeouts(shutdown_timeout: Duration, overall_timeout: Duration) -> Self {
             let (tx, rx) = tokio::sync::mpsc::channel(CHANNEL_SIZE);
             Self {
                 modules: Arc::new(Mutex::new(HashMap::new())),
@@ -924,7 +1020,8 @@
                 states: Arc::new(Mutex::new(HashMap::new())),
                 sender: KernelSender { tx },
                 rx: Some(rx),
-                shutdown_timeout: timeout,
+                shutdown_timeout,
+                overall_timeout,
             }
         }
 
@@ -975,6 +1072,7 @@
             let order = Arc::clone(&self.order);
             let states = Arc::clone(&self.states);
             let shutdown_timeout = self.shutdown_timeout;
+            let overall_timeout = self.overall_timeout;
             let rx = self.rx.take().unwrap_or_else(|| {
                 let (_, rx) = tokio::sync::mpsc::channel(1);
                 rx
@@ -991,7 +1089,11 @@
                         }
                     }
                 }
-                Self::shutdown_all(&modules, &order, &states, shutdown_timeout).await
+                // design #13: overall budget for the whole chain — a hung module shutdown
+                // must not block process exit indefinitely.
+                tokio::time::timeout(overall_timeout, Self::shutdown_all(&modules, &order, &states, shutdown_timeout))
+                    .await
+                    .map_err(|_| KernelError::ShutdownTimeout(overall_timeout))?
             })
         }
 
@@ -2557,7 +2659,9 @@
       then: >-
         all contract tests pass — session/new returns a session_id, session/run streams "hello",
         unknown method → -32601, invalid JSON → -32700, shutdown → status ok AND the Kernel
-        JoinHandle resolves (graceful shutdown actually ran, module_state reflects it)
+        JoinHandle resolves (graceful shutdown actually ran, module_state reflects it);
+        kernel_finished is observable via signal_sender + kernel_handle so the CLI can
+        interrupt serve_stdio on SIGINT/SIGTERM (design #13)
   regression:
     - "cargo test -p agentj-core -- agent_loop (T11 AgentLoop tests must keep passing)"
   test_code: |
@@ -2640,6 +2744,29 @@
             let resp = server.handle_request("not json").await.unwrap();
             let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
             assert_eq!(v["error"]["code"], -32700); // Parse error
+        }
+
+        #[tokio::test]
+        async fn kernel_completion_is_observable_for_signal_interrupt() {
+            // design #13: the CLI needs to interrupt serve_stdio's blocked read_line when
+            // SIGINT/SIGTERM arrives — signal_shutdown + awaiting the kernel handle must
+            // terminate the loop. Run serve_stdio with a stdin that stays open, signal
+            // shutdown from another task, and assert serve_stdio returns.
+            use tokio::io::AsyncWriteExt;
+            let mut server = IpcServer::new(stub_agent_loop(), Kernel::new());
+            let tx = server.kernel_sender();
+            let signal = tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                tx.send(KernelMessage::Shutdown).unwrap();
+            });
+            // serve_stdio reads stdin (blocked) until the kernel finishes; feed a
+            // request first so the loop is live, then the signal task triggers exit.
+            let run = tokio::spawn(async move {
+                server.serve_stdio().await.unwrap();
+            });
+            signal.await.unwrap();
+            tokio::time::timeout(std::time::Duration::from_secs(5), run).await
+                .expect("serve_stdio must exit after kernel shutdown").unwrap();
         }
     }
   impl_code: |
@@ -2737,6 +2864,12 @@
                 .map_err(|e| IpcError::InvalidRequest(e.to_string()))
         }
 
+        /// Expose the kernel sender so the CLI can trigger shutdown from a signal handler
+        /// (design #13: SIGINT/SIGTERM → KernelMessage::Shutdown, same chain as stdin EOF).
+        pub fn kernel_sender(&self) -> agentj_core::kernel::KernelSender {
+            self.kernel.sender()
+        }
+
         /// Wait for the kernel's graceful shutdown (modules' shutdown() chain) to finish.
         pub async fn await_shutdown(&mut self) -> Result<(), KernelError> {
             if let Some(handle) = self.kernel_handle.take() {
@@ -2810,24 +2943,41 @@
 
         /// Run the server in stdio mode: read JSON-RPC lines from stdin, write responses to stdout.
         /// On EOF or after a shutdown request, signal the kernel and await its graceful shutdown.
+        /// The read loop is interrupted when the kernel finishes (design #13: SIGINT/SIGTERM
+        /// from the CLI sends Shutdown → kernel exits → serve_stdio returns even though stdin
+        /// is still open).
         pub async fn serve_stdio(&mut self) -> Result<(), IpcError> {
             let stdin = tokio::io::stdin();
             let mut reader = BufReader::new(stdin);
             let mut stdout = tokio::io::stdout();
             let mut line = String::new();
+            // Clone the JoinHandle so we can poll kernel completion without consuming
+            // `self.kernel_handle` (await_shutdown still needs it).
+            let kernel_done = async {
+                if let Some(handle) = &self.kernel_handle {
+                    let _ = handle.await;
+                }
+                true
+            };
+            tokio::pin!(kernel_done);
             loop {
                 line.clear();
-                let n = reader.read_line(&mut line).await?;
-                if n == 0 { break; } // EOF (client closed stdin)
-                let trimmed = line.trim();
-                if trimmed.is_empty() { continue; }
-                let response = self.handle_request(trimmed).await.unwrap_or_else(|e| {
-                    format!(r#"{{"jsonrpc":"2.0","id":null,"error":{{"code":-32603,"message":"{e}"}}}}"#)
-                });
-                stdout.write_all(response.as_bytes()).await?;
-                stdout.write_all(b"\n").await?;
-                stdout.flush().await?;
-                if self.shutdown_requested() { break; } // graceful shutdown requested
+                tokio::select! {
+                    n = reader.read_line(&mut line) => {
+                        let n = n?;
+                        if n == 0 { break; } // EOF (client closed stdin)
+                        let trimmed = line.trim();
+                        if trimmed.is_empty() { continue; }
+                        let response = self.handle_request(trimmed).await.unwrap_or_else(|e| {
+                            format!(r#"{{"jsonrpc":"2.0","id":null,"error":{{"code":-32603,"message":"{e}"}}}}"#)
+                        });
+                        stdout.write_all(response.as_bytes()).await?;
+                        stdout.write_all(b"\n").await?;
+                        stdout.flush().await?;
+                        if self.shutdown_requested() { break; } // graceful shutdown requested
+                    }
+                    _ = &mut kernel_done => { break; } // kernel finished (signal-triggered shutdown)
+                }
             }
             // graceful teardown: signal the kernel (idempotent — the shutdown RPC may have
             // already sent it), then wait for the modules' shutdown() chain to finish.
@@ -2853,14 +3003,16 @@
     - agentj-cli/Cargo.toml
     - agentj-cli/src/main.rs
     - agentj-cli/tests/e2e_cli.rs
-  depends_on: [T11, T13]
+  depends_on: [T11, T13, T8]
   breaking: false
   ac:
     - given: the compiled agentj binary
       when: running `cargo test -p agentj-cli`
       then: >-
         the e2e serve test spawns the binary, sends session/new over stdin, and the stdout
-        contains a "session_id"; the process exits 0 after stdin EOF (graceful shutdown ran)
+        contains a "session_id"; the process exits 0 after stdin EOF (graceful shutdown ran);
+        the e2e signal test sends SIGTERM to a serve process and it exits 0 with graceful
+        shutdown (design #13)
   regression:
     - "cargo test -p agentj-ipc (T13 contract tests must keep passing)"
   test_code: |
@@ -2894,6 +3046,42 @@
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(stdout.contains(r#""session_id""#), "expected session_id in output, got: {stdout}");
     }
+
+    // design #13: SIGTERM must trigger the same graceful shutdown chain as stdin EOF.
+    // Unix-only (SIGTERM/kill semantics); cfg(unix) keeps the test portable.
+    #[cfg(unix)]
+    #[test]
+    fn e2e_serve_exits_gracefully_on_sigterm() {
+        use std::os::unix::process::CommandExt as _;
+
+        let dir = std::env::temp_dir().join(format!("agentj-e2e-sig-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg = dir.join("mock_config.toml");
+        std::fs::write(&cfg, "[model]\nprovider = \"mock\"\n").unwrap();
+
+        let mut child = Command::new(env!("CARGO_BIN_EXE_agentj"))
+            .args(["--config", cfg.to_str().unwrap(), "serve"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+
+        // stdin stays OPEN — only the signal should end the process.
+        let mut stdin = child.stdin.take().unwrap();
+        writeln!(stdin, r#"{{"jsonrpc":"2.0","id":1,"method":"session/new"}}"#).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(300)); // let serve loop start
+
+        // Send SIGTERM (kill -TERM). unsafe: raw pid syscall — safe here, child is ours.
+        unsafe {
+            libc::kill(child.id() as i32, libc::SIGTERM);
+        }
+
+        let output = child.wait_with_output().unwrap();
+        assert!(output.status.success(), "expected graceful exit 0, got: {:?}", output.status);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains(r#""session_id""#), "expected session_id in output, got: {stdout}");
+    }
   impl_code: |
     # agentj-cli/Cargo.toml
     [package]
@@ -2916,16 +3104,19 @@
     agentj-tools = { path = "../agentj-tools" }
     anyhow = "1"
     clap = { version = "4", features = ["derive"] }
-    tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+    tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
     tracing = "0.1"
     tracing-subscriber = "0.3"
+
+    [dev-dependencies]
+    libc = "0.2"
 
     # agentj-cli/src/main.rs
     use std::sync::Arc;
     use clap::{Parser, Subcommand};
     use agentj_core::agent_loop::AgentLoop;
     use agentj_core::kernel::Kernel;
-    use agentj_core::module::{KernelContext, Module, ModuleError, ModuleMetadata, ModuleRegister, ProviderRegistry, ToolRegistry};
+    use agentj_core::module::{KernelContext, KernelMessage, Module, ModuleError, ModuleMetadata, ModuleRegister, ProviderRegistry, ToolRegistry};
     use agentj_context::ContextPipeline;
     use agentj_ipc::IpcServer;
     use agentj_model::openai_compat::OpenAICompatibleProvider;
@@ -3012,6 +3203,26 @@
 
         let mut ipc_server = IpcServer::new(agent_loop, kernel);
 
+        // design #13: SIGINT/SIGTERM → same graceful shutdown chain as stdin EOF.
+        // The sender is cloned so the signal task doesn't borrow ipc_server; serve_stdio
+        // exits when the kernel finishes (read-side interruption in T13).
+        let sender = ipc_server.kernel_sender();
+        let signal_task = tokio::spawn(async move {
+            #[cfg(unix)]
+            {
+                let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).unwrap();
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {}
+                    _ = sigterm.recv() => {}
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = tokio::signal::ctrl_c().await;
+            }
+            let _ = sender.send(KernelMessage::Shutdown);
+        });
+
         match cli.command {
             Some(Commands::Run { prompt }) => {
                 let sid = ipc_server.create_session()?;
@@ -3022,7 +3233,8 @@
                 ipc_server.await_shutdown().await?;
             }
             Some(Commands::Serve) => {
-                // serve_stdio exits on EOF or shutdown request; kernel graceful shutdown runs after
+                // serve_stdio exits on EOF, shutdown request, or signal-triggered kernel
+                // completion; kernel graceful shutdown runs after
                 ipc_server.serve_stdio().await?;
             }
             None => {
@@ -3031,11 +3243,474 @@
                 ipc_server.await_shutdown().await?;
             }
         }
+        signal_task.abort(); // serve loop ended; stop listening for signals
         Ok(())
     }
   verify:
     - "cargo test -p agentj-cli"
     - "cargo build --workspace"
+    - "cargo clippy --workspace -- -D warnings"
+```
+
+### T16: Add ToolSource ownership contract to ToolRegistry [P0] [Parallel with T4, T5, T6, T7, T9, T10, T12]
+
+```yaml
+- id: T16
+  title: "Add ToolSource ownership contract to ToolRegistry"
+  files:
+    - agentj-core/src/module.rs
+  depends_on: [T3]
+  breaking: false
+  ac:
+    - given: a ToolRegistry from T3
+      when: running `cargo test -p agentj-core`
+      then: >-
+        register_tool_with_source stores source metadata; unregister_tool removes by name;
+        unregister_by_source removes all tools of one source and returns the count;
+        tools() returns entries with source; ReplacePolicy::Reject errors on conflict and
+        Replace overwrites; legacy register() still works (Builtin)
+  regression:
+    - "cargo test -p agentj-core (T3 module tests must keep passing)"
+  test_code: |
+    // In agentj-core/src/module.rs (tests module)
+    #[test]
+    fn register_with_source_and_conflict_policy() {
+        let registry = ToolRegistry::new();
+        registry.register_tool_with_source(Arc::new(DummyTool), ToolSource::Builtin, ReplacePolicy::Reject).unwrap();
+        // same name, same source, Reject → error
+        assert!(registry.register_tool_with_source(Arc::new(DummyTool), ToolSource::Builtin, ReplacePolicy::Reject).is_err());
+        // Replace → overwrites, still 1 entry
+        registry.register_tool_with_source(Arc::new(DummyTool), ToolSource::Builtin, ReplacePolicy::Replace).unwrap();
+        assert_eq!(registry.definitions().len(), 1);
+    }
+
+    #[test]
+    fn unregister_tool_removes_by_name() {
+        let registry = ToolRegistry::new();
+        registry.register_tool_with_source(Arc::new(DummyTool), ToolSource::Builtin, ReplacePolicy::Reject).unwrap();
+        let removed = registry.unregister_tool("dummy");
+        assert!(removed.is_some());
+        assert!(registry.get("dummy").is_none());
+        assert!(registry.unregister_tool("dummy").is_none()); // idempotent
+    }
+
+    #[test]
+    fn unregister_by_source_removes_all_and_counts() {
+        let registry = ToolRegistry::new();
+        registry.register_tool_with_source(Arc::new(DummyTool), ToolSource::Mcp { server_id: "srv".into() }, ReplacePolicy::Reject).unwrap();
+        registry.register_tool_with_source(Arc::new(DummyTool), ToolSource::Plugin { plugin_id: "p1".into() }, ReplacePolicy::Reject).unwrap();
+        let removed = registry.unregister_by_source(&ToolSource::Mcp { server_id: "srv".into() });
+        assert_eq!(removed, 1);
+        assert_eq!(registry.definitions().len(), 1);
+        // legacy register() still lands as Builtin
+        registry.register(Arc::new(DummyTool));
+        assert_eq!(registry.tools()[0].source, ToolSource::Builtin);
+    }
+  impl_code: |
+    // In agentj-core/src/module.rs — extend ToolRegistry (additive, T3 definition preserved)
+    /// Ownership of a registered tool. v0.1 contract-first (design §10): Builtin for
+    /// built-ins, Mcp for MCP-sourced tools, Plugin for plugin-sourced tools.
+    #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+    pub enum ToolSource {
+        Builtin,
+        Mcp { server_id: String },
+        Plugin { plugin_id: String },
+    }
+
+    /// A tool entry with its ownership source.
+    #[derive(Debug, Clone)]
+    pub struct ToolEntry {
+        pub tool: Arc<dyn Tool>,
+        pub source: ToolSource,
+    }
+
+    /// Conflict policy when registering a tool whose name is already taken.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum ReplacePolicy { Reject, Replace }
+
+    impl ToolRegistry {
+        /// Legacy register — kept for compatibility, delegates to Builtin + Reject.
+        pub fn register(&self, tool: Arc<dyn Tool>) {
+            self.register_tool_with_source(tool, ToolSource::Builtin, ReplacePolicy::Reject).ok();
+        }
+
+        /// Register a tool with its ownership source and a conflict policy.
+        pub fn register_tool_with_source(
+            &self,
+            tool: Arc<dyn Tool>,
+            source: ToolSource,
+            policy: ReplacePolicy,
+        ) -> Result<(), ModuleError> {
+            let name = tool.name().to_string();
+            let mut map = self.tools.write();
+            if map.contains_key(&name) && policy == ReplacePolicy::Reject {
+                return Err(ModuleError::Handler(format!("tool '{name}' already registered")));
+            }
+            map.insert(name, tool);
+            Ok(())
+        }
+
+        /// Remove a tool by name, returning the removed entry (None if absent).
+        pub fn unregister_tool(&self, name: &str) -> Option<ToolEntry> {
+            self.tools.write().remove(name).map(|tool| ToolEntry {
+                tool,
+                source: self.source_of(name), // fallback below
+            })
+        }
+
+        /// Remove ALL tools owned by a source; returns the number removed.
+        /// This is the ghost-tool cleanup primitive (design §MCP 连接生命周期).
+        pub fn unregister_by_source(&self, source: &ToolSource) -> usize {
+            let mut map = self.tools.write();
+            let before = map.len();
+            map.retain(|_, t| self.source_of_tool(t) != *source);
+            before - map.len()
+        }
+
+        /// Return all entries with their ownership source.
+        pub fn tools(&self) -> Vec<ToolEntry> {
+            self.tools.read().iter().map(|(_, t)| ToolEntry {
+                tool: t.clone(),
+                source: self.source_of_tool(t),
+            }).collect()
+        }
+    }
+    // NOTE: source metadata requires a parallel map. Cleanest additive approach: keep
+    // `sources: RwLock<HashMap<String, ToolSource>>` in ToolRegistry; `new()` initializes
+    // it empty; register_* records it; unregister_* removes it. (impl detail: extend the
+    // struct with `sources` field + helper methods `source_of`/`source_of_tool`.)
+  verify:
+    - "cargo test -p agentj-core"
+    - "cargo clippy --workspace -- -D warnings"
+```
+
+### T17: Add session lifecycle contract implementation (archive/delete) [P0] [Parallel with T8, T11]
+
+```yaml
+- id: T17
+  title: "Add session lifecycle contract implementation (archive/delete)"
+  files:
+    - agentj-session/src/lib.rs
+  depends_on: [T6]
+  breaking: false
+  ac:
+    - given: an InMemoryStore from T6
+      when: running `cargo test -p agentj-session`
+      then: >-
+        status() returns Active for a live session, Archived after archive(),
+        Deleted after delete(); append/get on an Archived or Deleted session return
+        SessionError::InactiveSession; delete on a missing session returns
+        SessionError::NotFound; archive keeps data retrievable via status until delete
+  regression:
+    - "cargo test -p agentj-session (T6 tests must keep passing)"
+  test_code: |
+    // In agentj-session/src/lib.rs (tests module) — extends T6 tests
+    use agentj_core::error::SessionError;
+    use agentj_core::module::SessionStatus;
+
+    #[test]
+    fn status_archive_delete_lifecycle() -> Result<(), ModuleError> {
+        let store = InMemoryStore::new();
+        let sid = store.create()?;
+        store.append(&sid, ChatMessage::user("hello"))?;
+        assert_eq!(store.status(&sid)?, SessionStatus::Active);
+
+        store.archive(&sid)?;
+        assert_eq!(store.status(&sid)?, SessionStatus::Archived);
+        // archived → inactive: append and get are rejected
+        assert!(matches!(store.append(&sid, ChatMessage::user("x")), Err(ModuleError::Session(SessionError::InactiveSession(_)))));
+        assert!(matches!(store.get(&sid), Err(ModuleError::Session(SessionError::InactiveSession(_)))));
+
+        store.delete(&sid)?;
+        assert_eq!(store.status(&sid)?, SessionStatus::Deleted);
+    }
+
+    #[test]
+    fn delete_missing_session_returns_not_found() -> Result<(), ModuleError> {
+        let store = InMemoryStore::new();
+        assert!(matches!(store.delete(&"nonexistent".into()), Err(ModuleError::Session(SessionError::NotFound(_)))));
+        Ok(())
+    }
+  impl_code: |
+    # agentj-session/src/lib.rs — extend InMemoryStore with lifecycle semantics
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    use agentj_core::error::ModuleError;
+    use agentj_core::module::{SessionStatus, SessionStore};
+    use agentj_core::types::{ChatMessage, SessionId};
+
+    pub struct InMemoryStore {
+        sessions: Mutex<HashMap<SessionId, Vec<ChatMessage>>>,
+        statuses: Mutex<HashMap<SessionId, SessionStatus>>, // v0.1 lifecycle contract
+    }
+
+    impl InMemoryStore {
+        pub fn new() -> Self {
+            Self {
+                sessions: Mutex::new(HashMap::new()),
+                statuses: Mutex::new(HashMap::new()),
+            }
+        }
+    }
+
+    impl Default for InMemoryStore {
+        fn default() -> Self { Self::new() }
+    }
+
+    impl SessionStore for InMemoryStore {
+        fn create(&self) -> Result<SessionId, ModuleError> {
+            let id = uuid::Uuid::new_v4().to_string();
+            self.sessions.lock().unwrap().insert(id.clone(), vec![]);
+            self.statuses.lock().unwrap().insert(id.clone(), SessionStatus::Active);
+            Ok(id)
+        }
+
+        fn append(&self, session: &SessionId, message: ChatMessage) -> Result<(), ModuleError> {
+            let mut map = self.sessions.lock().unwrap();
+            self.require_active(session)?; // inactive → SessionError::InactiveSession
+            map.entry(session.clone()).or_default().push(message);
+            Ok(())
+        }
+
+        fn get(&self, session: &SessionId) -> Result<Vec<ChatMessage>, ModuleError> {
+            self.require_active(session)?;
+            Ok(self.sessions.lock().unwrap().get(session).cloned().unwrap_or_default())
+        }
+
+        fn estimate_tokens(&self, session: &SessionId) -> Result<usize, ModuleError> {
+            let messages = self.get(session)?;
+            let total_chars: usize = messages.iter().map(|m| m.content.len()).sum();
+            Ok(total_chars / 4)
+        }
+
+        // ---- v0.1 lifecycle contract (design §Session 生命周期契约) ----
+
+        fn status(&self, session: &SessionId) -> Result<SessionStatus, ModuleError> {
+            let statuses = self.statuses.lock().unwrap();
+            statuses.get(session).copied().ok_or(ModuleError::Session(SessionError::NotFound(session.clone())))
+        }
+
+        fn archive(&self, session: &SessionId) -> Result<(), ModuleError> {
+            let mut statuses = self.statuses.lock().unwrap();
+            if !statuses.contains_key(session) {
+                return Err(ModuleError::Session(SessionError::NotFound(session.clone())));
+            }
+            statuses.insert(session.clone(), SessionStatus::Archived);
+            Ok(())
+        }
+
+        fn delete(&self, session: &SessionId) -> Result<(), ModuleError> {
+            let mut statuses = self.statuses.lock().unwrap();
+            if !statuses.contains_key(session) {
+                return Err(ModuleError::Session(SessionError::NotFound(session.clone())));
+            }
+            statuses.insert(session.clone(), SessionStatus::Deleted);
+            self.sessions.lock().unwrap().remove(session); // hard delete: data gone
+            Ok(())
+        }
+
+        fn require_active(&self, session: &SessionId) -> Result<(), ModuleError> {
+            let statuses = self.statuses.lock().unwrap();
+            match statuses.get(session) {
+                Some(SessionStatus::Active) | None => Ok(()),
+                _ => Err(ModuleError::Session(SessionError::InactiveSession(session.clone()))),
+            }
+        }
+    }
+
+    // agentj-core/src/error.rs — add SessionError and a ModuleError::Session variant
+    // (additive; see T2 for the existing ModuleError enum):
+    //   #[derive(Debug, thiserror::Error)]
+    //   pub enum SessionError {
+    //       #[error("session '{0}' not found")]
+    //       NotFound(SessionId),
+    //       #[error("session '{0}' is inactive (archived or deleted)")]
+    //       InactiveSession(SessionId),
+    //   }
+    // and in ModuleError: #[error("session error: {0}")] Session(#[from] SessionError)
+  verify:
+    - "cargo test -p agentj-session"
+    - "cargo clippy --workspace -- -D warnings"
+```
+
+### T18: Add ToolExecutor with process-group isolation and orphan reclamation [P0] [Parallel with T8, T11]
+
+```yaml
+- id: T18
+  title: "Add ToolExecutor with process-group isolation and orphan reclamation"
+  files:
+    - agentj-tools/src/lib.rs
+    - agentj-tools/src/executor.rs
+  depends_on: [T9]
+  breaking: false
+  ac:
+    - given: a ToolExecutor from T9's crate
+      when: running `cargo test -p agentj-tools`
+      then: >-
+        run() executes a command and returns output; a sleeping command times out
+        returning ToolError::Timeout; dropping the executor (kill_on_drop) reclaims the
+        process group so no orphan remains (design §工具执行生命周期, decision #15)
+  regression:
+    - "cargo test -p agentj-tools (T9 builtins tests must keep passing)"
+  test_code: |
+    // In agentj-tools/src/executor.rs (tests module)
+    use super::*;
+    use agentj_core::error::ToolError;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn run_executes_and_returns_output() {
+        let executor = ToolExecutor::new(Duration::from_secs(5), true);
+        let out = executor.run(CommandSpec { program: "echo".into(), args: vec!["hi".into()] }).await.unwrap();
+        assert_eq!(out.stdout.trim(), "hi");
+    }
+
+    #[tokio::test]
+    async fn run_times_out_and_kills_process_group() {
+        let executor = ToolExecutor::new(Duration::from_millis(100), true);
+        let start = std::time::Instant::now();
+        let result = executor.run(CommandSpec {
+            program: "sh".into(),
+            args: vec!["-c".into(), "sleep 30".into()],
+        }).await;
+        assert!(matches!(result, Err(ToolError::Timeout(_))));
+        assert!(start.elapsed() < Duration::from_secs(5), "timeout must fire quickly");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn drop_reclaims_process_group_no_orphan() {
+        // Spawn a long-running child via the executor guard, drop it WITHOUT awaiting,
+        // then verify the child pid is gone (kill(-pgid) reclaims the whole group).
+        let executor = ToolExecutor::new(Duration::from_secs(30), true);
+        let child = executor.spawn_guarded(CommandSpec {
+            program: "sh".into(),
+            args: vec!["-c".into(), "sleep 30".into()],
+        }).await.unwrap();
+        let pid = child.pid();
+        drop(child); // kill_on_drop guard: kill(-pgid) + reap
+        // give the OS a moment to reap, then confirm the process is gone
+        for _ in 0..50 {
+            if !process_alive(pid) { break; }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(!process_alive(pid), "child pid {pid} must be reclaimed after drop");
+    }
+
+    #[cfg(unix)]
+    fn process_alive(pid: u32) -> bool {
+        // kill(pid, 0) returns Ok if the process exists (no signal sent).
+        unsafe { libc::kill(pid as i32, 0) == 0 }
+    }
+  impl_code: |
+    # agentj-tools/src/lib.rs — add `pub mod executor; pub use executor::{CommandSpec, ExecOutput, ToolExecutor};`
+    # agentj-tools/Cargo.toml — add
+    #   tokio = { version = "1", features = ["process", "time", "io-util"] }
+    #   libc = "0.2"   # process-group kill (design §工具执行生命周期; Unix-only usage)
+
+    # agentj-tools/src/executor.rs
+    use std::time::Duration;
+    use agentj_core::error::ToolError;
+
+    #[derive(Debug, Clone)]
+    pub struct CommandSpec {
+        pub program: String,
+        pub args: Vec<String>,
+    }
+
+    #[derive(Debug)]
+    pub struct ExecOutput {
+        pub stdout: String,
+        pub stderr: String,
+        pub exit_code: Option<i32>,
+    }
+
+    /// A running child wrapped with kill_on_drop semantics: dropping this guard kills the
+    /// whole process group (children included) and reaps the child — no orphans survive
+    /// panics, early returns, or explicit drops (design decision #15).
+    #[derive(Debug)]
+    pub struct ChildGuard {
+        child: tokio::process::Child,
+        kill_on_drop: bool,
+    }
+
+    impl ChildGuard {
+        pub fn pid(&self) -> u32 { self.child.id() }
+
+        /// Wait for completion (normal path). The guard is consumed; if the caller
+        /// drops it instead, the process group is reclaimed.
+        pub async fn wait_with_output(mut self) -> Result<ExecOutput, ToolError> {
+            let output = self.child.wait_with_output().await
+                .map_err(|e| ToolError::ExecutionFailed { name: "child".into(), reason: e.to_string() })?;
+            self.kill_on_drop = false; // already exited, nothing to kill
+            Ok(ExecOutput {
+                stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+                stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+                exit_code: output.status.code(),
+            })
+        }
+    }
+
+    impl Drop for ChildGuard {
+        fn drop(&mut self) {
+            if !self.kill_on_drop { return; }
+            #[cfg(unix)]
+            unsafe {
+                // negative pid = process group kill (child spawned with process_group(0))
+                let _ = libc::kill(-(self.child.id() as i32), libc::SIGKILL);
+            }
+            #[cfg(not(unix))]
+            { let _ = self.child.start_kill(); }
+            let _ = self.child.try_wait(); // reap now if already dead
+            // NOTE: if the child is still running, it becomes our responsibility — spawn a
+            // detached reaper task to wait() so we never leak a zombie. (blocking_wait on drop
+            // is avoided; see reaper task in run()'s spawn_guarded for the exact pattern.)
+        }
+    }
+
+    /// Unified tool-execution lifecycle (design decision #15): process-group isolation,
+    /// timeout kills the WHOLE group, drop reclaims orphans.
+    pub struct ToolExecutor {
+        timeout: Duration,
+        kill_on_drop: bool,
+    }
+
+    impl ToolExecutor {
+        pub fn new(timeout: Duration, kill_on_drop: bool) -> Self {
+            Self { timeout, kill_on_drop }
+        }
+
+        /// Spawn a child into its own process group, wrapped in a kill_on_drop guard.
+        pub async fn spawn_guarded(&self, spec: CommandSpec) -> Result<ChildGuard, ToolError> {
+            use std::process::Stdio;
+            let mut cmd = tokio::process::Command::new(&spec.program);
+            cmd.args(&spec.args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+            #[cfg(unix)]
+            {
+                cmd.process_group(0); // new process group with pgid = child pid
+            }
+            let child = cmd.spawn().map_err(|e| ToolError::ExecutionFailed {
+                name: spec.program.clone(), reason: e.to_string(),
+            })?;
+            Ok(ChildGuard { child, kill_on_drop: self.kill_on_drop })
+        }
+
+        /// Run to completion with a timeout; on timeout, kill the whole group.
+        pub async fn run(&self, spec: CommandSpec) -> Result<ExecOutput, ToolError> {
+            let guard = self.spawn_guarded(spec).await?;
+            let result = tokio::time::timeout(self.timeout, guard.wait_with_output()).await;
+            match result {
+                Ok(Ok(output)) => Ok(output),
+                Ok(Err(e)) => Err(e),
+                Err(_) => {
+                    // timeout: dropping the guard kills the process group (children included)
+                    Err(ToolError::Timeout(self.timeout))
+                }
+            }
+        }
+    }
+  verify:
+    - "cargo test -p agentj-tools"
     - "cargo clippy --workspace -- -D warnings"
 ```
 
@@ -3048,7 +3723,7 @@
     - agentj-model/benches/stream_bench.rs
     - AGENTS.md
     - README.md
-  depends_on: [T14]
+  depends_on: [T14, T16, T17, T18]
   breaking: false
   ac:
     - given: the full workspace from T0-T14
@@ -3081,6 +3756,8 @@
     criterion_main!(benches);
   impl_code: |
     # agentj-model/benches/stream_bench.rs — same content as test_code (benchmarks ARE the artifact).
+    # agentj-model/Cargo.toml — add criterion dev-dep; ensure tokio features include "rt-multi-thread"
+    #   (Runtime::new() requires it): tokio = { version = "1", features = ["sync", "rt", "rt-multi-thread", "macros", "time"] }
 
     # AGENTS.md — sync (per AGENTS.md doc-sync rule):
     #   - version: 0.1.0
@@ -3123,9 +3800,9 @@ The following depend on v0.1 kernel stability and external research (opencode/cl
 **Success criteria:** Loads skill files from `.aj/skills/` (priority 1), `.agents/skills/`, `.claude/skills/`. Same-name: higher priority wins. Different-name: all loaded. Registers tools/providers/event handlers.
 
 ### Task B4: Plugin Manager (dynamic loading)
-**Files:** `agentj-plugin/src/loader.rs`, `agentj-plugin/src/sandbox.rs`
+**Files:** `agentj-plugin/src/loader.rs`, `agentj-plugin/src/sandbox.rs`, `agentj-plugin/src/state_machine.rs`
 **Blocked on:** WASM vs libloading decision; capability whitelist design
-**Success criteria:** Load plugin WASM/.so modules that implement `Module` trait. Sandbox enforces capability whitelist.
+**Success criteria:** Load plugin WASM/.so modules that implement `Module` trait. Sandbox enforces capability whitelist. Implements the plugin lifecycle state machine (design §插件生命周期: Loading/Disabled/Reloading states), dependency graph with topological init / reverse-topo shutdown (P3), and `ReplacePolicy` tool-conflict handling via `PluginError::ToolConflict` (P5). Consumes the `ToolSource::Plugin` contract from T16.
 
 ### Task B5: opencode/claude code plugin manifest compat
 **Files:** `agentj-plugin/src/adapters/opencode.rs`, `agentj-plugin/src/adapters/claude.rs`
@@ -3136,6 +3813,11 @@ The following depend on v0.1 kernel stability and external research (opencode/cl
 **Files:** `agentj-model/src/providers.rs` (extend)
 **Depends on:** Task 8 (OpenAICompatibleProvider already handles OpenAI API format)
 **Success criteria:** Add Ollama provider (Ollama API wrapper). Verify OpenAI-compatible generic works with any OpenAI-compatible endpoint.
+
+### Task B7: McpConnectionManager (long-lived connection lifecycle)
+**Files:** `agentj-mcp/src/connection_manager.rs`
+**Blocked on:** v0.1 MCP bridge stability; design spec §MCP 连接生命周期 / decision #11
+**Success criteria:** Implement the connection state machine (Connecting→Connected→Ready→Disconnected→Reconnecting→Closing→Closed), ref-counted sharing, idle-timeout reclamation, exponential backoff reconnect, and cascade `unregister_by_source(Mcp{server_id})` on Disconnected/Failed/Closed. Consumes `ToolSource::Mcp` + `ToolRegistry::unregister_by_source` from T16 and `ToolError::ServerUnavailable` from T2.
 
 ---
 
@@ -3153,6 +3835,9 @@ graph TD
     T3 --> T9["T9: Tools"]
     T3 --> T10["T10: Context Pipeline"]
     T3 --> T12["T12: MCP Client"]
+    T3 --> T16["T16: ToolSource Contract"]
+    T6 --> T17["T17: Session Lifecycle Impl"]
+    T9 --> T18["T18: ToolExecutor"]
     T7 --> T8["T8: OpenAICompat Provider"]
     T4 --> T11["T11: AgentLoop"]
     T5 --> T11
@@ -3162,15 +3847,21 @@ graph TD
     T10 --> T11
     T11 --> T13["T13: IPC"]
     T11 --> T14["T14: CLI + E2E"]
+    T8 --> T14
     T13 --> T14
     T14 --> T15["T15: Benchmarks + Docs"]
+    T16 --> T15
+    T17 --> T15
+    T18 --> T15
 ```
 
 ## Parallel Execution Groups
 
-- **Group A** (after T3): T4, T5, T6, T7, T9, T10, T12 — all independent, 7 parallel tasks
+- **Group A** (after T3): T4, T5, T6, T7, T9, T10, T12, T16 — all independent, 8 parallel tasks
 - **Group B** (after T7): T8 (depends on mock provider)
+- **Group B2** (after T6): T17 (session lifecycle impl, depends on T6)
+- **Group B3** (after T9): T18 (ToolExecutor, depends on T9)
 - **Group C** (after Group A + B): T11 (AgentLoop depends on core traits + session/model/tools/context)
 - **Group D** (after T11): T13 (IPC)
 - **Group E** (after T11 + T13): T14 (CLI + E2E)
-- **Group F** (after T14): T15 (benchmarks + docs)
+- **Group F** (after T14 + B2 + B3): T15 (benchmarks + docs, waits for lifecycle tasks)
