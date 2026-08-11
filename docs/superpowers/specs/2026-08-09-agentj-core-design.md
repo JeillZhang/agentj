@@ -320,6 +320,84 @@ pub trait PluginLoader: Send + Sync {
 - `WasmLoader`：WASM 沙箱 + 能力白名单 + 内存/执行超时资源上限（P4 缺口闭环），可选
 - `PluginInstance` 桥接为内核 `Module`，复用 Kernel 状态机与 Shutdown 链路
 
+### CLI 信号与关闭入口（v0.1）
+
+**背景**：T14 `serve_stdio` 仅在 stdin EOF 时触发 Kernel Shutdown；用户 Ctrl-C（SIGINT）或 `kill`（SIGTERM）时进程默认直接终止，优雅关闭链不执行——与决策 #8「生产路径真实接入生命周期」矛盾（决策 #13）。
+
+**信号流**：
+
+```mermaid
+flowchart LR
+    SIGINT["SIGINT (Ctrl-C)"] --> HANDLER["CLI 信号监听 (tokio::signal)"]
+    SIGTERM["SIGTERM (kill)"] --> HANDLER
+    HANDLER --> KERNEL["KernelMessage::Shutdown"]
+    KERNEL --> CHAIN["逆序优雅关闭链（复用已有机制）"]
+    EOF["stdin EOF（serve_stdio 原有路径）"] --> KERNEL
+```
+
+**设计要点**：
+
+- CLI 主函数启动 `tokio::signal::ctrl_c()` 与 `unix::signal(SIGTERM)` 监听，两个信号统一映射为 `KernelMessage::Shutdown`
+- **幂等**：`KernelMessage::Shutdown` 由事件循环优先检测（决策 #9），重复发送无害；EOF 路径与信号路径汇合到同一关闭链
+- **总超时兜底**：优雅关闭链超过总时限（默认 10s，可配置）→ 进程强制退出，防止模块 shutdown 挂死导致用户中断无响应
+- **读侧中断**：`serve_stdio` 的 `read_line` 阻塞中收到信号 → 事件循环已退出，读循环需感知 Kernel JoinHandle 结束（`select!` 或带超时读），T14 实现细节处理
+
+### Session 生命周期契约（v0.1 契约，v0.2 实现）
+
+**背景**：`SessionStore` 现有接口只有 `create/append/get/estimate_tokens`——会话只增不减。v0.2 若直接加 `delete/archive/expire` 属破坏性接口变更（同 M3 教训），且无清理机制导致长期运行数据无限增长。v0.1 固化契约，实现可推迟（决策 #14）。
+
+**契约（v0.1 加方法签名，InMemory 实现可直接落地）**：
+
+```rust
+pub enum SessionStatus { Active, Archived, Deleted }
+
+pub trait SessionStore: Send + Sync {
+    // 现有（不变）
+    fn create(&self) -> Result<SessionId, ModuleError>;
+    fn append(&self, session: &SessionId, message: ChatMessage) -> Result<(), ModuleError>;
+    fn get(&self, session: &SessionId) -> Result<Vec<ChatMessage>, ModuleError>;
+    fn estimate_tokens(&self, session: &SessionId) -> Result<usize, ModuleError>;
+
+    // v0.1 契约先行，实现可 v0.2 落地
+    fn status(&self, session: &SessionId) -> Result<SessionStatus, ModuleError>;
+    fn archive(&self, session: &SessionId) -> Result<(), ModuleError>;
+    fn delete(&self, session: &SessionId) -> Result<(), ModuleError>;
+}
+```
+
+**语义**：
+
+- **Archive（软删除）**：数据保留但退出活跃列表，`session/run` 拒绝访问 Archived 会话
+- **Delete（硬删除）**：数据不可恢复（InMemory 实现 trivial）
+- **过期清理（expire）属 v0.2**：归档会话 TTL + 后台定时扫描回收，`SessionExpired` 事件预留
+- **错误语义**：对 Archived/Deleted 会话执行 `append`/`get` → `SessionError::InactiveSession`；对不存在会话 delete → `SessionError::NotFound`
+- **事件预留**：`EventType::SessionArchived / SessionDeleted / SessionExpired`（v0.1 契约，v0.2 Hook 消费）
+
+### 工具执行生命周期（v0.1）
+
+**背景**：`ToolError::Timeout` 声明"超时→强制终止"，但机制未定义——内置 bash 等工具 spawn 子进程后，超时终止的是调用本身还是进程树？`kill_on_drop` 仅覆盖 MCP transport，普通工具子进程会成为孤儿（决策 #15）。
+
+**设计**：
+
+```rust
+/// 统一工具执行生命周期：进程组隔离 + 超时 kill + 孤儿回收
+pub struct ToolExecutor {
+    timeout: Duration,
+    kill_on_drop: bool, // 默认 true
+}
+
+impl ToolExecutor {
+    pub async fn run(&self, cmd: CommandSpec) -> Result<ExecOutput, ToolError>;
+}
+```
+
+**语义**：
+
+- **进程组隔离**：子进程以独立进程组启动（Unix `setpgid`/`setsid`），超时终止时 kill 整个进程组（含孙进程），避免 bash 脚本子进程逃逸
+- **超时**：`tokio::time::timeout` 包裹执行，超时 → kill 进程组 → 返回 `ToolError::Timeout`
+- **孤儿回收**：`ToolExecutor` drop（含 panic 路径）时 kill 残留进程组——复用 MCP 的 `kill_on_drop` 哲学，普通工具子进程不泄漏
+- **跨平台注记**：进程组 kill 在 Unix（`kill(-pgid)`）语义明确；Windows 需 Job Object 或 `taskkill /T`——v0.1 实现 Unix 路径，Windows 为已知限制（记录于遗留问题）
+
 ### 消息枚举
 
 ```rust
@@ -346,8 +424,8 @@ pub enum KernelMessage {
 | `agentj-core` | 内核：消息总线、模块注册表、Module/KernelModule trait 定义 | v0.1 |
 | `agentj-ipc` | stdio + JSON-RPC 协议实现 | v0.1 |
 | `agentj-model` | 模型管理：Provider trait + DeepSeek 适配 | v0.1 |
-| `agentj-tools` | 工具引擎：内置工具注册/调用/沙箱 | v0.1 |
-| `agentj-session` | 会话管理：对话历史、token 计数、压缩 | v0.1 |
+| `agentj-tools` | 工具引擎：内置工具注册/调用、ToolExecutor（进程组隔离 + 超时 kill + 孤儿回收） | v0.1 |
+| `agentj-session` | 会话管理：对话历史、token 计数、压缩；生命周期契约（archive/delete，v0.2 完整语义） | v0.1 |
 | `agentj-context` | 上下文管线：组装、注入、回流 | v0.1 |
 | `agentj-mcp` | MCP 协议客户端；v0.1 每次调用新建子进程；v0.2 引入 McpConnectionManager 长驻连接状态机 | v0.1 |
 | `agentj-config` | 多级配置合并 | v0.1 |
@@ -467,6 +545,7 @@ impl KernelContext {
 //    v0.1 已定义 ModuleLoaded / ModuleFailed / ModuleStopped 生命周期变体（契约先行）
 //    v0.2 扩展：ModuleLoading / ModuleDisabled / ModuleEnabled / ModuleReloaded
 //            + McpConnecting / McpConnected / McpDisconnected / McpReconnecting / McpClosed
+//            + SessionArchived / SessionDeleted / SessionExpired
 //    v0.2 publish(event) 广播给所有已注册 handler，复用现有定义
 ```
 
@@ -548,6 +627,24 @@ impl ToolRegistry {
 
 **理由**：加载机制与生命周期语义解耦——内核只需面向 `PluginInstance`（桥接 `Module`）工作。Disabled 满足"临时禁用不卸载"的标准插件需求；Reloading 支持热重载且失败回滚；依赖拓扑排序替代注册顺序，保证 init/shutdown 顺序正确。libloading 优先于 WASM 是因为 v0.2 聚焦生态适配，沙箱属增强项（阻塞项：libloading ABI 稳定性、WASM runtime 选型）。
 
+### 13. CLI 信号处理：SIGINT/SIGTERM 触发统一优雅关闭链
+
+**决策**：CLI 层注册 `tokio::signal::ctrl_c()` 与 SIGTERM 监听，统一映射为 `KernelMessage::Shutdown`；优雅关闭链总超时（默认 10s）后强制退出；`serve_stdio` 读侧感知 Kernel 退出。
+
+**理由**：若用户中断（Ctrl-C/kill）直接终止进程，Kernel 逆序优雅关闭链不执行——模块 `shutdown()`（长驻连接优雅关闭、上下文持久化）全部跳过，与决策 #8「生产路径真实接入生命周期」矛盾。信号路径与 EOF 路径汇合同一关闭链，保证任何退出方式生命周期完整。
+
+### 14. Session 生命周期契约先行（v0.1 固化签名，v0.2 实现语义）
+
+**决策**：v0.1 `SessionStore` 即固化 `SessionStatus`/`archive`/`delete` 签名（纯加性），实现可推迟；语义（软删/硬删/过期回收）v0.2 完整落地。
+
+**理由**：同 ToolRegistry 方案 A 教训——"推迟实现"≠"推迟契约"。v0.2 再改接口属破坏性变更；v0.1 固化签名后，长期运行的数据增长问题有了清理入口，InMemory 实现 archive/delete 成本极低。
+
+### 15. 工具执行生命周期：ToolExecutor 进程组隔离 + 超时 kill + 孤儿回收
+
+**决策**：内置工具子进程由 `ToolExecutor` 统一管理——独立进程组、超时 kill 进程组、drop 时回收残留进程组；Unix 进程组为 v0.1 实现路径，Windows 记入已知限制。
+
+**理由**：`ToolError::Timeout` 若只终止调用本身，bash 脚本的孙进程逃逸成孤儿。进程组隔离保证"超时=整树终止"，与 MCP `kill_on_drop` 哲学一致——工具子进程不泄漏是资源生命周期闭环的一部分。
+
 ## 错误处理
 
 ### 错误类型层次
@@ -623,6 +720,16 @@ pub enum PluginError {
     #[error("tool '{name}' already registered by {existing:?}")]
     ToolConflict { name: String, existing: ToolSource },
 }
+
+// agentj-session 中的错误定义
+#[derive(Debug, thiserror::Error)]
+pub enum SessionError {
+    #[error("session '{0}' not found")]
+    NotFound(SessionId),
+
+    #[error("session '{0}' is inactive (archived or deleted)")]
+    InactiveSession(SessionId),
+}
 ```
 
 ### 错误传播策略
@@ -632,7 +739,9 @@ pub enum PluginError {
 - **模型层**：网络/API 错误 → 自动重试（最多 3 次，指数退避）。Token 超限 → 触发上下文压缩后重试
 - **工具层**：执行失败 → 返回错误给模型（让模型自行修复）。超时 → 强制终止并通知模型。MCP server 不可用（断连/崩溃）→ 返回 `ToolError::ServerUnavailable`，工具从注册表移除（`unregister_by_source`），连接进入 `Reconnecting`（v0.2）
 - **子进程层**：MCP 客户端子进程 `kill_on_drop(true)`，transport 被 drop 时终止子进程，避免孤儿进程泄漏；每次调用新建 MCP server 进程为 v0.1 简化，连接复用/长驻 server 属 v0.2（`McpConnectionManager` 状态机，见「MCP 连接生命周期」章节）
+- **工具执行层**：内置工具子进程由 `ToolExecutor` 统一管理（进程组隔离 + 超时 kill + drop 回收），超时返回 `ToolError::Timeout` 且整树终止，见「工具执行生命周期」章节
 - **插件层**：manifest 无效/依赖循环/工具冲突 → `PluginError` 对应变体；重载失败回滚旧版本；单插件失败不拖垮 PluginManager 与内核
+- **CLI 层**：SIGINT/SIGTERM 或 stdin EOF 统一触发 `KernelMessage::Shutdown`；优雅关闭链总超时（默认 10s）后强制退出，见「CLI 信号与关闭入口」章节
 
 ## 测试策略
 
@@ -642,6 +751,9 @@ pub enum PluginError {
 | **生命周期测试** | Kernel 状态机转换、逆序关闭、关闭超时、init 失败隔离 | `#[tokio::test]` 构造迷你 Kernel + spy 模块 | 状态转换正确、Shutdown 触发全部模块 shutdown、单模块失败不阻断 |
 | **MCP 连接测试**（v0.2） | McpConnectionManager 状态机、引用计数回收、退避重连、级联反注册 | mock MCP server（stdio 子进程模拟） | 断连→工具移除、重连→工具刷新、空闲→优雅关闭 |
 | **插件生命周期测试**（v0.2） | 插件状态机、Disabled/Reloading、依赖拓扑排序、工具冲突 | 测试插件（libloading） | 依赖先 init 逆序 shutdown、重载失败回滚、冲突 Reject |
+| **CLI 信号测试**（v0.1） | Ctrl-C/SIGTERM 触发优雅关闭、stdin EOF 路径 | spawn 二进制 + `child.kill()` 模拟 SIGTERM | 信号后进程退出码 0、优雅关闭链执行（MCP 子进程被回收） |
+| **Session 契约测试**（v0.1） | archive/delete 语义、InactiveSession/NotFound 错误 | InMemory SessionStore | archive 后 run 拒绝、delete 后数据不可达、错误映射正确 |
+| **工具执行测试**（v0.1） | 超时杀进程组、孤儿回收 | bash 子进程 spawn 孙进程 | 超时后整树终止、drop 后无残留进程 |
 | **集成测试** | 模块→内核消息通信 | `tests/` 目录，启动迷你内核 | 验证模块间协作 |
 | **E2E 测试** | CLI → 完整流水线 | Mock LLM 服务器 | 核心链路正确性 |
 | **契约测试** | IPC JSON-RPC 协议 | 固定请求/响应 snapshot | 协议不退化 |
@@ -685,3 +797,11 @@ clap = { version = "4", features = ["derive"] }
 - opencode / claude code 插件 manifest 格式调研（v0.2 前置）
 - libloading 跨平台 ABI 稳定性验证与版本兼容策略（v0.2 前置）
 - WASM runtime 选型调研（wasmtime 等）与沙箱资源上限基准（v0.2 可选）
+
+### 遗留问题 / 已知限制
+
+- **Windows 进程组 kill**：`ToolExecutor` 的进程组终止（`kill(-pgid)`）是 Unix 语义，v0.1 仅实现 Unix 路径；Windows 需 Job Object 或 `taskkill /T`，属已知限制
+- **Config 热重载**（低优先级）：`ConfigProvider` 静态加载，无 reload 机制——v0.2 若做配置热更新需接口扩展，同 ToolRegistry 教训（契约先行原则届时适用）
+- **ModelProvider 切换**（低优先级）：v0.1 单厂商 DeepSeek，网络错误重试已覆盖；多厂商切换/重连状态机属 v0.2 模型扩展
+- **IPC 多连接**（低优先级）：v0.1 stdio 单客户端模型（EOF 即关）简单可靠；v0.3 Web Dashboard 多连接时的连接生命周期再设计
+- **Session 过期回收（expire）**：契约已固化（决策 #14），TTL 扫描回收实现属 v0.2
