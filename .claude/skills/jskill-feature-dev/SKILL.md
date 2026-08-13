@@ -25,7 +25,7 @@ flowchart TB
     D --> E{"Task dependencies?"}
     E -- "independent tasks" --> F["Phase 4: dispatching-parallel-agents + subagent-driven-development"]
     E -- "sequential" --> G["Phase 4: executing-plans"]
-    F --> H["Phase 4: Two-phase review per task"]
+    F --> H["Phase 4: ajteam-task-reviewer gate per task"]
     G --> H
     H --> I{"All tasks complete?"}
     I -- "no" --> H
@@ -110,13 +110,36 @@ Read the plan's dependency graph and parallel execution groups. Choose:
 **Independent tasks → `dispatching-parallel-agents` + `subagent-driven-development`:**
 - **REQUIRED SUB-SKILLS:** Load both `superpowers:dispatching-parallel-agents` and `superpowers:subagent-driven-development`
 - Each task dispatched to an independent subagent
-- Two-phase review per task:
-  - Phase 1: Spec compliance (does it match the plan?)
-  - Phase 2: Code quality (does it follow patterns, handle errors, have tests?)
+- **Task-reviewer gate (per-task hard gate)** — after EACH task completes, dispatch the `ajteam-task-reviewer` agent to check the implementation against the task brief and the design doc:
+  1. Implementer subagent finishes and self-verifies (lint + tests pass)
+  2. Dispatch `ajteam-task-reviewer` with the task brief, design-doc path, and change scope (use the dispatch prompt template below)
+  3. **PASS** → record outcome in `.superpowers/sdd/progress.md` → proceed to next task
+  4. **FAIL** → send the deviation list back to the implementer (`task(task_id=ses_...)` — continue the same session) to fix → re-dispatch the reviewer
+  5. If the reviewer's report lacks a VERDICT line (incomplete format) → treat as FAIL and re-dispatch (counts as 1 round)
+  6. Bounce cap: **3 rounds** (counting from the 1st FAIL). If still FAIL after 3 rounds → escalate: Consult Oracle / report to user. NEVER silently proceed past a FAIL.
+
+**Task-reviewer dispatch prompt template:**
+
+```text
+TASK: Review task {id} — {title}: does the implementation deviate from the task's AC/verify or the design doc?
+EXPECTED OUTCOME: Structured review report (VERDICT: PASS/FAIL + deviation list + fix guidance).
+REQUIRED TOOLS: read, grep, glob, git diff — READ-ONLY. Do NOT run tests or builds.
+MUST DO:
+  - Read the design doc {spec-path} and the task brief (ac/verify/files)
+  - Check every AC against the implementation: is `then` observably satisfied?
+  - Check the implementation against the design doc (architecture, key decisions, error handling, interface signatures)
+  - Output VERDICT and a deviation list, each item with a code location
+MUST NOT DO:
+  - Edit any files, run tests, or run build commands
+  - Review code style/naming/performance/security (Phase 5 scope)
+  - Fix deviations yourself — report only
+CONTEXT: Task brief = {ac/verify}; Design doc = {spec-path}; Change scope = {files/diff}.
+```
 
 **Sequential tasks → `executing-plans`:**
 - **REQUIRED SUB-SKILL:** Load `superpowers:executing-plans`
 - Execute tasks in order with human checkpoints between batches
+- Apply the same `ajteam-task-reviewer` gate after EACH task (see the Independent-tasks section above) — FAIL bounces back, 3-round cap, escalate after 3. NEVER silently proceed.
 
 **Key rules:**
 - Sequential execution for interdependent tasks — do NOT fan out parallel implementers for dependent tasks.
@@ -272,7 +295,7 @@ The feature pipeline (design → plan → dev) is finished.
 | "These two tasks are quick, I'll run them sequentially" | Parallel tasks speed up delivery 2-4x. Follow the plan's groups. |
 | "I'll fix this unrelated issue while I'm here" | Scope creep introduces new bugs. Separate PR. |
 | "Code review can wait until the PR" | Pre-review catches issues BEFORE they reach the reviewer. |
-| "I'll skip the two-phase review for this one subagent" | Unreviewed subagent output propagates errors downstream. |
+| "I'll skip the ajteam-task-reviewer gate for this one task" | Unreviewed deviations propagate downstream. The 3-round cap exists to fix, not to skip. |
 | "The plan is slightly off-template, I'll just start" | Intake validation exists to catch this. Fix the plan first. |
 | "Doc sync can wait, the user didn't ask" | AGENTS.md mandates it. Skip only if the user explicitly says so. |
 
@@ -311,7 +334,7 @@ The feature pipeline (design → plan → dev) is finished.
 | 1 | Create feature branch | `feature/<name>` branch |
 | 2 | test-driven-development | TDD discipline |
 | 3 | dispatching-parallel-agents OR executing-plans | Executed tasks |
-| 4 | subagent-driven-development review | Two-phase verified code |
+| 4 | ajteam-task-reviewer per-task gate | Deviation check PASS/FAIL |
 | 5 | requesting-code-review | Pre-review checklist pass |
 | 6 | System verification (conditional) | Integration/e2e green or noted skip |
 | 7 | Final verification + version bump | Clean gates, bumped version |
