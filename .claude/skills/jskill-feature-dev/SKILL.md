@@ -139,6 +139,7 @@ CONTEXT: Task brief = {ac/verify}; Design doc = {spec-path}; Change scope = {fil
 **Sequential tasks → `executing-plans`:**
 - **REQUIRED SUB-SKILL:** Load `superpowers:executing-plans`
 - Execute tasks in order with human checkpoints between batches
+- Apply the same `ajteam-task-reviewer` gate after EACH task (see the Independent-tasks section above) — FAIL bounces back, 3-round cap, escalate after 3. NEVER silently proceed.
 
 **Key rules:**
 - Sequential execution for interdependent tasks — do NOT fan out parallel implementers for dependent tasks.
