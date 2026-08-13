@@ -29,7 +29,7 @@
 - Agent **只读**：工具限定 read / grep / glob / git diff；禁止运行测试/编译/编辑文件
 - 适用范围：**仅** `jskill-feature-dev`，不接入 `jskill-bug-fix`
 - spec 文档中文；`.claude/skills/jskill-feature-dev/SKILL.md` 保持英文（现有文件语言）
-- 所有文件行宽 ≤ 120 字符
+- 行宽 ≤ 120 字符**仅适用于代码文件**（与 AGENTS.md 一致：「Rust function or method ... <= 120 characters for each line」）；markdown/CJK 文档不受此限制
 - 不创建新的命令（jcmd-*）或技能（jskill-*）
 
 ---
@@ -127,15 +127,14 @@ grep -n "设计文档符合性" .claude/agents/ajteam-task-reviewer.md
 
 Expected: 4 条 grep 全部命中（返回匹配行，退出码 0）
 
-- [ ] **Step 4: 验证格式与行宽**
+- [ ] **Step 4: 验证格式**
 
 ```bash
 test -f .claude/agents/ajteam-task-reviewer.md
-awk 'length > 120 {print FILENAME":"NR": "length" chars"}' .claude/agents/ajteam-task-reviewer.md
 git diff --check
 ```
 
-Expected: `test` 通过；awk 无输出（无超 120 字符行）；`git diff --check` 无输出
+Expected: `test` 通过；`git diff --check` 无输出（120 字符规则仅限代码文件，本任务为 markdown，不适用）
 
 - [ ] **Step 5: 提交**
 
@@ -266,11 +265,11 @@ grep -n "Two-phase review" .claude/skills/jskill-feature-dev/SKILL.md
 Expected: FAIL（退出码 1，无匹配 — 旧措辞已全部清除）
 
 ```bash
-awk 'length > 120 {print FILENAME":"NR": "length" chars"}' .claude/skills/jskill-feature-dev/SKILL.md
+awk 'length > 120 {print FILENAME":"NR": "length" chars"}' $(git diff --name-only HEAD -- '*.rs' '*.go' '*.py' '*.ts' '*.tsx' '*.js')
 git diff --check
 ```
 
-Expected: awk 无输出；`git diff --check` 无输出
+Expected: awk 无输出（本任务仅改 markdown，无代码文件）；`git diff --check` 无输出
 
 - [ ] **Step 6: 提交**
 
