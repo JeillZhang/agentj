@@ -129,3 +129,9 @@ CONTEXT: 任务 brief = {ac/verify}；设计文档 = {spec-path}；变更范围 
 - 前置：`jskill-feature-dev` Phase 4 现有结构（已存在）
 - 无外部 crate / 服务依赖
 - 阻塞项：无
+
+## 实施清单
+
+- [x] T0: 创建 `.claude/agents/ajteam-task-reviewer.md` agent 定义（✅ 已提交）
+- [x] T1: 修改 `jskill-feature-dev` Phase 4 为 task-reviewer 硬门控（✅ 已提交）
+- [x] T2: 本清单更新 — 已完成
