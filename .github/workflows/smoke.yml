@@ -1,0 +1,33 @@
+name: smoke
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: smoke-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: cargo build --release --locked
+      - name: Smoke: version
+        run: ./target/release/agentj --version
+      - name: Smoke: help
+        run: ./target/release/agentj --help
+      - name: Smoke: run subcommand help
+        run: ./target/release/agentj run --help
+      - name: Smoke: serve subcommand help
+        run: ./target/release/agentj serve --help
+      - name: Smoke: core quick tests
+        run: cargo test -p agentj-core -- smoke
