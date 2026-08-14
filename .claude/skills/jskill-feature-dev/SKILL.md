@@ -266,9 +266,11 @@ After branch finishing is resolved, output:
    Result: <merged/PR created/kept/discarded>
 
 The feature pipeline (design → plan → dev) is finished.
+
+下一步（建议）：运行 `/jcmd-test-acceptance` 启动测试验收流程（测试 → 修复 → 回归验证）。
 ```
 
-`jskill-feature-dev` is the terminal stage of the feature pipeline. No further handoff.
+`jskill-feature-dev` 是功能管线（design → plan → dev）的终点；测试验收由 `/jcmd-test-acceptance` 独立触发。
 
 ## Failure Recovery
 
