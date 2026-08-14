@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ModuleInfo",
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "state": {
+      "$ref": "#/$defs/ModuleState"
+    }
+  },
+  "required": [
+    "id",
+    "state"
+  ],
+  "$defs": {
+    "ModuleState": {
+      "type": "string",
+      "enum": [
+        "unloaded",
+        "initializing",
+        "ready",
+        "stopping",
+        "stopped",
+        "failed"
+      ]
+    }
+  }
+}

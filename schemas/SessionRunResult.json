@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SessionRunResult",
+  "type": "object",
+  "properties": {
+    "content": {
+      "type": "string"
+    },
+    "tool_calls": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "$ref": "#/$defs/ToolCall"
+      }
+    }
+  },
+  "required": [
+    "content"
+  ],
+  "$defs": {
+    "ToolCall": {
+      "type": "object",
+      "properties": {
+        "arguments": true,
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "arguments"
+      ]
+    }
+  }
+}

@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "InitializeParams",
+  "description": "`initialize` request params (design 决策 #2).",
+  "type": "object",
+  "properties": {
+    "capabilities": true,
+    "client_info": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ClientInfo"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "protocol_version": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "protocol_version"
+  ],
+  "$defs": {
+    "ClientInfo": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "version"
+      ]
+    }
+  }
+}

@@ -1,0 +1,105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ProgressParams",
+  "type": "object",
+  "properties": {
+    "token": {
+      "$ref": "#/$defs/ProgressToken"
+    },
+    "value": {
+      "$ref": "#/$defs/ProgressValue"
+    }
+  },
+  "required": [
+    "token",
+    "value"
+  ],
+  "$defs": {
+    "ProgressToken": {
+      "description": "Streaming progress token — independent of the request id (design 决策 #3).",
+      "anyOf": [
+        {
+          "type": "integer",
+          "format": "int64"
+        },
+        {
+          "type": "string"
+        }
+      ]
+    },
+    "ProgressValue": {
+      "description": "`$/progress` payload, discriminated by `kind` (design 决策 #3).\nAn unknown `kind` is ignorable by consumers (per `$/`-prefix convention,\ndesign 决策 #5) — consumer-side behavior documented in the spec, deferred to v0.1.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "delta": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "text"
+            }
+          },
+          "required": [
+            "kind",
+            "delta"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "tool_call"
+            },
+            "tool_call": {
+              "$ref": "#/$defs/ToolCall"
+            }
+          },
+          "required": [
+            "kind",
+            "tool_call"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "content": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "tool_result"
+            },
+            "tool_call_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "tool_call_id",
+            "content"
+          ]
+        }
+      ]
+    },
+    "ToolCall": {
+      "type": "object",
+      "properties": {
+        "arguments": true,
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "arguments"
+      ]
+    }
+  }
+}

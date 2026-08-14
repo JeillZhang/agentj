@@ -1,0 +1,17 @@
+{
+  "protocol_version": "0.1.0",
+  "methods": [
+    { "method": "initialize", "kind": "request", "direction": "client_to_server", "params": "InitializeParams", "result": "InitializeResult" },
+    { "method": "initialized", "kind": "notification", "direction": "client_to_server", "params": null, "result": null },
+    { "method": "shutdown", "kind": "request", "direction": "client_to_server", "params": null, "result": null },
+    { "method": "exit", "kind": "notification", "direction": "client_to_server", "params": null, "result": null },
+    { "method": "session/new", "kind": "request", "direction": "client_to_server", "params": null, "result": "SessionNewResult" },
+    { "method": "session/run", "kind": "request", "direction": "client_to_server", "params": "SessionRunParams", "result": "SessionRunResult" },
+    { "method": "session/status", "kind": "request", "direction": "client_to_server", "params": "SessionIdParams", "result": "SessionStatusResult" },
+    { "method": "session/archive", "kind": "request", "direction": "client_to_server", "params": "SessionIdParams", "result": null },
+    { "method": "session/delete", "kind": "request", "direction": "client_to_server", "params": "SessionIdParams", "result": null },
+    { "method": "kernel/status", "kind": "request", "direction": "client_to_server", "params": null, "result": "KernelStatusResult" },
+    { "method": "$/cancelRequest", "kind": "notification", "direction": "both", "params": "CancelParams", "result": null },
+    { "method": "$/progress", "kind": "notification", "direction": "server_to_client", "params": "ProgressParams", "result": null }
+  ]
+}
