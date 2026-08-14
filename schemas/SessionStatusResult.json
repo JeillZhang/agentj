@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SessionStatusResult",
+  "type": "object",
+  "properties": {
+    "status": {
+      "$ref": "#/$defs/SessionStatus"
+    }
+  },
+  "required": [
+    "status"
+  ],
+  "$defs": {
+    "SessionStatus": {
+      "type": "string",
+      "enum": [
+        "active",
+        "archived",
+        "deleted"
+      ]
+    }
+  }
+}

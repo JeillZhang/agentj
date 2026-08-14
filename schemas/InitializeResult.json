@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "InitializeResult",
+  "type": "object",
+  "properties": {
+    "capabilities": true,
+    "protocol_version": {
+      "type": "string"
+    },
+    "server_info": {
+      "$ref": "#/$defs/ServerInfo"
+    }
+  },
+  "required": [
+    "protocol_version",
+    "server_info"
+  ],
+  "$defs": {
+    "ServerInfo": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "version"
+      ]
+    }
+  }
+}

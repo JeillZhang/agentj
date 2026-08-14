@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ProgressToken",
+  "description": "Streaming progress token — independent of the request id (design 决策 #3).",
+  "anyOf": [
+    {
+      "type": "integer",
+      "format": "int64"
+    },
+    {
+      "type": "string"
+    }
+  ]
+}

@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CancelParams",
+  "type": "object",
+  "properties": {
+    "id": {
+      "$ref": "#/$defs/Id"
+    }
+  },
+  "required": [
+    "id"
+  ],
+  "$defs": {
+    "Id": {
+      "description": "JSON-RPC 2.0 request/notification id. `Null` is used only in error responses\nwhere the request id could not be determined (e.g. parse error — JSON-RPC 2.0 §5).",
+      "anyOf": [
+        {
+          "type": "integer",
+          "format": "int64"
+        },
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  }
+}
