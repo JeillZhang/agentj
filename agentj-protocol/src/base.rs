@@ -50,8 +50,16 @@ pub struct ErrorObject {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(untagged)]
 pub enum ResponseMessage {
-    Success { jsonrpc: String, id: Id, result: serde_json::Value },
-    Error { jsonrpc: String, id: Id, error: ErrorObject },
+    Success {
+        jsonrpc: String,
+        id: Id,
+        result: serde_json::Value,
+    },
+    Error {
+        jsonrpc: String,
+        id: Id,
+        error: ErrorObject,
+    },
 }
 
 /// Protocol error codes — JSON-RPC reserved range plus the agentj block
@@ -113,7 +121,11 @@ mod tests {
         let err = ResponseMessage::Error {
             jsonrpc: "2.0".into(),
             id: Id::Number(1),
-            error: ErrorObject { code: error_codes::INVALID_PARAMS, message: "bad".into(), data: None },
+            error: ErrorObject {
+                code: error_codes::INVALID_PARAMS,
+                message: "bad".into(),
+                data: None,
+            },
         };
         let ok_json = serde_json::to_value(&ok).unwrap();
         let err_json = serde_json::to_value(&err).unwrap();

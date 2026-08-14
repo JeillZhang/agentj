@@ -119,12 +119,19 @@ mod tests {
     #[test]
     fn module_state_and_session_status_serialize_lowercase() {
         assert_eq!(serde_json::to_value(ModuleState::Ready).unwrap(), "ready");
-        assert_eq!(serde_json::to_value(SessionStatus::Active).unwrap(), "active");
+        assert_eq!(
+            serde_json::to_value(SessionStatus::Active).unwrap(),
+            "active"
+        );
     }
 
     #[test]
     fn tool_call_roundtrip() {
-        let tc = ToolCall { id: "call-1".into(), name: "bash".into(), arguments: serde_json::json!({"cmd":"ls"}) };
+        let tc = ToolCall {
+            id: "call-1".into(),
+            name: "bash".into(),
+            arguments: serde_json::json!({"cmd":"ls"}),
+        };
         let back: ToolCall = serde_json::from_str(&serde_json::to_string(&tc).unwrap()).unwrap();
         assert_eq!(back.name, "bash");
         assert_eq!(back.arguments["cmd"], "ls");

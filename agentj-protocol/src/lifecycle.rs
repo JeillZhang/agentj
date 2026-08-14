@@ -43,7 +43,10 @@ mod tests {
         let p = InitializeParams {
             protocol_version: "0.1.0".into(),
             capabilities: Some(serde_json::json!({"streaming": true})),
-            client_info: Some(ClientInfo { name: "cli".into(), version: "0.1.0".into() }),
+            client_info: Some(ClientInfo {
+                name: "cli".into(),
+                version: "0.1.0".into(),
+            }),
         };
         let json = serde_json::to_value(&p).unwrap();
         assert_eq!(json["protocol_version"], "0.1.0");
@@ -56,9 +59,13 @@ mod tests {
         let r = InitializeResult {
             protocol_version: "0.1.0".into(),
             capabilities: Some(serde_json::json!({"streaming": true})),
-            server_info: ServerInfo { name: "agentj".into(), version: "0.1.0".into() },
+            server_info: ServerInfo {
+                name: "agentj".into(),
+                version: "0.1.0".into(),
+            },
         };
-        let back: InitializeResult = serde_json::from_str(&serde_json::to_string(&r).unwrap()).unwrap();
+        let back: InitializeResult =
+            serde_json::from_str(&serde_json::to_string(&r).unwrap()).unwrap();
         assert_eq!(back.protocol_version, "0.1.0");
         assert_eq!(back.server_info.name, "agentj");
     }

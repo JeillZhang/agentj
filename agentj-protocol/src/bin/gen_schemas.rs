@@ -1,6 +1,6 @@
+use agentj_protocol::schema::generate_schemas;
 use std::fs;
 use std::path::Path;
-use agentj_protocol::schema::generate_schemas;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../schemas");

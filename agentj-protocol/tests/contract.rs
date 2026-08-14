@@ -1,5 +1,7 @@
 // agentj-protocol/tests/contract.rs
-use agentj_protocol::base::{Id, NotificationMessage, ProgressToken, RequestMessage, ResponseMessage};
+use agentj_protocol::base::{
+    Id, NotificationMessage, ProgressToken, RequestMessage, ResponseMessage,
+};
 use agentj_protocol::lifecycle::{ClientInfo, InitializeParams, InitializeResult, ServerInfo};
 use agentj_protocol::session::{SessionNewResult, SessionRunParams, SessionRunResult};
 use agentj_protocol::streaming::{ProgressParams, ProgressValue};
@@ -11,11 +13,17 @@ fn initialize_request_wire_shape() {
         jsonrpc: "2.0".into(),
         id: Id::Number(1),
         method: "initialize".into(),
-        params: Some(serde_json::to_value(InitializeParams {
-            protocol_version: "0.1.0".into(),
-            capabilities: Some(serde_json::json!({"streaming": true})),
-            client_info: Some(ClientInfo { name: "cli".into(), version: "0.1.0".into() }),
-        }).unwrap()),
+        params: Some(
+            serde_json::to_value(InitializeParams {
+                protocol_version: "0.1.0".into(),
+                capabilities: Some(serde_json::json!({"streaming": true})),
+                client_info: Some(ClientInfo {
+                    name: "cli".into(),
+                    version: "0.1.0".into(),
+                }),
+            })
+            .unwrap(),
+        ),
     };
     let json = serde_json::to_value(req).unwrap();
     assert_eq!(json["jsonrpc"], "2.0");
@@ -33,8 +41,12 @@ fn initialize_response_wire_shape() {
         result: serde_json::to_value(InitializeResult {
             protocol_version: "0.1.0".into(),
             capabilities: Some(serde_json::json!({"streaming": true})),
-            server_info: ServerInfo { name: "agentj".into(), version: "0.1.0".into() },
-        }).unwrap(),
+            server_info: ServerInfo {
+                name: "agentj".into(),
+                version: "0.1.0".into(),
+            },
+        })
+        .unwrap(),
     };
     let json = serde_json::to_value(resp).unwrap();
     assert_eq!(json["result"]["server_info"]["name"], "agentj");
@@ -46,12 +58,15 @@ fn session_run_request_wire_shape() {
         jsonrpc: "2.0".into(),
         id: Id::Str("req-1".into()),
         method: "session/run".into(),
-        params: Some(serde_json::to_value(SessionRunParams {
-            session_id: "s1".into(),
-            content: "hi".into(),
-            attachments: None,
-            progress_token: Some(ProgressToken::Str("tok-1".into())),
-        }).unwrap()),
+        params: Some(
+            serde_json::to_value(SessionRunParams {
+                session_id: "s1".into(),
+                content: "hi".into(),
+                attachments: None,
+                progress_token: Some(ProgressToken::Str("tok-1".into())),
+            })
+            .unwrap(),
+        ),
     };
     let json = serde_json::to_value(req).unwrap();
     assert_eq!(json["params"]["progress_token"], "tok-1");
@@ -62,7 +77,10 @@ fn session_new_response_wire_shape() {
     let resp = ResponseMessage::Success {
         jsonrpc: "2.0".into(),
         id: Id::Number(2),
-        result: serde_json::to_value(SessionNewResult { session_id: "s1".into() }).unwrap(),
+        result: serde_json::to_value(SessionNewResult {
+            session_id: "s1".into(),
+        })
+        .unwrap(),
     };
     let json = serde_json::to_value(resp).unwrap();
     assert_eq!(json["result"]["session_id"], "s1");
@@ -73,10 +91,15 @@ fn progress_notification_wire_shape() {
     let n = NotificationMessage {
         jsonrpc: "2.0".into(),
         method: "$/progress".into(),
-        params: Some(serde_json::to_value(ProgressParams {
-            token: ProgressToken::Str("tok-1".into()),
-            value: ProgressValue::Text { delta: "hel".into() },
-        }).unwrap()),
+        params: Some(
+            serde_json::to_value(ProgressParams {
+                token: ProgressToken::Str("tok-1".into()),
+                value: ProgressValue::Text {
+                    delta: "hel".into(),
+                },
+            })
+            .unwrap(),
+        ),
     };
     let json = serde_json::to_value(n).unwrap();
     assert_eq!(json["method"], "$/progress");
@@ -89,12 +112,19 @@ fn tool_call_progress_wire_shape() {
     let n = NotificationMessage {
         jsonrpc: "2.0".into(),
         method: "$/progress".into(),
-        params: Some(serde_json::to_value(ProgressParams {
-            token: ProgressToken::Number(9),
-            value: ProgressValue::ToolCall {
-                tool_call: ToolCall { id: "c1".into(), name: "bash".into(), arguments: serde_json::json!({}) },
-            },
-        }).unwrap()),
+        params: Some(
+            serde_json::to_value(ProgressParams {
+                token: ProgressToken::Number(9),
+                value: ProgressValue::ToolCall {
+                    tool_call: ToolCall {
+                        id: "c1".into(),
+                        name: "bash".into(),
+                        arguments: serde_json::json!({}),
+                    },
+                },
+            })
+            .unwrap(),
+        ),
     };
     let json = serde_json::to_value(n).unwrap();
     assert_eq!(json["params"]["value"]["kind"], "tool_call");
@@ -103,7 +133,10 @@ fn tool_call_progress_wire_shape() {
 
 #[test]
 fn session_run_result_roundtrip() {
-    let r = SessionRunResult { content: "done".into(), tool_calls: None };
+    let r = SessionRunResult {
+        content: "done".into(),
+        tool_calls: None,
+    };
     let back: SessionRunResult = serde_json::from_str(&serde_json::to_string(&r).unwrap()).unwrap();
     assert_eq!(back.content, "done");
     assert!(back.tool_calls.is_none());

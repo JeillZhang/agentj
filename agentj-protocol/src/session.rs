@@ -46,7 +46,9 @@ mod tests {
 
     #[test]
     fn session_new_result_roundtrip() {
-        let r = SessionNewResult { session_id: "s1".into() };
+        let r = SessionNewResult {
+            session_id: "s1".into(),
+        };
         assert_eq!(serde_json::to_value(&r).unwrap()["session_id"], "s1");
     }
 
@@ -69,7 +71,11 @@ mod tests {
         let p = SessionRunParams {
             session_id: "s1".into(),
             content: "hi".into(),
-            attachments: Some(vec![crate::types::Attachment { path: Some("a.txt".into()), content: None, mime: None }]),
+            attachments: Some(vec![crate::types::Attachment {
+                path: Some("a.txt".into()),
+                content: None,
+                mime: None,
+            }]),
             progress_token: Some(ProgressToken::Str("tok".into())),
         };
         let json = serde_json::to_value(&p).unwrap();
@@ -79,14 +85,19 @@ mod tests {
 
     #[test]
     fn session_status_result_serialize() {
-        let r = SessionStatusResult { status: SessionStatus::Archived };
+        let r = SessionStatusResult {
+            status: SessionStatus::Archived,
+        };
         assert_eq!(serde_json::to_value(&r).unwrap()["status"], "archived");
     }
 
     #[test]
     fn session_id_params_roundtrip() {
-        let p = SessionIdParams { session_id: "s9".into() };
-        let back: SessionIdParams = serde_json::from_str(&serde_json::to_string(&p).unwrap()).unwrap();
+        let p = SessionIdParams {
+            session_id: "s9".into(),
+        };
+        let back: SessionIdParams =
+            serde_json::from_str(&serde_json::to_string(&p).unwrap()).unwrap();
         assert_eq!(back.session_id, "s9");
     }
 }

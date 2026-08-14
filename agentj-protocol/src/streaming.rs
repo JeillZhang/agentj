@@ -18,9 +18,16 @@ pub struct ProgressParams {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ProgressValue {
-    Text { delta: String },
-    ToolCall { tool_call: ToolCall },
-    ToolResult { tool_call_id: String, content: String },
+    Text {
+        delta: String,
+    },
+    ToolCall {
+        tool_call: ToolCall,
+    },
+    ToolResult {
+        tool_call_id: String,
+        content: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -48,7 +55,9 @@ mod tests {
 
     #[test]
     fn progress_value_text_kind() {
-        let v = ProgressValue::Text { delta: "hello".into() };
+        let v = ProgressValue::Text {
+            delta: "hello".into(),
+        };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(json["kind"], "text");
         assert_eq!(json["delta"], "hello");
@@ -57,7 +66,11 @@ mod tests {
     #[test]
     fn progress_value_tool_call_kind() {
         let v = ProgressValue::ToolCall {
-            tool_call: ToolCall { id: "c1".into(), name: "bash".into(), arguments: serde_json::json!({}) },
+            tool_call: ToolCall {
+                id: "c1".into(),
+                name: "bash".into(),
+                arguments: serde_json::json!({}),
+            },
         };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(json["kind"], "tool_call");
@@ -66,7 +79,10 @@ mod tests {
 
     #[test]
     fn progress_value_tool_result_kind() {
-        let v = ProgressValue::ToolResult { tool_call_id: "c1".into(), content: "ok".into() };
+        let v = ProgressValue::ToolResult {
+            tool_call_id: "c1".into(),
+            content: "ok".into(),
+        };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(json["kind"], "tool_result");
         assert_eq!(json["tool_call_id"], "c1");
@@ -83,7 +99,10 @@ mod tests {
     fn kernel_status_result_serialize() {
         let r = KernelStatusResult {
             version: "0.1.0".into(),
-            modules: vec![ModuleInfo { id: "m1".into(), state: ModuleState::Ready }],
+            modules: vec![ModuleInfo {
+                id: "m1".into(),
+                state: ModuleState::Ready,
+            }],
         };
         let json = serde_json::to_value(&r).unwrap();
         assert_eq!(json["version"], "0.1.0");
