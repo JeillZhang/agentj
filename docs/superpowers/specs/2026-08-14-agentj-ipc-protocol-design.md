@@ -178,7 +178,7 @@ flowchart LR
 
 ### 1. 消息信封：NDJSON 帧 + JSON-RPC 2.0
 
-**决策**：每个消息一条 JSON（NDJSON，行分隔），信封严格遵循 JSON-RPC 2.0：请求 `{jsonrpc:"2.0", id, method, params}`、通知（无 id）、响应 `{jsonrpc:"2.0", id, result}` 或 `{jsonrpc:"2.0", id, error:{code,message,data?}}`。`id` 为 integer|string，**永不为 null、会话内永不复用**（MCP 比 JSON-RPC 更严的规则）；`params` 一律按名对象（by-name），不用位置参数（LSP 约定，方法面增长后可维护）。`result` 与 `error` 互斥。
+**决策**：每个消息一条 JSON（NDJSON，行分隔），信封严格遵循 JSON-RPC 2.0：请求 `{jsonrpc:"2.0", id, method, params}`、通知（无 id）、响应 `{jsonrpc:"2.0", id, result}` 或 `{jsonrpc:"2.0", id, error:{code,message,data?}}`。请求/通知的 `id` 为 integer|string，**永不为 null、会话内永不复用**（MCP 比 JSON-RPC 更严的规则）；唯一例外是**解析错误响应的 `id` 可为 null**（JSON-RPC 2.0 §5：请求 id 无法确定时响应 id 为 null）。`params` 一律按名对象（by-name），不用位置参数（LSP 约定，方法面增长后可维护）。`result` 与 `error` 互斥。
 
 **理由**：NDJSON 与 v0.1 计划已采用的 `read_line`/`write + \n` 帧一致（无需 Content-Length 头），JSON 字符串内换行已转义为 `\n`，安全。JSON-RPC 2.0 是 LSP/MCP 共同基底，直接复用信封与错误语义，不造轮子。by-name params 避免位置参数在方法演进时成为破坏源。
 
@@ -307,3 +307,11 @@ schemars = { version = "1", features = ["derive"] }
 - **meta-model 演进**：方法面膨胀后可将 `protocol/methods.json` 升级为 LSP 式 meta-model（加 types/enumerations + codegen），属加性演进，见备选方案 B
 - **批量请求（batch）**：JSON-RPC 2.0 支持 batch，但 v0.1 协议面暂不启用（前端与内核交互是顺序会话型），规范在基础协议层保留 batch 语义、方法面不承诺 batch 支持，v0.2+ 再议
 - **`session/run` 的 `progressToken`**：默认服务端分配（若请求未携带），服务端分配的 token 需在首个 `$/progress` 或最终响应中告知——实现计划阶段定稿该字段的确切语义
+
+## TODO（阶段完成状态，2026-08-14 更新）
+
+- [x] 实现计划：`docs/superpowers/plans/2026-08-14-agentj-ipc-protocol-plan.md`（11 任务 T0-T10，momus 3 轮验证 PASS）
+- [x] 开发完成（`feature/ipc-protocol` 分支）：`agentj-protocol` crate、27 个 `schemas/*.json`、`protocol/methods.json`、`docs/specs/ipc-protocol.md`、契约测试、TS 绑定测试
+- [x] 验证：`cargo test --workspace` 41 passed；`cargo clippy --workspace -- -D warnings` clean
+- [x] 计划级决策落地：`progress_token` 语义定稿（Plan-Level Decision #5：客户端可选，缺省用请求 id 作 token）、wire 字段 snake_case 归一化（Decision #2）、枚举向前兼容 `#[serde(other)] Unknown`（Decision #4）
+- [ ] 待实施：运行时 IPC 服务器（v0.1 `agentj-ipc` T13/T14）——消费本规范定义的类型与 `schemas/*.json`

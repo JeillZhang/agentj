@@ -1,18 +1,24 @@
 # AGENTS.md
 
-> Placeholder — last updated 2026-08-09. Update as the project takes shape.
+> Updated 2026-08-14 — IPC protocol contract phase.
 
 ## Project Status
 
-This repository is newly initialized and has no source code, builds, tests, or conventions yet.
+AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + 可插拔模块」架构。当前处于 v0.1 前序阶段：**统一 UI 接口契约（IPC 协议）已落地**；内核（agentj-core 等）尚未开发（见 v0.1 计划）。
 
 ## Setup
 
-_No setup steps available. Add them once tooling (package manager, build system, etc.) is configured._
+- Rust 1.96+（stable，实测 1.97.1）
+- Node 24+（仅 `bindings/ts/` TS 绑定测试需要）
+- DeepSeek API Key（v0.1 集成测试与手动验证用，当前阶段未使用）
 
 ## Commands
 
-_No build/test/lint commands yet._
+- `cargo test --workspace` — 全量测试（agentj-protocol：31 单元 + 7 契约 + 3 注册表）
+- `cargo clippy --workspace -- -D warnings` — lint 门禁（零警告）
+- `cargo run -p agentj-protocol --bin gen_schemas` — 重新生成 `schemas/*.json`
+- `cargo test -p agentj-protocol -- drift` — 漂移门禁（生成结果 == 提交的 schemas）
+- `cd bindings/ts && npm install && npm run generate && npm run build` — TS 绑定测试
 
 ### CI Pipelines (GitHub Actions)
 
@@ -20,14 +26,21 @@ _No build/test/lint commands yet._
 - `.github/workflows/smoke.yml` — 冒烟流水线（PR + push main + 手动）：`cargo build --release --locked` + `agentj --version/--help/run --help/serve --help` 退出码断言 + `cargo test -p agentj-core -- smoke`
 - `.github/workflows/e2e.yml` — E2E 流水线（main 合并后 + 手动）：`cargo build --release --locked` + `cargo test --release --test e2e -- --ignored`（Mock LLM 密封测试，无真实 API key）
 - 本地校验：`scripts/validate-workflow.sh <workflow-file> <jobs...>`（依赖-free，可选 PyYAML 严格解析）
+- ⚠️ 已知缺口：smoke/e2e 流水线引用 `agentj-core`/`agentj`，内核 crate 尚未创建（v0.1 计划执行后才会存在）。
 
 ## Architecture
 
-_No code to document._
+- `agentj-protocol`（leaf crate）：IPC 协议契约的权威 wire 类型（JSON-RPC 2.0 信封、错误码、12 个 v0.1 方法 params/result、流式类型），serde + schemars，零内核耦合。v0.1 的 `agentj-core`/`agentj-ipc` 应消费其类型（导入而非重定义）。
+- `schemas/*.json`：schemars 从 Rust 类型生成的 27 个 JSON Schema（机器事实来源，提交件 + CI 漂移门禁）。
+- `protocol/methods.json`：方法注册表（method ↔ params/result schema、方向、类型）。
+- `docs/specs/ipc-protocol.md`：人类可读协议规范（11 节，中文）。
+- `bindings/ts/`：TS 绑定测试（json-schema-to-typescript + tsc）。
 
 ## Conventions
 
-_No conventions established yet. When they emerge, capture them here — especially anything that differs from language/framework defaults._
+- 协议 wire 字段一律 snake_case（`protocol_version`、`client_info`、`session_id` 等）。
+- 协议版本：`initialize` 握手 + 语义化版本 + 加性纪律（只加不改；未知能力/枚举值容忍，不致命）。
+- 值枚举（Role/ModuleState/SessionStatus）带 `#[serde(other)]` + `#[schemars(skip)]` `Unknown` 变体（向前兼容；schema 只列已知值）。
 
 ## Rules
 
