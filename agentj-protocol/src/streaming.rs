@@ -1,0 +1,1 @@
+//! Streaming + kernel method types.
