@@ -1,0 +1,11 @@
+[package]
+name = "agentj-mcp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+agentj-core = { path = "../agentj-core" }
+serde_json = "1"
+tokio = { version = "1", features = ["sync", "rt", "macros", "io-util", "process", "time"] }
+tracing = "0.1"
