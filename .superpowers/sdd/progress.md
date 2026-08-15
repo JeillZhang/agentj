@@ -22,8 +22,8 @@ Started: 2026-08-15
 | T11 | Add AgentLoop with a streaming run_turn_stream API | ✅ done | PASS |
 | T12 | Add the agentj-mcp crate with an MCP client bridge | ✅ done | PASS |
 | T13 | Add the agentj-ipc crate with the Connection trait and JSON-RPC 2.0 over stdio | ✅ done | PASS |
-| T14 | Add the agentj-cli binary with run/serve commands (Connection model) | pending | — |
-| T15 | Add benchmarks and sync docs for v0.1 | pending | — |
+| T14 | Add the agentj-cli binary with run/serve commands (Connection model) | ✅ done | PASS |
+| T15 | Add benchmarks and sync docs for v0.1 | 🔄 running | — |
 | T16 | Add ToolSource ownership contract to ToolRegistry | ✅ done | PASS |
 | T17 | Add session lifecycle contract implementation (archive/delete) | ✅ done | PASS |
 | T18 | Add session recovery contract (snapshot/restore/load_all) | ✅ done | PASS |
@@ -31,8 +31,8 @@ Started: 2026-08-15
 | T20 | Add the ResponsesProvider (OpenAI Responses API) | ✅ done | PASS |
 | T21 | Add the AnthropicProvider (Anthropic Messages API) | ✅ done | PASS |
 | T22 | Add the opencode-go model catalog artifact and loader | ✅ done | PASS |
-| T23 | Add the OpenCodeGoProvider facade | ✅ done (impl) | review running |
-| T24 | Add the ProviderFactory | 🔄 running | — |
+| T23 | Add the OpenCodeGoProvider facade | ✅ done | PASS |
+| T24 | Add the ProviderFactory | ✅ done | PASS |
 
 ## Execution Notes
 
