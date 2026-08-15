@@ -46,8 +46,8 @@ impl SessionStore for InMemoryStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agentj_core::error::ModuleError;
-    use agentj_core::module::SessionStore;
+    use agentj_core::error::{ModuleError, SessionError};
+    use agentj_core::module::{SessionStatus, SessionStore};
     use agentj_core::types::{ChatMessage, Role, SessionId};
 
     #[test]
@@ -78,6 +78,33 @@ mod tests {
         let tokens = store.estimate_tokens(&sid)?;
         assert!(tokens > 5, "should have more than 5 tokens");
         assert!(tokens < 50, "should have fewer than 50 tokens");
+        Ok(())
+    }
+
+    #[test]
+    fn status_archive_delete_lifecycle() -> Result<(), ModuleError> {
+        let store = InMemoryStore::new();
+        let sid = store.create()?;
+        store.append(&sid, ChatMessage::user("hello"))?;
+        assert_eq!(store.status(&sid)?, SessionStatus::Active);
+
+        store.archive(&sid)?;
+        assert_eq!(store.status(&sid)?, SessionStatus::Archived);
+        // archived → inactive: append and get are rejected
+        assert!(matches!(
+            store.append(&sid, ChatMessage::user("x")),
+            Err(ModuleError::Session(SessionError::InactiveSession(_)))
+        ));
+        assert!(matches!(store.get(&sid), Err(ModuleError::Session(SessionError::InactiveSession(_)))));
+
+        store.delete(&sid)?;
+        assert_eq!(store.status(&sid)?, SessionStatus::Deleted);
+    }
+
+    #[test]
+    fn delete_missing_session_returns_not_found() -> Result<(), ModuleError> {
+        let store = InMemoryStore::new();
+        assert!(matches!(store.delete(&"nonexistent".into()), Err(ModuleError::Session(SessionError::NotFound(_)))));
         Ok(())
     }
 }
