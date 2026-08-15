@@ -23,7 +23,7 @@ Started: 2026-08-15
 | T12 | Add the agentj-mcp crate with an MCP client bridge | ✅ done | PASS |
 | T13 | Add the agentj-ipc crate with the Connection trait and JSON-RPC 2.0 over stdio | ✅ done | PASS |
 | T14 | Add the agentj-cli binary with run/serve commands (Connection model) | ✅ done | PASS |
-| T15 | Add benchmarks and sync docs for v0.1 | 🔄 running | — |
+| T15 | Add benchmarks and sync docs for v0.1 | ✅ done (impl) | review running |
 | T16 | Add ToolSource ownership contract to ToolRegistry | ✅ done | PASS |
 | T17 | Add session lifecycle contract implementation (archive/delete) | ✅ done | PASS |
 | T18 | Add session recovery contract (snapshot/restore/load_all) | ✅ done | PASS |
