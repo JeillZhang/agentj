@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::fmt;
 use std::sync::Arc;
 use async_trait::async_trait;
 use futures::stream::BoxStream;
@@ -127,17 +128,108 @@ impl ModuleRegister {
     }
 }
 
+/// Ownership of a registered tool. v0.1 contract-first (design §10): Builtin for
+/// built-ins, Mcp for MCP-sourced tools, Plugin for plugin-sourced tools.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ToolSource {
+    Builtin,
+    Mcp { server_id: String },
+    Plugin { plugin_id: String },
+}
+
+/// A tool entry with its ownership source.
+#[derive(Clone)]
+pub struct ToolEntry {
+    pub tool: Arc<dyn Tool>,
+    pub source: ToolSource,
+}
+
+impl fmt::Debug for ToolEntry {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ToolEntry")
+            .field("tool", &self.tool.name())
+            .field("source", &self.source)
+            .finish()
+    }
+}
+
+/// Conflict policy when registering a tool whose name is already taken.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReplacePolicy { Reject, Replace }
+
 pub struct ToolRegistry {
     tools: RwLock<HashMap<String, Arc<dyn Tool>>>,
+    sources: RwLock<HashMap<String, ToolSource>>,
 }
 
 impl ToolRegistry {
     pub fn new() -> Self {
-        Self { tools: RwLock::new(HashMap::new()) }
+        Self {
+            tools: RwLock::new(HashMap::new()),
+            sources: RwLock::new(HashMap::new()),
+        }
     }
 
+    /// Legacy register — kept for compatibility, delegates to Builtin + Reject.
     pub fn register(&self, tool: Arc<dyn Tool>) {
-        self.tools.write().insert(tool.name().to_string(), tool);
+        self.register_tool_with_source(tool, ToolSource::Builtin, ReplacePolicy::Reject).ok();
+    }
+
+    /// Register a tool with its ownership source and a conflict policy.
+    pub fn register_tool_with_source(
+        &self,
+        tool: Arc<dyn Tool>,
+        source: ToolSource,
+        policy: ReplacePolicy,
+    ) -> Result<(), ModuleError> {
+        let name = tool.name().to_string();
+        let mut tools = self.tools.write();
+        if tools.contains_key(&name) && policy == ReplacePolicy::Reject {
+            return Err(ModuleError::Handler(format!("tool '{name}' already registered")));
+        }
+        tools.insert(name.clone(), tool);
+        self.sources.write().insert(name, source);
+        Ok(())
+    }
+
+    /// Remove a tool by name, returning the removed entry (None if absent).
+    pub fn unregister_tool(&self, name: &str) -> Option<ToolEntry> {
+        let tool = self.tools.write().remove(name)?;
+        let source = self.sources.write().remove(name).unwrap_or(ToolSource::Builtin);
+        Some(ToolEntry { tool, source })
+    }
+
+    /// Remove ALL tools owned by a source; returns the number removed.
+    /// This is the ghost-tool cleanup primitive (design §MCP 连接生命周期).
+    pub fn unregister_by_source(&self, source: &ToolSource) -> usize {
+        let names: Vec<String> = {
+            let sources = self.sources.read();
+            sources
+                .iter()
+                .filter(|(_, s)| **s == *source)
+                .map(|(name, _)| (*name).clone())
+                .collect()
+        };
+        let mut tools = self.tools.write();
+        let mut sources = self.sources.write();
+        for name in &names {
+            tools.remove(name);
+            sources.remove(name);
+        }
+        names.len()
+    }
+
+    /// Return all entries with their ownership source.
+    pub fn tools(&self) -> Vec<ToolEntry> {
+        let tools = self.tools.read();
+        let sources = self.sources.read();
+        tools
+            .iter()
+            .map(|(name, tool)| ToolEntry {
+                tool: tool.clone(),
+                source: sources.get(name).cloned().unwrap_or(ToolSource::Builtin),
+            })
+            .collect()
     }
 
     pub fn get(&self, name: &str) -> Option<Arc<dyn Tool>> {
