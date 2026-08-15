@@ -117,3 +117,5 @@ docker-compose.override.yml
 
 # ── remember plugin state ────────────────────────────────────
 .remember/
+
+.superpowers
