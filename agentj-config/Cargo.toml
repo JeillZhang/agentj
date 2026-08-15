@@ -1,0 +1,8 @@
+[package]
+name = "agentj-config"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
