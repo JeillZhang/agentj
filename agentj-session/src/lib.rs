@@ -46,8 +46,8 @@ impl SessionStore for InMemoryStore {
     }
 
     fn append(&self, session: &SessionId, message: ChatMessage) -> Result<(), ModuleError> {
-        let mut map = self.sessions.lock().unwrap();
         self.require_active(session)?; // inactive → SessionError::InactiveSession
+        let mut map = self.sessions.lock().unwrap();
         map.entry(session.clone()).or_default().push(message);
         Ok(())
     }
@@ -136,10 +136,10 @@ impl SessionStore for InMemoryStore {
     }
 
     fn restore(&self, snapshot: &SessionSnapshot) -> Result<(), ModuleError> {
-        let mut sessions = self.sessions.lock().unwrap();
         let mut statuses = self.statuses.lock().unwrap();
-        sessions.insert(snapshot.session_id.clone(), snapshot.messages.clone());
+        let mut sessions = self.sessions.lock().unwrap();
         statuses.insert(snapshot.session_id.clone(), snapshot.status);
+        sessions.insert(snapshot.session_id.clone(), snapshot.messages.clone());
         Ok(())
     }
     // load_all: keep the trait default (empty) — InMemory carries no persistence
@@ -294,5 +294,52 @@ mod tests {
         // InMemory carries no persistence — load_all reports zero persisted sessions
         assert!(store.load_all()?.is_empty());
         Ok(())
+    }
+
+    #[test]
+    fn concurrent_mixed_ops_do_not_deadlock() {
+        use std::sync::{Arc, Barrier, mpsc};
+        use std::thread;
+        use std::time::{Duration, Instant};
+
+        let store = Arc::new(InMemoryStore::new());
+        let sid = store.create().unwrap();
+        const THREADS: usize = 8;
+        const ITERS: usize = 20_000;
+
+        let barrier = Arc::new(Barrier::new(THREADS));
+        let (tx, rx) = mpsc::channel();
+        let mut handles = Vec::with_capacity(THREADS);
+        for t in 0..THREADS {
+            let store = Arc::clone(&store);
+            let sid = sid.clone();
+            let barrier = Arc::clone(&barrier);
+            let tx = tx.clone();
+            handles.push(thread::spawn(move || {
+                barrier.wait();
+                for i in 0..ITERS {
+                    match t % 4 {
+                        0 => drop(store.append(&sid, ChatMessage::user(format!("t{t}-{i}")))),
+                        1 => drop(store.snapshot(&sid)),
+                        2 => drop(store.delete(&sid)),
+                        _ => drop(store.archive(&sid)),
+                    }
+                }
+                tx.send(()).unwrap();
+            }));
+        }
+        drop(tx);
+
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let mut done = 0;
+        while done < THREADS {
+            match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+                Ok(()) => done += 1,
+                Err(_) => panic!("deadlock: only {done}/{THREADS} workers finished within 30s"),
+            }
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
     }
 }
