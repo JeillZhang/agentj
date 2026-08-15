@@ -1,10 +1,10 @@
 # AGENTS.md
 
-> Updated 2026-08-14 — IPC protocol contract phase.
+> Updated 2026-08-15 — daemon-kernel (resident API service) design phase.
 
 ## Project Status
 
-AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + 可插拔模块」架构。当前处于 v0.1 前序阶段：**统一 UI 接口契约（IPC 协议）已落地**；内核（agentj-core 等）尚未开发（见 v0.1 计划）。
+AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + 可插拔模块」架构。当前处于 v0.1 前序阶段：**统一 UI 接口契约（IPC 协议）已落地**（16 方法）；**守护内核（常驻 API 服务）设计已批准**——统一 Connection 传输抽象契约 v0.1 固化、多客户端常驻能力 v0.3 落地（见 v0.1/v0.3 计划）；内核（agentj-core 等）尚未开发。
 
 ## Setup
 
@@ -30,17 +30,18 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
 
 ## Architecture
 
-- `agentj-protocol`（leaf crate）：IPC 协议契约的权威 wire 类型（JSON-RPC 2.0 信封、错误码、12 个 v0.1 方法 params/result、流式类型），serde + schemars，零内核耦合。v0.1 的 `agentj-core`/`agentj-ipc` 应消费其类型（导入而非重定义）。
-- `schemas/*.json`：schemars 从 Rust 类型生成的 27 个 JSON Schema（机器事实来源，提交件 + CI 漂移门禁）。
+- `agentj-protocol`（leaf crate）：IPC 协议契约的权威 wire 类型（JSON-RPC 2.0 信封、错误码、16 个方法 params/result、流式类型、订阅/权限类型），serde + schemars，零内核耦合。v0.1 的 `agentj-core`/`agentj-ipc` 应消费其类型（导入而非重定义）。
+- `schemas/*.json`：schemars 从 Rust 类型生成的 31 个 JSON Schema（机器事实来源，提交件 + CI 漂移门禁）。
 - `protocol/methods.json`：方法注册表（method ↔ params/result schema、方向、类型）。
 - `docs/specs/ipc-protocol.md`：人类可读协议规范（11 节，中文）。
 - `bindings/ts/`：TS 绑定测试（json-schema-to-typescript + tsc）。
+- **守护内核（设计已批准，契约 v0.1 / 能力 v0.3）**：统一 `Connection` 传输抽象（stdio / TCP / Unix socket），`agentj serve --port` 常驻内核多客户端共享；协议加性扩展（`multi_client` / `connection_id` / `session/subscribe` / `permission` 定向 / `-32805`/`-32806`）——见 `docs/superpowers/specs/2026-08-15-agentj-daemon-kernel-design.md`。v0.1 计划 T13/T14 已按 Connection 模型改写；v0.3 计划 T0/T3/T4 已改为多客户端常驻。
 
 ## Conventions
 
 - 协议 wire 字段一律 snake_case（`protocol_version`、`client_info`、`session_id` 等）。
 - 协议版本：`initialize` 握手 + 语义化版本 + 加性纪律（只加不改；未知能力/枚举值容忍，不致命）。
-- 值枚举（Role/ModuleState/SessionStatus）带 `#[serde(other)]` + `#[schemars(skip)]` `Unknown` 变体（向前兼容；schema 只列已知值）。
+- 值枚举（Role/ModuleState/SessionStatus/PermissionDecision）带 `#[serde(other)]` + `#[schemars(skip)]` `Unknown` 变体（向前兼容；schema 只列已知值）。
 
 ## Rules
 
