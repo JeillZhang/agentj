@@ -1,4 +1,5 @@
 //! Unified Connection abstraction (design 决策 #1/#2) — transport-agnostic serve.
+use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use agentj_core::agent_loop::{AgentEvent, AgentLoop};
@@ -9,7 +10,7 @@ use agentj_core::types::SessionId;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::task::JoinHandle;
 
 /// Transport kind — new transports (Tcp / UnixSocket) add a variant + impl, serve loop unchanged.
@@ -227,6 +228,7 @@ impl IpcServer {
         // Poll the kernel handle by `&mut` (taken out so the future needs no `self` borrow
         // while the loop also reads the registry); it is restored below for await_shutdown.
         let mut kernel_handle = self.kernel_handle.take();
+        let mut kernel_finished = false;
         let kernel_done = async {
             if let Some(handle) = &mut kernel_handle {
                 let _ = handle.await;
@@ -245,7 +247,7 @@ impl IpcServer {
                         None => break, // EOF (client closed stdin)
                     }
                 }
-                _ = &mut kernel_done => { break; } // kernel finished (signal-triggered shutdown)
+                _ = &mut kernel_done => { kernel_finished = true; break; } // signal-triggered shutdown
             };
             let trimmed = line.trim().to_string();
             if trimmed.is_empty() { continue; }
@@ -257,15 +259,17 @@ impl IpcServer {
             conn.send(&response)?;
             if self.shutdown_requested() { break; } // graceful shutdown requested
         }
-        // graceful teardown: signal the kernel (idempotent — the shutdown RPC may have
-        // already sent it), then wait for the modules' shutdown() chain to finish. If the
-        // kernel already exited via kernel_done its receiver is gone and the send fails
-        // harmlessly — that is exactly the signal-interrupt path.
-        self.kernel_handle = kernel_handle;
-        if !self.shutdown_requested() {
-            let _ = self.kernel.sender().send(KernelMessage::Shutdown);
+        // Graceful teardown. When the loop exited via kernel_done the kernel already ran
+        // its shutdown chain — re-awaiting the completed handle would panic, so skip. On
+        // the EOF/request paths, signal the kernel (idempotent — the shutdown RPC may have
+        // already sent it), then wait for the modules' shutdown() chain to finish.
+        if !kernel_finished {
+            self.kernel_handle = kernel_handle;
+            if !self.shutdown_requested() {
+                let _ = self.kernel.sender().send(KernelMessage::Shutdown);
+            }
+            self.await_shutdown().await.map_err(|e| IpcError::InvalidRequest(e.to_string()))?;
         }
-        self.await_shutdown().await.map_err(|e| IpcError::InvalidRequest(e.to_string()))?;
         Ok(())
     }
 }
@@ -296,15 +300,13 @@ impl Connection for StdioConnection {
     fn id(&self) -> String { self.id.clone() }
     fn kind(&self) -> TransportKind { TransportKind::Stdio }
     fn send(&self, msg: &str) -> Result<(), IpcError> {
-        // Sync shim (tokio::io::Stdout is not Clone): fetch a fresh handle to the
-        // shared stdout stream and write the NDJSON line on the current runtime.
-        let mut stdout = tokio::io::stdout();
-        tokio::runtime::Handle::current().block_on(async move {
-            stdout.write_all(msg.as_bytes()).await?;
-            stdout.write_all(b"\n").await?;
-            stdout.flush().await?;
-            Ok(())
-        }).map_err(|e: std::io::Error| IpcError::InvalidRequest(e.to_string()))
+        // Sync trait method — std blocking stdout; tokio stdout's block_on panics
+        // when called from within the serve loop's async context.
+        let mut stdout = std::io::stdout().lock();
+        stdout.write_all(msg.as_bytes())?;
+        stdout.write_all(b"\n")?;
+        stdout.flush()?;
+        Ok(())
     }
     async fn recv(&mut self) -> Option<Result<String, IpcError>> {
         let mut line = String::new();
