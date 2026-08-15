@@ -4,7 +4,7 @@
 
 ## Project Status
 
-AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + 可插拔模块」架构。v0.1 已落地：**IPC 协议契约**（16 方法）+ **10 crate 内核**（agentj-core 等，见 Architecture）——内核调度 + 模块 trait 注册表、AgentLoop 流式 API、内置工具、MCP 桥、JSON-RPC stdio IPC、CLI run/serve、模型提供方（DeepSeek + opencode-go 三线格式统一订阅）；**守护内核（常驻 API 服务）设计已批准**——统一 Connection 传输抽象契约 v0.1 固化、多客户端常驻能力 v0.3 落地（见 v0.3 计划）。
+AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + 可插拔模块」架构。v0.1 已落地：**IPC 协议契约**（12 方法）+ **10 crate 内核**（agentj-core 等，见 Architecture）——内核调度 + 模块 trait 注册表、AgentLoop 流式 API、内置工具、MCP 桥、JSON-RPC stdio IPC、CLI run/serve、模型提供方（DeepSeek + opencode-go 三线格式统一订阅）；**守护内核（常驻 API 服务）设计已批准**——统一 Connection 传输抽象契约 v0.1 固化、多客户端常驻能力 v0.3 落地（见 v0.3 计划）。
 
 ## Setup
 
@@ -31,7 +31,7 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
 
 ## Architecture
 
-- `agentj-protocol`（leaf crate）：IPC 协议契约的权威 wire 类型（JSON-RPC 2.0 信封、错误码、16 个方法 params/result、流式类型、订阅/权限类型），serde + schemars，零内核耦合。v0.1 的 `agentj-core`/`agentj-ipc` 应消费其类型（导入而非重定义）。
+- `agentj-protocol`（leaf crate）：IPC 协议契约的权威 wire 类型（JSON-RPC 2.0 信封、错误码、12 个方法 params/result、流式类型、订阅/权限类型），serde + schemars，零内核耦合。v0.1 的 `agentj-core`/`agentj-ipc` 应消费其类型（导入而非重定义）。
 - `agentj-core`（内核）：Kernel 调度 + 模块 trait 注册表（`module.rs`：ModelProvider / SessionStore / ToolRegistry / ContextPipeline / ConfigProvider）、AgentLoop 流式 API（`run_turn_stream` → `mpsc::Receiver<AgentEvent>`，`run_turn` 聚合）、错误/类型（`error.rs`/`types.rs`）。
 - `agentj-config`：TOML 配置（`[model]`：`provider` + `providers[]`（name/base_url/api_key_env/**kind**）+ `default_model`），ConfigProvider 读取。
 - `agentj-session`：会话生命周期（InMemoryStore：状态机 SessionStatus + 快照恢复）。

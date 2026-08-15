@@ -2,11 +2,11 @@
 
 AI 编码代理工具（Rust）——Linux 内核式「内核调度 + 可插拔模块」架构。内核通过统一的 JSON-RPC 2.0 协议（stdio，未来 TCP / WebSocket）对外暴露能力；CLI、TUI、Web Dashboard、IDE 插件均可作为协议消费者，**任意语言**可开发前端连接内核。
 
-> 当前版本：**v0.1.0**——IPC 协议契约（16 方法）+ 10 crate 内核已落地：Agent 循环（流式）、内置工具、MCP 桥、JSON-RPC stdio IPC、CLI run/serve、模型提供方（DeepSeek + opencode-go）；守护内核（常驻 API 服务）设计已批准，待 v0.3。
+> 当前版本：**v0.1.0**——IPC 协议契约（12 方法）+ 10 crate 内核已落地：Agent 循环（流式）、内置工具、MCP 桥、JSON-RPC stdio IPC、CLI run/serve、模型提供方（DeepSeek + opencode-go）；守护内核（常驻 API 服务）设计已批准，待 v0.3。
 
 ## Features
 
-- [x] **IPC 协议契约**：JSON-RPC 2.0 信封 + 错误码 + 16 个方法（lifecycle 4 / session 7 / permission 2 / kernel/status / `$/permissionRequest` / `$/cancelRequest` / `$/progress`）
+- [x] **IPC 协议契约**：JSON-RPC 2.0 信封 + 错误码 + 12 个方法（lifecycle 4 / session 5 / kernel/status 1 / `$/cancelRequest` `$/progress` 通知 2；`session/subscribe` / `session/unsubscribe` / `permission/respond` / `$/permissionRequest` 订阅·审批系列为 v0.2 计划）
 - [x] **JSON Schema**：31 个机器可读 Schema（`schemars` 从 Rust 类型生成，提交件 + 漂移门禁）
 - [x] **方法注册表** `protocol/methods.json`（语言无关，method ↔ schema/方向/类型）
 - [x] **人类可读协议规范** `docs/specs/ipc-protocol.md`（11 节，v0.2.0）
@@ -15,7 +15,7 @@ AI 编码代理工具（Rust）——Linux 内核式「内核调度 + 可插拔�
 - [x] **Agent 循环（流式）**：AgentLoop `run_turn_stream` 事件流 + `run_turn` 聚合
 - [x] **内置工具**：bash / glob / grep / read / write + ToolExecutor
 - [x] **MCP 桥**：子进程 MCP 客户端 + 工具发现注册
-- [x] **JSON-RPC stdio IPC**：16 方法服务循环 + 优雅退出
+- [x] **JSON-RPC stdio IPC**：12 方法服务循环 + 优雅退出
 - [x] **CLI run/serve**：`agentj run "prompt"` / `agentj serve`
 - [x] **模型提供方**：DeepSeek + opencode-go 统一订阅（Chat Completions / Responses / Anthropic 三线格式，ProviderFactory 按 `kind` 实例化）
 - [ ] **守护内核**：统一 Connection 传输抽象（stdio/TCP/Unix socket）+ 常驻 API 服务（`agentj serve --port` 多客户端共享、可接续任务）——设计已批准，能力 v0.3
@@ -69,7 +69,7 @@ kind = "openai-compat"   # openai-compat | responses | anthropic | opencode-go
 - 规范：`docs/specs/ipc-protocol.md`（v0.2.0）
 - Schema：`schemas/*.json`
 - 方法注册表：`protocol/methods.json`
-- 方法面（16）：`initialize` / `initialized` / `shutdown` / `exit` / `session/new` / `session/run` / `session/status` / `session/archive` / `session/delete` / `session/subscribe` / `session/unsubscribe` / `permission/respond` / `kernel/status` / `$/permissionRequest` / `$/cancelRequest` / `$/progress`
+- 方法面（12）：`initialize` / `initialized` / `shutdown` / `exit` / `session/new` / `session/run` / `session/status` / `session/archive` / `session/delete` / `kernel/status` / `$/cancelRequest` / `$/progress`（`session/subscribe` / `session/unsubscribe` / `permission/respond` / `$/permissionRequest` 为 v0.2 计划）
 
 ## Development
 
