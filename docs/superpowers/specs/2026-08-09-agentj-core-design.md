@@ -21,6 +21,7 @@ AgentJ 是一个面向社区的 AI 编码代理工具，以 Rust 语言构建，
 | v0.1 | 权限闭环：敏感工具（bash/write）执行前权限检查 + IPC 审批流（决策 #17） |
 | v0.2 | 生态扩展：Plugin Manager（兼容 opencode/claude code 插件格式）、Skills Loader（多路径）、Sub-Agent Dispatcher、Hook System |
 | v0.2+ | 模型扩展：Ollama 本地模型、更多厂商（OpenAI 兼容 API 已随 v0.1 opencode-go 支持提前落地） |
+| v0.3 | 内核调度全量重构：AgentLoop 主循环 + Sub-Agent 全量迁入消息总线，兑现"内核调度 + 可插拔模块"理念（决策 #18，协议面零变化） |
 | v0.3+ | 商业扩展：Web Dashboard、用量统计、License 管理 |
 
 ### 非目标
@@ -657,6 +658,34 @@ pub enum KernelMessage {
 }
 ```
 
+### 内核调度：现状与理念的差距（v0.1-v0.2 现状，v0.3 全量重构）
+
+**背景**：本设计宣称"内核调度 + 可插拔模块"（Linux 内核式，见「架构模式」）——各模块通过 `KernelModule` 注册为子系统，模块间不直接通信，全部经过内核路由。但 v0.1/v0.2 计划的**实际架构是"注册表 + 生命周期管理"式内核**，与理念存在系统性差距。本节固化差距与重构规划（决策 #18）。
+
+**差距盘点**：
+
+| 理念维度 | 设计宣称 | v0.1-v0.2 实际 | 差距 |
+|---------|---------|---------------|------|
+| 可插拔模块 | 模块注册 + trait 抽象 | ✅ 双层 Module/KernelModule + 独立 crate 注册 | **无** |
+| 模块生命周期由内核维护 | init/shutdown/状态机 | ✅ 已实现（决策 #8/#9，逆序关闭 + 超时） | **无** |
+| **内核调度**：所有执行经消息总线 | 模块间不直接通信，全部经内核路由 | ❌ **AgentLoop 编排直调 trait 对象**（`run_turn_stream` 直接调 SessionStore/ModelProvider/ToolRegistry/ContextPipeline，不经 `KernelMessage`） | **有** |
+| 模块间通信经内核 | 总线中转 | ❌ 运行期无模块间消息（总线仅承载 IPC 入口 `UserRequest` + 生命周期 `Shutdown`） | **有** |
+| 故障隔离 | 单模块失败不拖垮内核 | ⚠️ 部分（init 失败隔离已实现；运行期编排为同步直调，无消息级隔离） | 部分 |
+
+**差距的代价**：
+
+- `AgentLoop` 成为事实上的**"第二内核"**——权限门（决策 #17）、工具循环、上下文回流、模型调度全部挂在直调路径上，而非挂在消息总线
+- 对外架构描述（README/AGENTS.md）与实现不符——"内核调度"目前是宣传语
+- v0.2 若仅让 Sub-Agent Dispatcher 走总线（`KernelMessage::ServiceCall`），将形成**双执行路径并存**（主循环直调 + 子代理走总线），架构分裂比现状更糟
+
+**重构规划（v0.3，完整落地，决策 #18）**：
+
+- **目标态**：AgentLoop 主循环 + Sub-Agent Dispatcher **全量**迁入 `KernelMessage` 消息总线——`UserRequest → 总线 → AgentLoopModule.handle() → ModelResponse/ToolCallRequest/ToolCallResult 回流总线 → IPC 订阅者`；`KernelMessage` 全部变体接线（v0.1 计划仅用 UserRequest/Shutdown，`ModelResponse/ToolCallRequest/ToolCallResult` 已在 L644 定义，属协议零缺口）
+- **协议面零变化**：`session/run` 保持「一请求一最终响应」+ `$/progress` 流式语义；调度重构为**纯内部行为**，CLI/客户端无感知
+- **权限门语义保留**：`ToolRegistry::execute_async` 拦截点（决策 #17）不因迁移丢失——工具调用经 `ToolCallRequest` 入总线，权限门仍在 execute_async 内执行
+- **任务骨架（v0.3 设计待定，执行前需 `jskill-feature-design`）**：AgentLoop 事件驱动重构（直调 → 状态机 + handle 驱动）、流式返回经总线（`ModelResponse` chunk → IPC 订阅者，保留 `$/progress`）、工具循环经总线（`ToolCallRequest`/`ToolCallResult`）、Sub-Agent 接入总线、消息路由层（request_id → 订阅者映射，镜像 `$/progress` token 解耦）、SessionManager/ContextPipeline 注册为 KernelModule、回归与文档对齐
+- **前置依赖**：v0.2 `ModuleResolver` + `KernelMessage::ServiceCall`（v0.2 计划 T1）、KernelMessage 全变体接线、权限门（决策 #17，v0.1）
+
 ### Rust Crate 拆分
 
 | Crate | 职责 | 阶段 |
@@ -1001,6 +1030,14 @@ impl ToolRegistry {
 
 **方案取舍**：全局默认 deny（最安全但 read 也弹确认，v0.1 可用性差）、全局默认 allow（首次运行即裸奔）均未选用；采用"敏感=ask、只读=allow + deny 优先"的默认策略，规则命中短路、未命中回退工具默认模式。
 
+### 18. 内核调度全量重构：兑现"内核调度 + 可插拔模块"理念（v0.3 落地，v1.0 稳定）
+
+**决策**：承认 v0.1-v0.2 实际架构为"注册表 + 生命周期管理"式内核（编排直调），与设计宣称的"内核调度"存在差距（见「内核调度：现状与理念的差距」章节）；**v0.3 期间完整重构**——AgentLoop 主循环 + Sub-Agent Dispatcher **全量**迁入 `KernelMessage` 消息总线（`UserRequest` 入总线、`ModelResponse`/`ToolCallRequest`/`ToolCallResult` 回流总线），兑现 Linux 内核式「内核调度 + 可插拔模块」理念；v1.0 作为首个稳定版消化重构风险。
+
+**理由**：① 设计 L644 的 `KernelMessage` 枚举已含全部调度所需变体，协议零缺口；② 能力接口与通道分离（§7）保证能力实现（SessionStore/ModelProvider/Tool/ContextPipeline trait）零改动，重构面收敛在编排层；③ 若仅让 Sub-Agent 走总线（v0.2 现状计划），会形成双执行路径并存，架构分裂比现状更糟——故全量重构而非增量叠加；④ 时机选 v0.3：v0.1/v0.2 聚焦功能闭环（权限、插件、MCP），调度重构作为独立里程碑避免与功能开发互相阻塞，v1.0 稳定化。**协议面零变化**——`session/run` 一请求一最终响应 + `$/progress` 流式语义保留，CLI/客户端无感知；权限门（决策 #17）的 `execute_async` 拦截点语义不因迁移丢失。
+
+**范围边界**：调度重构为纯内部行为，`agentj-protocol` wire 类型、`docs/specs/ipc-protocol.md`、CLI 接口均不改动；AgentLoop 从"编排者"降为"一个 KernelModule"，其内部 `run_turn_stream` 直调逻辑重写为状态机 + `handle()` 事件驱动（测试同步重写为总线驱动）。
+
 ## 错误处理
 
 ### 错误类型层次
@@ -1196,3 +1233,4 @@ clap = { version = "4", features = ["derive"] }
 - **运行级续跑（run resumption）**：会话历史持久化已设计（决策 #16），但 `session/run` 中断后的续跑（run 状态机 + 检查点 + 协议 resume 语义）属 v0.2+ 独立设计——协议 §3 当前明文"`session/run` 不可重试"，改动需走协议版本升级流程
 - **allow_always 持久化**：v0.1 会话级内存态（决策 #17），不回写配置文件；跨会话白名单需用户显式配置 `[permission]` 规则。`allow_always` 持久化交互（"允许并保存"）属 v0.2 增强项
 - **沙箱化执行**：权限控制（决策 #17）解决"能否执行"，`ToolExecutor` 进程组隔离解决"超时整树终止"；但**无 OS 级沙箱**（chroot/seccomp/bubblewrap）限制工具进程能力边界——属 v0.2 插件 WASM 沙箱（P4）之外的独立增强项，v0.1 不覆盖
+- **内核调度未兑现**：v0.1-v0.2 为"注册表 + 生命周期管理"式内核，编排直调（`AgentLoop` 直接调 trait 对象），与"内核调度 + 可插拔模块"理念存在差距（见「内核调度：现状与理念的差距」章节 + 决策 #18）——**v0.3 期间全量重构**，v1.0 稳定。前置依赖：v0.2 `ModuleResolver` + `ServiceCall`（v0.2 计划 T1）+ KernelMessage 全变体接线
