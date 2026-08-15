@@ -19,16 +19,16 @@ Started: 2026-08-15
 | T8 | Add the OpenAICompatibleProvider with SSE streaming, retry, tool-call assembly | ✅ done | PASS |
 | T9 | Add the agentj-tools crate with built-in tools | ✅ done | PASS |
 | T10 | Add the agentj-context crate with ContextPipeline | ✅ done | PASS |
-| T11 | Add AgentLoop with a streaming run_turn_stream API | pending | — |
+| T11 | Add AgentLoop with a streaming run_turn_stream API | ✅ done (impl) | review running |
 | T12 | Add the agentj-mcp crate with an MCP client bridge | ✅ done | PASS |
 | T13 | Add the agentj-ipc crate with the Connection trait and JSON-RPC 2.0 over stdio | pending | — |
 | T14 | Add the agentj-cli binary with run/serve commands (Connection model) | pending | — |
 | T15 | Add benchmarks and sync docs for v0.1 | pending | — |
 | T16 | Add ToolSource ownership contract to ToolRegistry | ✅ done | PASS |
 | T17 | Add session lifecycle contract implementation (archive/delete) | ✅ done | PASS |
-| T18 | Add session recovery contract (snapshot/restore/load_all) | 🔄 running | — |
-| T19 | Add ToolExecutor with process-group isolation and orphan reclamation | 🔄 fix round 1 (timeout orphan bug) | FAIL→fix |
-| T20 | Add the ResponsesProvider (OpenAI Responses API) | 🔄 running | — |
+| T18 | Add session recovery contract (snapshot/restore/load_all) | ✅ done | PASS |
+| T19 | Add ToolExecutor with process-group isolation and orphan reclamation | ✅ done | PASS (fix round 2) |
+| T20 | Add the ResponsesProvider (OpenAI Responses API) | ✅ done | PASS |
 | T21 | Add the AnthropicProvider (Anthropic Messages API) | pending | — |
 | T22 | Add the opencode-go model catalog artifact and loader | pending | — |
 | T23 | Add the OpenCodeGoProvider facade | pending | — |
