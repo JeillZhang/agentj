@@ -13,7 +13,10 @@ fn bench_mock_stream(c: &mut Criterion) {
                 .collect();
             events.push(Ok(ModelEvent::Done));
             let provider = MockModelProvider::new(events);
-            black_box(provider.chat_stream(vec![], vec![], ModelOptions::default()).await.unwrap());
+            let stream = black_box(
+                provider.chat_stream(vec![], vec![], ModelOptions::default()).await.unwrap(),
+            );
+            drop(stream);
         });
     });
 }
