@@ -1,5 +1,52 @@
 //! Context pipeline crate — pure message-builder for the agent loop.
 
+use agentj_core::module::ContextPipeline as ContextPipelineTrait;
+use agentj_core::types::{ChatMessage, Role, ToolCall};
+
+/// Pure message-builder pipeline. The system prompt is supplied by the caller
+/// (AgentLoop) at assemble time, so this struct carries no state.
+pub struct ContextPipeline;
+
+impl ContextPipeline {
+    pub fn new() -> Self { Self }
+}
+
+impl Default for ContextPipeline {
+    fn default() -> Self { Self::new() }
+}
+
+impl ContextPipelineTrait for ContextPipeline {
+    fn assemble(
+        &self,
+        system: &str,
+        history: &[ChatMessage],
+        tool_results: &[(ToolCall, String)],
+    ) -> Vec<ChatMessage> {
+        let mut messages = vec![ChatMessage::system(system)];
+        messages.extend_from_slice(history);
+        for (tc, result) in tool_results {
+            messages.push(ChatMessage {
+                role: Role::Assistant,
+                content: String::new(),
+                tool_call_id: None,
+                tool_calls: vec![tc.clone()],
+            });
+            messages.push(ChatMessage::tool_result(&tc.id, result));
+        }
+        messages
+    }
+
+    fn reflux(&self, history: &mut Vec<ChatMessage>, tool_call: &ToolCall, result: String) {
+        history.push(ChatMessage {
+            role: Role::Assistant,
+            content: String::new(),
+            tool_call_id: None,
+            tool_calls: vec![tool_call.clone()],
+        });
+        history.push(ChatMessage::tool_result(&tool_call.id, result));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
