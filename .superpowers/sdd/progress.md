@@ -16,7 +16,7 @@ Started: 2026-08-15
 | T5 | Add the agentj-config crate with layered config merge | ✅ done | PASS |
 | T6 | Add the agentj-session crate with an in-memory session store | ✅ done | PASS |
 | T7 | Add the agentj-model crate with MockModelProvider | ✅ done | PASS |
-| T8 | Add the OpenAICompatibleProvider with SSE streaming, retry, tool-call assembly | pending | — |
+| T8 | Add the OpenAICompatibleProvider with SSE streaming, retry, tool-call assembly | ✅ done | PASS |
 | T9 | Add the agentj-tools crate with built-in tools | ✅ done | PASS |
 | T10 | Add the agentj-context crate with ContextPipeline | ✅ done | PASS |
 | T11 | Add AgentLoop with a streaming run_turn_stream API | pending | — |
@@ -25,10 +25,10 @@ Started: 2026-08-15
 | T14 | Add the agentj-cli binary with run/serve commands (Connection model) | pending | — |
 | T15 | Add benchmarks and sync docs for v0.1 | pending | — |
 | T16 | Add ToolSource ownership contract to ToolRegistry | ✅ done | PASS |
-| T17 | Add session lifecycle contract implementation (archive/delete) | pending | — |
-| T18 | Add session recovery contract (snapshot/restore/load_all) | pending | — |
-| T19 | Add ToolExecutor with process-group isolation and orphan reclamation | pending | — |
-| T20 | Add the ResponsesProvider (OpenAI Responses API) | pending | — |
+| T17 | Add session lifecycle contract implementation (archive/delete) | ✅ done | PASS |
+| T18 | Add session recovery contract (snapshot/restore/load_all) | 🔄 running | — |
+| T19 | Add ToolExecutor with process-group isolation and orphan reclamation | 🔄 fix round 1 (timeout orphan bug) | FAIL→fix |
+| T20 | Add the ResponsesProvider (OpenAI Responses API) | 🔄 running | — |
 | T21 | Add the AnthropicProvider (Anthropic Messages API) | pending | — |
 | T22 | Add the opencode-go model catalog artifact and loader | pending | — |
 | T23 | Add the OpenCodeGoProvider facade | pending | — |
