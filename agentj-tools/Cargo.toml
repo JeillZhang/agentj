@@ -1,0 +1,12 @@
+[package]
+name = "agentj-tools"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+agentj-core = { path = "../agentj-core" }
+serde_json = "1"
+
+[dev-dependencies]
+tempfile = "3"
