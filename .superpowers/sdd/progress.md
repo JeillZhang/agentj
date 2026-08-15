@@ -12,19 +12,19 @@ Started: 2026-08-15
 | T1 | Create the agentj-core crate skeleton | ✅ done | PASS |
 | T2 | Add shared types and error enums | ✅ done | PASS |
 | T3 | Add module traits, registries, and KernelContext | pending | — |
-| T4 | Add the Kernel module registry, event loop, and lifecycle state machine | pending | — |
-| T5 | Add the agentj-config crate with layered config merge | pending | — |
-| T6 | Add the agentj-session crate with an in-memory session store | pending | — |
-| T7 | Add the agentj-model crate with MockModelProvider | pending | — |
+| T4 | Add the Kernel module registry, event loop, and lifecycle state machine | ✅ done | PASS |
+| T5 | Add the agentj-config crate with layered config merge | ✅ done | PASS |
+| T6 | Add the agentj-session crate with an in-memory session store | ✅ done | PASS |
+| T7 | Add the agentj-model crate with MockModelProvider | ✅ done | PASS |
 | T8 | Add the OpenAICompatibleProvider with SSE streaming, retry, tool-call assembly | pending | — |
-| T9 | Add the agentj-tools crate with built-in tools | pending | — |
-| T10 | Add the agentj-context crate with ContextPipeline | pending | — |
+| T9 | Add the agentj-tools crate with built-in tools | ✅ done | PASS |
+| T10 | Add the agentj-context crate with ContextPipeline | ✅ done | PASS |
 | T11 | Add AgentLoop with a streaming run_turn_stream API | pending | — |
-| T12 | Add the agentj-mcp crate with an MCP client bridge | pending | — |
+| T12 | Add the agentj-mcp crate with an MCP client bridge | ✅ done | PASS |
 | T13 | Add the agentj-ipc crate with the Connection trait and JSON-RPC 2.0 over stdio | pending | — |
 | T14 | Add the agentj-cli binary with run/serve commands (Connection model) | pending | — |
 | T15 | Add benchmarks and sync docs for v0.1 | pending | — |
-| T16 | Add ToolSource ownership contract to ToolRegistry | pending | — |
+| T16 | Add ToolSource ownership contract to ToolRegistry | ✅ done | PASS |
 | T17 | Add session lifecycle contract implementation (archive/delete) | pending | — |
 | T18 | Add session recovery contract (snapshot/restore/load_all) | pending | — |
 | T19 | Add ToolExecutor with process-group isolation and orphan reclamation | pending | — |
