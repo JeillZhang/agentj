@@ -17,9 +17,9 @@ AgentJ 是一个面向社区的 AI 编码代理工具，以 Rust 语言构建，
 | 阶段 | 目标 |
 |------|------|
 | v0.1 | 核心链路跑通：CLI 输入 → IPC → 上下文管线 → 模型调用 → 工具执行 → 流式返回 |
-| v0.1 | 基础模块可用：Context Pipeline、Session Manager、Tool System、Model Manager（DeepSeek）、MCP Bridge、Config System |
+| v0.1 | 基础模块可用：Context Pipeline、Session Manager、Tool System、Model Manager（DeepSeek + opencode-go 全模型）、MCP Bridge、Config System |
 | v0.2 | 生态扩展：Plugin Manager（兼容 opencode/claude code 插件格式）、Skills Loader（多路径）、Sub-Agent Dispatcher、Hook System |
-| v0.2+ | 模型扩展：OpenAI 兼容 API、Ollama 本地模型、更多厂商 |
+| v0.2+ | 模型扩展：Ollama 本地模型、更多厂商（OpenAI 兼容 API 已随 v0.1 opencode-go 支持提前落地） |
 | v0.3+ | 商业扩展：Web Dashboard、用量统计、License 管理 |
 
 ### 非目标
@@ -29,6 +29,7 @@ AgentJ 是一个面向社区的 AI 编码代理工具，以 Rust 语言构建，
 - ❌ 不做模型训练/微调（定位是 agent 工具，不是 ML pipeline）
 - ❌ 不做 IDE 深度集成（VS Code/JetBrains 插件是 v0.3+ 的事）
 - ❌ 不做多语言 runtime（核心 Rust + 配置 TOML，前端可选任意语言）
+- ❌ v0.1 不做动态模型目录拉取（opencode-go 的 `GET /v1/models` 动态发现属 v0.2 增强项，v0.1 用提交的静态模型目录）
 
 ## 设计方案
 
@@ -83,7 +84,7 @@ flowchart TB
     end
 
     subgraph External["外部服务"]
-        LLM["LLM APIs (DeepSeek 等)"]
+        LLM["LLM APIs (DeepSeek / opencode-go)"]
         MCPSRV["MCP Servers"]
         SKILLDIR[".aj / .agents / .claude"]
     end
@@ -111,7 +112,7 @@ sequenceDiagram
     participant Ctx as Context Pipeline
     participant Model as Model Manager
     participant Tools as Tool System
-    participant LLM as DeepSeek API
+    participant LLM as DeepSeek / opencode-go API
 
     CLI->>IPC: JSON-RPC "run task"
     IPC->>Kernel: KernelMessage::UserRequest
@@ -423,7 +424,7 @@ pub enum KernelMessage {
 |-------|------|------|
 | `agentj-core` | 内核：消息总线、模块注册表、Module/KernelModule trait 定义 | v0.1 |
 | `agentj-ipc` | stdio + JSON-RPC 协议实现 | v0.1 |
-| `agentj-model` | 模型管理：Provider trait + DeepSeek 适配 | v0.1 |
+| `agentj-model` | 模型管理：Provider trait + 三种 wire 格式 transport（OpenAI 兼容 / Responses / Anthropic）+ opencode-go 门面路由 + 工厂 | v0.1 |
 | `agentj-tools` | 工具引擎：内置工具注册/调用、ToolExecutor（进程组隔离 + 超时 kill + 孤儿回收） | v0.1 |
 | `agentj-session` | 会话管理：对话历史、token 计数、压缩；生命周期契约（archive/delete，v0.2 完整语义） | v0.1 |
 | `agentj-context` | 上下文管线：组装、注入、回流 | v0.1 |
@@ -432,6 +433,83 @@ pub enum KernelMessage {
 | `agentj-plugin` | 插件管理：PluginLoader 抽象（libloading/WASM）、插件状态机、依赖图拓扑排序、沙箱资源上限 | v0.2 |
 | `agentj-skills` | Skills 加载：多路径 | v0.2 |
 | `agentj-cli` | CLI 前端（clap），唯一二进制入口 | v0.1 |
+
+### opencode-go 模型供应商支持（v0.1）
+
+**背景**：opencode-go 是 OpenCode 的低价订阅（$5 首月 / $10 月），一个订阅覆盖主流开源编码模型。它**不是单一 API**——官方模型表横跨三种 wire 协议，由模型 ID 决定走哪个 endpoint：
+
+| 模型示例 | wire 格式 | endpoint | AI SDK 包 |
+|---------|-----------|----------|-----------|
+| Grok 4.5 / GPT 5.6 Luna | OpenAI Responses API | `/v1/responses` | `@ai-sdk/openai` |
+| GLM / Kimi / DeepSeek V4 / MiMo / Hy3 | OpenAI Chat Completions | `/v1/chat/completions` | `@ai-sdk/openai-compatible` |
+| MiniMax / Qwen | Anthropic Messages API | `/v1/messages` | `@ai-sdk/anthropic` |
+
+模型 ID 格式 `opencode-go/<model>`（如 `opencode-go/kimi-k3`）。「完美支持」= 用户只配置一次（`provider="opencode-go"` + api_key + 模型名），内核自动路由到正确的 wire 格式与 endpoint。
+
+**架构**：
+
+```mermaid
+flowchart TB
+    subgraph Config["agentj.toml（T5 扩展）"]
+        CFG["[model] provider / default_model<br/>[[model.providers]] kind / base_url / api_key_env"]
+    end
+
+    subgraph Model["agentj-model（T7/T8 扩展）"]
+        FACTORY["ProviderFactory<br/>match kind 实例化"]
+        OG["OpenCodeGoProvider（门面）"]
+        CAT["模型目录 models/opencode-go.json<br/>模型ID → format / endpoint"]
+        OC["OpenAICompatibleProvider<br/>（T8 改造 + tool-call 解析）"]
+        RS["ResponsesProvider<br/>（新增）"]
+        AN["AnthropicProvider<br/>（新增）"]
+        MOCK["MockModelProvider<br/>（T7 不变）"]
+    end
+
+    CFG --> FACTORY
+    FACTORY --> OG & OC & RS & AN & MOCK
+    OG --> CAT
+    OG -->|"openai-compat"| OC
+    OG -->|"responses"| RS
+    OG -->|"anthropic"| AN
+
+    subgraph External["外部"]
+        DEEP["api.deepseek.com<br/>（OpenAI 兼容）"]
+        GO["opencode.ai/zen/go<br/>/v1/chat/completions<br/>/v1/responses<br/>/v1/messages"]
+    end
+
+    OC --> DEEP
+    OC & RS & AN --> GO
+```
+
+**门面分派数据流**：
+
+```mermaid
+sequenceDiagram
+    participant AL as AgentLoop
+    participant PF as ProviderRegistry
+    participant OG as OpenCodeGoProvider
+    participant CAT as 模型目录
+    participant OC as OpenAICompatibleTransport
+    participant RS as ResponsesTransport
+    participant AN as AnthropicTransport
+    participant GO as opencode.ai/zen/go
+
+    AL->>PF: get_default()（kind=opencode-go）
+    AL->>OG: chat_stream(messages, tools, {model:"opencode-go/kimi-k3"})
+    OG->>CAT: lookup("opencode-go/kimi-k3")
+    CAT-->>OG: format=openai-compat, endpoint=/v1/chat/completions
+    OG->>OC: 转发（同签名）
+    OC->>GO: POST /v1/chat/completions（SSE）
+    GO-->>OC: delta.tool_calls / delta.content 增量
+    OC-->>OG: ModelEvent::ToolCall / Delta
+    OG-->>AL: 透传流
+```
+
+**设计要点**：
+
+- **transport 即独立 provider**：`OpenAICompatibleProvider`（OpenAI 兼容，服务 DeepSeek 与 opencode-go 的 chat/completions 模型）、`ResponsesProvider`、`AnthropicProvider` 各自实现 `ModelProvider` trait，可独立注册；`OpenCodeGoProvider` 门面组合三 transport，按模型目录分派——一份代码两种用途（DeepSeek = 直接用 OpenAICompatibleProvider；opencode-go = 门面组合）
+- **模型目录**：`models/opencode-go.json`（提交件，复用 `protocol/methods.json` 的「机器工件 + 校验」模式），字段 `{ id, format, endpoint }`，覆盖官方模型表；校验测试断言格式合法、ID 唯一
+- **tool-call 解析提前落地**（计划 T8 原为「推迟 v0.2」）：三格式各自实现 `delta → ToolCall` 增量聚合——Chat Completions 的 `delta.tool_calls[].function`、Responses 的 `output_item`、Anthropic 的 `content_block_delta` + `input_json_delta`——聚合完成后发 `ModelEvent::ToolCall`，使 v0.1 AgentLoop 工具循环（T11）对真实模型可用
+- **配置向后兼容**：`kind` 缺省 `"openai-compat"`（旧配置零破坏）；`default_model` 缺省 `"deepseek-chat"`；`agentj-core` 的 `ModelProvider` trait / `ProviderRegistry` 零改动
 
 ## 关键设计决策
 
@@ -480,7 +558,31 @@ pub trait ModelProvider: Send + Sync {
 }
 ```
 
-v0.1 实现 `DeepSeekProvider`（兼容 OpenAI Chat Completions API 格式），后续厂商只需实现同一 trait。
+v0.1 实现 `OpenAICompatibleProvider`（兼容 OpenAI Chat Completions API 格式，以 DeepSeek 为默认配置），后续厂商只需实现同一 trait。
+
+### 4.1. opencode-go 支持：三 transport + 门面组合 + 静态模型目录
+
+**决策**：v0.1 `agentj-model` 提供三种 wire 格式的独立 provider——`OpenAICompatibleProvider`（OpenAI Chat Completions，T8 改造）、`ResponsesProvider`（OpenAI Responses API）、`AnthropicProvider`（Anthropic Messages API）——以及 `OpenCodeGoProvider` 门面（组合三 transport，按 `models/opencode-go.json` 静态模型目录把 `opencode-go/<model>` 路由到对应 transport/endpoint）。三 provider 均可独立注册使用（如 DeepSeek 直接用 `OpenAICompatibleProvider`）；门面仅为 opencode-go 订阅提供「一个 base_url + 一个 api_key 覆盖全部模型」的体验。
+
+**理由**：opencode-go 官方模型表横跨三种 wire 协议，单格式实现只能覆盖 1/3 模型，不构成「完美支持」。`ModelProvider` trait 是 wire 格式的实现单元、门面是「按模型路由」的策略单元，职责分离、各自独立演进。静态目录复用 `protocol/methods.json` 的「机器工件 + 校验」模式；动态 `/v1/models` 拉取属 v0.2 增强项（v0.1 非目标）。
+
+### 4.2. tool-call 解析提前到 v0.1
+
+**决策**：v0.1 三个 provider 全部实现 tool-call delta → `ToolCall` 的流式组装（原计划 T8 注释「推迟 v0.2」取消）：Chat Completions `delta.tool_calls[].function`（含 `index` 增量合并）、Responses `output_item`（`function_call` 类型）、Anthropic `content_block_delta`（`input_json_delta` 累加）。组装完成后发 `ModelEvent::ToolCall`，AgentLoop 工具循环（T11）对真实模型可用。
+
+**理由**：AgentJ 是 agent 工具，工具引擎（T9）、AgentLoop 工具循环（T11）在 v0.1 全部就位，唯一缺口是 provider 侧 delta 组装——不落地则 v0.1 真实模型只能纯文本对话，工具执行成为死代码。三种格式的组装逻辑各约 30 行，风险低、收益是「核心链路（模型调用→工具执行→流式返回）」真实跑通。
+
+### 4.3. 配置 `kind` 判别 + `default_model`（向后兼容）
+
+**决策**：`ModelProviderConfig` 增加 `kind: "openai-compat" | "responses" | "anthropic" | "opencode-go"`（缺省 `"openai-compat"`），`ModelSection` 增加 `default_model: String`（缺省 `"deepseek-chat"`）；`agentj-model` 提供 `ProviderFactory` 按 `kind` 实例化对应 provider。旧配置文件不写 `kind`/`default_model` → 默认值生效，零破坏。
+
+**理由**：`kind` 是 provider 实例化的最小必要信息，工厂让 `agentj-model` 成为唯一实例化入口（同 `register_builtins` 哲学）；按 base_url 启发式推断在 opencode-go 场景数学上不可行（同一 base_url 三种格式）；`default_model` 使 `ModelOptions` 从配置注入而非硬编码。
+
+### 4.4. opencode-go 支持不动 IPC 协议
+
+**决策**：v0.1 opencode-go 接入全部收敛在 `agentj-model` + `agentj-config`，`agentj-protocol` / IPC 协议面零改动——模型由配置（`default_model`）全局决定，`session/run` 不新增模型参数，`kernel/status` 不新增模型列表。
+
+**理由**：v0.1 的模型选择属配置层职责，与「编排直接调 trait 对象」决策一致；协议加性纪律（只加不改）意味着每轮选模型/模型列表可随时在 v0.2 加（加性字段），而 v0.1 加等于为推迟的功能预付 schema 重生成 + 版本 bump + TS 绑定重跑成本。
 
 ### 5. Skills 加载优先级与合并策略
 
@@ -683,6 +785,9 @@ pub enum ModelError {
     #[error("context length exceeded: {used}/{max} tokens")]
     TokenLimitExceeded { used: usize, max: usize },
 
+    #[error("unknown model '{model}' for provider '{provider}'")]
+    UnknownModel { provider: String, model: String },
+
     #[error("network error: {0}")]
     Network(#[from] reqwest::Error),
 }
@@ -736,7 +841,7 @@ pub enum SessionError {
 
 - **内核层**：模块 init 失败 → 返回 `ModuleInitFailed`、状态置 `Failed`、不插入注册表，内核继续运行（单模块失败不拖垮内核）。模块关闭失败/超时 → 记录日志、状态置 `Failed`、继续关闭其余模块。致命错误（如 IPC 断开）→ 触发全局 shutdown
 - **生命周期层**：`Shutdown` 触发逆序优雅关闭，每模块超时（默认 2s）→ `ShutdownTimeout`；单模块关闭失败不阻断整体退出
-- **模型层**：网络/API 错误 → 自动重试（最多 3 次，指数退避）。Token 超限 → 触发上下文压缩后重试
+- **模型层**：网络/API 错误 → 自动重试（最多 3 次，指数退避）。Token 超限 → 触发上下文压缩后重试。opencode-go 用量限额（5 小时/$12、周/$30、月/$60）以 HTTP 429 返回 → 映射 `ModelError::RateLimited`（含 `retry_after`，支持退避重试）。模型目录未命中（门面收到不在 `models/opencode-go.json` 的模型 ID）→ `ModelError::UnknownModel`（不重试，属配置错误）。
 - **工具层**：执行失败 → 返回错误给模型（让模型自行修复）。超时 → 强制终止并通知模型。MCP server 不可用（断连/崩溃）→ 返回 `ToolError::ServerUnavailable`，工具从注册表移除（`unregister_by_source`），连接进入 `Reconnecting`（v0.2）
 - **子进程层**：MCP 客户端子进程 `kill_on_drop(true)`，transport 被 drop 时终止子进程，避免孤儿进程泄漏；每次调用新建 MCP server 进程为 v0.1 简化，连接复用/长驻 server 属 v0.2（`McpConnectionManager` 状态机，见「MCP 连接生命周期」章节）
 - **工具执行层**：内置工具子进程由 `ToolExecutor` 统一管理（进程组隔离 + 超时 kill + drop 回收），超时返回 `ToolError::Timeout` 且整树终止，见「工具执行生命周期」章节
@@ -755,6 +860,10 @@ pub enum SessionError {
 | **Session 契约测试**（v0.1） | archive/delete 语义、InactiveSession/NotFound 错误 | InMemory SessionStore | archive 后 run 拒绝、delete 后数据不可达、错误映射正确 |
 | **工具执行测试**（v0.1） | 超时杀进程组、孤儿回收 | bash 子进程 spawn 孙进程 | 超时后整树终止、drop 后无残留进程 |
 | **集成测试** | 模块→内核消息通信 | `tests/` 目录，启动迷你内核 | 验证模块间协作 |
+| **模型格式测试**（v0.1） | 三 transport 的流式解析 + tool-call 组装 | wiremock 分别 mock `/v1/chat/completions`、`/v1/responses`、`/v1/messages` 的 SSE | 各格式 delta 正确合并、tool_call 增量组装为完整 `ToolCall`、`[DONE]`/终止事件正确 |
+| **门面路由测试**（v0.1） | OpenCodeGoProvider 按目录分派 | 目录驱动 + 三 transport 的 mock 实例 | `opencode-go/kimi-k3` → openai-compat、`opencode-go/grok-4.5` → responses、`opencode-go/minimax-m3` → anthropic；目录未命中 → `UnknownModel` |
+| **目录校验测试**（v0.1） | `models/opencode-go.json` 工件 | 解析 + 断言 | 每条记录 `format` 合法、`id` 唯一、`endpoint` 非空（漂移门禁） |
+| **配置兼容测试**（v0.1） | `kind` / `default_model` 缺省值 | agentj-config 单元测试 | 旧配置（无 `kind`）解析为 `openai-compat`；`default_model` 缺省 `deepseek-chat`；工厂按 `kind` 实例化正确 provider |
 | **E2E 测试** | CLI → 完整流水线 | Mock LLM 服务器 | 核心链路正确性 |
 | **契约测试** | IPC JSON-RPC 协议 | 固定请求/响应 snapshot | 协议不退化 |
 | **性能测试** | Token 吞吐、延迟 | criterion benchmarks | 流式延迟 < 200ms |
@@ -794,6 +903,7 @@ clap = { version = "4", features = ["derive"] }
 ### 阻塞项
 
 - DeepSeek API 的 tool-calling 能力验证（需实际测试流式 tool_call 支持情况）
+- opencode-go 三 wire 格式（Responses / Chat Completions / Anthropic）的实际 SSE 事件结构验证（Grok/GPT 走 `/v1/responses`、MiniMax/Qwen 走 `/v1/messages`，需订阅后实测确认）
 - opencode / claude code 插件 manifest 格式调研（v0.2 前置）
 - libloading 跨平台 ABI 稳定性验证与版本兼容策略（v0.2 前置）
 - WASM runtime 选型调研（wasmtime 等）与沙箱资源上限基准（v0.2 可选）
@@ -802,6 +912,7 @@ clap = { version = "4", features = ["derive"] }
 
 - **Windows 进程组 kill**：`ToolExecutor` 的进程组终止（`kill(-pgid)`）是 Unix 语义，v0.1 仅实现 Unix 路径；Windows 需 Job Object 或 `taskkill /T`，属已知限制
 - **Config 热重载**（低优先级）：`ConfigProvider` 静态加载，无 reload 机制——v0.2 若做配置热更新需接口扩展，同 ToolRegistry 教训（契约先行原则届时适用）
-- **ModelProvider 切换**（低优先级）：v0.1 单厂商 DeepSeek，网络错误重试已覆盖；多厂商切换/重连状态机属 v0.2 模型扩展
+- **ModelProvider 切换**（低优先级）：v0.1 支持多厂商（DeepSeek + opencode-go 全模型，配置层选择），但**运行时切换/重连状态机**属 v0.2 模型扩展（v0.1 为进程启动时静态选择）
+- **opencode-go 模型目录为静态快照**：`models/opencode-go.json` 是提交的静态工件，opencode-go 新增模型需随 AgentJ 版本更新；动态 `/v1/models` 拉取属 v0.2 增强项（v0.1 非目标）
 - **IPC 多连接**（低优先级）：v0.1 stdio 单客户端模型（EOF 即关）简单可靠；v0.3 Web Dashboard 多连接时的连接生命周期再设计
 - **Session 过期回收（expire）**：契约已固化（决策 #14），TTL 扫描回收实现属 v0.2
