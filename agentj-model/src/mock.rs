@@ -41,9 +41,6 @@ impl ModelProvider for MockModelProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agentj_core::error::ModelError;
-    use agentj_core::module::ModelProvider;
-    use agentj_core::types::*;
     use futures::StreamExt;
 
     #[tokio::test]
