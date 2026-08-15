@@ -280,6 +280,16 @@ mod tests {
         }
     }
 
+    struct OtherTool;
+    impl Tool for OtherTool {
+        fn name(&self) -> &str { "other" }
+        fn description(&self) -> &str { "" }
+        fn input_schema(&self) -> serde_json::Value { serde_json::json!({}) }
+        fn execute(&self, _input: serde_json::Value) -> Result<serde_json::Value, ToolError> {
+            Ok(serde_json::Value::String("ok".into()))
+        }
+    }
+
     #[test]
     fn module_id() {
         let m = TestModule;
@@ -293,6 +303,42 @@ mod tests {
         registry.register(Arc::new(DummyTool));
         assert_eq!(registry.get("dummy").unwrap().name(), "dummy");
         assert_eq!(registry.definitions().len(), 1);
+    }
+
+    #[test]
+    fn register_with_source_and_conflict_policy() {
+        let registry = ToolRegistry::new();
+        registry.register_tool_with_source(Arc::new(DummyTool), ToolSource::Builtin, ReplacePolicy::Reject).unwrap();
+        // same name, same source, Reject → error
+        assert!(registry.register_tool_with_source(Arc::new(DummyTool), ToolSource::Builtin, ReplacePolicy::Reject).is_err());
+        // Replace → overwrites, still 1 entry
+        registry.register_tool_with_source(Arc::new(DummyTool), ToolSource::Builtin, ReplacePolicy::Replace).unwrap();
+        assert_eq!(registry.definitions().len(), 1);
+    }
+
+    #[test]
+    fn unregister_tool_removes_by_name() {
+        let registry = ToolRegistry::new();
+        registry.register_tool_with_source(Arc::new(DummyTool), ToolSource::Builtin, ReplacePolicy::Reject).unwrap();
+        let removed = registry.unregister_tool("dummy");
+        assert!(removed.is_some());
+        assert!(registry.get("dummy").is_none());
+        assert!(registry.unregister_tool("dummy").is_none()); // idempotent
+    }
+
+    #[test]
+    fn unregister_by_source_removes_all_and_counts() {
+        let registry = ToolRegistry::new();
+        registry.register_tool_with_source(Arc::new(DummyTool), ToolSource::Mcp { server_id: "srv".into() }, ReplacePolicy::Reject).unwrap();
+        registry.register_tool_with_source(Arc::new(OtherTool), ToolSource::Plugin { plugin_id: "p1".into() }, ReplacePolicy::Reject).unwrap();
+        let removed = registry.unregister_by_source(&ToolSource::Mcp { server_id: "srv".into() });
+        assert_eq!(removed, 1);
+        assert_eq!(registry.definitions().len(), 1);
+        assert_eq!(registry.get("other").unwrap().name(), "other");
+        // Legacy register() still lands as Builtin once "dummy" is free again.
+        registry.unregister_tool("other");
+        registry.register(Arc::new(DummyTool));
+        assert_eq!(registry.tools()[0].source, ToolSource::Builtin);
     }
 
     #[test]
