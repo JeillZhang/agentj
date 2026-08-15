@@ -19,4 +19,4 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo build --release --locked
-      - run: cargo test --release --test e2e -- --ignored
+      - run: cargo test --release --test e2e_cli -- --ignored
