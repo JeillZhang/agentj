@@ -18,6 +18,7 @@ AgentJ 是一个面向社区的 AI 编码代理工具，以 Rust 语言构建，
 |------|------|
 | v0.1 | 核心链路跑通：CLI 输入 → IPC → 上下文管线 → 模型调用 → 工具执行 → 流式返回 |
 | v0.1 | 基础模块可用：Context Pipeline、Session Manager、Tool System、Model Manager（DeepSeek + opencode-go 全模型）、MCP Bridge、Config System |
+| v0.1 | 权限闭环：敏感工具（bash/write）执行前权限检查 + IPC 审批流（决策 #17） |
 | v0.2 | 生态扩展：Plugin Manager（兼容 opencode/claude code 插件格式）、Skills Loader（多路径）、Sub-Agent Dispatcher、Hook System |
 | v0.2+ | 模型扩展：Ollama 本地模型、更多厂商（OpenAI 兼容 API 已随 v0.1 opencode-go 支持提前落地） |
 | v0.3+ | 商业扩展：Web Dashboard、用量统计、License 管理 |
@@ -447,6 +448,196 @@ impl ToolExecutor {
 - **孤儿回收**：`ToolExecutor` drop（含 panic 路径）时 kill 残留进程组——复用 MCP 的 `kill_on_drop` 哲学，普通工具子进程不泄漏
 - **跨平台注记**：进程组 kill 在 Unix（`kill(-pgid)`）语义明确；Windows 需 Job Object 或 `taskkill /T`——v0.1 实现 Unix 路径，Windows 为已知限制（记录于遗留问题）
 
+### 权限管理系统（v0.1）
+
+**背景**：v0.1 交付 BashTool/WriteTool/ReadTool/GlobTool/GrepTool 等内置工具，`ToolError::PermissionDenied` 在错误枚举中已定义（见「错误处理」）——但**没有任何代码路径会产生它**：无权限策略、无检查器、无拦截点，属死变体。工具执行仅有 `ToolExecutor` 的进程生命周期安全（超时/进程组隔离/孤儿回收，见「工具执行生命周期」），**无权限控制**——bash 可执行任意命令、write 可写任意路径。对标 opencode 的 per-tool allow/deny/ask 模式与 claude code 的目录白名单，v0.1 补齐权限闭环（决策 #17）。
+
+**决策模型：工具模式 + 规则覆盖**：
+
+- 每个工具类声明默认模式 `Allow` / `Ask` / `Deny`（内置工具出厂默认：bash=Ask、write=Ask、read/glob/grep=Allow；MCP/插件工具默认 Ask——信任=用户自装，保守起步）
+- 细粒度规则叠加在默认模式之上：**路径规则**（文件类工具，glob 相对 workspace 根解析）与**命令规则**（bash，命令前缀匹配）
+- **决策优先级：Deny > Allow > Ask**——规则命中即短路；规则未命中回退工具默认模式
+
+> **执行入口注记**：现有 `ToolRegistry` 为注册表（`register/get/definitions`），执行发生在 `AgentLoop::execute_tool_calls`（`spawn_blocking(tool.execute)`）。权限拦截引入 `ToolRegistry::execute_async(name, args, ctx)` 统一入口：**async** 方法先走权限门（Ask 时 `await_approval` 等待审批），放行后再 `spawn_blocking` 委托同步 `Tool::execute`——单一拦截点覆盖全部调用方（AgentLoop/sub-agent/插件），且审批等待不阻塞内核事件循环。
+
+| 工具类 | 默认模式 | 规则示例 |
+|--------|---------|---------|
+| bash | Ask | allow `npm test`* / deny `rm -rf /*`* |
+| write | Ask | allow `src/**` / deny `../**` |
+| read / glob / grep | Allow | deny `.env` |
+| MCP / 插件工具 | Ask | 按 server/plugin 粒度配置 |
+
+**架构**：
+
+```mermaid
+flowchart TB
+    subgraph Perm["agentj-permission（独立 leaf crate，零内核耦合）"]
+        ENGINE["PermissionEngine<br/>决策引擎（纯库）"]
+        POLICY["PermissionPolicy<br/>工具默认模式 + 规则表"]
+        STATE["SessionAllowState<br/>allow_always 会话态（内存）"]
+    end
+
+    subgraph Kernel["agentj-core（内核）"]
+        PM["PermissionModule<br/>实现 Module trait，注册进内核"]
+        CTX["KernelContext<br/>注入 PermissionChecker 能力接口"]
+    end
+
+    subgraph Tools["agentj-tools"]
+        REG["ToolRegistry.execute_async<br/>统一拦截点（async 权限门）"]
+        EXEC["spawn_blocking → Tool::execute"]
+    end
+
+    subgraph IPC["agentj-ipc"]
+        NOTIF["$/permissionRequest 通知"]
+        RESP["permission/respond 方法"]
+    end
+
+    subgraph Protocol["agentj-protocol"]
+        SCHEMA["新增 wire 类型（加性）"]
+    end
+
+    REG -->|"1. check(tool, args)"| PM
+    PM --> ENGINE
+    ENGINE --> POLICY
+    ENGINE --> STATE
+    ENGINE -->|"Decision::Ask"| NOTIF
+    RESP -->|"2. respond(request_id)"| PM
+    PM -->|"3. Allow/Deny"| REG
+    NOTIF --> SCHEMA
+    RESP --> SCHEMA
+```
+
+**审批时序（Ask 场景）**：
+
+```mermaid
+sequenceDiagram
+    participant AL as AgentLoop
+    participant REG as ToolRegistry.execute_async
+    participant PM as PermissionModule
+    participant EN as PermissionEngine
+    participant IPC as agentj-ipc
+    participant CLI as 客户端
+
+    AL->>REG: 调用 bash("rm -rf /tmp/x")
+    REG->>PM: check(bash, {cmd})
+    PM->>EN: evaluate(policy, tool, args)
+    EN->>EN: 规则求值 → 未命中 → 工具默认 ask
+    EN-->>PM: Decision::Ask{request_id}
+    PM->>IPC: $/permissionRequest {request_id, tool, args}
+    IPC-->>CLI: 通知（execute_async 挂起 await_approval）
+    CLI->>IPC: permission/respond {request_id, allow}
+    IPC->>PM: await_approval 返回 Allow
+    PM->>REG: Ok（放行）
+    REG->>REG: spawn_blocking → Tool::execute
+    REG-->>AL: 执行结果
+```
+
+**接口定义**（agentj-permission 内，能力接口与通道分离——§7 原则）：
+
+```rust
+/// 工具默认模式
+pub enum PermissionMode { Allow, Ask, Deny }
+
+/// 规则效果（优先级 Deny > Allow）
+pub enum PermissionEffect { Allow, Deny }
+
+/// 路径规则：文件类工具（write/read/glob/grep），glob 相对 workspace 根解析
+pub struct PathRule {
+    pub effect: PermissionEffect,
+    pub pattern: String, // glob，如 "src/**" / "../**" / ".env"
+}
+
+/// 命令规则：bash，命令前缀匹配
+pub struct CommandRule {
+    pub effect: PermissionEffect,
+    pub prefix: String, // 如 "npm test" / "rm -rf /*"
+}
+
+/// 单工具策略：默认模式 + 规则表
+pub struct ToolPolicy {
+    pub mode: PermissionMode,
+    pub path_rules: Vec<PathRule>,
+    pub command_rules: Vec<CommandRule>,
+}
+
+/// 审批请求 id（不透明，uuid，独立于 JSON-RPC 请求 id）
+pub struct PermissionRequestId(pub String);
+
+/// 决策结果
+pub enum PermissionDecision {
+    Allow,
+    Deny { reason: String },
+    Ask { request_id: PermissionRequestId },
+}
+
+/// 检查上下文
+pub struct PermissionContext {
+    pub session_id: SessionId,
+    pub tool: String,
+    pub source: ToolSource,      // Builtin / Mcp / Plugin（复用决策 #10）
+    pub args: serde_json::Value, // 原始参数（含 cmd / path 等）
+    pub workspace_root: PathBuf,
+}
+
+/// 能力接口：ToolRegistry::execute_async 的拦截点依赖此 trait（§7 通道解耦）
+pub trait PermissionChecker: Send + Sync {
+    /// 同步决策：Allow / Deny / Ask（Ask = 已登记挂起审批并发出 $/permissionRequest 通知）
+    fn check(&self, ctx: &PermissionContext) -> PermissionDecision;
+
+    /// 等待 Ask 审批结果（async，内部 await IPC 响应通道；超时/取消 → Deny）
+    /// 仅在 check() 返回 Ask 后调用；Tool::execute 是同步的，故审批等待必须发生在
+    /// 其外的 async 路径（ToolRegistry::execute_async）——见下方执行入口注记
+    async fn await_approval(&self, request_id: &PermissionRequestId) -> PermissionDecision;
+}
+
+/// allow_always 会话态（内存）：session_id → 已放行规则指纹集合
+pub struct SessionAllowState { /* Mutex<HashMap<SessionId, HashSet<RuleFingerprint>>> */ }
+```
+
+**allow_always 语义**：`permission/respond {decision: "allow_always"}` 将 (工具, 命中规则指纹) 写入当前 session 的 `SessionAllowState`；同 session 内后续相同请求直接 `Allow`，**会话结束即失效**（内存态，不回写配置文件——避免无意永久放行危险操作；需跨会话生效的用户显式配置 `[permission]` 规则）。
+
+**审批超时**：`Ask` 请求等待响应的默认超时 60s（可配置），超时 → 自动 `Deny`（返回 `ToolError::PermissionDenied`）；客户端断开（session 终止）→ 挂起审批全部 `Deny`，`session/run` 返回拒绝语义，不无限挂起。
+
+**协议扩展（加性，随 v0.1 计划执行）**：
+
+- S→C 通知：`$/permissionRequest {request_id, tool, args, reason}`（request_id 独立于请求 id，复用 `$/progress` 的 token 解耦设计）
+- C→S 请求：`permission/respond {request_id, decision: "allow"|"deny"|"allow_always"}` → `{}`
+- `session/run` 保持「一请求一最终响应」不变式，审批等待期间请求挂起
+- 属协议加性变更（只加不改）：agentj-protocol 新增 wire 类型 + schema 重生成 + 版本 bump（同步 `docs/specs/ipc-protocol.md`）
+
+**配置段（agentj.toml `[permission]`）**：
+
+```toml
+[permission]
+# 工具默认模式覆盖（缺省：bash=Ask、write=Ask、read/glob/grep=Allow、MCP/插件=Ask）
+# [permission.tools.bash]
+# mode = "ask"
+# [[permission.tools.bash.command_rules]]
+# effect = "allow"
+# prefix = "npm test"
+# [[permission.tools.bash.command_rules]]
+# effect = "deny"
+# prefix = "rm -rf /*"
+
+# [permission.tools.write]
+# mode = "ask"
+# [[permission.tools.write.path_rules]]
+# effect = "allow"
+# pattern = "src/**"
+# [[permission.tools.write.path_rules]]
+# effect = "deny"
+# pattern = "../**"
+
+# [permission.tools.read]
+# mode = "allow"
+# [[permission.tools.read.path_rules]]
+# effect = "deny"
+# pattern = ".env"
+```
+
+- 规则解析失败（无效 glob）→ 配置加载失败（fail-fast，`PermissionError::InvalidRule`）
+- 工具默认模式与规则均可被 `[permission.tools.<tool>]` 覆盖；未声明的工具类使用出厂默认
+
 ### 消息枚举
 
 ```rust
@@ -478,6 +669,7 @@ pub enum KernelMessage {
 | `agentj-context` | 上下文管线：组装、注入、回流 | v0.1 |
 | `agentj-mcp` | MCP 协议客户端；v0.1 每次调用新建子进程；v0.2 引入 McpConnectionManager 长驻连接状态机 | v0.1 |
 | `agentj-config` | 多级配置合并 | v0.1 |
+| `agentj-permission` | 权限管理：PermissionEngine 决策引擎（纯库）、ToolPolicy 工具模式+规则表、SessionAllowState allow_always 会话态；PermissionModule 桥接注册进内核（决策 #17） | v0.1 |
 | `agentj-plugin` | 插件管理：PluginLoader 抽象（libloading/WASM）、插件状态机、依赖图拓扑排序、沙箱资源上限 | v0.2 |
 | `agentj-skills` | Skills 加载：多路径 | v0.2 |
 | `agentj-cli` | CLI 前端（clap），唯一二进制入口 | v0.1 |
@@ -801,6 +993,14 @@ impl ToolRegistry {
 
 **理由**：会话数据跨进程存活是 agent 工具的基础能力（对标 claude `--resume` / opencode 磁盘会话），且与决策 #14 同为"推迟实现 ≠ 推迟契约"——v0.2 再改 `SessionStore` 接口属破坏性变更（同 M3 教训）。InMemory 默认实现成本几行；v0.2 磁盘后端仅需覆盖三个方法 + 构造扫描，消费方（AgentLoop/内核）零改动。选快照模型（全量重写）而非 JSONL 追加，因为 agent 会话 append 频率低、体积小（KBs~MBs），全量重写换"任意时刻崩溃无半写状态"的简单性更值；JSONL 的追加优化留待会话体积增长到需要 compaction 时再评估。
 
+### 17. 权限管理系统：独立引擎 + 统一拦截点 + IPC 审批流（v0.1）
+
+**决策**：新建 `agentj-permission` 独立 leaf crate（权限决策引擎 + 策略模型 + allow_always 会话态，零内核耦合）；内核侧 `PermissionModule`（实现 `Module` trait）注册，将 `PermissionChecker` 能力接口注入 `KernelContext`；拦截点收敛在 `ToolRegistry::execute_async` 统一入口（async：先权限门、Ask 时 await 审批、放行后 spawn_blocking 委托同步执行；覆盖内置 bash/write + MCP + 插件工具）；`Ask` 决策经 IPC `$/permissionRequest` 通知 + `permission/respond` 方法完成审批，审批超时（默认 60s）自动 Deny。
+
+**理由**：`ToolError::PermissionDenied` 是死变体（定义了错误但无任何代码路径产生它）——工具执行仅有 `ToolExecutor` 的进程生命周期安全（决策 #15），**无权限控制**。拦截点选 `ToolRegistry::execute_async` 而非 ToolExecutor/AgentLoop：单一入口保证所有工具来源（内置 + MCP + 插件，配合决策 #10 的 `ToolSource` 元数据）不遗漏，审计完整；相对 AgentLoop 编排层，未来 sub-agent/插件新增调用路径无需逐点接入。独立 crate 符合「能力接口与通道分离」（§7）：引擎是纯库能力实现，`PermissionModule` 是通道接入（可插拔），v0.2 插件可复用同一检查路径。会话级内存态 allow_always 平衡可用性与安全：跨会话白名单需用户显式配置 `[permission]` 规则，避免"允许并保存"无意永久放行危险操作。
+
+**方案取舍**：全局默认 deny（最安全但 read 也弹确认，v0.1 可用性差）、全局默认 allow（首次运行即裸奔）均未选用；采用"敏感=ask、只读=allow + deny 优先"的默认策略，规则命中短路、未命中回退工具默认模式。
+
 ## 错误处理
 
 ### 错误类型层次
@@ -892,13 +1092,27 @@ pub enum SessionError {
     #[error("session persistence failed: {0}")]
     PersistenceFailed(String), // v0.1 契约；v0.2 磁盘后端 IO/校验错误（InMemory 不可达）
 }
+
+// agentj-permission 中的错误定义
+#[derive(Debug, thiserror::Error)]
+pub enum PermissionError {
+    #[error("permission rule invalid for tool '{tool}': {reason}")]
+    InvalidRule { tool: String, reason: String },
+
+    #[error("permission request '{request_id}' timed out after {timeout:?}")]
+    RequestTimeout { request_id: String, timeout: Duration },
+
+    #[error("permission request '{request_id}' cancelled: {reason}")]
+    RequestCancelled { request_id: String, reason: String },
+}
 ```
 
 ### 错误传播策略
 
 - **内核层**：模块 init 失败 → 返回 `ModuleInitFailed`、状态置 `Failed`、不插入注册表，内核继续运行（单模块失败不拖垮内核）。模块关闭失败/超时 → 记录日志、状态置 `Failed`、继续关闭其余模块。致命错误（如 IPC 断开）→ 触发全局 shutdown
 - **生命周期层**：`Shutdown` 触发逆序优雅关闭，每模块超时（默认 2s）→ `ShutdownTimeout`；单模块关闭失败不阻断整体退出
-- **模型层**：网络/API 错误 → 自动重试（最多 3 次，指数退避）。Token 超限 → 触发上下文压缩后重试。opencode-go 用量限额（5 小时/$12、周/$30、月/$60）以 HTTP 429 返回 → 映射 `ModelError::RateLimited`（含 `retry_after`，支持退避重试）。模型目录未命中（门面收到不在 `models/opencode-go.json` 的模型 ID）→ `ModelError::UnknownModel`（不重试，属配置错误）。
+- **模型层**：网络/API 错误 → 自动重试（最多 3 次，指数退避）。Token 超限 → 触发上下文压缩后重试。opencode-go 用量限额（5 小时/$12、周/$30、月/$60）以 HTTP 429 返回 → 映射 `ModelError::RateLimited`（含 `retry_after`，支持退避重试）。模型目录未命中（门面收到不在 `models/opencode-go.json` 的模型 ID）→ `ModelError::UnknownModel`（不重试，属配置错误）
+- **权限层**：规则解析失败（无效 glob）→ 配置加载 fail-fast（`PermissionError::InvalidRule`）。`Ask` 审批超时（默认 60s）→ `PermissionError::RequestTimeout` → 自动 Deny → `ToolError::PermissionDenied`（接线死变体）；`session/run` 被 `$/cancelRequest` 取消且审批挂起中 → `PermissionError::RequestCancelled`。Deny 决策 → `ToolError::PermissionDenied` 返回给模型（让模型调整命令/路径自行修复），不再重试同参数请求；allow_always 会话态随 session 终止清空。
 - **工具层**：执行失败 → 返回错误给模型（让模型自行修复）。超时 → 强制终止并通知模型。MCP server 不可用（断连/崩溃）→ 返回 `ToolError::ServerUnavailable`，工具从注册表移除（`unregister_by_source`），连接进入 `Reconnecting`（v0.2）
 - **子进程层**：MCP 客户端子进程 `kill_on_drop(true)`，transport 被 drop 时终止子进程，避免孤儿进程泄漏；每次调用新建 MCP server 进程为 v0.1 简化，连接复用/长驻 server 属 v0.2（`McpConnectionManager` 状态机，见「MCP 连接生命周期」章节）
 - **工具执行层**：内置工具子进程由 `ToolExecutor` 统一管理（进程组隔离 + 超时 kill + drop 回收），超时返回 `ToolError::Timeout` 且整树终止，见「工具执行生命周期」章节
@@ -919,6 +1133,9 @@ pub enum SessionError {
 | **Session 恢复契约测试**（v0.1） | snapshot/restore/load_all 契约、恢复覆盖语义 | InMemory SessionStore | snapshot 往返一致、restore 覆盖已有会话、load_all 默认空、NotFound 错误 |
 | **会话存储测试**（v0.2） | FileBackedStore 写读往返、原子写、损坏文件、删除 | 临时目录 + 文件断言 | 重启后数据存活、temp 残留清理、损坏文件跳过不拖垮启动、delete 删文件 |
 | **工具执行测试**（v0.1） | 超时杀进程组、孤儿回收 | bash 子进程 spawn 孙进程 | 超时后整树终止、drop 后无残留进程 |
+| **权限决策测试**（v0.1） | PermissionEngine 规则求值：路径 glob 匹配、命令前缀匹配、deny>allow>ask 优先级、默认模式回退 | PermissionEngine 单测 + 伪 ToolPolicy | 规则命中短路、未命中回退默认模式、`../**` 越界拒绝 |
+| **权限模块测试**（v0.1） | PermissionModule 生命周期（init/shutdown）、PermissionChecker 注入 KernelContext | 迷你 Kernel + spy 模块 | 注册后 ToolRegistry 可解析 checker、shutdown 清空会话态 |
+| **审批流测试**（v0.1） | ToolRegistry.execute_async 拦截 → Ask → `$/permissionRequest` 通知 → `permission/respond` 放行/拒绝 | 迷你内核 + mock IPC 客户端 | allow 后执行、deny 后返回 PermissionDenied、超时自动 Deny、allow_always 会话内放行/跨会话失效 |
 | **集成测试** | 模块→内核消息通信 | `tests/` 目录，启动迷你内核 | 验证模块间协作 |
 | **模型格式测试**（v0.1） | 三 transport 的流式解析 + tool-call 组装 | wiremock 分别 mock `/v1/chat/completions`、`/v1/responses`、`/v1/messages` 的 SSE | 各格式 delta 正确合并、tool_call 增量组装为完整 `ToolCall`、`[DONE]`/终止事件正确 |
 | **门面路由测试**（v0.1） | OpenCodeGoProvider 按目录分派 | 目录驱动 + 三 transport 的 mock 实例 | `opencode-go/kimi-k3` → openai-compat、`opencode-go/grok-4.5` → responses、`opencode-go/minimax-m3` → anthropic；目录未命中 → `UnknownModel` |
@@ -977,3 +1194,5 @@ clap = { version = "4", features = ["derive"] }
 - **IPC 多连接**（低优先级）：v0.1 stdio 单客户端模型（EOF 即关）简单可靠；v0.3 Web Dashboard 多连接时的连接生命周期再设计
 - **Session 过期回收（expire）**：契约已固化（决策 #14），TTL 扫描回收实现属 v0.2
 - **运行级续跑（run resumption）**：会话历史持久化已设计（决策 #16），但 `session/run` 中断后的续跑（run 状态机 + 检查点 + 协议 resume 语义）属 v0.2+ 独立设计——协议 §3 当前明文"`session/run` 不可重试"，改动需走协议版本升级流程
+- **allow_always 持久化**：v0.1 会话级内存态（决策 #17），不回写配置文件；跨会话白名单需用户显式配置 `[permission]` 规则。`allow_always` 持久化交互（"允许并保存"）属 v0.2 增强项
+- **沙箱化执行**：权限控制（决策 #17）解决"能否执行"，`ToolExecutor` 进程组隔离解决"超时整树终止"；但**无 OS 级沙箱**（chroot/seccomp/bubblewrap）限制工具进程能力边界——属 v0.2 插件 WASM 沙箱（P4）之外的独立增强项，v0.1 不覆盖
