@@ -90,6 +90,7 @@ mod tests {
     use agentj_core::error::{ModuleError, SessionError};
     use agentj_core::module::{SessionStatus, SessionStore};
     use agentj_core::types::{ChatMessage, Role};
+    use agentj_core::types::SessionSnapshot;
 
     #[test]
     fn create_and_append_session() -> Result<(), ModuleError> {
@@ -147,6 +148,80 @@ mod tests {
     fn delete_missing_session_returns_not_found() -> Result<(), ModuleError> {
         let store = InMemoryStore::new();
         assert!(matches!(store.delete(&"nonexistent".into()), Err(ModuleError::Session(SessionError::NotFound(_)))));
+        Ok(())
+    }
+
+    // ---- v0.1 recovery contract (design §会话持久化与恢复, decision #16) ----
+
+    #[test]
+    fn snapshot_roundtrip_active_session() -> Result<(), ModuleError> {
+        let store = InMemoryStore::new();
+        let sid = store.create()?;
+        store.append(&sid, ChatMessage::user("hello"))?;
+        store.append(&sid, ChatMessage::user("world"))?;
+        let snap = store.snapshot(&sid)?;
+        assert_eq!(snap.session_id, sid);
+        assert_eq!(snap.status, SessionStatus::Active);
+        assert_eq!(snap.messages.len(), 2);
+
+        let fresh = InMemoryStore::new();
+        fresh.restore(&snap)?;
+        assert_eq!(fresh.status(&sid)?, SessionStatus::Active);
+        assert_eq!(fresh.get(&sid)?.len(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn snapshot_archived_session_preserves_status() -> Result<(), ModuleError> {
+        let store = InMemoryStore::new();
+        let sid = store.create()?;
+        store.append(&sid, ChatMessage::user("hello"))?;
+        store.archive(&sid)?;
+        let snap = store.snapshot(&sid)?;
+        assert_eq!(snap.status, SessionStatus::Archived);
+        assert_eq!(snap.messages.len(), 1); // archived keeps data
+        Ok(())
+    }
+
+    #[test]
+    fn snapshot_deleted_or_missing_returns_not_found() -> Result<(), ModuleError> {
+        let store = InMemoryStore::new();
+        assert!(matches!(
+            store.snapshot(&"missing".into()),
+            Err(ModuleError::Session(SessionError::NotFound(_)))
+        ));
+
+        let sid = store.create()?;
+        store.delete(&sid)?;
+        assert!(matches!(
+            store.snapshot(&sid),
+            Err(ModuleError::Session(SessionError::NotFound(_)))
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn restore_overwrites_existing_session() -> Result<(), ModuleError> {
+        let store = InMemoryStore::new();
+        let sid = store.create()?;
+        store.append(&sid, ChatMessage::user("old"))?;
+        let snap = store.snapshot(&sid)?;
+
+        store.append(&sid, ChatMessage::user("new"))?; // drift after snapshot
+        store.restore(&snap)?; // roll back to snapshot state
+        let msgs = store.get(&sid)?;
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].content, "old");
+        Ok(())
+    }
+
+    #[test]
+    fn load_all_default_is_empty_for_inmemory() -> Result<(), ModuleError> {
+        let store = InMemoryStore::new();
+        let sid = store.create()?;
+        store.append(&sid, ChatMessage::user("hello"))?;
+        // InMemory carries no persistence — load_all reports zero persisted sessions
+        assert!(store.load_all()?.is_empty());
         Ok(())
     }
 }
