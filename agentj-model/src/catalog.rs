@@ -56,8 +56,8 @@ impl ModelCatalog {
             base_url: String,
             models: Vec<RawEntry>,
         }
-        let raw: RawCatalog = serde_json::from_str(json)
-            .unwrap_or_else(|e| panic!("invalid catalog JSON: {e}"));
+        let raw: RawCatalog =
+            serde_json::from_str(json).unwrap_or_else(|e| panic!("invalid catalog JSON: {e}"));
         let entries = raw
             .models
             .into_iter()
@@ -95,7 +95,10 @@ mod tests {
         assert!(!catalog.entries.is_empty(), "catalog must not be empty");
         for entry in catalog.entries.values() {
             assert!(
-                matches!(entry.format, WireFormat::OpenAiCompat | WireFormat::Responses | WireFormat::Anthropic),
+                matches!(
+                    entry.format,
+                    WireFormat::OpenAiCompat | WireFormat::Responses | WireFormat::Anthropic
+                ),
                 "unknown format in catalog"
             );
         }
@@ -106,18 +109,39 @@ mod tests {
         let catalog = ModelCatalog::builtin();
         let mut ids = std::collections::HashSet::new();
         for entry in catalog.entries.values() {
-            assert!(ids.insert(entry.id.clone()), "duplicate model id: {}", entry.id);
-            assert!(!entry.endpoint.is_empty(), "empty endpoint for {}", entry.id);
-            assert!(entry.id.starts_with("opencode-go/"), "id must be namespaced: {}", entry.id);
+            assert!(
+                ids.insert(entry.id.clone()),
+                "duplicate model id: {}",
+                entry.id
+            );
+            assert!(
+                !entry.endpoint.is_empty(),
+                "empty endpoint for {}",
+                entry.id
+            );
+            assert!(
+                entry.id.starts_with("opencode-go/"),
+                "id must be namespaced: {}",
+                entry.id
+            );
         }
     }
 
     #[test]
     fn catalog_lookup_routes_formats() {
         let catalog = ModelCatalog::builtin();
-        assert_eq!(catalog.lookup("opencode-go/kimi-k3").unwrap().format, WireFormat::OpenAiCompat);
-        assert_eq!(catalog.lookup("opencode-go/grok-4.5").unwrap().format, WireFormat::Responses);
-        assert_eq!(catalog.lookup("opencode-go/minimax-m3").unwrap().format, WireFormat::Anthropic);
+        assert_eq!(
+            catalog.lookup("opencode-go/kimi-k3").unwrap().format,
+            WireFormat::OpenAiCompat
+        );
+        assert_eq!(
+            catalog.lookup("opencode-go/grok-4.5").unwrap().format,
+            WireFormat::Responses
+        );
+        assert_eq!(
+            catalog.lookup("opencode-go/minimax-m3").unwrap().format,
+            WireFormat::Anthropic
+        );
         assert!(catalog.lookup("opencode-go/no-such-model").is_none());
     }
 }

@@ -33,16 +33,36 @@ pub struct ChatMessage {
 
 impl ChatMessage {
     pub fn system(content: impl Into<String>) -> Self {
-        Self { role: Role::System, content: content.into(), tool_call_id: None, tool_calls: vec![] }
+        Self {
+            role: Role::System,
+            content: content.into(),
+            tool_call_id: None,
+            tool_calls: vec![],
+        }
     }
     pub fn user(content: impl Into<String>) -> Self {
-        Self { role: Role::User, content: content.into(), tool_call_id: None, tool_calls: vec![] }
+        Self {
+            role: Role::User,
+            content: content.into(),
+            tool_call_id: None,
+            tool_calls: vec![],
+        }
     }
     pub fn assistant(content: impl Into<String>) -> Self {
-        Self { role: Role::Assistant, content: content.into(), tool_call_id: None, tool_calls: vec![] }
+        Self {
+            role: Role::Assistant,
+            content: content.into(),
+            tool_call_id: None,
+            tool_calls: vec![],
+        }
     }
     pub fn tool_result(tool_call_id: impl Into<String>, content: impl Into<String>) -> Self {
-        Self { role: Role::Tool, content: content.into(), tool_call_id: Some(tool_call_id.into()), tool_calls: vec![] }
+        Self {
+            role: Role::Tool,
+            content: content.into(),
+            tool_call_id: Some(tool_call_id.into()),
+            tool_calls: vec![],
+        }
     }
 }
 
@@ -76,7 +96,12 @@ pub struct ModelOptions {
 
 impl Default for ModelOptions {
     fn default() -> Self {
-        Self { model: "deepseek-chat".into(), temperature: None, max_tokens: None, stream: true }
+        Self {
+            model: "deepseek-chat".into(),
+            temperature: None,
+            max_tokens: None,
+            stream: true,
+        }
     }
 }
 

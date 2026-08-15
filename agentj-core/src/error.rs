@@ -1,5 +1,5 @@
-use std::time::Duration;
 use crate::types::SessionId;
+use std::time::Duration;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ModuleError {
@@ -105,16 +105,26 @@ mod tests {
 
     #[test]
     fn model_error_unknown_model_display() {
-        let err = ModelError::UnknownModel { provider: "opencode-go".into(), model: "opencode-go/nope".into() };
+        let err = ModelError::UnknownModel {
+            provider: "opencode-go".into(),
+            model: "opencode-go/nope".into(),
+        };
         assert!(err.to_string().contains("opencode-go/nope"));
-        assert!(matches!(err, ModelError::UnknownModel { provider, .. } if provider == "opencode-go"));
+        assert!(
+            matches!(err, ModelError::UnknownModel { provider, .. } if provider == "opencode-go")
+        );
     }
 
     #[test]
     fn tool_error_server_unavailable_display() {
-        let err = ToolError::ServerUnavailable { server_id: "srv1".into(), reason: "crashed".into() };
+        let err = ToolError::ServerUnavailable {
+            server_id: "srv1".into(),
+            reason: "crashed".into(),
+        };
         assert!(err.to_string().contains("srv1"));
-        assert!(matches!(err, ToolError::ServerUnavailable { server_id, .. } if server_id == "srv1"));
+        assert!(
+            matches!(err, ToolError::ServerUnavailable { server_id, .. } if server_id == "srv1")
+        );
     }
 
     #[test]
