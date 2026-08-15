@@ -374,6 +374,54 @@ pub trait SessionStore: Send + Sync {
 - **错误语义**：对 Archived/Deleted 会话执行 `append`/`get` → `SessionError::InactiveSession`；对不存在会话 delete → `SessionError::NotFound`
 - **事件预留**：`EventType::SessionArchived / SessionDeleted / SessionExpired`（v0.1 契约，v0.2 Hook 消费）
 
+### 会话持久化与恢复（v0.1 契约，v0.2 实现）
+
+**背景**：`SessionStore` 现有接口只定义会话的内存语义（`InMemoryStore = Mutex<HashMap>`），进程重启/崩溃即全部会话丢失。「Session 生命周期契约」解决数据只增不减的清理问题，但**会话数据跨进程存活的恢复能力从未被设计**——决策 #13 的 shutdown 理由提及"上下文持久化"，却无任何模块承担该职责（悬空引用）。v0.1 固化恢复契约，磁盘后端 v0.2 实现（决策 #16）。
+
+**范围边界**：本设计只覆盖**会话历史持久化与恢复**（消息 + 生命周期状态）。**运行级续跑**（`session/run` 中断后从断点续跑）依赖 AgentLoop 编排状态，属 v0.2+ 独立设计（见遗留问题）；协议 §3 当前明文"`session/run` 不可重试"，改动需走协议版本升级流程。
+
+**契约（v0.1 在「Session 生命周期契约」的 trait 基础上追加，纯加性 + 默认实现，InMemory 可直接落地）**：
+
+```rust
+/// 可序列化的会话快照——持久化/恢复的原子单元
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct SessionSnapshot {
+    pub session_id: SessionId,
+    pub status: SessionStatus,
+    pub messages: Vec<ChatMessage>,
+    pub created_at: u64, // epoch 秒
+    pub updated_at: u64,
+}
+
+pub trait SessionStore: Send + Sync {
+    // 现有 + v0.1 生命周期契约（不变，见「Session 生命周期契约」）
+
+    // v0.1 恢复契约（纯加性；默认实现零破坏，见下方"语义"）
+    /// 导出会话完整状态（消息 + 生命周期状态）。不存在 → SessionError::NotFound
+    fn snapshot(&self, session: &SessionId) -> Result<SessionSnapshot, ModuleError>;
+    /// 恢复会话：不存在则创建，已存在则整体覆盖（messages + status）
+    fn restore(&self, snapshot: &SessionSnapshot) -> Result<(), ModuleError>;
+    /// 导出全部会话快照——内核启动时探测持久化存储（无持久化的存储返回空）
+    fn load_all(&self) -> Result<Vec<SessionSnapshot>, ModuleError>;
+}
+```
+
+**语义**：
+
+- **snapshot = 恢复原子单元**：快照承载消息历史 + 生命周期状态 + 时间戳，一次导出/恢复即会话的完整一致视图。默认实现由 `get()` + `status()` 组装，时间戳取当前时间（v0.1 InMemory 无时间元数据，尽力而为；v0.2 磁盘后端以持久化元数据为准）
+- **restore 覆盖语义**：恢复 = 回到快照时刻的已知状态（消息与状态整体覆盖）；不存在则创建——区别于 `create` 的"新建空会话"
+- **load_all 的两种含义**：InMemory 返回空 = "无持久化、重启即空"；FileBackedStore 返回磁盘全部 = "重启后完整恢复"——同一签名承载两种语义，启动代码无需区分
+- **协议面零改动**：恢复是内核启动时的内部行为（`load_all` + 存储自恢复），对协议消费者透明——CLI/客户端无需新方法即可获得"重启后会话仍在"（同决策 #4.4「能力收敛在 crate 内」哲学）。`session/status` 预留加性字段 `updated_at`（`@since 0.2.0`），使客户端可感知会话最后活动时间
+
+**v0.2 FileBackedStore 实现（agentj-session）**：
+
+- **布局**：每会话一个 JSON 文件 `<session_id>.json` 于 `~/.agentj/sessions/`（目录经 `agentj-config` 可配，默认 XDG data dir 语义）；删除 = 删文件；归档 = 重写 `status` 字段
+- **原子写**：写入 `<id>.json.tmp` → fsync → rename 覆盖，任何时刻崩溃不产生半写文件；temp 残留启动时清理
+- **写入时机**：`append`/`archive`/`delete` 即触发持久化（同步——agent 每轮 append 次数少、快照体积小，全量重写成本可接受）；优雅关闭链 `shutdown()` 时全量 flush 兜底——闭环决策 #13 的"上下文持久化"悬空引用
+- **启动恢复**：构造时扫描目录解析全部文件 → 内存 Map；解析失败的损坏文件跳过 + `tracing` 告警 + 备份为 `.corrupt` 后缀，不阻断启动
+- **session_id 字符集约束**：`SessionId` 为裸 `String`（v0.1 计划），FileBackedStore 写盘前校验字符集（`[A-Za-z0-9_-]`），非法字符 → `SessionError::PersistenceFailed`——文件名安全是磁盘后端的硬约束，v0.1 `create()` 生成方（uuid）天然满足
+- **IO 错误**：读/写/重命名失败 → `SessionError::PersistenceFailed`
+
 ### 工具执行生命周期（v0.1）
 
 **背景**：`ToolError::Timeout` 声明"超时→强制终止"，但机制未定义——内置 bash 等工具 spawn 子进程后，超时终止的是调用本身还是进程树？`kill_on_drop` 仅覆盖 MCP transport，普通工具子进程会成为孤儿（决策 #15）。
@@ -747,6 +795,12 @@ impl ToolRegistry {
 
 **理由**：`ToolError::Timeout` 若只终止调用本身，bash 脚本的孙进程逃逸成孤儿。进程组隔离保证"超时=整树终止"，与 MCP `kill_on_drop` 哲学一致——工具子进程不泄漏是资源生命周期闭环的一部分。
 
+### 16. 会话恢复契约先行（v0.1 固化签名，v0.2 实现磁盘后端）
+
+**决策**：v0.1 在 `SessionStore` 固化 `snapshot`/`restore`/`load_all` 签名（纯加性 + 默认实现），InMemory 可直接落地；v0.2 `FileBackedStore` 实现磁盘持久化（每会话一个 JSON 文件 + 原子写 + 启动扫描恢复）。恢复是内核启动时的内部行为，协议面零改动。
+
+**理由**：会话数据跨进程存活是 agent 工具的基础能力（对标 claude `--resume` / opencode 磁盘会话），且与决策 #14 同为"推迟实现 ≠ 推迟契约"——v0.2 再改 `SessionStore` 接口属破坏性变更（同 M3 教训）。InMemory 默认实现成本几行；v0.2 磁盘后端仅需覆盖三个方法 + 构造扫描，消费方（AgentLoop/内核）零改动。选快照模型（全量重写）而非 JSONL 追加，因为 agent 会话 append 频率低、体积小（KBs~MBs），全量重写换"任意时刻崩溃无半写状态"的简单性更值；JSONL 的追加优化留待会话体积增长到需要 compaction 时再评估。
+
 ## 错误处理
 
 ### 错误类型层次
@@ -834,6 +888,9 @@ pub enum SessionError {
 
     #[error("session '{0}' is inactive (archived or deleted)")]
     InactiveSession(SessionId),
+
+    #[error("session persistence failed: {0}")]
+    PersistenceFailed(String), // v0.1 契约；v0.2 磁盘后端 IO/校验错误（InMemory 不可达）
 }
 ```
 
@@ -845,6 +902,7 @@ pub enum SessionError {
 - **工具层**：执行失败 → 返回错误给模型（让模型自行修复）。超时 → 强制终止并通知模型。MCP server 不可用（断连/崩溃）→ 返回 `ToolError::ServerUnavailable`，工具从注册表移除（`unregister_by_source`），连接进入 `Reconnecting`（v0.2）
 - **子进程层**：MCP 客户端子进程 `kill_on_drop(true)`，transport 被 drop 时终止子进程，避免孤儿进程泄漏；每次调用新建 MCP server 进程为 v0.1 简化，连接复用/长驻 server 属 v0.2（`McpConnectionManager` 状态机，见「MCP 连接生命周期」章节）
 - **工具执行层**：内置工具子进程由 `ToolExecutor` 统一管理（进程组隔离 + 超时 kill + drop 回收），超时返回 `ToolError::Timeout` 且整树终止，见「工具执行生命周期」章节
+- **会话层**：快照/恢复失败 → `SessionError::PersistenceFailed`（v0.2 磁盘后端 IO/损坏错误，v0.1 InMemory 不可达）；对不存在会话 `snapshot` → `NotFound`；损坏的会话文件跳过 + 告警 + 备份 `.corrupt`，不阻断启动，见「会话持久化与恢复」章节
 - **插件层**：manifest 无效/依赖循环/工具冲突 → `PluginError` 对应变体；重载失败回滚旧版本；单插件失败不拖垮 PluginManager 与内核
 - **CLI 层**：SIGINT/SIGTERM 或 stdin EOF 统一触发 `KernelMessage::Shutdown`；优雅关闭链总超时（默认 10s）后强制退出，见「CLI 信号与关闭入口」章节
 
@@ -858,6 +916,8 @@ pub enum SessionError {
 | **插件生命周期测试**（v0.2） | 插件状态机、Disabled/Reloading、依赖拓扑排序、工具冲突 | 测试插件（libloading） | 依赖先 init 逆序 shutdown、重载失败回滚、冲突 Reject |
 | **CLI 信号测试**（v0.1） | Ctrl-C/SIGTERM 触发优雅关闭、stdin EOF 路径 | spawn 二进制 + `child.kill()` 模拟 SIGTERM | 信号后进程退出码 0、优雅关闭链执行（MCP 子进程被回收） |
 | **Session 契约测试**（v0.1） | archive/delete 语义、InactiveSession/NotFound 错误 | InMemory SessionStore | archive 后 run 拒绝、delete 后数据不可达、错误映射正确 |
+| **Session 恢复契约测试**（v0.1） | snapshot/restore/load_all 契约、恢复覆盖语义 | InMemory SessionStore | snapshot 往返一致、restore 覆盖已有会话、load_all 默认空、NotFound 错误 |
+| **会话存储测试**（v0.2） | FileBackedStore 写读往返、原子写、损坏文件、删除 | 临时目录 + 文件断言 | 重启后数据存活、temp 残留清理、损坏文件跳过不拖垮启动、delete 删文件 |
 | **工具执行测试**（v0.1） | 超时杀进程组、孤儿回收 | bash 子进程 spawn 孙进程 | 超时后整树终止、drop 后无残留进程 |
 | **集成测试** | 模块→内核消息通信 | `tests/` 目录，启动迷你内核 | 验证模块间协作 |
 | **模型格式测试**（v0.1） | 三 transport 的流式解析 + tool-call 组装 | wiremock 分别 mock `/v1/chat/completions`、`/v1/responses`、`/v1/messages` 的 SSE | 各格式 delta 正确合并、tool_call 增量组装为完整 `ToolCall`、`[DONE]`/终止事件正确 |
@@ -916,3 +976,4 @@ clap = { version = "4", features = ["derive"] }
 - **opencode-go 模型目录为静态快照**：`models/opencode-go.json` 是提交的静态工件，opencode-go 新增模型需随 AgentJ 版本更新；动态 `/v1/models` 拉取属 v0.2 增强项（v0.1 非目标）
 - **IPC 多连接**（低优先级）：v0.1 stdio 单客户端模型（EOF 即关）简单可靠；v0.3 Web Dashboard 多连接时的连接生命周期再设计
 - **Session 过期回收（expire）**：契约已固化（决策 #14），TTL 扫描回收实现属 v0.2
+- **运行级续跑（run resumption）**：会话历史持久化已设计（决策 #16），但 `session/run` 中断后的续跑（run 状态机 + 检查点 + 协议 resume 语义）属 v0.2+ 独立设计——协议 §3 当前明文"`session/run` 不可重试"，改动需走协议版本升级流程
