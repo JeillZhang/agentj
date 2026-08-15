@@ -25,7 +25,7 @@ AgentJ 的内核架构定位是「前端无关」：CLI、TUI、Web Dashboard、
 | G5 | **资源级复用**：MCP 长驻连接、模型连接、allow_always 会话态、模块生命周期状态在常驻内核内跨客户端共享 |
 | G6 | **权限审批定向**：`$/permissionRequest` 定向发给发起该 run 的客户端（`origin_client` 字段），`permission/respond` 校验发起方归属 |
 | G7 | **协议加性纪律**：全部扩展走「只加不改」（新字段 / 新方法 / 新错误码），v0.1 协议面零破坏 |
-| G8 | **阶段衔接**：Connection 契约 v0.1 固化，多客户端 serve 能力 v0.3 落地，与既有 v0.3 计划（T0/T3/T4）对齐而非另起炉灶 |
+| G8 | **阶段衔接（契约合并）**：Connection 契约作为 v0.1 计划**正式任务**（T13 按 Connection 模型构建），多客户端 serve 能力 v0.3 落地，与既有 v0.3 计划（T0/T3/T4）对齐而非另起炉灶 |
 
 ### 非目标
 
@@ -73,9 +73,9 @@ pub struct ConnectionRegistry {
 | A. 沿 v0.3 T0 骨架扩展 | 改动面最小、与既有计划天然衔接 | stdio 单客户端与 TCP 多连接两套语义并存，连接抽象不对称；权限定向、订阅广播需在 TCP 层另造轮子 | 连接不对称在长期是架构债，多客户端能力是本特性核心，不值得为省重构付出双语义代价 |
 | C. 守护包装器（胶水层） | 协议面零改动、最快交付 | 双进程胶水层 = 双份生命周期 + 双份状态同步；与资源级复用目标矛盾（MCP 连接仍在内核子进程内，共享的是转发层而非内核态） | 架构上是死胡同，运维复杂度高于直接常驻 |
 
-### 契约先行：Connection 落位 v0.1，serve 能力落位 v0.3
+### 契约先行：Connection 合并进 v0.1 计划，serve 能力落位 v0.3
 
-**Connection trait 契约在 v0.1 按此构建**（v0.1 `serve_stdio` 直接实现为 `StdioConnection` + 统一 serve 循环），**多客户端 serve 能力在 v0.3 落地**（新增 `TcpConnection`）。符合项目「推迟实现 ≠ 推迟契约」哲学（决策 #14/#16 先例）——若 v0.1 先写死 read_line 循环再 v0.3 重构，等于为推迟的功能预付重写成本。
+**Connection trait 契约作为 v0.1 计划正式任务**（v0.1 `serve_stdio` 按 `StdioConnection` + 统一 serve 循环构建，不写死 read_line），**多客户端 serve 能力在 v0.3 落地**（新增 `TcpConnection` + 订阅/定向/错误码）。符合项目「推迟实现 ≠ 推迟契约」哲学（决策 #14/#16 先例）——若 v0.1 先写死 read_line 循环再 v0.3 重构，等于为推迟的功能预付重写成本。v0.1 计划尚未执行，契约合并零重构成本。
 
 ## 架构
 
@@ -181,9 +181,9 @@ flowchart LR
 
 **理由**：多客户端共享是本特性核心，两套连接语义（stdio 单客户端 vs TCP 多连接）并存是长期架构债；统一抽象让未来 WebSocket 只需新增一个 `Connection` 实现（方法面零改动，呼应 IPC 设计「消息内容传输无关」原则）。生态先例：Codex `app-server` 的 JSON-RPC 服务同样对 stdio/WebSocket/Unix socket 统一暴露。
 
-### 2. 契约先行：Connection 落位 v0.1，serve 能力落位 v0.3
+### 2. 契约合并：Connection 进 v0.1 计划，serve 能力落位 v0.3
 
-**决策**：v0.1 的 `serve_stdio` 按 `StdioConnection` + 统一 serve 循环实现；v0.3 新增 `TcpConnection` 与多客户端语义。不写死 read_line 循环。
+**决策**：Connection 契约作为 **v0.1 计划正式任务**（T13 `serve_stdio` 按 `StdioConnection` + 统一 serve 循环构建，不写死 read_line）；v0.3 新增 `TcpConnection` 与多客户端语义。
 
 **理由**：符合项目「推迟实现 ≠ 推迟契约」哲学（决策 #14/#16 先例）。若 v0.1 先写死、v0.3 再重构，等于为推迟的功能预付重写成本；契约先行则 v0.3 只是「新加一个 Connection 实现 + 注册表逻辑」，v0.1 代码零重写。
 
@@ -231,7 +231,7 @@ flowchart LR
 
 ### 9. 与既有计划的衔接
 
-**决策**：本设计对齐 v0.3 计划（T0 TCP 多连接 / T3 Web Dashboard / T4 CLI 接入），将 v0.3 计划遗留的 design-pending（鉴权/限流/最大连接数）定稿；Connection 契约回填 v0.1 计划（T13/T14 `serve_stdio` 重构）。
+**决策**：Connection 契约作为**正式任务合并进 v0.1 计划**（T13 按 `StdioConnection` + `ConnectionRegistry` 构建，非 read_line 循环）；多客户端 serve 能力（`TcpConnection` + 订阅/定向/错误码）对齐 v0.3 计划（T0/T3/T4），并将 v0.3 计划遗留的 design-pending（鉴权/限流/最大连接数）定稿。
 
 **理由**：v0.3 计划 T0 已写「单共享 IpcServer 服务所有连接」骨架，本设计将其从「TCP 专属」升级为「统一传输抽象」，方向一致、避免另起炉灶。v0.1 计划需插入 Connection 契约任务（见「依赖」）。
 
@@ -274,13 +274,13 @@ flowchart LR
 
 | 阶段 | 变更 | 依赖 |
 |------|------|------|
-| v0.1 | `agentj-ipc` T13/T14：`serve_stdio` 重构为 `StdioConnection` + 统一 serve 循环；`ConnectionRegistry`（仅 stdio 单连接路径可用） | v0.1 计划执行时插入 |
+| v0.1 | `agentj-ipc` T13/T14（**正式任务，契约合并**）：`serve_stdio` 按 `StdioConnection` + 统一 serve 循环构建；`ConnectionRegistry`（仅 stdio 单连接路径可用） | v0.1 计划执行 |
 | v0.2 | FileBackedStore（会话磁盘持久化地基，已设计）、`McpConnectionManager`（长驻连接，资源复用依赖） | v0.2 计划 |
 | v0.3 | `TcpConnection` + `serve --port` / `run --attach`；协议加性扩展（multi_client / subscribe / permission 定向 / 新错误码）；`--token` / `--max-connections`；Web Dashboard（T3）消费 | 本设计 + v0.3 计划 T0/T3/T4 |
 
 ### 前置条件 / 阻塞项
 
-- v0.1 计划需在 `agentj-ipc`（T13/T14）插入 Connection 契约任务——若 v0.1 已按 read_line 实现，需回溯重构（建议 v0.1 尚未执行时插入）
+- v0.1 计划 T13 按 Connection 契约构建（**契约合并**——v0.1 计划尚未执行，零重构成本；若已按 read_line 实现则需回溯重构）
 - `docs/specs/ipc-protocol.md` 需同步新增：`session/subscribe`/`session/unsubscribe` 方法节、`multi_client`/`connection_id` 能力字段、`origin_client` 字段、`-32805`/`-32806` 错误码、`shutdown` 多连接语义细化
 - `agentj-protocol` 需新增 wire 类型 + schema 重生成 + 版本 bump（加性，同步 TS 绑定测试）
 - Web Dashboard（v0.3 T3）依赖本设计的 TCP 常驻能力作为协议入口
@@ -301,5 +301,5 @@ flowchart LR
 | 2 | 部署形态 | **A 按需常驻**（`agentj serve`，无 OS 级守护） |
 | 3 | 运行级接管 | **A 广播订阅 + 单发起方控制** |
 | 4 | 审批路由 | **A 定向发给发起方** |
-| 5 | 阶段归属 | **A 独立阶段，对齐 v0.3**（Connection 契约 v0.1 固化） |
+| 5 | 阶段归属 | **A' 契约合并进 v0.1**（Connection 契约作为 v0.1 T13 正式任务，TCP 常驻保留 v0.3） |
 | 6 | 架构方案 | **B 统一传输抽象**（Connection trait） |
