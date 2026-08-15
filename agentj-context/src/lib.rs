@@ -54,8 +54,6 @@ impl ContextPipelineTrait for ContextPipeline {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agentj_core::module::ContextPipeline as _;
-    use agentj_core::types::*;
 
     #[test]
     fn assemble_builds_system_prompt_and_history() {

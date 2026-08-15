@@ -113,7 +113,6 @@ impl ConfigProvider for Config {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
 
     #[test]
     fn loads_default_config() {
