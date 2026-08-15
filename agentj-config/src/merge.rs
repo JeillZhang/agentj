@@ -1,7 +1,32 @@
+use crate::AgentJConfig;
+
+/// Overlay `file` onto `base`: non-empty file fields win, otherwise base stays.
+pub fn merge_config(base: AgentJConfig, file: AgentJConfig) -> AgentJConfig {
+    let mut config = base;
+    if !file.model.providers.is_empty() {
+        config.model.providers = file.model.providers;
+    }
+    if !file.model.provider.is_empty() && file.model.provider != "deepseek" {
+        config.model.provider = file.model.provider;
+    }
+    if !file.model.default_model.is_empty() {
+        config.model.default_model = file.model.default_model;
+    }
+    config
+}
+
+/// Apply environment overrides (AGENTJ_* prefix) onto config — env always wins.
+pub fn apply_env(mut config: AgentJConfig) -> AgentJConfig {
+    if let Ok(val) = std::env::var("AGENTJ_MODEL_PROVIDER") {
+        config.model.provider = val;
+    }
+    config
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{AgentJConfig, ModelSection};
+    use crate::{AgentJConfig, ModelProviderConfig, ModelSection};
 
     #[test]
     fn merge_precedence() {
