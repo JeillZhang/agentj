@@ -1,16 +1,28 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
-use agentj_core::error::ModuleError;
-use agentj_core::module::SessionStore;
+use agentj_core::error::{ModuleError, SessionError};
+use agentj_core::module::{SessionStatus, SessionStore};
 use agentj_core::types::{ChatMessage, SessionId};
 
 pub struct InMemoryStore {
     sessions: Mutex<HashMap<SessionId, Vec<ChatMessage>>>,
+    statuses: Mutex<HashMap<SessionId, SessionStatus>>, // v0.1 lifecycle contract
 }
 
 impl InMemoryStore {
     pub fn new() -> Self {
-        Self { sessions: Mutex::new(HashMap::new()) }
+        Self {
+            sessions: Mutex::new(HashMap::new()),
+            statuses: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn require_active(&self, session: &SessionId) -> Result<(), ModuleError> {
+        let statuses = self.statuses.lock().unwrap();
+        match statuses.get(session) {
+            Some(SessionStatus::Active) | None => Ok(()),
+            _ => Err(ModuleError::Session(SessionError::InactiveSession(session.clone()))),
+        }
     }
 }
 
@@ -22,16 +34,19 @@ impl SessionStore for InMemoryStore {
     fn create(&self) -> Result<SessionId, ModuleError> {
         let id = uuid::Uuid::new_v4().to_string();
         self.sessions.lock().unwrap().insert(id.clone(), vec![]);
+        self.statuses.lock().unwrap().insert(id.clone(), SessionStatus::Active);
         Ok(id)
     }
 
     fn append(&self, session: &SessionId, message: ChatMessage) -> Result<(), ModuleError> {
         let mut map = self.sessions.lock().unwrap();
+        self.require_active(session)?; // inactive → SessionError::InactiveSession
         map.entry(session.clone()).or_default().push(message);
         Ok(())
     }
 
     fn get(&self, session: &SessionId) -> Result<Vec<ChatMessage>, ModuleError> {
+        self.require_active(session)?;
         Ok(self.sessions.lock().unwrap().get(session).cloned().unwrap_or_default())
     }
 
@@ -41,6 +56,32 @@ impl SessionStore for InMemoryStore {
         let total_chars: usize = messages.iter().map(|m| m.content.len()).sum();
         Ok(total_chars / 4)
     }
+
+    // ---- v0.1 lifecycle contract (design §Session 生命周期契约) ----
+
+    fn status(&self, session: &SessionId) -> Result<SessionStatus, ModuleError> {
+        let statuses = self.statuses.lock().unwrap();
+        statuses.get(session).copied().ok_or(ModuleError::Session(SessionError::NotFound(session.clone())))
+    }
+
+    fn archive(&self, session: &SessionId) -> Result<(), ModuleError> {
+        let mut statuses = self.statuses.lock().unwrap();
+        if !statuses.contains_key(session) {
+            return Err(ModuleError::Session(SessionError::NotFound(session.clone())));
+        }
+        statuses.insert(session.clone(), SessionStatus::Archived);
+        Ok(())
+    }
+
+    fn delete(&self, session: &SessionId) -> Result<(), ModuleError> {
+        let mut statuses = self.statuses.lock().unwrap();
+        if !statuses.contains_key(session) {
+            return Err(ModuleError::Session(SessionError::NotFound(session.clone())));
+        }
+        statuses.insert(session.clone(), SessionStatus::Deleted);
+        self.sessions.lock().unwrap().remove(session); // hard delete: data gone
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -48,7 +89,7 @@ mod tests {
     use super::*;
     use agentj_core::error::{ModuleError, SessionError};
     use agentj_core::module::{SessionStatus, SessionStore};
-    use agentj_core::types::{ChatMessage, Role, SessionId};
+    use agentj_core::types::{ChatMessage, Role};
 
     #[test]
     fn create_and_append_session() -> Result<(), ModuleError> {
@@ -99,6 +140,7 @@ mod tests {
 
         store.delete(&sid)?;
         assert_eq!(store.status(&sid)?, SessionStatus::Deleted);
+        Ok(())
     }
 
     #[test]

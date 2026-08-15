@@ -1,4 +1,5 @@
 use std::time::Duration;
+use crate::types::SessionId;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ModuleError {
@@ -8,6 +9,18 @@ pub enum ModuleError {
     Shutdown(String),
     #[error("handler error: {0}")]
     Handler(String),
+    #[error("session error: {0}")]
+    Session(#[from] SessionError),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum SessionError {
+    #[error("session '{0}' not found")]
+    NotFound(SessionId),
+    #[error("session '{0}' is inactive (archived or deleted)")]
+    InactiveSession(SessionId),
+    #[error("session persistence failed: {0}")]
+    PersistenceFailed(String), // v0.1 contract, reserved for v0.2 disk backend (design #16)
 }
 
 #[derive(Debug, thiserror::Error)]
