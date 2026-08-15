@@ -10,7 +10,7 @@ Started: 2026-08-15
 |------|-------|--------|--------|
 | T0 | Scaffold the Cargo workspace | ✅ done (repo already scaffolded, gates pass) | n/a (verify-only) |
 | T1 | Create the agentj-core crate skeleton | ✅ done | PASS |
-| T2 | Add shared types and error enums | pending | — |
+| T2 | Add shared types and error enums | ✅ done | PASS |
 | T3 | Add module traits, registries, and KernelContext | pending | — |
 | T4 | Add the Kernel module registry, event loop, and lifecycle state machine | pending | — |
 | T5 | Add the agentj-config crate with layered config merge | pending | — |
