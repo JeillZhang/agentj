@@ -280,7 +280,7 @@ flowchart LR
 
 ### 前置条件 / 阻塞项
 
-- v0.1 计划 T13 按 Connection 契约构建（**契约合并**——v0.1 计划尚未执行，零重构成本；若已按 read_line 实现则需回溯重构）
+- v0.1 计划 T13/T14 已按 Connection 契约执行完毕（✅ 2026-08-16：`agentj-ipc` `StdioConnection` + 统一 serve 循环 + `ConnectionRegistry` 落地；`agentj-cli` run/serve 信号处理经 e2e 验证）
 - `docs/specs/ipc-protocol.md` 需同步新增：`session/subscribe`/`session/unsubscribe` 方法节、`multi_client`/`connection_id` 能力字段、`origin_client` 字段、`-32805`/`-32806` 错误码、`shutdown` 多连接语义细化
 - `agentj-protocol` 需新增 wire 类型 + schema 重生成 + 版本 bump（加性，同步 TS 绑定测试）
 - Web Dashboard（v0.3 T3）依赖本设计的 TCP 常驻能力作为协议入口
