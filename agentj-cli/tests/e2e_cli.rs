@@ -19,13 +19,24 @@ fn e2e_serve_responds_to_jsonrpc_session_new() {
 
     {
         let mut stdin = child.stdin.take().unwrap();
-        writeln!(stdin, r#"{{"jsonrpc":"2.0","id":1,"method":"session/new"}}"#).unwrap();
+        writeln!(
+            stdin,
+            r#"{{"jsonrpc":"2.0","id":1,"method":"session/new"}}"#
+        )
+        .unwrap();
     } // drop closes stdin → serve_stdio exits on EOF → kernel graceful shutdown
 
     let output = child.wait_with_output().unwrap();
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains(r#""session_id""#), "expected session_id in output, got: {stdout}");
+    assert!(
+        stdout.contains(r#""session_id""#),
+        "expected session_id in output, got: {stdout}"
+    );
 }
 
 // design #13: SIGTERM must trigger the same graceful shutdown chain as stdin EOF.
@@ -48,7 +59,11 @@ fn e2e_serve_exits_gracefully_on_sigterm() {
 
     // stdin stays OPEN — only the signal should end the process.
     let mut stdin = child.stdin.take().unwrap();
-    writeln!(stdin, r#"{{"jsonrpc":"2.0","id":1,"method":"session/new"}}"#).unwrap();
+    writeln!(
+        stdin,
+        r#"{{"jsonrpc":"2.0","id":1,"method":"session/new"}}"#
+    )
+    .unwrap();
     std::thread::sleep(std::time::Duration::from_millis(300)); // let serve loop start
 
     // Send SIGTERM (kill -TERM). unsafe: raw pid syscall — safe here, child is ours.
@@ -57,7 +72,14 @@ fn e2e_serve_exits_gracefully_on_sigterm() {
     }
 
     let output = child.wait_with_output().unwrap();
-    assert!(output.status.success(), "expected graceful exit 0, got: {:?}", output.status);
+    assert!(
+        output.status.success(),
+        "expected graceful exit 0, got: {:?}",
+        output.status
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains(r#""session_id""#), "expected session_id in output, got: {stdout}");
+    assert!(
+        stdout.contains(r#""session_id""#),
+        "expected session_id in output, got: {stdout}"
+    );
 }
