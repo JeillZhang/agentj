@@ -1,3 +1,260 @@
+use std::collections::HashMap;
+use std::sync::Arc;
+use async_trait::async_trait;
+use futures::stream::BoxStream;
+use parking_lot::RwLock;
+use crate::error::{ModuleError, ModelError, ToolError};
+use crate::types::*;
+
+// ---- Traits ----
+
+pub trait Tool: Send + Sync {
+    fn name(&self) -> &str;
+    fn description(&self) -> &str;
+    fn input_schema(&self) -> serde_json::Value;
+    fn execute(&self, input: serde_json::Value) -> Result<serde_json::Value, ToolError>;
+}
+
+#[async_trait]
+pub trait ModelProvider: Send + Sync {
+    async fn chat_stream(
+        &self,
+        messages: Vec<ChatMessage>,
+        tools: Vec<ToolDefinition>,
+        options: ModelOptions,
+    ) -> Result<BoxStream<'static, Result<ModelEvent, ModelError>>, ModelError>;
+
+    async fn chat(
+        &self,
+        messages: Vec<ChatMessage>,
+        options: ModelOptions,
+    ) -> Result<ChatResponse, ModelError>;
+}
+
+/// Assembles the request context and folds tool results back into history.
+/// Defined in core so `AgentLoop` stays trait-only; implemented by domain crates.
+pub trait ContextPipeline: Send + Sync {
+    fn assemble(
+        &self,
+        system: &str,
+        history: &[ChatMessage],
+        tool_results: &[(ToolCall, String)],
+    ) -> Vec<ChatMessage>;
+    fn reflux(&self, history: &mut Vec<ChatMessage>, tool_call: &ToolCall, result: String);
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum EventType {
+    PreRequest,
+    PostResponse,
+    Shutdown,
+    ToolStart(String),
+    ToolEnd(String),
+    // 生命周期事件（v0.1 契约先行，v0.2 Hook System 消费）
+    ModuleLoaded(ModuleId),
+    ModuleFailed(ModuleId),
+    ModuleStopped(ModuleId),
+    // Session 生命周期事件（v0.1 契约先行，v0.2 消费；见设计 §Session 生命周期契约）
+    SessionArchived(SessionId),
+    SessionDeleted(SessionId),
+    SessionExpired(SessionId),
+}
+
+pub trait EventHandler: Send + Sync {
+    fn on_event(&self, event: &EventType, ctx: &KernelContext);
+}
+
+#[derive(Debug, Clone)]
+pub struct ModuleMetadata {
+    pub id: ModuleId,
+    pub name: String,
+    pub version: String,
+    pub description: String,
+    pub author: String,
+}
+
+/// Lifecycle state of a registered module. Tracked by the Kernel registry (NOT by
+/// the module itself) — state belongs to the orchestrator (see design §模块生命周期状态机).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModuleState {
+    Unloaded,
+    Initializing,
+    Ready,
+    Stopping,
+    Stopped,
+    Failed,
+}
+
+// ---- Module & KernelModule ----
+
+pub trait Module: Send + Sync {
+    fn id(&self) -> ModuleId;
+    fn metadata(&self) -> ModuleMetadata;
+    fn init(&mut self, ctx: &KernelContext, register: &mut ModuleRegister) -> Result<(), ModuleError>;
+    fn shutdown(&mut self) -> Result<(), ModuleError>;
+}
+
+pub trait KernelModule: Module {
+    fn handle(&mut self, msg: &KernelMessage) -> Result<KernelResponse, ModuleError>;
+}
+
+// ---- Registries ----
+
+pub struct ModuleRegister {
+    pub tools: Arc<ToolRegistry>,
+    pub events: Vec<(EventType, Box<dyn EventHandler>)>,
+    pub providers: Arc<ProviderRegistry>,
+}
+
+impl ModuleRegister {
+    pub fn new(tools: Arc<ToolRegistry>, providers: Arc<ProviderRegistry>) -> Self {
+        Self { tools, events: vec![], providers }
+    }
+
+    pub fn register_tool(&mut self, tool: Arc<dyn Tool>) -> Result<(), ModuleError> {
+        self.tools.register(tool);
+        Ok(())
+    }
+
+    pub fn on_event(&mut self, event: EventType, handler: Box<dyn EventHandler>) -> Result<(), ModuleError> {
+        self.events.push((event, handler));
+        Ok(())
+    }
+
+    pub fn register_provider(&mut self, provider: Arc<dyn ModelProvider>) -> Result<(), ModuleError> {
+        self.providers.register("default".into(), provider);
+        Ok(())
+    }
+}
+
+pub struct ToolRegistry {
+    tools: RwLock<HashMap<String, Arc<dyn Tool>>>,
+}
+
+impl ToolRegistry {
+    pub fn new() -> Self {
+        Self { tools: RwLock::new(HashMap::new()) }
+    }
+
+    pub fn register(&self, tool: Arc<dyn Tool>) {
+        self.tools.write().insert(tool.name().to_string(), tool);
+    }
+
+    pub fn get(&self, name: &str) -> Option<Arc<dyn Tool>> {
+        self.tools.read().get(name).cloned()
+    }
+
+    pub fn definitions(&self) -> Vec<ToolDefinition> {
+        self.tools.read().values().map(|t| ToolDefinition {
+            name: t.name().into(),
+            description: t.description().into(),
+            input_schema: t.input_schema(),
+        }).collect()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.tools.read().is_empty()
+    }
+}
+
+impl Default for ToolRegistry {
+    fn default() -> Self { Self::new() }
+}
+
+pub struct ProviderRegistry {
+    providers: RwLock<HashMap<String, Arc<dyn ModelProvider>>>,
+    default: RwLock<Option<String>>,
+}
+
+impl ProviderRegistry {
+    pub fn new() -> Self {
+        Self { providers: RwLock::new(HashMap::new()), default: RwLock::new(None) }
+    }
+
+    pub fn register(&self, name: String, provider: Arc<dyn ModelProvider>) {
+        self.providers.write().insert(name.clone(), provider);
+        if self.default.read().is_none() {
+            *self.default.write() = Some(name);
+        }
+    }
+
+    pub fn get_default(&self) -> Option<Arc<dyn ModelProvider>> {
+        self.default.read().as_ref()
+            .and_then(|name| self.providers.read().get(name).cloned())
+    }
+
+    pub fn list(&self) -> Vec<String> {
+        self.providers.read().keys().cloned().collect()
+    }
+}
+
+impl Default for ProviderRegistry {
+    fn default() -> Self { Self::new() }
+}
+
+// ---- Session & Config ----
+
+/// Session lifecycle status. Contract-first (v0.1 signature, v0.2 semantics) —
+/// see design §Session 生命周期契约 (decision #14).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionStatus { Active, Archived, Deleted }
+
+pub trait SessionStore: Send + Sync {
+    fn create(&self) -> Result<SessionId, ModuleError>;
+    fn append(&self, session: &SessionId, message: ChatMessage) -> Result<(), ModuleError>;
+    fn get(&self, session: &SessionId) -> Result<Vec<ChatMessage>, ModuleError>;
+    fn estimate_tokens(&self, session: &SessionId) -> Result<usize, ModuleError>;
+
+    // v0.1 contract-first: default impls keep existing stores compiling;
+    // real archive/delete semantics land in T17 (agentj-session).
+    fn status(&self, _session: &SessionId) -> Result<SessionStatus, ModuleError> {
+        Ok(SessionStatus::Active)
+    }
+    fn archive(&self, _session: &SessionId) -> Result<(), ModuleError> {
+        Err(ModuleError::Handler("archive not supported".into()))
+    }
+    fn delete(&self, _session: &SessionId) -> Result<(), ModuleError> {
+        Err(ModuleError::Handler("delete not supported".into()))
+    }
+}
+
+pub trait ConfigProvider: Send + Sync {
+    fn get_str(&self, key: &str) -> Option<String>;
+    fn get_int(&self, key: &str) -> Option<i64>;
+    fn providers(&self) -> Vec<(String, String)>; // Vec<(name, base_url)>
+}
+
+#[derive(Clone)]
+pub struct KernelContext {
+    pub session: Arc<dyn SessionStore>,
+    pub tools: Arc<ToolRegistry>,
+    pub providers: Arc<ProviderRegistry>,
+    pub config: Arc<dyn ConfigProvider>,
+}
+
+// 预留访问器方法（v0.2+ Kernel 服务定位通道的契约，纯加性，零破坏）：
+// 未来方法内部可从"硬编码字段"换成 ModuleResolver::resolve()，模块代码零改动。
+impl KernelContext {
+    pub fn session(&self) -> Arc<dyn SessionStore> { self.session.clone() }
+    pub fn tools(&self) -> Arc<ToolRegistry> { self.tools.clone() }
+    pub fn providers(&self) -> Arc<ProviderRegistry> { self.providers.clone() }
+    pub fn config(&self) -> Arc<dyn ConfigProvider> { self.config.clone() }
+}
+
+// ---- Kernel Message ----
+
+#[derive(Debug, Clone)]
+pub enum KernelMessage {
+    UserRequest { session_id: SessionId, content: String, attachments: Vec<Attachment> },
+    Shutdown,
+}
+
+#[derive(Debug, Clone)]
+pub enum KernelResponse {
+    Handled,
+    Streaming(Vec<String>),
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
