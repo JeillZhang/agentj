@@ -101,6 +101,35 @@ struct JsonRpcError {
     message: String,
 }
 
+/// Method-dispatch failure carrying the JSON-RPC 2.0 standard error code
+/// (design 决策 #4). `handle_request` echoes the request `id` alongside this
+/// code so every error path round-trips the correlation id.
+struct DispatchError {
+    code: i32,
+    message: String,
+}
+
+impl DispatchError {
+    fn invalid_params(msg: impl Into<String>) -> Self {
+        Self {
+            code: -32602,
+            message: msg.into(),
+        }
+    }
+    fn method_not_found(method: &str) -> Self {
+        Self {
+            code: -32601,
+            message: format!("method not found: {method}"),
+        }
+    }
+    fn internal(msg: impl Into<String>) -> Self {
+        Self {
+            code: -32603,
+            message: msg.into(),
+        }
+    }
+}
+
 pub struct IpcServer {
     agent_loop: Arc<AgentLoop>,
     kernel: Kernel,
@@ -161,6 +190,8 @@ impl IpcServer {
     }
 
     /// Handle a single JSON-RPC request, returning a JSON-RPC response string.
+    /// Every error path echoes the request `id` (JSON-RPC 2.0 §5) with the
+    /// semantically correct standard code, never falling through to `serve_stdio`.
     pub async fn handle_request(&self, raw: &str) -> Result<String, IpcError> {
         let req: JsonRpcRequest = match serde_json::from_str(raw) {
             Ok(r) => r,
@@ -179,72 +210,71 @@ impl IpcServer {
         };
 
         let result = match req.method.as_str() {
-            "session/new" => {
-                let sid = self
-                    .agent_loop
-                    .create_session()
-                    .map_err(|e| IpcError::InvalidRequest(e.to_string()))?;
-                Ok(serde_json::json!({ "session_id": sid }))
-            }
-            "session/run" => {
-                let params = req
-                    .params
-                    .ok_or_else(|| IpcError::InvalidRequest("missing params".into()))?;
-                let sid = params["session_id"]
-                    .as_str()
-                    .ok_or_else(|| IpcError::InvalidRequest("missing session_id".into()))?;
-                let content = params["content"].as_str().unwrap_or("");
-                let mut rx = self.agent_loop.run_turn_stream(&sid.to_string(), content);
-                let mut text = String::new();
-                let mut tc_list = vec![];
-                while let Some(event) = rx.recv().await {
-                    match event {
-                        AgentEvent::Delta(d) => text.push_str(&d),
-                        AgentEvent::Done { tool_calls, .. } => {
-                            tc_list = tool_calls;
-                            break;
-                        }
-                        AgentEvent::Error(e) => return Err(IpcError::InvalidRequest(e)),
-                        _ => {}
-                    }
-                }
-                Ok(serde_json::json!({ "response": text, "tool_calls": tc_list }))
-            }
-            "shutdown" => {
-                // real shutdown: signal the kernel, graceful teardown happens in serve loop
-                self.signal_shutdown()?;
-                self.shutdown_requested.store(true, Ordering::SeqCst);
-                Ok(serde_json::json!({ "status": "ok" }))
-            }
-            _ => Err(IpcError::InvalidRequest(format!(
-                "unknown method: {}",
-                req.method
-            ))),
+            "session/new" => self.dispatch_session_new(),
+            "session/run" => self.dispatch_session_run(&req).await,
+            "shutdown" => self.dispatch_shutdown(),
+            other => Err(DispatchError::method_not_found(other)),
         };
 
-        match result {
-            Ok(r) => {
-                let resp = JsonRpcResponse {
-                    jsonrpc: "2.0".into(),
-                    id: req.id,
-                    result: Some(r),
-                    error: None,
-                };
-                Ok(serde_json::to_string(&resp)?)
-            }
-            Err(e) => {
-                let resp = JsonRpcResponse {
-                    jsonrpc: "2.0".into(),
-                    id: req.id,
-                    result: None,
-                    error: Some(JsonRpcError {
-                        code: -32601,
-                        message: e.to_string(),
-                    }),
-                };
-                Ok(serde_json::to_string(&resp)?)
+        let resp = match result {
+            Ok(r) => JsonRpcResponse {
+                jsonrpc: "2.0".into(),
+                id: req.id,
+                result: Some(r),
+                error: None,
+            },
+            Err(e) => JsonRpcResponse {
+                jsonrpc: "2.0".into(),
+                id: req.id,
+                result: None,
+                error: Some(JsonRpcError {
+                    code: e.code,
+                    message: e.message,
+                }),
+            },
+        };
+        Ok(serde_json::to_string(&resp)?)
+    }
+
+    fn dispatch_session_new(&self) -> Result<Value, DispatchError> {
+        let sid = self
+            .agent_loop
+            .create_session()
+            .map_err(|e| DispatchError::internal(e.to_string()))?;
+        Ok(serde_json::json!({ "session_id": sid }))
+    }
+
+    async fn dispatch_session_run(&self, req: &JsonRpcRequest) -> Result<Value, DispatchError> {
+        let params = req
+            .params
+            .as_ref()
+            .ok_or_else(|| DispatchError::invalid_params("missing params"))?;
+        let sid = params["session_id"]
+            .as_str()
+            .ok_or_else(|| DispatchError::invalid_params("missing session_id"))?;
+        let content = params["content"].as_str().unwrap_or("");
+        let mut rx = self.agent_loop.run_turn_stream(&sid.to_string(), content);
+        let mut text = String::new();
+        let mut tc_list = vec![];
+        while let Some(event) = rx.recv().await {
+            match event {
+                AgentEvent::Delta(d) => text.push_str(&d),
+                AgentEvent::Done { tool_calls, .. } => {
+                    tc_list = tool_calls;
+                    break;
+                }
+                AgentEvent::Error(e) => return Err(DispatchError::internal(e)),
+                _ => {}
             }
         }
+        Ok(serde_json::json!({ "response": text, "tool_calls": tc_list }))
+    }
+
+    fn dispatch_shutdown(&self) -> Result<Value, DispatchError> {
+        self.signal_shutdown()
+            .map_err(|e| DispatchError::internal(e.to_string()))?;
+        self.shutdown_requested.store(true, Ordering::SeqCst);
+        Ok(serde_json::json!({ "status": "ok" }))
     }
 
     /// Run the server in stdio mode via the unified Connection serve loop (design 决策 #2).
@@ -450,6 +480,46 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
         assert!(v["error"].is_object());
         assert_eq!(v["error"]["code"], -32601); // Method not found
+        assert_eq!(v["id"], 3, "error response must echo request id");
+    }
+
+    #[tokio::test]
+    async fn session_run_missing_params_echoes_id_and_invalid_params() {
+        let server = IpcServer::new(stub_agent_loop(), Kernel::new());
+        let resp = server
+            .handle_request(r#"{"jsonrpc":"2.0","id":10,"method":"session/run"}"#)
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(
+            v["id"], 10,
+            "error response must echo request id, got: {resp}"
+        );
+        assert_eq!(
+            v["error"]["code"], -32602,
+            "missing params is Invalid params, got: {resp}"
+        );
+        assert!(v["error"]["message"].is_string());
+    }
+
+    #[tokio::test]
+    async fn session_run_missing_session_id_echoes_id_and_invalid_params() {
+        let server = IpcServer::new(stub_agent_loop(), Kernel::new());
+        let resp = server
+            .handle_request(
+                r#"{"jsonrpc":"2.0","id":7,"method":"session/run","params":{"content":"hi"}}"#,
+            )
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(
+            v["id"], 7,
+            "error response must echo request id, got: {resp}"
+        );
+        assert_eq!(
+            v["error"]["code"], -32602,
+            "missing session_id is Invalid params, got: {resp}"
+        );
     }
 
     #[tokio::test]
