@@ -1,0 +1,9 @@
+[package]
+name = "agentj-context"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+agentj-core = { path = "../agentj-core" }
+serde_json = "1"

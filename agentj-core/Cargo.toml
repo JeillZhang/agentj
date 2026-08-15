@@ -1,0 +1,22 @@
+[package]
+name = "agentj-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow = "1.0.104"
+async-trait = "0.1"
+futures = "0.3"
+parking_lot = "0.12"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["sync", "rt", "macros", "time", "io-util", "fs", "process"] }
+tracing = "0.1"
+
+[dev-dependencies]
+agentj-session = { path = "../agentj-session" }
+agentj-model = { path = "../agentj-model" }
+agentj-tools = { path = "../agentj-tools" }
+agentj-context = { path = "../agentj-context" }
