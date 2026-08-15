@@ -1,3 +1,48 @@
+use std::collections::HashMap;
+use std::sync::Mutex;
+use agentj_core::error::ModuleError;
+use agentj_core::module::SessionStore;
+use agentj_core::types::{ChatMessage, SessionId};
+
+pub struct InMemoryStore {
+    sessions: Mutex<HashMap<SessionId, Vec<ChatMessage>>>,
+}
+
+impl InMemoryStore {
+    pub fn new() -> Self {
+        Self { sessions: Mutex::new(HashMap::new()) }
+    }
+}
+
+impl Default for InMemoryStore {
+    fn default() -> Self { Self::new() }
+}
+
+impl SessionStore for InMemoryStore {
+    fn create(&self) -> Result<SessionId, ModuleError> {
+        let id = uuid::Uuid::new_v4().to_string();
+        self.sessions.lock().unwrap().insert(id.clone(), vec![]);
+        Ok(id)
+    }
+
+    fn append(&self, session: &SessionId, message: ChatMessage) -> Result<(), ModuleError> {
+        let mut map = self.sessions.lock().unwrap();
+        map.entry(session.clone()).or_default().push(message);
+        Ok(())
+    }
+
+    fn get(&self, session: &SessionId) -> Result<Vec<ChatMessage>, ModuleError> {
+        Ok(self.sessions.lock().unwrap().get(session).cloned().unwrap_or_default())
+    }
+
+    fn estimate_tokens(&self, session: &SessionId) -> Result<usize, ModuleError> {
+        let messages = self.get(session)?;
+        // v0.1: approximate token counting — ~4 chars per token for English text
+        let total_chars: usize = messages.iter().map(|m| m.content.len()).sum();
+        Ok(total_chars / 4)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
