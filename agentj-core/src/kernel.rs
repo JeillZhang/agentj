@@ -1,3 +1,191 @@
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+use tokio::task::JoinHandle;
+use crate::error::KernelError;
+use crate::module::{KernelContext, KernelMessage, KernelModule, ModuleRegister, ModuleState};
+
+const CHANNEL_SIZE: usize = 128;
+const DEFAULT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
+const DEFAULT_OVERALL_TIMEOUT: Duration = Duration::from_secs(10); // design #13 CLI 信号兜底
+
+#[derive(Clone)]
+pub struct KernelSender {
+    tx: tokio::sync::mpsc::Sender<KernelMessage>,
+}
+
+impl KernelSender {
+    pub fn send(&self, msg: KernelMessage) -> Result<(), KernelError> {
+        self.tx.try_send(msg).map_err(|e| KernelError::MessageRouteFailed {
+            msg: format!("{:?}", e.into_inner()),
+            reason: "channel closed or full".into(),
+        })
+    }
+}
+
+/// Kernel: message bus + module registry + lifecycle state machine.
+///
+/// Module lifecycle states (Unloaded/Initializing/Ready/Stopping/Stopped/Failed) are
+/// tracked here, NOT on the Module trait — state belongs to the orchestrator.
+pub struct Kernel {
+    modules: Arc<Mutex<HashMap<String, Box<dyn KernelModule>>>>,
+    order: Arc<Mutex<Vec<String>>>, // registration order, for reverse shutdown
+    states: Arc<Mutex<HashMap<String, ModuleState>>>,
+    sender: KernelSender,
+    rx: Option<tokio::sync::mpsc::Receiver<KernelMessage>>,
+    shutdown_timeout: Duration,
+    overall_timeout: Duration, // design #13: total graceful-shutdown budget
+}
+
+impl Kernel {
+    pub fn new() -> Self {
+        Self::with_timeouts(DEFAULT_SHUTDOWN_TIMEOUT, DEFAULT_OVERALL_TIMEOUT)
+    }
+
+    pub fn with_shutdown_timeout(timeout: Duration) -> Self {
+        Self::with_timeouts(timeout, DEFAULT_OVERALL_TIMEOUT)
+    }
+
+    pub fn with_timeouts(shutdown_timeout: Duration, overall_timeout: Duration) -> Self {
+        let (tx, rx) = tokio::sync::mpsc::channel(CHANNEL_SIZE);
+        Self {
+            modules: Arc::new(Mutex::new(HashMap::new())),
+            order: Arc::new(Mutex::new(Vec::new())),
+            states: Arc::new(Mutex::new(HashMap::new())),
+            sender: KernelSender { tx },
+            rx: Some(rx),
+            shutdown_timeout,
+            overall_timeout,
+        }
+    }
+
+    pub fn sender(&self) -> KernelSender {
+        self.sender.clone()
+    }
+
+    /// Query a module's lifecycle state (None if never registered).
+    pub fn module_state(&self, id: &str) -> Option<ModuleState> {
+        self.states.lock().unwrap().get(id).copied()
+    }
+
+    /// Register a module: init() runs synchronously; on failure the module is marked
+    /// Failed (NOT inserted into the registry) and the error is returned — the kernel
+    /// keeps running (one module's failure must not crash the kernel).
+    pub fn register_module(
+        &mut self,
+        mut module: Box<dyn KernelModule>,
+        ctx: &KernelContext,
+        register: &mut ModuleRegister,
+    ) -> Result<(), KernelError> {
+        let id = module.id();
+        self.set_state(&id, ModuleState::Initializing);
+        match module.init(ctx, register) {
+            Ok(()) => {
+                self.modules.lock().unwrap().insert(id.clone(), module);
+                self.order.lock().unwrap().push(id.clone());
+                self.set_state(&id, ModuleState::Ready);
+                Ok(())
+            }
+            Err(e) => {
+                self.set_state(&id, ModuleState::Failed);
+                tracing::warn!(module_id = %id, error = %e, "module init failed, continuing without it");
+                Err(KernelError::ModuleInitFailed(id, anyhow::Error::from(e)))
+            }
+        }
+    }
+
+    fn set_state(&self, id: &str, state: ModuleState) {
+        self.states.lock().unwrap().insert(id.to_string(), state);
+    }
+
+    /// Start the event loop. Shutdown is checked BEFORE broadcast (so a blocked
+    /// module cannot starve the shutdown signal). On Shutdown (or channel close) all
+    /// Ready modules are shut down in REVERSE registration order, each with a timeout.
+    pub fn start(&mut self) -> JoinHandle<Result<(), KernelError>> {
+        let modules = Arc::clone(&self.modules);
+        let order = Arc::clone(&self.order);
+        let states = Arc::clone(&self.states);
+        let shutdown_timeout = self.shutdown_timeout;
+        let overall_timeout = self.overall_timeout;
+        let mut rx = self.rx.take().unwrap_or_else(|| {
+            let (_, rx) = tokio::sync::mpsc::channel(1);
+            rx
+        });
+        tokio::spawn(async move {
+            while let Some(msg) = rx.recv().await {
+                if matches!(msg, KernelMessage::Shutdown) {
+                    break; // graceful shutdown handled below — NOT broadcast via handle()
+                }
+                let mut guard = modules.lock().unwrap();
+                for (_, module) in guard.iter_mut() {
+                    if let Err(e) = module.handle(&msg) {
+                        tracing::error!(?e, "module handler error");
+                    }
+                }
+            }
+            // design #13: overall budget for the whole chain — a hung module shutdown
+            // must not block process exit indefinitely.
+            tokio::time::timeout(overall_timeout, Self::shutdown_all(&modules, &order, &states, shutdown_timeout))
+                .await
+                .map_err(|_| KernelError::ShutdownTimeout(overall_timeout))?
+        })
+    }
+
+    /// Reverse-order graceful shutdown. A single module's failure/timeout is logged
+    /// and recorded (state = Failed), but does NOT block shutting down the rest.
+    async fn shutdown_all(
+        modules: &Mutex<HashMap<String, Box<dyn KernelModule>>>,
+        order: &Mutex<Vec<String>>,
+        states: &Mutex<HashMap<String, ModuleState>>,
+        timeout: Duration,
+    ) -> Result<(), KernelError> {
+        let ids: Vec<String> = order.lock().unwrap().iter().rev().cloned().collect();
+        let mut first_error: Option<KernelError> = None;
+        for id in &ids {
+            states.lock().unwrap().insert(id.clone(), ModuleState::Stopping);
+            let module = {
+                let mut guard = modules.lock().unwrap();
+                guard.remove(id) // remove while shutting down: no more messages after this
+            };
+            let Some(mut module) = module else { continue };
+            // shutdown() is a sync fn that may block (e.g. killing a subprocess); run it on
+            // the blocking pool so the per-module timeout can still fire.
+            let shutdown_task = tokio::task::spawn_blocking(move || module.shutdown());
+            let result = tokio::time::timeout(timeout, shutdown_task).await;
+            let (state, err) = match result {
+                Ok(Ok(Ok(()))) => (ModuleState::Stopped, None),
+                Ok(Ok(Err(e))) => {
+                    tracing::error!(module_id = %id, error = %e, "module shutdown failed");
+                    (ModuleState::Failed, Some(KernelError::ModuleShutdownFailed(id.clone(), anyhow::Error::from(e))))
+                }
+                Ok(Err(e)) => {
+                    tracing::error!(module_id = %id, error = %e, "module shutdown task panicked");
+                    (ModuleState::Failed, Some(KernelError::ModuleShutdownFailed(
+                        id.clone(),
+                        anyhow::anyhow!(e.to_string()),
+                    )))
+                }
+                Err(_) => {
+                    tracing::error!(module_id = %id, ?timeout, "module shutdown timeout");
+                    (ModuleState::Failed, Some(KernelError::ShutdownTimeout(timeout)))
+                }
+            };
+            states.lock().unwrap().insert(id.clone(), state);
+            if first_error.is_none() { first_error = err; }
+        }
+        match first_error {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
+    }
+}
+
+impl Default for Kernel {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -42,7 +230,10 @@ mod tests {
     impl Module for SpyModule {
         fn id(&self) -> ModuleId { self.id.to_string() }
         fn metadata(&self) -> ModuleMetadata {
-            ModuleMetadata { id: self.id.to_string(), name: self.id.to_string(), version: "0.1".into(), description: "".into(), author: "".into() }
+            ModuleMetadata {
+                id: self.id.to_string(), name: self.id.to_string(), version: "0.1".into(),
+                description: "".into(), author: "".into(),
+            }
         }
         fn init(&mut self, _ctx: &KernelContext, _r: &mut ModuleRegister) -> Result<(), ModuleError> {
             if self.init_fails { Err(ModuleError::Init("boom".into())) } else { Ok(()) }
@@ -140,7 +331,13 @@ mod tests {
         let mut register = ModuleRegister::new(Arc::new(ToolRegistry::new()), Arc::new(ProviderRegistry::new()));
         let mut kernel = Kernel::with_shutdown_timeout(Duration::from_millis(10));
         kernel.register_module(
-            Box::new(spy("slow", Arc::new(StdMutex::new(vec![])), Arc::new(StdMutex::new(vec![])), Some(Duration::from_millis(200)), false)),
+            Box::new(spy(
+                "slow",
+                Arc::new(StdMutex::new(vec![])),
+                Arc::new(StdMutex::new(vec![])),
+                Some(Duration::from_millis(200)),
+                false,
+            )),
             &dummy_kernel_context(), &mut register,
         ).unwrap();
 
@@ -162,11 +359,23 @@ mod tests {
             Duration::from_millis(10),       // overall graceful shutdown timeout
         );
         kernel.register_module(
-            Box::new(spy("a", Arc::new(StdMutex::new(vec![])), shutdowns.clone(), Some(Duration::from_millis(50)), false)),
+            Box::new(spy(
+                "a",
+                Arc::new(StdMutex::new(vec![])),
+                shutdowns.clone(),
+                Some(Duration::from_millis(50)),
+                false,
+            )),
             &dummy_kernel_context(), &mut register,
         ).unwrap();
         kernel.register_module(
-            Box::new(spy("b", Arc::new(StdMutex::new(vec![])), shutdowns.clone(), Some(Duration::from_millis(50)), false)),
+            Box::new(spy(
+                "b",
+                Arc::new(StdMutex::new(vec![])),
+                shutdowns.clone(),
+                Some(Duration::from_millis(50)),
+                false,
+            )),
             &dummy_kernel_context(), &mut register,
         ).unwrap();
 
