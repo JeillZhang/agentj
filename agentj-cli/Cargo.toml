@@ -1,0 +1,26 @@
+[package]
+name = "agentj-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "agentj"
+path = "src/main.rs"
+
+[dependencies]
+agentj-core = { path = "../agentj-core" }
+agentj-config = { path = "../agentj-config" }
+agentj-context = { path = "../agentj-context" }
+agentj-ipc = { path = "../agentj-ipc" }
+agentj-model = { path = "../agentj-model" }
+agentj-session = { path = "../agentj-session" }
+agentj-tools = { path = "../agentj-tools" }
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
+[dev-dependencies]
+libc = "0.2"
