@@ -1,12 +1,163 @@
 //! Agent loop — orchestrates a single turn: chat stream, tool calls, and
-//! history persistence. RED state: tests only, AgentLoop not implemented yet.
+//! history persistence.
+
+use std::sync::Arc;
+use futures::StreamExt;
+use tokio::sync::mpsc;
+use crate::error::{KernelError, ModuleError};
+use crate::module::{ContextPipeline, KernelContext};
+use crate::types::*;
+
+/// Incremental event emitted during agent loop execution.
+#[derive(Debug, Clone)]
+pub enum AgentEvent {
+    Delta(String),
+    ToolCall(ToolCall),
+    ToolResult { call_id: String, result: String },
+    Done { final_response: String, tool_calls: Vec<ToolCall> },
+    Error(String),
+}
+
+#[derive(Clone)]
+pub struct AgentLoop {
+    ctx: KernelContext,
+    pipeline: Arc<dyn ContextPipeline>,
+    system_prompt: String,
+    max_tool_iterations: usize,
+}
+
+impl AgentLoop {
+    pub fn new(ctx: KernelContext, pipeline: Arc<dyn ContextPipeline>, system_prompt: String) -> Self {
+        Self { ctx, pipeline, system_prompt, max_tool_iterations: 10 }
+    }
+
+    pub fn create_session(&self) -> Result<SessionId, ModuleError> {
+        self.ctx.session.create()
+    }
+
+    /// Runs one turn and returns a stream of events for incremental output.
+    pub fn run_turn_stream(&self, session_id: &SessionId, user_input: &str) -> mpsc::Receiver<AgentEvent> {
+        let (tx, rx) = mpsc::channel(256);
+        let sid = session_id.clone();
+        let input = user_input.to_string();
+        let ctx = self.ctx.clone();
+        let pipeline = Arc::clone(&self.pipeline);
+        let system_prompt = self.system_prompt.clone();
+        let max_iter = self.max_tool_iterations;
+        tokio::spawn(async move {
+            if let Err(e) = Self::run_inner(ctx, pipeline, sid, input, system_prompt, max_iter, tx.clone()).await {
+                let _ = tx.send(AgentEvent::Error(e.to_string())).await;
+            }
+        });
+        rx
+    }
+
+    /// Convenience: run one turn and collect the final text (non-streaming callers).
+    pub async fn run_turn(&self, session_id: &SessionId, user_input: &str) -> Result<String, KernelError> {
+        let mut rx = self.run_turn_stream(session_id, user_input);
+        let mut text = String::new();
+        while let Some(event) = rx.recv().await {
+            match event {
+                AgentEvent::Delta(d) => text.push_str(&d),
+                AgentEvent::Done { .. } => break,
+                AgentEvent::Error(e) => {
+                    return Err(KernelError::MessageRouteFailed { msg: "agent".into(), reason: e });
+                }
+                _ => {}
+            }
+        }
+        Ok(text)
+    }
+
+    async fn run_inner(
+        ctx: KernelContext,
+        pipeline: Arc<dyn ContextPipeline>,
+        session_id: SessionId,
+        user_input: String,
+        system_prompt: String,
+        max_iter: usize,
+        tx: mpsc::Sender<AgentEvent>,
+    ) -> Result<(), KernelError> {
+        let route = |msg: &str, reason: String| KernelError::MessageRouteFailed { msg: msg.into(), reason };
+
+        ctx.session.append(&session_id, ChatMessage::user(user_input))
+            .map_err(|e| route("append", e.to_string()))?;
+        let history = ctx.session.get(&session_id)
+            .map_err(|e| route("get", e.to_string()))?;
+        let provider = ctx.providers.get_default()
+            .ok_or_else(|| route("no provider", "no default provider".into()))?;
+        let tool_defs = ctx.tools.definitions();
+
+        let mut messages = pipeline.assemble(&system_prompt, &history, &[]);
+        let mut all_tool_calls: Vec<ToolCall> = vec![];
+        // design 4.3: model comes from config (default_model), not hardcoded default
+        let model = ctx.config.get_str("model.default_model").unwrap_or_else(|| "deepseek-chat".into());
+        let default_options = ModelOptions { model, ..Default::default() };
+
+        for _iter in 0..max_iter {
+            let mut stream = provider.chat_stream(messages.clone(), tool_defs.clone(), default_options.clone()).await
+                .map_err(|e| route("chat_stream", e.to_string()))?;
+            let mut content = String::new();
+            let mut tc_list: Vec<ToolCall> = vec![];
+            while let Some(result) = stream.next().await {
+                match result.map_err(|e| route("stream", e.to_string()))? {
+                    ModelEvent::Delta(text) => {
+                        content.push_str(&text);
+                        let _ = tx.send(AgentEvent::Delta(text)).await;
+                    }
+                    ModelEvent::ToolCall(tc) => tc_list.push(tc),
+                    ModelEvent::Done => break,
+                }
+            }
+
+            if tc_list.is_empty() {
+                ctx.session.append(&session_id, ChatMessage::assistant(content.clone()))
+                    .map_err(|e| route("append response", e.to_string()))?;
+                let _ = tx.send(AgentEvent::Done { final_response: content, tool_calls: all_tool_calls }).await;
+                return Ok(());
+            }
+
+            Self::execute_tool_calls(&ctx, pipeline.as_ref(), &mut messages, &tc_list, &mut all_tool_calls, &tx).await?;
+        }
+        let _ = tx.send(AgentEvent::Error("max tool iterations exceeded".into())).await;
+        Ok(())
+    }
+
+    async fn execute_tool_calls(
+        ctx: &KernelContext,
+        pipeline: &dyn ContextPipeline,
+        messages: &mut Vec<ChatMessage>,
+        tc_list: &[ToolCall],
+        all_tool_calls: &mut Vec<ToolCall>,
+        tx: &mpsc::Sender<AgentEvent>,
+    ) -> Result<(), KernelError> {
+        for tc in tc_list {
+            let _ = tx.send(AgentEvent::ToolCall(tc.clone())).await;
+            all_tool_calls.push(tc.clone());
+            if let Some(tool) = ctx.tools.get(&tc.name) {
+                let result = tokio::task::spawn_blocking({
+                    let tool = tool.clone();
+                    let args = tc.arguments.clone();
+                    move || tool.execute(args)
+                }).await
+                    .map_err(|e| KernelError::MessageRouteFailed { msg: "tool panic".into(), reason: e.to_string() })?;
+                let result_str = match result {
+                    Ok(val) => val.as_str().map(String::from).unwrap_or_else(|| val.to_string()),
+                    Err(e) => format!("Error: {e}"),
+                };
+                let _ = tx.send(AgentEvent::ToolResult { call_id: tc.id.clone(), result: result_str.clone() }).await;
+                pipeline.reflux(messages, tc, result_str);
+            }
+        }
+        Ok(())
+    }
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::error::*;
     use crate::module::*;
-    use crate::types::*;
     use async_trait::async_trait;
     use futures::stream::{self, BoxStream};
     use std::sync::{Arc, Mutex};
