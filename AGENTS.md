@@ -1,6 +1,6 @@
 # AGENTS.md
 
-> Updated 2026-08-16 — v0.1 core complete (10 crates); daemon-kernel design approved for v0.3.
+> Updated 2026-08-16 — v0.1.1 released (10 crates, test acceptance passed, 7 bugs fixed); daemon-kernel design approved for v0.3.
 
 ## Project Status
 
@@ -14,7 +14,7 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
 
 ## Commands
 
-- `cargo test --workspace` — 全量测试（118 个：agentj-protocol 31 单元 + 7 契约 + 3 注册表，其余 9 crate 77 个）
+- `cargo test --workspace` — 全量测试（121 个：agentj-protocol 31 单元 + 7 契约 + 3 注册表，其余 9 crate 80 个）
 - `cargo clippy --workspace -- -D warnings` — lint 门禁（零警告）
 - `cargo bench -p agentj-model` — 模型流式基准（criterion：`mock_stream_10_events`）
 - `cargo run -p agentj-protocol --bin gen_schemas` — 重新生成 `schemas/*.json`
@@ -25,9 +25,8 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
 
 - `.github/workflows/ci.yml` — 单元测试流水线（PR + push main + 手动）：`cargo fmt --all --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace --locked`、覆盖率门禁 `cargo llvm-cov --workspace --fail-under-lines 50`（门槛随开发上调至 80%）
 - `.github/workflows/smoke.yml` — 冒烟流水线（PR + push main + 手动）：`cargo build --release --locked` + `agentj --version/--help/run --help/serve --help` 退出码断言 + `cargo test -p agentj-core -- smoke`
-- `.github/workflows/e2e.yml` — E2E 流水线（main 合并后 + 手动）：`cargo build --release --locked` + `cargo test --release --test e2e -- --ignored`（Mock LLM 密封测试，无真实 API key）
+- `.github/workflows/e2e.yml` — E2E 流水线（main 合并后 + 手动）：`cargo build --release --locked` + `cargo test --release --test e2e_cli`（Mock LLM 密封测试，无真实 API key）
 - 本地校验：`scripts/validate-workflow.sh <workflow-file> <jobs...>`（依赖-free，可选 PyYAML 严格解析）
-- ⚠️ 已知缺口：e2e 流水线的 `--test e2e` 目标名与实际 `agentj-cli/tests/e2e_cli.rs` 不一致（`e2e_cli`）；Mock LLM 密封测试接入时需对齐。
 
 ## Architecture
 
