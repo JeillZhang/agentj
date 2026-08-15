@@ -2,7 +2,7 @@
 
 > 本文档是 AgentJ 内核对外暴露的统一 UI 接口协议（IPC）的**人类可读权威规范**。
 > 机器可读工件（`schemas/*.json` 与 `protocol/methods.json`）是本规范的机器事实来源，见 [机器可读模型](#10-机器可读模型)。
-> 协议当前版本：`0.1.0`。
+> 协议当前版本：`0.2.0`。
 
 ## 1. 范围与一致性
 
@@ -10,7 +10,7 @@
 
 - **传输层**：每种传输各自的帧格式（stdio / TCP 使用 NDJSON，WebSocket 使用原生帧）。
 - **基础协议**：传输无关的 JSON-RPC 2.0 消息信封、错误对象与错误码。
-- **方法面**：v0.1 支持的 12 个方法及其参数 / 结果结构。
+- **方法面**：v0.2 支持的 16 个方法及其参数 / 结果结构。
 
 本文档适用于所有传输。任何传输都必须遵循基础协议与方法面的全部规则。
 
@@ -39,9 +39,9 @@ stdio 是 v0.1 唯一正式启用的传输。内核进程通过标准输入读�
 - 每条消息 MUST 是单个有效的 JSON 值（对象或数组），同一行内不得包含多条消息。
 - 消息 MUST 为 UTF-8 编码。
 
-### 2.2 TCP（v0.3 预留）
+### 2.2 TCP（v0.3 定稿，守护内核）
 
-TCP 传输沿用 NDJSON 帧格式，每条消息一行。连接生命周期、鉴权、限流、最大连接数等策略不在 v0.1 定义，规范仅在此预留帧格式约定，具体设计随 v0.3 落地。
+TCP 传输沿用 NDJSON 帧格式，每条消息一行。多客户端共享内核的能力由守护内核设计定稿（`docs/superpowers/specs/2026-08-15-agentj-daemon-kernel-design.md`）：`agentj serve --port` 常驻内核，通过统一的 `Connection` 抽象（stdio / TCP 均为实现）服务多个并发客户端；TCP 绑定默认 `127.0.0.1`（本机信任模型），可选 `--token`（`initialize` 握手时校验，不匹配 → `-32806 NotAuthorized`）、`--max-connections`（默认 16，超限新连接直接拒绝）。连接生命周期、订阅广播、审批定向语义见 §4.5、§7 与 §8 对应方法节。
 
 ### 2.3 WebSocket（未来预留）
 
@@ -57,7 +57,8 @@ WebSocket 使用**原生帧**：每条 WebSocket 文本消息即一条 JSON 消�
 
 - **进程退出**：客户端发送 `shutdown`（请求）后，服务端返回结果并开始优雅关闭；随后客户端发送 `exit`（通知），服务端进程退出。`exit` MUST 在 `shutdown` 之后发送。
 - **stdio EOF**：stdin 到达 EOF 视为对端主动断开。若发生在优雅关闭流程之外，服务端 SHOULD 完成当前请求处理后退出，MUST NOT 再写入输出。
-- **异常断开**：任一侧可随时关闭传输；对端 MUST 将任何未完成的请求视为已失败，且不应重试不可重试的请求（如 `session/run`）。
+- **多客户端语义（v0.3 常驻内核，`@since 0.2.0`）**：多客户端模式下，`shutdown` 请求断开**请求方连接**而非直接终止内核；**最后一条连接断开**时触发内核优雅关闭链（SIGINT/SIGTERM 信号仍可强制，决策 #13 语义不变）。单个客户端断开不影响其它连接。
+- **异常断开**：任一侧可随时关闭传输；对端 MUST 将任何未完成的请求视为已失败，且不应重试不可重试的请求（如 `session/run`）。常驻内核下，断线客户端的 run 继续执行，重连者用 `session/subscribe` 观测而非重试。
 - 服务端退出前 SHOULD 关闭传输流（刷新 stdout、关闭 stdin）。
 
 ## 3. 基础协议
@@ -148,6 +149,8 @@ WebSocket 使用**原生帧**：每条 WebSocket 文本消息即一条 JSON 消�
 | `-32802` | SessionNotFound | agentj | 会话不存在（映射 `SessionError::NotFound`） |
 | `-32803` | SessionInactive | agentj | 对 archived / deleted 会话执行操作（映射 `SessionError::InactiveSession`） |
 | `-32804` | InvalidVersion | agentj | 协议版本不兼容（`initialize` 握手） |
+| `-32805` | SessionBusy | agentj | 同 session 已有活动 run 时再次 `session/run`（`@since 0.2.0`） |
+| `-32806` | NotAuthorized | agentj | 非 owner 连接的 `permission/respond` 或 `$/cancelRequest`；`--token` 不匹配（`@since 0.2.0`） |
 
 错误码是**稳定的协议契约**，一旦发布不可更改含义。新增错误码 SHOULD 从 `-32800` 段向下或 `-32000 … -32099` 段内加性分配。
 
@@ -196,10 +199,17 @@ initialize（请求）→ initialized（通知）→ 会话阶段 → shutdown�
 | `protocol_version` | string | 是 | 服务端选定的协议版本 |
 | `capabilities` | object | 否 | 服务端能力对象，见 4.2 |
 | `server_info` | ServerInfo | 是 | 服务端元信息 `{ name, version }` |
+| `connection_id` | string | 否 | 本连接在多客户端内核下的唯一标识（`@since 0.2.0`）；stdio 单客户端模式缺省 |
 
 ### 4.2 能力交换
 
-`capabilities` 对象用于能力探测：服务端在 `initialize` 结果中声明自己支持的能力，客户端可在 `initialize` 参数中声明自身能力。v0.1 暂无强制能力项；能力交换为加性设计，未知能力 MUST 忽略、绝不致命。v0.2 出现真正可选能力（hooks、插件）时作为能力标志加进 capabilities 对象，无需重构。
+`capabilities` 对象用于能力探测：服务端在 `initialize` 结果中声明自己支持的能力，客户端可在 `initialize` 参数中声明自身能力。v0.1 暂无强制能力项；能力交换为加性设计，未知能力 MUST 忽略、绝不致命。
+
+`@since 0.2.0` 新增服务端能力标志：
+
+| 能力 | 类型 | 说明 |
+|------|------|------|
+| `multi_client` | boolean | 服务端支持多客户端共享同一内核实例（常驻内核，`agentj serve --port`）。为 true 时 `InitializeResult` 携带 `connection_id` |
 
 ### 4.3 协议版本协商
 
@@ -227,6 +237,8 @@ initialize（请求）→ initialized（通知）→ 会话阶段 → shutdown�
 ```
 
 `shutdown` 无参数，结果固定为 `null`。收到 `shutdown` 后，服务端 MUST 停止接收新请求（新请求以 `-32600` 或 `-32801` 类错误拒绝），完成进行中的请求，然后返回 `null`，触发内核逆序优雅关闭链。
+
+**多客户端语义（`@since 0.2.0`，常驻内核）**：在 `multi_client` 为 true 的内核上，`shutdown` 断开**请求方连接**（该连接的 `session_owner` 释放、订阅隐式退订），不终止内核；**最后一条连接断开**时触发内核优雅关闭链。stdio 单客户端模式语义不变（`shutdown` 即触发进程优雅关闭）。
 
 ### 4.6 exit（通知）
 
@@ -330,14 +342,18 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 |------|------|------|--------|--------|------|
 | `initialize` | request | C→S | InitializeParams | InitializeResult | 版本 + 能力协商 |
 | `initialized` | notification | C→S | — | — | 客户端就绪 |
-| `shutdown` | request | C→S | — | null | 触发内核优雅关闭链 |
+| `shutdown` | request | C→S | — | null | 断开连接 / 触发优雅关闭（见 §4.5） |
 | `exit` | notification | C→S | — | — | shutdown 后进程退出 |
 | `session/new` | request | C→S | — | SessionNewResult | 新建会话 |
 | `session/run` | request | C→S | SessionRunParams | SessionRunResult | 运行一轮（流式，见 §7） |
 | `session/status` | request | C→S | SessionIdParams | SessionStatusResult | 查询会话状态 |
 | `session/archive` | request | C→S | SessionIdParams | null | 软删除 |
 | `session/delete` | request | C→S | SessionIdParams | null | 硬删除 |
+| `session/subscribe` | request | C→S | SessionSubscribeParams | null | 订阅会话运行进度（`@since 0.2.0`） |
+| `session/unsubscribe` | request | C→S | SessionIdParams | null | 退订会话进度（`@since 0.2.0`） |
+| `permission/respond` | request | C→S | PermissionRespondParams | null | 响应审批（`@since 0.2.0`） |
 | `kernel/status` | request | C→S | — | KernelStatusResult | 内核与模块状态 |
+| `$/permissionRequest` | notification | S→C | PermissionRequestParams | — | 审批请求通知（`@since 0.2.0`） |
 | `$/cancelRequest` | notification | both | CancelParams | — | 取消进行中的请求 |
 | `$/progress` | notification | S→C | ProgressParams | — | 流式增量（见 §7） |
 
@@ -462,7 +478,61 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 - **部分结果**：无。
 - **error.data**：`-32802 SessionNotFound`；对已删除会话重复删除 → `-32803 SessionInactive`。
 
-### 8.11 kernel/status（请求）
+### 8.11 session/subscribe（请求，`@since 0.2.0`）
+
+- **能力声明**：多客户端能力 `multi_client`（见 §4.2）。
+- **请求**：`SessionSubscribeParams`。
+
+```json
+{ "jsonrpc": "2.0", "id": 6, "method": "session/subscribe", "params": {
+  "session_id": "s-1",
+  "progress_token": "tok-dash"
+} }
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `session_id` | string | 是 | 目标会话 id |
+| `progress_token` | ProgressToken | 否 | 订阅流 token；省略时服务端用请求 id 作 token（见 §7.2） |
+
+- **响应**：`null`（订阅成功）。
+- **语义**：订阅后，该 session 的 `$/progress` 通知向**所有订阅者**广播（含发起方，其同时是订阅者或经 `session/run` 的 `progress_token`）。订阅是**只读观测**：订阅者不能控制该 run（`session/run` / `$/cancelRequest` / `permission/respond` 仅 owner 可用，见 8.13）。
+- **部分结果**：无。
+- **error.data**：`-32802 SessionNotFound`；`-32803 SessionInactive`（archived / deleted 会话不可订阅）。
+
+### 8.12 session/unsubscribe（请求，`@since 0.2.0`）
+
+- **能力声明**：多客户端能力 `multi_client`（见 §4.2）。
+- **请求**：`SessionIdParams`（`session_id` 必填）。
+- **响应**：`null`。
+- **语义**：退订指定 session 的进度广播。对未订阅的 session 退订为 no-op。**连接断开时隐式退订**（无需显式 unsubscribe，避免残留订阅）。
+- **部分结果**：无。
+- **error.data**：不适用。
+
+### 8.13 permission/respond（请求，`@since 0.2.0`）
+
+- **能力声明**：权限审批能力（`$/permissionRequest` 通知对端声明）。
+- **请求**：`PermissionRespondParams`。
+
+```json
+{ "jsonrpc": "2.0", "id": 7, "method": "permission/respond", "params": {
+  "request_id": "req-9",
+  "decision": "allow"
+} }
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `request_id` | string | 是 | 对应 `$/permissionRequest` 的通知 id（独立于 JSON-RPC 请求 id） |
+| `decision` | PermissionDecision | 是 | `allow` \| `deny` \| `allow_always`（未知值见 §9） |
+
+- **响应**：`null`。
+- **归属校验**：服务端按 `session_owner` 校验发起方——**只有发起该 run 的客户端连接**可以响应对应审批；非 owner 连接响应 → `-32806 NotAuthorized`。
+- **allow_always 语义**：将（工具, 命中规则指纹）写入当前 session 的 `SessionAllowState`（会话级内存态，会话结束即失效；跨会话白名单需显式配置 `[permission]` 规则）。
+- **部分结果**：无。
+- **error.data**：`-32806 NotAuthorized`（非 owner 响应）；审批超时（默认 60s）自动 `Deny`，`session/run` 返回拒绝语义。
+
+### 8.14 kernel/status（请求）
 
 - **能力声明**：无。
 - **请求**：无参数。
@@ -483,7 +553,35 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 - **部分结果**：无。
 - **error.data**：`-32603` 时 MAY 携带内部上下文。
 
-### 8.12 $/cancelRequest（通知，见 §6）
+### 8.15 $/permissionRequest（通知，`@since 0.2.0`）
+
+- **能力声明**：权限审批能力（服务端声明于 `initialize` 的 capabilities）。
+- **请求（通知）**：`PermissionRequestParams`。
+
+```json
+{ "jsonrpc": "2.0", "method": "$/permissionRequest", "params": {
+  "request_id": "req-9",
+  "tool": "bash",
+  "args": { "cmd": "rm -rf /tmp/x" },
+  "origin_client": "conn-a",
+  "reason": "tool default ask"
+} }
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `request_id` | string | 是 | 审批请求 id（uuid，独立于 JSON-RPC 请求 id） |
+| `tool` | string | 是 | 需要审批的工具名 |
+| `args` | object | 是 | 工具原始参数 |
+| `origin_client` | string | 是 | 发起该 run 的客户端连接 id（`InitializeResult.connection_id`） |
+| `reason` | string | 否 | 审批原因（如命中的规则 / 默认模式） |
+
+- **定向路由**：服务端按 `session_owner` **定向**发送给发起该 run 的客户端连接（设计决策 #5），其余客户端不收到该通知。
+- **响应**：无（通知不响应）；发起方通过 `permission/respond`（见 8.13）响应。
+- **部分结果**：不适用。
+- **error.data**：不适用。
+
+### 8.16 $/cancelRequest（通知，见 §6）
 
 - **能力声明**：无。
 - **请求（通知）**：`CancelParams`（`id` 必填，为要取消的请求 id）。
@@ -491,7 +589,7 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 - **部分结果**：无。
 - **error.data**：不适用。
 
-### 8.13 $/progress（通知，见 §7）
+### 8.17 $/progress（通知，见 §7）
 
 - **能力声明**：流式能力（服务端声明于 `initialize` 的 capabilities）。
 - **请求（通知）**：`ProgressParams`（`token`、`value` 必填）。
@@ -510,6 +608,7 @@ v0.1 定义三个字符串值枚举：
 | `Role` | `system` \| `user` \| `assistant` \| `tool` | 消息角色 |
 | `ModuleState` | `unloaded` \| `initializing` \| `ready` \| `stopping` \| `stopped` \| `failed` | 内核模块状态 |
 | `SessionStatus` | `active` \| `archived` \| `deleted` | 会话状态 |
+| `PermissionDecision` | `allow` \| `deny` \| `allow_always` | 审批决策（`@since 0.2.0`，见 8.13） |
 
 ### 9.2 未知值处理
 
@@ -532,8 +631,8 @@ v0.1 定义三个字符串值枚举：
 
 本规范是叙述性人类规范；机器事实来源为以下两个工件，两者由 CI 门禁保证与实现一致：
 
-- **`schemas/*.json`**：27 个 JSON Schema（JSON Schema Draft 2020-12），由 Rust `agentj-core` 的 serde 类型经 `schemars` 生成并提交。它们是所有消息 payload 结构的唯一事实来源，任意语言可从中生成绑定或做运行时校验。
-- **`protocol/methods.json`**：方法注册表，捕获 JSON Schema 表达不了的方法语义（method 字符串 ↔ params/result schema 引用、方向、类型）。当前 `protocol_version` 为 `0.1.0`。
+- **`schemas/*.json`**：31 个 JSON Schema（JSON Schema Draft 2020-12），由 Rust `agentj-protocol` 的 serde 类型经 `schemars` 生成并提交。它们是所有消息 payload 结构的唯一事实来源，任意语言可从中生成绑定或做运行时校验。
+- **`protocol/methods.json`**：方法注册表，捕获 JSON Schema 表达不了的方法语义（method 字符串 ↔ params/result schema 引用、方向、类型）。当前 `protocol_version` 为 `0.2.0`。
 
 对应关系：
 
@@ -548,11 +647,15 @@ v0.1 定义三个字符串值枚举：
 | `session/status` | `SessionIdParams.json` | `SessionStatusResult.json` |
 | `session/archive` | `SessionIdParams.json` | — |
 | `session/delete` | `SessionIdParams.json` | — |
+| `session/subscribe` | `SessionSubscribeParams.json` | — |
+| `session/unsubscribe` | `SessionIdParams.json` | — |
+| `permission/respond` | `PermissionRespondParams.json` | — |
 | `kernel/status` | — | `KernelStatusResult.json` |
+| `$/permissionRequest` | `PermissionRequestParams.json` | — |
 | `$/cancelRequest` | `CancelParams.json` | — |
 | `$/progress` | `ProgressParams.json` | — |
 
-信封与公共类型见 `RequestMessage.json`、`NotificationMessage.json`、`ResponseMessage.json`、`ErrorObject.json`、`Id.json`、`ProgressToken.json`、`ProgressValue.json`、`Role.json` 等。
+信封与公共类型见 `RequestMessage.json`、`NotificationMessage.json`、`ResponseMessage.json`、`ErrorObject.json`、`Id.json`、`ProgressToken.json`、`ProgressValue.json`、`Role.json`、`PermissionDecision.json` 等。
 
 一致性锚点：Rust 侧 `schemars` 生成 `schemas/*.json` 并提交，契约测试断言实际 wire 输出与 Schema 一致，CI 漂移门禁在生成结果与提交版本不一致时失败。
 
@@ -560,7 +663,7 @@ v0.1 定义三个字符串值枚举：
 
 ### 11.1 版本策略
 
-协议版本遵循语义化版本（semver），规则见 §4.3：major 破坏 / minor 加方法 / patch 修 bug。当前版本 `0.1.0`（`protocol/methods.json` 中 `protocol_version` 字段为准）。
+协议版本遵循语义化版本（semver），规则见 §4.3：major 破坏 / minor 加方法 / patch 修 bug。当前版本 `0.2.0`（`protocol/methods.json` 中 `protocol_version` 字段为准）。
 
 ### 11.2 命名归一化决策（v0.1.0 记录）
 
@@ -589,8 +692,17 @@ v0.1 定义三个字符串值枚举：
 - 记录 snake_case 命名归一化决策。
 - 明确 batch 语义保留但 v0.1 未启用。
 
+#### 0.2.0（当前，守护内核契约）
+
+- 方法面 12 → **16**：新增 `session/subscribe`、`session/unsubscribe`、`permission/respond`（请求）与 `$/permissionRequest`（通知），支撑守护内核（常驻 API 服务）的多客户端能力。
+- 错误码新增 2 个：`-32805 SessionBusy`（同 session 并发 run 互斥）、`-32806 NotAuthorized`（非 owner 的 respond / cancel、`--token` 不匹配）。
+- `initialize` 结果新增可选字段 `connection_id`；服务端能力新增 `multi_client` 标志（见 §4.2）。
+- `shutdown` 多客户端语义细化：断开请求方连接；最后一条连接断开触发优雅关闭（见 §4.5）。
+- 值枚举新增 `PermissionDecision`（`allow` / `deny` / `allow_always` + Unknown）。
+- 全部为加性变更（只加不改），v0.1 客户端零破坏。
+
 #### 后续版本
 
-- **0.1.x（patch）**：修复歧义、澄清文档；不改变任何 wire 结构或错误码语义。
-- **0.2.0（minor）**：预期加入 hooks / sub-agent / skills / stats 等方法的完整 Schema（预留路线图占位），以及 `session/expire` 或 TTL 配置等会话过期语义；枚举与能力对象加性扩展并标注 `@since 0.2.0`。
+- **0.2.x（patch）**：修复歧义、澄清文档；不改变任何 wire 结构或错误码语义。
+- **0.3.0（minor）**：预期加入 hooks / sub-agent / skills / stats 等方法的完整 Schema（预留路线图占位），以及 `session/expire` 或 TTL 配置等会话过期语义；枚举与能力对象加性扩展并标注 `@since 0.3.0`。
 - **major**：任何破坏性变更，必须在此记录迁移路径。
