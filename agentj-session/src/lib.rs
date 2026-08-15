@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use agentj_core::error::{ModuleError, SessionError};
 use agentj_core::module::{SessionStatus, SessionStore};
-use agentj_core::types::{ChatMessage, SessionId};
+use agentj_core::types::{ChatMessage, SessionId, SessionSnapshot, now_epoch_secs};
 
 pub struct InMemoryStore {
     sessions: Mutex<HashMap<SessionId, Vec<ChatMessage>>>,
@@ -82,6 +82,36 @@ impl SessionStore for InMemoryStore {
         self.sessions.lock().unwrap().remove(session); // hard delete: data gone
         Ok(())
     }
+
+    // ---- v0.1 recovery contract (design §会话持久化与恢复, decision #16) ----
+
+    fn snapshot(&self, session: &SessionId) -> Result<SessionSnapshot, ModuleError> {
+        let statuses = self.statuses.lock().unwrap();
+        let status = statuses.get(session).copied().ok_or_else(|| {
+            ModuleError::Session(SessionError::NotFound(session.clone()))
+        })?;
+        if status == SessionStatus::Deleted {
+            return Err(ModuleError::Session(SessionError::NotFound(session.clone())));
+        }
+        let messages = self.sessions.lock().unwrap().get(session).cloned().unwrap_or_default();
+        let now = now_epoch_secs();
+        Ok(SessionSnapshot {
+            session_id: session.clone(),
+            status,
+            messages,
+            created_at: now,
+            updated_at: now,
+        })
+    }
+
+    fn restore(&self, snapshot: &SessionSnapshot) -> Result<(), ModuleError> {
+        let mut sessions = self.sessions.lock().unwrap();
+        let mut statuses = self.statuses.lock().unwrap();
+        sessions.insert(snapshot.session_id.clone(), snapshot.messages.clone());
+        statuses.insert(snapshot.session_id.clone(), snapshot.status);
+        Ok(())
+    }
+    // load_all: keep the trait default (empty) — InMemory carries no persistence
 }
 
 #[cfg(test)]
@@ -90,7 +120,6 @@ mod tests {
     use agentj_core::error::{ModuleError, SessionError};
     use agentj_core::module::{SessionStatus, SessionStore};
     use agentj_core::types::{ChatMessage, Role};
-    use agentj_core::types::SessionSnapshot;
 
     #[test]
     fn create_and_append_session() -> Result<(), ModuleError> {

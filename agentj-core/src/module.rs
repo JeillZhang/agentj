@@ -288,7 +288,7 @@ impl Default for ProviderRegistry {
 
 /// Session lifecycle status. Contract-first (v0.1 signature, v0.2 semantics) —
 /// see design §Session 生命周期契约 (decision #14).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SessionStatus { Active, Archived, Deleted }
 
 pub trait SessionStore: Send + Sync {
@@ -307,6 +307,34 @@ pub trait SessionStore: Send + Sync {
     }
     fn delete(&self, _session: &SessionId) -> Result<(), ModuleError> {
         Err(ModuleError::Handler("delete not supported".into()))
+    }
+
+    /// Export the session's full state (messages + lifecycle status).
+    /// Missing/Deleted session → SessionError::NotFound. Default impl assembles
+    /// from get()+status() — stores with lifecycle semantics (InMemory) override
+    /// so Archived sessions snapshot too (get() rejects inactive).
+    fn snapshot(&self, session: &SessionId) -> Result<SessionSnapshot, ModuleError> {
+        let messages = self.get(session)?;
+        let status = self.status(session)?;
+        let now = crate::types::now_epoch_secs();
+        Ok(SessionSnapshot {
+            session_id: session.clone(),
+            status,
+            messages,
+            created_at: now,
+            updated_at: now,
+        })
+    }
+
+    /// Restore a session: create if missing, overwrite (messages + status) if present.
+    /// Default: no-op (stores without recovery support ignore restore).
+    fn restore(&self, _snapshot: &SessionSnapshot) -> Result<(), ModuleError> {
+        Ok(())
+    }
+
+    /// All persisted sessions — empty for non-persistent stores.
+    fn load_all(&self) -> Result<Vec<SessionSnapshot>, ModuleError> {
+        Ok(vec![])
     }
 }
 

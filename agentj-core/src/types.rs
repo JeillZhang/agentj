@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::module::SessionStatus;
+
 pub type ModuleId = String;
 pub type SessionId = String;
 
@@ -83,6 +85,25 @@ pub struct Attachment {
     pub path: Option<String>,
     pub content: Option<String>,
     pub mime: Option<String>,
+}
+
+/// Serializable session snapshot — the atomic unit of persistence/recovery
+/// (design §会话持久化与恢复, decision #16).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionSnapshot {
+    pub session_id: SessionId,
+    pub status: SessionStatus,
+    pub messages: Vec<ChatMessage>,
+    pub created_at: u64, // epoch seconds (InMemory: best-effort current time)
+    pub updated_at: u64,
+}
+
+/// Current UNIX epoch seconds (shared by trait default + InMemoryStore).
+pub fn now_epoch_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
