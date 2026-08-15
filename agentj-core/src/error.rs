@@ -1,3 +1,73 @@
+use std::time::Duration;
+
+#[derive(Debug, thiserror::Error)]
+pub enum ModuleError {
+    #[error("module init failed: {0}")]
+    Init(String),
+    #[error("module shutdown failed: {0}")]
+    Shutdown(String),
+    #[error("handler error: {0}")]
+    Handler(String),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum KernelError {
+    #[error("module '{0}' not found")]
+    ModuleNotFound(String),
+    #[error("module '{0}' initialization failed: {1}")]
+    ModuleInitFailed(String, #[source] anyhow::Error),
+    #[error("module '{0}' shutdown failed: {1}")]
+    ModuleShutdownFailed(String, #[source] anyhow::Error),
+    #[error("message routing failed for {msg:?}: {reason}")]
+    MessageRouteFailed { msg: String, reason: String },
+    #[error("shutdown timeout after {0:?}")]
+    ShutdownTimeout(Duration),
+    #[error("IPC error: {0}")]
+    Ipc(#[from] IpcError),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum IpcError {
+    #[error("JSON parse error: {0}")]
+    Json(#[from] serde_json::Error),
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("invalid request: {0}")]
+    InvalidRequest(String),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ModelError {
+    #[error("API error ({status}): {message}")]
+    Api { status: u16, message: String },
+    #[error("rate limited, retry after {retry_after:?}")]
+    RateLimited { retry_after: Option<Duration> },
+    #[error("context length exceeded: {used}/{max} tokens")]
+    TokenLimitExceeded { used: usize, max: usize },
+    #[error("unknown model '{model}' for provider '{provider}'")]
+    UnknownModel { provider: String, model: String },
+    #[error("network error: {0}")]
+    Network(String),
+    #[error("stream error: {0}")]
+    Stream(String),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ToolError {
+    #[error("tool '{name}' not found")]
+    ToolNotFound { name: String },
+    #[error("tool '{name}' execution failed: {reason}")]
+    ExecutionFailed { name: String, reason: String },
+    #[error("tool '{name}' permission denied: {reason}")]
+    PermissionDenied { name: String, reason: String },
+    #[error("tool timeout after {0:?}")]
+    Timeout(Duration),
+    // v0.1 contract-first (design error section): MCP server crash/disconnect mid-call.
+    // Consumed by the v0.2 McpConnectionManager; defined now so the contract is stable.
+    #[error("MCP server '{server_id}' unavailable: {reason}")]
+    ServerUnavailable { server_id: String, reason: String },
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
