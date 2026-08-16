@@ -3,12 +3,15 @@
 //! Modules engine/session_allow/module are added incrementally by T3/T4/T5.
 pub mod engine;
 pub mod error;
+pub mod module;
 pub mod policy;
 pub mod session_allow;
 
 pub use engine::PermissionEngine;
 pub use error::PermissionError;
+pub use module::{ApprovalDecision, PermissionModule};
 pub use policy::{
-    CommandRule, PathRule, PermissionEffect, PermissionMode, ToolPolicy, builtin_default_mode,
+    CommandRule, PathRule, PermissionConfig, PermissionEffect, PermissionMode, ToolPolicy,
+    builtin_default_mode,
 };
 pub use session_allow::SessionAllowState;

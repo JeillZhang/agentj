@@ -1,4 +1,7 @@
 //! Tool policy model: per-tool default mode + path/command rules (design #17).
+use std::collections::HashMap;
+
+use crate::error::PermissionError;
 use serde::{Deserialize, Serialize};
 
 /// Per-tool default mode.
@@ -63,6 +66,28 @@ pub fn builtin_default_mode(tool: &str) -> PermissionMode {
     match tool {
         "read" | "glob" | "grep" => PermissionMode::Allow,
         _ => PermissionMode::Ask,
+    }
+}
+
+/// Top-level [permission] section: per-tool policies keyed by tool name.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct PermissionConfig {
+    #[serde(default)]
+    pub tools: HashMap<String, ToolPolicy>,
+}
+
+impl PermissionConfig {
+    /// Validate all rule patterns compile as globs (fail-fast on config load).
+    pub fn validate(&self) -> Result<(), PermissionError> {
+        for (tool, policy) in &self.tools {
+            for rule in &policy.path_rules {
+                globset::Glob::new(&rule.pattern).map_err(|e| PermissionError::InvalidRule {
+                    tool: tool.clone(),
+                    reason: format!("invalid glob '{}': {e}", rule.pattern),
+                })?;
+            }
+        }
+        Ok(())
     }
 }
 

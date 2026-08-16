@@ -26,6 +26,7 @@ name = "agentj-config"
 version = "0.1.1"
 dependencies = [
  "agentj-core",
+ "agentj-permission",
  "serde",
  "tempfile",
  "toml",
@@ -103,6 +104,7 @@ version = "0.1.1"
 dependencies = [
  "agentj-core",
  "agentj-protocol",
+ "async-trait",
  "globset",
  "serde",
  "serde_json",

@@ -47,6 +47,8 @@ impl Default for ModelSection {
 pub struct AgentJConfig {
     #[serde(default)]
     pub model: ModelSection,
+    #[serde(default)]
+    pub permission: Option<agentj_permission::PermissionConfig>,
 }
 
 impl Default for AgentJConfig {
@@ -62,6 +64,7 @@ impl Default for AgentJConfig {
                 }],
                 default_model: default_model(),
             },
+            permission: None,
         }
     }
 }
@@ -194,6 +197,86 @@ mod tests {
         assert_eq!(
             config.get_str("model.default_model").as_deref(),
             Some("opencode-go/kimi-k3")
+        );
+    }
+
+    #[test]
+    fn permission_section_parses() {
+        // AgentJConfig is the serde struct (Config is a non-deserializable wrapper).
+        let cfg: AgentJConfig = toml::from_str(
+            r#"
+            [permission.tools.bash]
+            mode = "ask"
+            [[permission.tools.bash.command_rules]]
+            effect = "deny"
+            prefix = "rm -rf /*"
+        "#,
+        )
+        .unwrap();
+        let pc = cfg.permission.unwrap_or_default();
+        let bash = pc.tools.get("bash").unwrap();
+        assert_eq!(bash.mode, agentj_permission::PermissionMode::Ask);
+        assert_eq!(bash.command_rules.len(), 1);
+        assert_eq!(
+            bash.command_rules[0].effect,
+            agentj_permission::PermissionEffect::Deny
+        );
+        assert_eq!(bash.command_rules[0].prefix, "rm -rf /*");
+    }
+
+    #[test]
+    fn permission_section_defaults_when_absent() {
+        let cfg: AgentJConfig = toml::from_str("").unwrap();
+        assert!(cfg.permission.is_none());
+        // Factory defaults kick in at the engine level, not config level:
+        assert_eq!(
+            agentj_permission::builtin_default_mode("read"),
+            agentj_permission::PermissionMode::Allow
+        );
+        assert_eq!(
+            agentj_permission::builtin_default_mode("bash"),
+            agentj_permission::PermissionMode::Ask
+        );
+    }
+
+    #[test]
+    fn permission_rule_invalid_glob_fails_fast() {
+        // "[**" is an unterminated glob — globset rejects it.
+        let cfg: AgentJConfig = toml::from_str(
+            r#"
+            [permission.tools.write]
+            mode = "ask"
+            [[permission.tools.write.path_rules]]
+            effect = "allow"
+            pattern = "[**"
+        "#,
+        )
+        .unwrap();
+        let pc = cfg.permission.unwrap_or_default();
+        let err = pc.validate().unwrap_err();
+        assert!(matches!(
+            err,
+            agentj_permission::PermissionError::InvalidRule { .. }
+        ));
+    }
+
+    #[test]
+    fn permission_reachable_through_config_wrapper() {
+        // The permission field lives on AgentJConfig; Config::load/merge preserves it.
+        let dir = std::env::temp_dir().join(format!("agentj-cfg-perm-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("c.toml");
+        std::fs::write(&path, "[permission.tools.bash]\nmode = \"ask\"\n").unwrap();
+        let config = Config::load(Some(path)).unwrap();
+        assert!(config.inner().permission.is_some());
+        assert!(
+            config
+                .inner()
+                .permission
+                .as_ref()
+                .unwrap()
+                .tools
+                .contains_key("bash")
         );
     }
 }
