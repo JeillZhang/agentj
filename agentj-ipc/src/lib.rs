@@ -4,6 +4,9 @@ use agentj_core::error::{IpcError, KernelError, ModuleError};
 use agentj_core::kernel::Kernel;
 use agentj_core::module::KernelMessage;
 use agentj_core::types::SessionId;
+use agentj_permission::{ApprovalDecision, PermissionModule};
+use agentj_protocol::permission::{PermissionRequestParams, PermissionRespondParams};
+use agentj_protocol::streaming::CancelParams;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -79,6 +82,8 @@ impl Default for ConnectionRegistry {
 struct JsonRpcRequest {
     #[allow(dead_code)]
     jsonrpc: String, // JSON-RPC 2.0 envelope version — required by serde, value not inspected
+    /// Notifications carry no id (JSON-RPC 2.0 §2) — defaults to Null.
+    #[serde(default)]
     id: Value,
     method: String,
     #[serde(default)]
@@ -116,6 +121,12 @@ impl DispatchError {
             message: msg.into(),
         }
     }
+    fn invalid_request(msg: impl Into<String>) -> Self {
+        Self {
+            code: -32600,
+            message: msg.into(),
+        }
+    }
     fn method_not_found(method: &str) -> Self {
         Self {
             code: -32601,
@@ -136,6 +147,10 @@ pub struct IpcServer {
     kernel_handle: Option<JoinHandle<Result<(), KernelError>>>,
     shutdown_requested: AtomicBool,
     registry: ConnectionRegistry,
+    /// Optional PermissionModule: `permission/respond` and `$/cancelRequest` dispatch into it.
+    pub permission_module: Option<Arc<PermissionModule>>,
+    /// In-flight session id — the mapping `$/cancelRequest` reads to reach the module.
+    pub session: Option<String>,
 }
 
 impl IpcServer {
@@ -149,6 +164,8 @@ impl IpcServer {
             kernel_handle: Some(kernel_handle),
             shutdown_requested: AtomicBool::new(false),
             registry: ConnectionRegistry::new(),
+            permission_module: None,
+            session: None,
         }
     }
 
@@ -213,6 +230,8 @@ impl IpcServer {
             "session/new" => self.dispatch_session_new(),
             "session/run" => self.dispatch_session_run(&req).await,
             "shutdown" => self.dispatch_shutdown(),
+            "permission/respond" => self.dispatch_permission_respond(&req),
+            "$/cancelRequest" => self.dispatch_cancel_request(&req),
             other => Err(DispatchError::method_not_found(other)),
         };
 
@@ -277,6 +296,53 @@ impl IpcServer {
         Ok(serde_json::json!({ "status": "ok" }))
     }
 
+    /// `permission/respond`: deliver the client's decision to a pending approval.
+    /// An unknown request_id is an error (-32600), never silent success.
+    fn dispatch_permission_respond(&self, req: &JsonRpcRequest) -> Result<Value, DispatchError> {
+        let params = req
+            .params
+            .as_ref()
+            .ok_or_else(|| DispatchError::invalid_request("missing params"))?;
+        let params: PermissionRespondParams = serde_json::from_value(params.clone())
+            .map_err(|e| DispatchError::invalid_request(e.to_string()))?;
+        let module = self
+            .permission_module
+            .clone()
+            .ok_or_else(|| DispatchError::invalid_request("no permission module"))?;
+        let decision = match params.decision {
+            agentj_protocol::permission::PermissionDecision::Allow => ApprovalDecision::Allow,
+            agentj_protocol::permission::PermissionDecision::Deny => ApprovalDecision::Deny,
+            agentj_protocol::permission::PermissionDecision::AllowAlways => {
+                ApprovalDecision::AllowAlways
+            }
+            agentj_protocol::permission::PermissionDecision::Unknown => {
+                return Err(DispatchError::invalid_request("unknown decision"));
+            }
+        };
+        let rid = agentj_core::permission::PermissionRequestId(params.request_id);
+        if !module.respond(&rid, decision) {
+            return Err(DispatchError::invalid_request(format!(
+                "unknown permission request: {}",
+                rid.0
+            )));
+        }
+        Ok(serde_json::json!({}))
+    }
+
+    /// `$/cancelRequest` notification: resolve the in-flight session's pending
+    /// approvals to Deny ("cancelled"). Notifications carry no response body.
+    fn dispatch_cancel_request(&self, req: &JsonRpcRequest) -> Result<Value, DispatchError> {
+        let _params: CancelParams =
+            serde_json::from_value(req.params.clone().unwrap_or(serde_json::json!({})))
+                .map_err(|e| DispatchError::invalid_request(e.to_string()))?;
+        let session_id = self.session.clone();
+        let module = self.permission_module.as_ref();
+        if let (Some(session_id), Some(module)) = (session_id, module) {
+            let _ = module.cancel_session(&session_id, "cancelled");
+        }
+        Ok(serde_json::Value::Null)
+    }
+
     /// Run the server in stdio mode via the unified Connection serve loop (design 决策 #2).
     /// On EOF or after a shutdown request, signal the kernel and await its graceful shutdown.
     /// The read loop is interrupted when the kernel finishes (design #13: SIGINT/SIGTERM
@@ -288,6 +354,25 @@ impl IpcServer {
         let conn = StdioConnection::new();
         let conn_id = conn.id();
         self.registry.register(Box::new(conn));
+        // Subscribe the permission notifier: an Ask request emits a $/permissionRequest
+        // notification line on stdout (same blocking write path as StdioConnection::send).
+        if let Some(module) = &self.permission_module {
+            let notifier = Arc::new(|p: &PermissionRequestParams| {
+                let msg = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "method": "$/permissionRequest",
+                    "params": {
+                        "request_id": p.request_id,
+                        "tool": p.tool,
+                        "args": p.args,
+                        "reason": p.reason,
+                    },
+                });
+                let mut stdout = std::io::stdout().lock();
+                let _ = writeln!(stdout, "{msg}");
+            });
+            module.set_notifier(notifier);
+        }
         // Poll the kernel handle by `&mut` (taken out so the future needs no `self` borrow
         // while the loop also reads the registry); it is restored below for await_shutdown.
         let mut kernel_handle = self.kernel_handle.take();
@@ -409,6 +494,7 @@ mod tests {
     use agentj_core::agent_loop::AgentLoop;
     use agentj_core::kernel::Kernel;
     use agentj_core::module::*;
+    use agentj_core::permission::{PermissionChecker, PermissionContext, PermissionDecision};
     use agentj_core::types::*;
     use agentj_model::mock::MockModelProvider;
     use agentj_session::InMemoryStore;
@@ -448,6 +534,97 @@ mod tests {
             Arc::new(ContextPipeline::new()),
             "You are helpful.".into(),
         )
+    }
+
+    fn permission_server() -> (IpcServer, Arc<agentj_permission::PermissionModule>) {
+        let mut policies = std::collections::HashMap::new();
+        policies.insert(
+            "bash".to_string(),
+            agentj_permission::ToolPolicy {
+                mode: agentj_permission::PermissionMode::Ask,
+                path_rules: vec![],
+                command_rules: vec![],
+            },
+        );
+        let module = Arc::new(agentj_permission::PermissionModule::new(
+            policies,
+            std::time::Duration::from_millis(50),
+        ));
+        let mut server = IpcServer::new(stub_agent_loop(), Kernel::new());
+        server.permission_module = Some(module.clone());
+        (server, module)
+    }
+
+    #[tokio::test]
+    async fn permission_respond_resolves_pending_approval() {
+        let (server, module) = permission_server();
+        let ctx = PermissionContext {
+            session_id: "s1".into(),
+            tool: "bash".into(),
+            source: ToolSource::Builtin,
+            args: serde_json::json!({"cmd": "curl x"}),
+            workspace_root: std::path::PathBuf::from("/ws"),
+        };
+        let d = module.check(&ctx);
+        if let PermissionDecision::Ask { request_id } = d {
+            let module2 = module.clone();
+            let rid = request_id.clone();
+            let handle = tokio::spawn(async move { module2.await_approval(&rid).await });
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            let raw = format!(
+                r#"{{"jsonrpc":"2.0","id":7,"method":"permission/respond","params":{{"request_id":"{}","decision":"allow"}}}}"#,
+                request_id.0
+            );
+            let resp = server.handle_request(&raw).await.unwrap();
+            assert!(resp.contains("\"result\""));
+            assert!(matches!(handle.await.unwrap(), PermissionDecision::Allow));
+        } else {
+            panic!("expected Ask");
+        }
+    }
+
+    #[tokio::test]
+    async fn permission_respond_unknown_request_id_errors() {
+        let (server, _module) = permission_server();
+        let raw = r#"{"jsonrpc":"2.0","id":8,"method":"permission/respond","params":{"request_id":"nope","decision":"allow"}}"#;
+        let resp = server.handle_request(raw).await.unwrap();
+        assert!(resp.contains("\"error\""));
+        assert!(
+            resp.contains("-32600") || resp.contains("InvalidRequest") || resp.contains("unknown")
+        );
+    }
+
+    #[tokio::test]
+    async fn cancel_request_resolves_pending_to_deny() {
+        let (mut server, _module) = permission_server();
+        let module = server.permission_module.clone().unwrap();
+        let ctx = PermissionContext {
+            session_id: "s1".into(),
+            tool: "bash".into(),
+            source: ToolSource::Builtin,
+            args: serde_json::json!({"cmd": "curl x"}),
+            workspace_root: std::path::PathBuf::from("/ws"),
+        };
+        if let PermissionDecision::Ask { request_id } = module.check(&ctx) {
+            let module2 = module.clone();
+            let rid = request_id.clone();
+            let handle = tokio::spawn(async move { module2.await_approval(&rid).await });
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            // Seed the request→session mapping the $/cancelRequest handler reads,
+            // then send the notification and assert the HANDLER resolves the approval
+            // (no manual cancel_session call — the mapping path is exercised).
+            server.session = Some("s1".into());
+            let raw = r#"{"jsonrpc":"2.0","method":"$/cancelRequest","params":{"id":5}}"#;
+            let _ = server.handle_request(raw).await.unwrap();
+            assert_eq!(
+                handle.await.unwrap(),
+                PermissionDecision::Deny {
+                    reason: "cancelled".into()
+                }
+            );
+        } else {
+            panic!("expected Ask");
+        }
     }
 
     #[tokio::test]

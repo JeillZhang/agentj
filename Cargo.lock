@@ -66,6 +66,8 @@ dependencies = [
  "agentj-context",
  "agentj-core",
  "agentj-model",
+ "agentj-permission",
+ "agentj-protocol",
  "agentj-session",
  "async-trait",
  "serde",
