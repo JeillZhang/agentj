@@ -227,7 +227,7 @@ impl ModelProvider for ResponsesProvider {
         let response = self
             .client
             .post(&url)
-            .header("Authorization", format!("Bearer {}", &self.api_key))
+            .header("Authorization", format!("Bearer {}", self.api_key))
             .json(&self.request_body(&messages, &[], &options, false))
             .send()
             .await
@@ -273,7 +273,7 @@ impl ResponsesProvider {
         let response = self
             .client
             .post(&url)
-            .header("Authorization", format!("Bearer {}", &self.api_key))
+            .header("Authorization", format!("Bearer {}", self.api_key))
             .json(&self.request_body(messages, tools, options, true))
             .send()
             .await
