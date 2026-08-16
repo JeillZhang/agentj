@@ -1,3 +1,5 @@
+pub mod file_store;
+
 use agentj_core::error::{ModuleError, SessionError};
 use agentj_core::hooks::EventBus;
 use agentj_core::module::{EventType, SessionStatus, SessionStore};
