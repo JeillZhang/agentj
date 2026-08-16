@@ -1,10 +1,10 @@
 # AGENTS.md
 
-> Updated 2026-08-16 — v0.2.1 released (11 crates, permission system + 2 new protocol methods, acceptance fixes BUG-001/002/003); daemon-kernel design approved for v0.3.
+> Updated 2026-08-16 — v0.2.1 released (11 crates, permission system + 2 new protocol methods, acceptance fixes BUG-001/002/003); daemon-kernel design approved for v0.4. Version renumbering: ecosystem expansion = v0.3, commercial (incl. daemon-kernel) = v0.4.
 
 ## Project Status
 
-AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + 可插拔模块」架构。v0.2 已落地：**IPC 协议契约**（14 方法）+ **11 crate 内核**（agentj-core 等，见 Architecture）——内核调度 + 模块 trait 注册表、AgentLoop 流式 API、**权限审批系统**（`$/permissionRequest` + `permission/respond`，设计决策 #17）、内置工具、MCP 桥、JSON-RPC stdio IPC、CLI run/serve、模型提供方（DeepSeek + opencode-go 三线格式统一订阅）；**守护内核（常驻 API 服务）设计已批准**——统一 Connection 传输抽象契约 v0.1 固化、多客户端常驻能力 v0.3 落地（见 v0.3 计划）。
+AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + 可插拔模块」架构。v0.2 已落地：**IPC 协议契约**（14 方法）+ **11 crate 内核**（agentj-core 等，见 Architecture）——内核调度 + 模块 trait 注册表、AgentLoop 流式 API、**权限审批系统**（`$/permissionRequest` + `permission/respond`，设计决策 #17）、内置工具、MCP 桥、JSON-RPC stdio IPC、CLI run/serve、模型提供方（DeepSeek + opencode-go 三线格式统一订阅）；**守护内核（常驻 API 服务）设计已批准**——统一 Connection 传输抽象契约 v0.1 固化、多客户端常驻能力 v0.4 落地（见 v0.4 计划）。
 
 ## Setup
 
@@ -47,7 +47,7 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
 - `protocol/methods.json`：方法注册表（method ↔ params/result schema、方向、类型）。
 - `docs/specs/ipc-protocol.md`：人类可读协议规范（11 节，中文）。
 - `bindings/ts/`：TS 绑定测试（json-schema-to-typescript + tsc）。
-- **守护内核（设计已批准，契约 v0.1 / 能力 v0.3）**：统一 `Connection` 传输抽象（stdio / TCP / Unix socket），`agentj serve --port` 常驻内核多客户端共享；协议加性扩展（`multi_client` / `connection_id` / `session/subscribe` / `permission` 定向 / `-32805`/`-32806`）——见 `docs/superpowers/specs/2026-08-15-agentj-daemon-kernel-design.md`。v0.1 计划 T13/T14 已按 Connection 模型改写；v0.3 计划 T0/T3/T4 已改为多客户端常驻。
+- **守护内核（设计已批准，契约 v0.1 / 能力 v0.4）**：统一 `Connection` 传输抽象（stdio / TCP / Unix socket），`agentj serve --port` 常驻内核多客户端共享；协议加性扩展（`multi_client` / `connection_id` / `session/subscribe` / `permission` 定向 / `-32805`/`-32806`）——见 `docs/superpowers/specs/2026-08-15-agentj-daemon-kernel-design.md`。v0.1 计划 T13/T14 已按 Connection 模型改写；v0.4 计划 T0/T3/T4 已改为多客户端常驻。
 
 ## Conventions
 
