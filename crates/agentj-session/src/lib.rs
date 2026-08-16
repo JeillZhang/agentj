@@ -149,8 +149,13 @@ impl SessionStore for InMemoryStore {
 mod tests {
     use super::*;
     use agentj_core::error::{ModuleError, SessionError};
-    use agentj_core::module::{SessionStatus, SessionStore};
+    use agentj_core::hooks::EventBus;
+    use agentj_core::module::{
+        ConfigProvider, EventHandler, EventType, KernelContext, ProviderRegistry, SessionStatus,
+        SessionStore, ToolRegistry,
+    };
     use agentj_core::types::{ChatMessage, Role};
+    use std::sync::Arc;
 
     #[test]
     fn create_and_append_session() -> Result<(), ModuleError> {
@@ -341,5 +346,73 @@ mod tests {
         for h in handles {
             h.join().unwrap();
         }
+    }
+
+    // ---- v0.3 T9 expiry scan (design 遗留问题「Session 过期回收」) ----
+
+    struct ExpirySpy {
+        events: Arc<Mutex<Vec<EventType>>>,
+    }
+
+    impl EventHandler for ExpirySpy {
+        fn on_event(&self, event: &EventType, _ctx: &KernelContext) {
+            self.events.lock().unwrap().push(event.clone());
+        }
+    }
+
+    struct NoopCfg;
+    impl ConfigProvider for NoopCfg {
+        fn get_str(&self, _k: &str) -> Option<String> {
+            None
+        }
+        fn get_int(&self, _k: &str) -> Option<i64> {
+            None
+        }
+        fn providers(&self) -> Vec<(String, String)> {
+            vec![]
+        }
+    }
+
+    #[test]
+    fn scan_expired_archives_and_publishes() -> Result<(), ModuleError> {
+        // injectable clock: everything is created at t=90s (deterministic — last_activity
+        // must be comparable against the explicit now_epoch, NOT the real wall clock)
+        let store = Arc::new(InMemoryStore::with_clock(|| 90));
+        let sid = store.create()?;
+        store.append(&sid, ChatMessage::user("hello"))?;
+
+        // ctx-carrying bus: the store publishes through it; the ctx reuses the store itself
+        let ctx = KernelContext {
+            session: store.clone(),
+            tools: Arc::new(ToolRegistry::new()),
+            providers: Arc::new(ProviderRegistry::new()),
+            config: Arc::new(NoopCfg),
+        };
+        let bus = EventBus::with_ctx(Arc::new(ctx));
+        let spy = Arc::new(ExpirySpy {
+            events: Arc::new(Mutex::new(vec![])),
+        });
+        // EventBus matches by exact equality (T0) — subscribe to the ACTUAL session id
+        bus.register(EventType::SessionExpired(sid.clone()), spy.clone());
+
+        // now = 100, ttl = 5s → last_activity (90) is stale → expired
+        let count = store.scan_expired(std::time::Duration::from_secs(5), 100, &bus)?;
+        assert_eq!(count, 1);
+        assert_eq!(store.status(&sid)?, SessionStatus::Archived);
+        assert!(matches!(
+            spy.events.lock().unwrap()[0],
+            EventType::SessionExpired(ref s) if *s == sid
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn scan_keeps_fresh_sessions_active() -> Result<(), ModuleError> {
+        let store = Arc::new(InMemoryStore::new());
+        let sid = store.create()?;
+        let count = store.scan_expired(std::time::Duration::from_secs(60), 0, &EventBus::new())?;
+        assert_eq!(count, 0);
+        assert_eq!(store.status(&sid)?, SessionStatus::Active);
+        Ok(())
     }
 }
