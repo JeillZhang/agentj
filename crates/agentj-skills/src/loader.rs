@@ -1,3 +1,66 @@
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+
+/// Priority order (design §5): .aj > .agents > .claude > builtin.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum SkillPriority {
+    Builtin,
+    Claude,
+    Agents,
+    Aj,
+}
+
+#[derive(Debug, Clone)]
+pub struct Skill {
+    pub name: String,
+    pub path: PathBuf,
+    pub description: String,
+    pub priority: SkillPriority,
+}
+
+/// Scan `base` for `.aj/skills`, `.agents/skills`, `.claude/skills`; each skill is a
+/// subdirectory containing SKILL.md. Same-name skills: highest priority wins (map merge
+/// with max). Different-name skills: all loaded.
+pub fn load_skills(base: &Path) -> Result<Vec<Skill>, Box<dyn std::error::Error>> {
+    let mut merged: HashMap<String, Skill> = HashMap::new();
+    for (subdir, priority) in [
+        (".aj/skills", SkillPriority::Aj),
+        (".agents/skills", SkillPriority::Agents),
+        (".claude/skills", SkillPriority::Claude),
+    ] {
+        let dir = base.join(subdir);
+        if !dir.is_dir() {
+            continue;
+        }
+        for entry in std::fs::read_dir(&dir)? {
+            let entry = entry?;
+            let skill_dir = entry.path();
+            if !skill_dir.is_dir() {
+                continue;
+            }
+            let md_path = skill_dir.join("SKILL.md");
+            if !md_path.is_file() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().to_string();
+            let description = std::fs::read_to_string(&md_path)?;
+            let candidate = Skill {
+                name: name.clone(),
+                path: skill_dir,
+                description,
+                priority,
+            };
+            match merged.get(&name) {
+                Some(existing) if existing.priority >= candidate.priority => {}
+                _ => {
+                    merged.insert(name, candidate);
+                }
+            }
+        }
+    }
+    Ok(merged.into_values().collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -15,7 +78,10 @@ mod tests {
         write_skill(&dir.path().join(".claude/skills"), "echo", "CLAUDE VERSION");
         let skills = load_skills(dir.path()).unwrap();
         let echo = skills.iter().find(|s| s.name == "echo").unwrap();
-        assert_eq!(echo.description, "AJ VERSION", ".aj wins over .claude for same name");
+        assert_eq!(
+            echo.description, "AJ VERSION",
+            ".aj wins over .claude for same name"
+        );
         assert_eq!(echo.priority, SkillPriority::Aj);
     }
 
