@@ -7,7 +7,10 @@ pub enum PermissionError {
     InvalidRule { tool: String, reason: String },
 
     #[error("permission request '{request_id}' timed out after {timeout:?}")]
-    RequestTimeout { request_id: String, timeout: Duration },
+    RequestTimeout {
+        request_id: String,
+        timeout: Duration,
+    },
 
     #[error("permission request '{request_id}' cancelled: {reason}")]
     RequestCancelled { request_id: String, reason: String },
