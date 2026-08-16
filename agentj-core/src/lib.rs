@@ -4,6 +4,7 @@ pub mod agent_loop;
 pub mod error;
 pub mod kernel;
 pub mod module;
+pub mod permission;
 pub mod types;
 
 pub fn add(left: u64, right: u64) -> u64 {
