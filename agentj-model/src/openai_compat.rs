@@ -61,7 +61,7 @@ impl OpenAICompatibleProvider {
         let response = self
             .client
             .post(&url)
-            .header("Authorization", format!("Bearer {}", &self.api_key))
+            .header("Authorization", format!("Bearer {}", self.api_key))
             .header("Content-Type", "application/json")
             .json(&self.request_body(messages, tools, options))
             .send()
@@ -236,7 +236,7 @@ impl ModelProvider for OpenAICompatibleProvider {
     ) -> Result<ChatResponse, ModelError> {
         let url = format!("{}/v1/chat/completions", self.base_url);
         let response = self.client.post(&url)
-            .header("Authorization", format!("Bearer {}", &self.api_key))
+            .header("Authorization", format!("Bearer {}", self.api_key))
             .json(&serde_json::json!({ "model": options.model, "messages": messages, "stream": false }))
             .send().await
             .map_err(|e| ModelError::Network(e.to_string()))?;

@@ -1,7 +1,7 @@
 pub mod merge;
-use std::path::PathBuf;
 use agentj_core::module::ConfigProvider;
 use serde::Deserialize;
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ModelProviderConfig {
@@ -14,7 +14,9 @@ pub struct ModelProviderConfig {
     pub kind: String,
 }
 
-fn default_kind() -> String { "openai-compat".into() }
+fn default_kind() -> String {
+    "openai-compat".into()
+}
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ModelSection {
@@ -27,11 +29,17 @@ pub struct ModelSection {
     pub default_model: String,
 }
 
-fn default_model() -> String { "deepseek-chat".into() }
+fn default_model() -> String {
+    "deepseek-chat".into()
+}
 
 impl Default for ModelSection {
     fn default() -> Self {
-        Self { provider: "deepseek".into(), providers: vec![], default_model: default_model() }
+        Self {
+            provider: "deepseek".into(),
+            providers: vec![],
+            default_model: default_model(),
+        }
     }
 }
 
@@ -43,16 +51,18 @@ pub struct AgentJConfig {
 
 impl Default for AgentJConfig {
     fn default() -> Self {
-        Self { model: ModelSection {
-            provider: "deepseek".into(),
-            providers: vec![ModelProviderConfig {
-                name: "deepseek-chat".into(),
-                base_url: "https://api.deepseek.com".into(),
-                api_key_env: Some("DEEPSEEK_API_KEY".into()),
-                kind: default_kind(),
-            }],
-            default_model: default_model(),
-        }}
+        Self {
+            model: ModelSection {
+                provider: "deepseek".into(),
+                providers: vec![ModelProviderConfig {
+                    name: "deepseek-chat".into(),
+                    base_url: "https://api.deepseek.com".into(),
+                    api_key_env: Some("DEEPSEEK_API_KEY".into()),
+                    kind: default_kind(),
+                }],
+                default_model: default_model(),
+            },
+        }
     }
 }
 
@@ -64,16 +74,19 @@ impl Config {
     pub fn load(path: Option<PathBuf>) -> Result<Self, Box<dyn std::error::Error>> {
         let mut config = AgentJConfig::default();
         if let Some(p) = path
-            && p.exists() {
-                let content = std::fs::read_to_string(&p)?;
-                let file_config: AgentJConfig = toml::from_str(&content)?;
-                config = merge::merge_config(config, file_config);
-            }
+            && p.exists()
+        {
+            let content = std::fs::read_to_string(&p)?;
+            let file_config: AgentJConfig = toml::from_str(&content)?;
+            config = merge::merge_config(config, file_config);
+        }
         config = merge::apply_env(config);
         Ok(Self { inner: config })
     }
 
-    pub fn inner(&self) -> &AgentJConfig { &self.inner }
+    pub fn inner(&self) -> &AgentJConfig {
+        &self.inner
+    }
 }
 
 impl ConfigProvider for Config {
@@ -84,9 +97,14 @@ impl ConfigProvider for Config {
             _ => None,
         }
     }
-    fn get_int(&self, _key: &str) -> Option<i64> { None }
+    fn get_int(&self, _key: &str) -> Option<i64> {
+        None
+    }
     fn providers(&self) -> Vec<(String, String)> {
-        self.inner.model.providers.iter()
+        self.inner
+            .model
+            .providers
+            .iter()
             .map(|p| (p.name.clone(), p.base_url.clone()))
             .collect()
     }
@@ -95,18 +113,21 @@ impl ConfigProvider for Config {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
 
     #[test]
     fn loads_default_config() {
         let dir = tempfile::TempDir::new().unwrap();
         let config_path = dir.path().join("config.toml");
-        std::fs::write(&config_path, r#"[model]
+        std::fs::write(
+            &config_path,
+            r#"[model]
         provider = "deepseek"
         [[model.providers]]
         name = "deepseek-chat"
         base_url = "https://api.deepseek.com"
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
 
         let config = Config::load(Some(config_path)).unwrap();
         let providers = config.providers();
@@ -131,12 +152,16 @@ mod tests {
         // Legacy config (design 4.3): no `kind` field → "openai-compat" (zero break).
         let dir = tempfile::TempDir::new().unwrap();
         let config_path = dir.path().join("config.toml");
-        std::fs::write(&config_path, r#"[model]
+        std::fs::write(
+            &config_path,
+            r#"[model]
         provider = "deepseek"
         [[model.providers]]
         name = "deepseek-chat"
         base_url = "https://api.deepseek.com"
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
 
         let config = Config::load(Some(config_path)).unwrap();
         assert_eq!(config.inner().model.providers[0].kind, "openai-compat");
@@ -147,7 +172,9 @@ mod tests {
     fn opencode_go_kind_and_default_model_parse() {
         let dir = tempfile::TempDir::new().unwrap();
         let config_path = dir.path().join("config.toml");
-        std::fs::write(&config_path, r#"[model]
+        std::fs::write(
+            &config_path,
+            r#"[model]
         provider = "opencode-go"
         default_model = "opencode-go/kimi-k3"
         [[model.providers]]
@@ -155,13 +182,18 @@ mod tests {
         kind = "opencode-go"
         base_url = "https://opencode.ai/zen/go"
         api_key_env = "OPENCODE_GO_API_KEY"
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
 
         let config = Config::load(Some(config_path)).unwrap();
         let p = &config.inner().model.providers[0];
         assert_eq!(p.kind, "opencode-go");
         assert_eq!(p.base_url, "https://opencode.ai/zen/go");
         assert_eq!(config.inner().model.default_model, "opencode-go/kimi-k3");
-        assert_eq!(config.get_str("model.default_model").as_deref(), Some("opencode-go/kimi-k3"));
+        assert_eq!(
+            config.get_str("model.default_model").as_deref(),
+            Some("opencode-go/kimi-k3")
+        );
     }
 }

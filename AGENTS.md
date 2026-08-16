@@ -1,10 +1,10 @@
 # AGENTS.md
 
-> Updated 2026-08-16 — v0.1 core complete (10 crates); daemon-kernel design approved for v0.3.
+> Updated 2026-08-16 — v0.1.1 released (10 crates, test acceptance passed, 7 bugs fixed); daemon-kernel design approved for v0.3.
 
 ## Project Status
 
-AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + 可插拔模块」架构。v0.1 已落地：**IPC 协议契约**（16 方法）+ **10 crate 内核**（agentj-core 等，见 Architecture）——内核调度 + 模块 trait 注册表、AgentLoop 流式 API、内置工具、MCP 桥、JSON-RPC stdio IPC、CLI run/serve、模型提供方（DeepSeek + opencode-go 三线格式统一订阅）；**守护内核（常驻 API 服务）设计已批准**——统一 Connection 传输抽象契约 v0.1 固化、多客户端常驻能力 v0.3 落地（见 v0.3 计划）。
+AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + 可插拔模块」架构。v0.1 已落地：**IPC 协议契约**（12 方法）+ **10 crate 内核**（agentj-core 等，见 Architecture）——内核调度 + 模块 trait 注册表、AgentLoop 流式 API、内置工具、MCP 桥、JSON-RPC stdio IPC、CLI run/serve、模型提供方（DeepSeek + opencode-go 三线格式统一订阅）；**守护内核（常驻 API 服务）设计已批准**——统一 Connection 传输抽象契约 v0.1 固化、多客户端常驻能力 v0.3 落地（见 v0.3 计划）。
 
 ## Setup
 
@@ -14,7 +14,7 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
 
 ## Commands
 
-- `cargo test --workspace` — 全量测试（118 个：agentj-protocol 31 单元 + 7 契约 + 3 注册表，其余 9 crate 77 个）
+- `cargo test --workspace` — 全量测试（121 个：agentj-protocol 31 单元 + 7 契约 + 3 注册表，其余 9 crate 80 个）
 - `cargo clippy --workspace -- -D warnings` — lint 门禁（零警告）
 - `cargo bench -p agentj-model` — 模型流式基准（criterion：`mock_stream_10_events`）
 - `cargo run -p agentj-protocol --bin gen_schemas` — 重新生成 `schemas/*.json`
@@ -25,13 +25,12 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
 
 - `.github/workflows/ci.yml` — 单元测试流水线（PR + push main + 手动）：`cargo fmt --all --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace --locked`、覆盖率门禁 `cargo llvm-cov --workspace --fail-under-lines 50`（门槛随开发上调至 80%）
 - `.github/workflows/smoke.yml` — 冒烟流水线（PR + push main + 手动）：`cargo build --release --locked` + `agentj --version/--help/run --help/serve --help` 退出码断言 + `cargo test -p agentj-core -- smoke`
-- `.github/workflows/e2e.yml` — E2E 流水线（main 合并后 + 手动）：`cargo build --release --locked` + `cargo test --release --test e2e -- --ignored`（Mock LLM 密封测试，无真实 API key）
+- `.github/workflows/e2e.yml` — E2E 流水线（main 合并后 + 手动）：`cargo build --release --locked` + `cargo test --release --test e2e_cli`（Mock LLM 密封测试，无真实 API key）
 - 本地校验：`scripts/validate-workflow.sh <workflow-file> <jobs...>`（依赖-free，可选 PyYAML 严格解析）
-- ⚠️ 已知缺口：e2e 流水线的 `--test e2e` 目标名与实际 `agentj-cli/tests/e2e_cli.rs` 不一致（`e2e_cli`）；Mock LLM 密封测试接入时需对齐。
 
 ## Architecture
 
-- `agentj-protocol`（leaf crate）：IPC 协议契约的权威 wire 类型（JSON-RPC 2.0 信封、错误码、16 个方法 params/result、流式类型、订阅/权限类型），serde + schemars，零内核耦合。v0.1 的 `agentj-core`/`agentj-ipc` 应消费其类型（导入而非重定义）。
+- `agentj-protocol`（leaf crate）：IPC 协议契约的权威 wire 类型（JSON-RPC 2.0 信封、错误码、12 个方法 params/result、流式类型、订阅/权限类型），serde + schemars，零内核耦合。v0.1 的 `agentj-core`/`agentj-ipc` 应消费其类型（导入而非重定义）。
 - `agentj-core`（内核）：Kernel 调度 + 模块 trait 注册表（`module.rs`：ModelProvider / SessionStore / ToolRegistry / ContextPipeline / ConfigProvider）、AgentLoop 流式 API（`run_turn_stream` → `mpsc::Receiver<AgentEvent>`，`run_turn` 聚合）、错误/类型（`error.rs`/`types.rs`）。
 - `agentj-config`：TOML 配置（`[model]`：`provider` + `providers[]`（name/base_url/api_key_env/**kind**）+ `default_model`），ConfigProvider 读取。
 - `agentj-session`：会话生命周期（InMemoryStore：状态机 SessionStatus + 快照恢复）。

@@ -1,9 +1,9 @@
+use crate::error::KernelError;
+use crate::module::{KernelContext, KernelMessage, KernelModule, ModuleRegister, ModuleState};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::task::JoinHandle;
-use crate::error::KernelError;
-use crate::module::{KernelContext, KernelMessage, KernelModule, ModuleRegister, ModuleState};
 
 const CHANNEL_SIZE: usize = 128;
 const DEFAULT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
@@ -16,10 +16,12 @@ pub struct KernelSender {
 
 impl KernelSender {
     pub fn send(&self, msg: KernelMessage) -> Result<(), KernelError> {
-        self.tx.try_send(msg).map_err(|e| KernelError::MessageRouteFailed {
-            msg: format!("{:?}", e.into_inner()),
-            reason: "channel closed or full".into(),
-        })
+        self.tx
+            .try_send(msg)
+            .map_err(|e| KernelError::MessageRouteFailed {
+                msg: format!("{:?}", e.into_inner()),
+                reason: "channel closed or full".into(),
+            })
     }
 }
 
@@ -117,7 +119,7 @@ impl Kernel {
                     break; // graceful shutdown handled below — NOT broadcast via handle()
                 }
                 let mut guard = modules.lock().unwrap();
-                for (_, module) in guard.iter_mut() {
+                for module in guard.values_mut() {
                     if let Err(e) = module.handle(&msg) {
                         tracing::error!(?e, "module handler error");
                     }
@@ -125,9 +127,12 @@ impl Kernel {
             }
             // design #13: overall budget for the whole chain — a hung module shutdown
             // must not block process exit indefinitely.
-            tokio::time::timeout(overall_timeout, Self::shutdown_all(&modules, &order, &states, shutdown_timeout))
-                .await
-                .map_err(|_| KernelError::ShutdownTimeout(overall_timeout))?
+            tokio::time::timeout(
+                overall_timeout,
+                Self::shutdown_all(&modules, &order, &states, shutdown_timeout),
+            )
+            .await
+            .map_err(|_| KernelError::ShutdownTimeout(overall_timeout))?
         })
     }
 
@@ -142,7 +147,10 @@ impl Kernel {
         let ids: Vec<String> = order.lock().unwrap().iter().rev().cloned().collect();
         let mut first_error: Option<KernelError> = None;
         for id in &ids {
-            states.lock().unwrap().insert(id.clone(), ModuleState::Stopping);
+            states
+                .lock()
+                .unwrap()
+                .insert(id.clone(), ModuleState::Stopping);
             let module = {
                 let mut guard = modules.lock().unwrap();
                 guard.remove(id) // remove while shutting down: no more messages after this
@@ -156,22 +164,36 @@ impl Kernel {
                 Ok(Ok(Ok(()))) => (ModuleState::Stopped, None),
                 Ok(Ok(Err(e))) => {
                     tracing::error!(module_id = %id, error = %e, "module shutdown failed");
-                    (ModuleState::Failed, Some(KernelError::ModuleShutdownFailed(id.clone(), anyhow::Error::from(e))))
+                    (
+                        ModuleState::Failed,
+                        Some(KernelError::ModuleShutdownFailed(
+                            id.clone(),
+                            anyhow::Error::from(e),
+                        )),
+                    )
                 }
                 Ok(Err(e)) => {
                     tracing::error!(module_id = %id, error = %e, "module shutdown task panicked");
-                    (ModuleState::Failed, Some(KernelError::ModuleShutdownFailed(
-                        id.clone(),
-                        anyhow::anyhow!(e.to_string()),
-                    )))
+                    (
+                        ModuleState::Failed,
+                        Some(KernelError::ModuleShutdownFailed(
+                            id.clone(),
+                            anyhow::anyhow!(e.to_string()),
+                        )),
+                    )
                 }
                 Err(_) => {
                     tracing::error!(module_id = %id, ?timeout, "module shutdown timeout");
-                    (ModuleState::Failed, Some(KernelError::ShutdownTimeout(timeout)))
+                    (
+                        ModuleState::Failed,
+                        Some(KernelError::ShutdownTimeout(timeout)),
+                    )
                 }
             };
             states.lock().unwrap().insert(id.clone(), state);
-            if first_error.is_none() { first_error = err; }
+            if first_error.is_none() {
+                first_error = err;
+            }
         }
         match first_error {
             Some(e) => Err(e),
@@ -197,17 +219,31 @@ mod tests {
 
     struct NoopSession;
     impl SessionStore for NoopSession {
-        fn create(&self) -> Result<SessionId, ModuleError> { Ok("s1".into()) }
-        fn append(&self, _s: &SessionId, _m: ChatMessage) -> Result<(), ModuleError> { Ok(()) }
-        fn get(&self, _s: &SessionId) -> Result<Vec<ChatMessage>, ModuleError> { Ok(vec![]) }
-        fn estimate_tokens(&self, _s: &SessionId) -> Result<usize, ModuleError> { Ok(0) }
+        fn create(&self) -> Result<SessionId, ModuleError> {
+            Ok("s1".into())
+        }
+        fn append(&self, _s: &SessionId, _m: ChatMessage) -> Result<(), ModuleError> {
+            Ok(())
+        }
+        fn get(&self, _s: &SessionId) -> Result<Vec<ChatMessage>, ModuleError> {
+            Ok(vec![])
+        }
+        fn estimate_tokens(&self, _s: &SessionId) -> Result<usize, ModuleError> {
+            Ok(0)
+        }
     }
 
     struct NoopConfig;
     impl ConfigProvider for NoopConfig {
-        fn get_str(&self, _k: &str) -> Option<String> { None }
-        fn get_int(&self, _k: &str) -> Option<i64> { None }
-        fn providers(&self) -> Vec<(String, String)> { vec![] }
+        fn get_str(&self, _k: &str) -> Option<String> {
+            None
+        }
+        fn get_int(&self, _k: &str) -> Option<i64> {
+            None
+        }
+        fn providers(&self) -> Vec<(String, String)> {
+            vec![]
+        }
     }
 
     fn dummy_kernel_context() -> KernelContext {
@@ -228,19 +264,34 @@ mod tests {
     }
 
     impl Module for SpyModule {
-        fn id(&self) -> ModuleId { self.id.to_string() }
+        fn id(&self) -> ModuleId {
+            self.id.to_string()
+        }
         fn metadata(&self) -> ModuleMetadata {
             ModuleMetadata {
-                id: self.id.to_string(), name: self.id.to_string(), version: "0.1".into(),
-                description: "".into(), author: "".into(),
+                id: self.id.to_string(),
+                name: self.id.to_string(),
+                version: "0.1".into(),
+                description: "".into(),
+                author: "".into(),
             }
         }
-        fn init(&mut self, _ctx: &KernelContext, _r: &mut ModuleRegister) -> Result<(), ModuleError> {
-            if self.init_fails { Err(ModuleError::Init("boom".into())) } else { Ok(()) }
+        fn init(
+            &mut self,
+            _ctx: &KernelContext,
+            _r: &mut ModuleRegister,
+        ) -> Result<(), ModuleError> {
+            if self.init_fails {
+                Err(ModuleError::Init("boom".into()))
+            } else {
+                Ok(())
+            }
         }
         fn shutdown(&mut self) -> Result<(), ModuleError> {
             self.shutdowns.lock().unwrap().push(self.id.to_string());
-            if let Some(d) = self.shutdown_delay { std::thread::sleep(d); }
+            if let Some(d) = self.shutdown_delay {
+                std::thread::sleep(d);
+            }
             Ok(())
         }
     }
@@ -259,26 +310,42 @@ mod tests {
         shutdown_delay: Option<Duration>,
         init_fails: bool,
     ) -> SpyModule {
-        SpyModule { id, handled, shutdowns, shutdown_delay, init_fails }
+        SpyModule {
+            id,
+            handled,
+            shutdowns,
+            shutdown_delay,
+            init_fails,
+        }
     }
 
     #[tokio::test]
     async fn kernel_routes_message_and_shuts_down() {
         let handled = Arc::new(StdMutex::new(vec![]));
         let shutdowns = Arc::new(StdMutex::new(vec![]));
-        let mut register = ModuleRegister::new(Arc::new(ToolRegistry::new()), Arc::new(ProviderRegistry::new()));
+        let mut register = ModuleRegister::new(
+            Arc::new(ToolRegistry::new()),
+            Arc::new(ProviderRegistry::new()),
+        );
         let mut kernel = Kernel::new();
-        kernel.register_module(
-            Box::new(spy("spy", handled.clone(), shutdowns.clone(), None, false)),
-            &dummy_kernel_context(),
-            &mut register,
-        ).unwrap();
+        kernel
+            .register_module(
+                Box::new(spy("spy", handled.clone(), shutdowns.clone(), None, false)),
+                &dummy_kernel_context(),
+                &mut register,
+            )
+            .unwrap();
         assert_eq!(kernel.module_state("spy"), Some(ModuleState::Ready));
 
         let handle = kernel.start();
-        kernel.sender().send(KernelMessage::UserRequest {
-            session_id: "s1".into(), content: "hello".into(), attachments: vec![],
-        }).unwrap();
+        kernel
+            .sender()
+            .send(KernelMessage::UserRequest {
+                session_id: "s1".into(),
+                content: "hello".into(),
+                attachments: vec![],
+            })
+            .unwrap();
 
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert_eq!(handled.lock().unwrap().len(), 1);
@@ -292,30 +359,64 @@ mod tests {
     #[tokio::test]
     async fn shutdown_runs_in_reverse_registration_order() {
         let shutdowns = Arc::new(StdMutex::new(vec![]));
-        let mut register = ModuleRegister::new(Arc::new(ToolRegistry::new()), Arc::new(ProviderRegistry::new()));
+        let mut register = ModuleRegister::new(
+            Arc::new(ToolRegistry::new()),
+            Arc::new(ProviderRegistry::new()),
+        );
         let mut kernel = Kernel::new();
-        kernel.register_module(
-            Box::new(spy("a", Arc::new(StdMutex::new(vec![])), shutdowns.clone(), None, false)),
-            &dummy_kernel_context(), &mut register,
-        ).unwrap();
-        kernel.register_module(
-            Box::new(spy("b", Arc::new(StdMutex::new(vec![])), shutdowns.clone(), None, false)),
-            &dummy_kernel_context(), &mut register,
-        ).unwrap();
+        kernel
+            .register_module(
+                Box::new(spy(
+                    "a",
+                    Arc::new(StdMutex::new(vec![])),
+                    shutdowns.clone(),
+                    None,
+                    false,
+                )),
+                &dummy_kernel_context(),
+                &mut register,
+            )
+            .unwrap();
+        kernel
+            .register_module(
+                Box::new(spy(
+                    "b",
+                    Arc::new(StdMutex::new(vec![])),
+                    shutdowns.clone(),
+                    None,
+                    false,
+                )),
+                &dummy_kernel_context(),
+                &mut register,
+            )
+            .unwrap();
 
         let handle = kernel.start();
         kernel.sender().send(KernelMessage::Shutdown).unwrap();
         handle.await.unwrap().unwrap();
-        assert_eq!(*shutdowns.lock().unwrap(), vec!["b".to_string(), "a".to_string()]);
+        assert_eq!(
+            *shutdowns.lock().unwrap(),
+            vec!["b".to_string(), "a".to_string()]
+        );
     }
 
     #[tokio::test]
     async fn init_failure_is_reported_and_isolated() {
-        let mut register = ModuleRegister::new(Arc::new(ToolRegistry::new()), Arc::new(ProviderRegistry::new()));
+        let mut register = ModuleRegister::new(
+            Arc::new(ToolRegistry::new()),
+            Arc::new(ProviderRegistry::new()),
+        );
         let mut kernel = Kernel::new();
         let err = kernel.register_module(
-            Box::new(spy("bad", Arc::new(StdMutex::new(vec![])), Arc::new(StdMutex::new(vec![])), None, true)),
-            &dummy_kernel_context(), &mut register,
+            Box::new(spy(
+                "bad",
+                Arc::new(StdMutex::new(vec![])),
+                Arc::new(StdMutex::new(vec![])),
+                None,
+                true,
+            )),
+            &dummy_kernel_context(),
+            &mut register,
         );
         assert!(matches!(err, Err(KernelError::ModuleInitFailed(ref id, _)) if id == "bad"));
         assert_eq!(kernel.module_state("bad"), Some(ModuleState::Failed));
@@ -328,18 +429,24 @@ mod tests {
 
     #[tokio::test]
     async fn shutdown_timeout_yields_shutdown_timeout() {
-        let mut register = ModuleRegister::new(Arc::new(ToolRegistry::new()), Arc::new(ProviderRegistry::new()));
+        let mut register = ModuleRegister::new(
+            Arc::new(ToolRegistry::new()),
+            Arc::new(ProviderRegistry::new()),
+        );
         let mut kernel = Kernel::with_shutdown_timeout(Duration::from_millis(10));
-        kernel.register_module(
-            Box::new(spy(
-                "slow",
-                Arc::new(StdMutex::new(vec![])),
-                Arc::new(StdMutex::new(vec![])),
-                Some(Duration::from_millis(200)),
-                false,
-            )),
-            &dummy_kernel_context(), &mut register,
-        ).unwrap();
+        kernel
+            .register_module(
+                Box::new(spy(
+                    "slow",
+                    Arc::new(StdMutex::new(vec![])),
+                    Arc::new(StdMutex::new(vec![])),
+                    Some(Duration::from_millis(200)),
+                    false,
+                )),
+                &dummy_kernel_context(),
+                &mut register,
+            )
+            .unwrap();
 
         let handle = kernel.start();
         kernel.sender().send(KernelMessage::Shutdown).unwrap();
@@ -353,31 +460,40 @@ mod tests {
         // Overall (design #13) timeout: 10ms total budget for the whole chain,
         // two modules each blocking 50ms — the overall budget fires first.
         let shutdowns = Arc::new(StdMutex::new(vec![]));
-        let mut register = ModuleRegister::new(Arc::new(ToolRegistry::new()), Arc::new(ProviderRegistry::new()));
-        let mut kernel = Kernel::with_timeouts(
-            Duration::from_secs(2),          // per-module timeout
-            Duration::from_millis(10),       // overall graceful shutdown timeout
+        let mut register = ModuleRegister::new(
+            Arc::new(ToolRegistry::new()),
+            Arc::new(ProviderRegistry::new()),
         );
-        kernel.register_module(
-            Box::new(spy(
-                "a",
-                Arc::new(StdMutex::new(vec![])),
-                shutdowns.clone(),
-                Some(Duration::from_millis(50)),
-                false,
-            )),
-            &dummy_kernel_context(), &mut register,
-        ).unwrap();
-        kernel.register_module(
-            Box::new(spy(
-                "b",
-                Arc::new(StdMutex::new(vec![])),
-                shutdowns.clone(),
-                Some(Duration::from_millis(50)),
-                false,
-            )),
-            &dummy_kernel_context(), &mut register,
-        ).unwrap();
+        let mut kernel = Kernel::with_timeouts(
+            Duration::from_secs(2),    // per-module timeout
+            Duration::from_millis(10), // overall graceful shutdown timeout
+        );
+        kernel
+            .register_module(
+                Box::new(spy(
+                    "a",
+                    Arc::new(StdMutex::new(vec![])),
+                    shutdowns.clone(),
+                    Some(Duration::from_millis(50)),
+                    false,
+                )),
+                &dummy_kernel_context(),
+                &mut register,
+            )
+            .unwrap();
+        kernel
+            .register_module(
+                Box::new(spy(
+                    "b",
+                    Arc::new(StdMutex::new(vec![])),
+                    shutdowns.clone(),
+                    Some(Duration::from_millis(50)),
+                    false,
+                )),
+                &dummy_kernel_context(),
+                &mut register,
+            )
+            .unwrap();
 
         let handle = kernel.start();
         kernel.sender().send(KernelMessage::Shutdown).unwrap();

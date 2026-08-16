@@ -1,8 +1,8 @@
-use std::collections::HashMap;
-use std::sync::Mutex;
 use agentj_core::error::{ModuleError, SessionError};
 use agentj_core::module::{SessionStatus, SessionStore};
 use agentj_core::types::{ChatMessage, SessionId, SessionSnapshot, now_epoch_secs};
+use std::collections::HashMap;
+use std::sync::Mutex;
 
 pub struct InMemoryStore {
     sessions: Mutex<HashMap<SessionId, Vec<ChatMessage>>>,
@@ -21,33 +21,46 @@ impl InMemoryStore {
         let statuses = self.statuses.lock().unwrap();
         match statuses.get(session) {
             Some(SessionStatus::Active) | None => Ok(()),
-            _ => Err(ModuleError::Session(SessionError::InactiveSession(session.clone()))),
+            _ => Err(ModuleError::Session(SessionError::InactiveSession(
+                session.clone(),
+            ))),
         }
     }
 }
 
 impl Default for InMemoryStore {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl SessionStore for InMemoryStore {
     fn create(&self) -> Result<SessionId, ModuleError> {
         let id = uuid::Uuid::new_v4().to_string();
         self.sessions.lock().unwrap().insert(id.clone(), vec![]);
-        self.statuses.lock().unwrap().insert(id.clone(), SessionStatus::Active);
+        self.statuses
+            .lock()
+            .unwrap()
+            .insert(id.clone(), SessionStatus::Active);
         Ok(id)
     }
 
     fn append(&self, session: &SessionId, message: ChatMessage) -> Result<(), ModuleError> {
-        let mut map = self.sessions.lock().unwrap();
         self.require_active(session)?; // inactive → SessionError::InactiveSession
+        let mut map = self.sessions.lock().unwrap();
         map.entry(session.clone()).or_default().push(message);
         Ok(())
     }
 
     fn get(&self, session: &SessionId) -> Result<Vec<ChatMessage>, ModuleError> {
         self.require_active(session)?;
-        Ok(self.sessions.lock().unwrap().get(session).cloned().unwrap_or_default())
+        Ok(self
+            .sessions
+            .lock()
+            .unwrap()
+            .get(session)
+            .cloned()
+            .unwrap_or_default())
     }
 
     fn estimate_tokens(&self, session: &SessionId) -> Result<usize, ModuleError> {
@@ -61,13 +74,20 @@ impl SessionStore for InMemoryStore {
 
     fn status(&self, session: &SessionId) -> Result<SessionStatus, ModuleError> {
         let statuses = self.statuses.lock().unwrap();
-        statuses.get(session).copied().ok_or(ModuleError::Session(SessionError::NotFound(session.clone())))
+        statuses
+            .get(session)
+            .copied()
+            .ok_or(ModuleError::Session(SessionError::NotFound(
+                session.clone(),
+            )))
     }
 
     fn archive(&self, session: &SessionId) -> Result<(), ModuleError> {
         let mut statuses = self.statuses.lock().unwrap();
         if !statuses.contains_key(session) {
-            return Err(ModuleError::Session(SessionError::NotFound(session.clone())));
+            return Err(ModuleError::Session(SessionError::NotFound(
+                session.clone(),
+            )));
         }
         statuses.insert(session.clone(), SessionStatus::Archived);
         Ok(())
@@ -76,7 +96,9 @@ impl SessionStore for InMemoryStore {
     fn delete(&self, session: &SessionId) -> Result<(), ModuleError> {
         let mut statuses = self.statuses.lock().unwrap();
         if !statuses.contains_key(session) {
-            return Err(ModuleError::Session(SessionError::NotFound(session.clone())));
+            return Err(ModuleError::Session(SessionError::NotFound(
+                session.clone(),
+            )));
         }
         statuses.insert(session.clone(), SessionStatus::Deleted);
         self.sessions.lock().unwrap().remove(session); // hard delete: data gone
@@ -87,13 +109,22 @@ impl SessionStore for InMemoryStore {
 
     fn snapshot(&self, session: &SessionId) -> Result<SessionSnapshot, ModuleError> {
         let statuses = self.statuses.lock().unwrap();
-        let status = statuses.get(session).copied().ok_or_else(|| {
-            ModuleError::Session(SessionError::NotFound(session.clone()))
-        })?;
+        let status = statuses
+            .get(session)
+            .copied()
+            .ok_or_else(|| ModuleError::Session(SessionError::NotFound(session.clone())))?;
         if status == SessionStatus::Deleted {
-            return Err(ModuleError::Session(SessionError::NotFound(session.clone())));
+            return Err(ModuleError::Session(SessionError::NotFound(
+                session.clone(),
+            )));
         }
-        let messages = self.sessions.lock().unwrap().get(session).cloned().unwrap_or_default();
+        let messages = self
+            .sessions
+            .lock()
+            .unwrap()
+            .get(session)
+            .cloned()
+            .unwrap_or_default();
         let now = now_epoch_secs();
         Ok(SessionSnapshot {
             session_id: session.clone(),
@@ -105,10 +136,10 @@ impl SessionStore for InMemoryStore {
     }
 
     fn restore(&self, snapshot: &SessionSnapshot) -> Result<(), ModuleError> {
-        let mut sessions = self.sessions.lock().unwrap();
         let mut statuses = self.statuses.lock().unwrap();
-        sessions.insert(snapshot.session_id.clone(), snapshot.messages.clone());
+        let mut sessions = self.sessions.lock().unwrap();
         statuses.insert(snapshot.session_id.clone(), snapshot.status);
+        sessions.insert(snapshot.session_id.clone(), snapshot.messages.clone());
         Ok(())
     }
     // load_all: keep the trait default (empty) — InMemory carries no persistence
@@ -145,7 +176,12 @@ mod tests {
     fn estimate_tokens_counts_approximate() -> Result<(), ModuleError> {
         let store = InMemoryStore::new();
         let sid = store.create()?;
-        store.append(&sid, ChatMessage::user("hello world, this is a test message with enough chars to count tokens roughly"))?;
+        store.append(
+            &sid,
+            ChatMessage::user(
+                "hello world, this is a test message with enough chars to count tokens roughly",
+            ),
+        )?;
         let tokens = store.estimate_tokens(&sid)?;
         assert!(tokens > 5, "should have more than 5 tokens");
         assert!(tokens < 50, "should have fewer than 50 tokens");
@@ -166,7 +202,10 @@ mod tests {
             store.append(&sid, ChatMessage::user("x")),
             Err(ModuleError::Session(SessionError::InactiveSession(_)))
         ));
-        assert!(matches!(store.get(&sid), Err(ModuleError::Session(SessionError::InactiveSession(_)))));
+        assert!(matches!(
+            store.get(&sid),
+            Err(ModuleError::Session(SessionError::InactiveSession(_)))
+        ));
 
         store.delete(&sid)?;
         assert_eq!(store.status(&sid)?, SessionStatus::Deleted);
@@ -176,7 +215,10 @@ mod tests {
     #[test]
     fn delete_missing_session_returns_not_found() -> Result<(), ModuleError> {
         let store = InMemoryStore::new();
-        assert!(matches!(store.delete(&"nonexistent".into()), Err(ModuleError::Session(SessionError::NotFound(_)))));
+        assert!(matches!(
+            store.delete(&"nonexistent".into()),
+            Err(ModuleError::Session(SessionError::NotFound(_)))
+        ));
         Ok(())
     }
 
@@ -252,5 +294,52 @@ mod tests {
         // InMemory carries no persistence — load_all reports zero persisted sessions
         assert!(store.load_all()?.is_empty());
         Ok(())
+    }
+
+    #[test]
+    fn concurrent_mixed_ops_do_not_deadlock() {
+        use std::sync::{Arc, Barrier, mpsc};
+        use std::thread;
+        use std::time::{Duration, Instant};
+
+        let store = Arc::new(InMemoryStore::new());
+        let sid = store.create().unwrap();
+        const THREADS: usize = 8;
+        const ITERS: usize = 20_000;
+
+        let barrier = Arc::new(Barrier::new(THREADS));
+        let (tx, rx) = mpsc::channel();
+        let mut handles = Vec::with_capacity(THREADS);
+        for t in 0..THREADS {
+            let store = Arc::clone(&store);
+            let sid = sid.clone();
+            let barrier = Arc::clone(&barrier);
+            let tx = tx.clone();
+            handles.push(thread::spawn(move || {
+                barrier.wait();
+                for i in 0..ITERS {
+                    match t % 4 {
+                        0 => drop(store.append(&sid, ChatMessage::user(format!("t{t}-{i}")))),
+                        1 => drop(store.snapshot(&sid)),
+                        2 => drop(store.delete(&sid)),
+                        _ => drop(store.archive(&sid)),
+                    }
+                }
+                tx.send(()).unwrap();
+            }));
+        }
+        drop(tx);
+
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let mut done = 0;
+        while done < THREADS {
+            match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+                Ok(()) => done += 1,
+                Err(_) => panic!("deadlock: only {done}/{THREADS} workers finished within 30s"),
+            }
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
     }
 }

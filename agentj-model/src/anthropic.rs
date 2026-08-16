@@ -224,7 +224,7 @@ impl ModelProvider for AnthropicProvider {
         let response = self
             .client
             .post(&url)
-            .header("Authorization", format!("Bearer {}", &self.api_key))
+            .header("Authorization", format!("Bearer {}", self.api_key))
             .header("anthropic-version", "2023-06-01")
             .json(&self.request_body(&messages, &[], &options, false))
             .send()
@@ -266,7 +266,7 @@ impl AnthropicProvider {
         let response = self
             .client
             .post(&url)
-            .header("Authorization", format!("Bearer {}", &self.api_key))
+            .header("Authorization", format!("Bearer {}", self.api_key))
             .header("anthropic-version", "2023-06-01")
             .json(&self.request_body(messages, tools, options, true))
             .send()

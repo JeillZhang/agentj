@@ -1,10 +1,10 @@
 //! Integration tests for AgentLoop wiring real domain crates
 //! (agentj-session, agentj-model, agentj-tools, agentj-context).
 
+use agentj_context::ContextPipeline;
 use agentj_core::agent_loop::{AgentEvent, AgentLoop};
 use agentj_core::module::*;
 use agentj_core::types::*;
-use agentj_context::ContextPipeline;
 use agentj_model::mock::MockModelProvider;
 use agentj_session::InMemoryStore;
 use agentj_tools::builtins::ReadTool;
@@ -12,9 +12,15 @@ use std::sync::Arc;
 
 struct MockConfig;
 impl ConfigProvider for MockConfig {
-    fn get_str(&self, _k: &str) -> Option<String> { None }
-    fn get_int(&self, _k: &str) -> Option<i64> { None }
-    fn providers(&self) -> Vec<(String, String)> { vec![] }
+    fn get_str(&self, _k: &str) -> Option<String> {
+        None
+    }
+    fn get_int(&self, _k: &str) -> Option<i64> {
+        None
+    }
+    fn providers(&self) -> Vec<(String, String)> {
+        vec![]
+    }
 }
 
 #[tokio::test]
@@ -30,8 +36,17 @@ async fn e2e_streaming_with_real_modules() {
     ]));
     providers.register("test-model".into(), mock);
 
-    let ctx = KernelContext { session: session.clone(), tools, providers, config };
-    let agent_loop = AgentLoop::new(ctx, Arc::new(ContextPipeline::new()), "You are helpful.".into());
+    let ctx = KernelContext {
+        session: session.clone(),
+        tools,
+        providers,
+        config,
+    };
+    let agent_loop = AgentLoop::new(
+        ctx,
+        Arc::new(ContextPipeline::new()),
+        "You are helpful.".into(),
+    );
     let sid = agent_loop.create_session().unwrap();
 
     let mut rx = agent_loop.run_turn_stream(&sid, "hi");

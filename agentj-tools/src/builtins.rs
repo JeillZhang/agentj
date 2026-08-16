@@ -1,11 +1,15 @@
-use std::sync::Arc;
 use agentj_core::error::ToolError;
 use agentj_core::module::Tool;
+use std::sync::Arc;
 
 pub struct ReadTool;
 impl Tool for ReadTool {
-    fn name(&self) -> &str { "read" }
-    fn description(&self) -> &str { "Read file contents from the filesystem" }
+    fn name(&self) -> &str {
+        "read"
+    }
+    fn description(&self) -> &str {
+        "Read file contents from the filesystem"
+    }
     fn input_schema(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
@@ -14,18 +18,28 @@ impl Tool for ReadTool {
         })
     }
     fn execute(&self, input: serde_json::Value) -> Result<serde_json::Value, ToolError> {
-        let path = input["path"].as_str()
-            .ok_or_else(|| ToolError::ExecutionFailed { name: "read".into(), reason: "missing 'path'".into() })?;
-        let content = std::fs::read_to_string(path)
-            .map_err(|e| ToolError::ExecutionFailed { name: "read".into(), reason: e.to_string() })?;
+        let path = input["path"]
+            .as_str()
+            .ok_or_else(|| ToolError::ExecutionFailed {
+                name: "read".into(),
+                reason: "missing 'path'".into(),
+            })?;
+        let content = std::fs::read_to_string(path).map_err(|e| ToolError::ExecutionFailed {
+            name: "read".into(),
+            reason: e.to_string(),
+        })?;
         Ok(serde_json::Value::String(content))
     }
 }
 
 pub struct WriteTool;
 impl Tool for WriteTool {
-    fn name(&self) -> &str { "write" }
-    fn description(&self) -> &str { "Write content to a file" }
+    fn name(&self) -> &str {
+        "write"
+    }
+    fn description(&self) -> &str {
+        "Write content to a file"
+    }
     fn input_schema(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
@@ -34,20 +48,40 @@ impl Tool for WriteTool {
         })
     }
     fn execute(&self, input: serde_json::Value) -> Result<serde_json::Value, ToolError> {
-        let path = input["path"].as_str().ok_or_else(|| ToolError::ExecutionFailed { name: "write".into(), reason: "missing 'path'".into() })?;
-        let content = input["content"].as_str().ok_or_else(|| ToolError::ExecutionFailed { name: "write".into(), reason: "missing 'content'".into() })?;
+        let path = input["path"]
+            .as_str()
+            .ok_or_else(|| ToolError::ExecutionFailed {
+                name: "write".into(),
+                reason: "missing 'path'".into(),
+            })?;
+        let content = input["content"]
+            .as_str()
+            .ok_or_else(|| ToolError::ExecutionFailed {
+                name: "write".into(),
+                reason: "missing 'content'".into(),
+            })?;
         if let Some(parent) = std::path::Path::new(path).parent() {
-            std::fs::create_dir_all(parent).map_err(|e| ToolError::ExecutionFailed { name: "write".into(), reason: e.to_string() })?;
+            std::fs::create_dir_all(parent).map_err(|e| ToolError::ExecutionFailed {
+                name: "write".into(),
+                reason: e.to_string(),
+            })?;
         }
-        std::fs::write(path, content).map_err(|e| ToolError::ExecutionFailed { name: "write".into(), reason: e.to_string() })?;
+        std::fs::write(path, content).map_err(|e| ToolError::ExecutionFailed {
+            name: "write".into(),
+            reason: e.to_string(),
+        })?;
         Ok(serde_json::Value::String("ok".into()))
     }
 }
 
 pub struct BashTool;
 impl Tool for BashTool {
-    fn name(&self) -> &str { "bash" }
-    fn description(&self) -> &str { "Execute a shell command" }
+    fn name(&self) -> &str {
+        "bash"
+    }
+    fn description(&self) -> &str {
+        "Execute a shell command"
+    }
     fn input_schema(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
@@ -56,12 +90,20 @@ impl Tool for BashTool {
         })
     }
     fn execute(&self, input: serde_json::Value) -> Result<serde_json::Value, ToolError> {
-        let cmd = input["command"].as_str()
-            .ok_or_else(|| ToolError::ExecutionFailed { name: "bash".into(), reason: "missing 'command'".into() })?;
+        let cmd = input["command"]
+            .as_str()
+            .ok_or_else(|| ToolError::ExecutionFailed {
+                name: "bash".into(),
+                reason: "missing 'command'".into(),
+            })?;
         let output = std::process::Command::new("sh")
-            .arg("-c").arg(cmd)
+            .arg("-c")
+            .arg(cmd)
             .output()
-            .map_err(|e| ToolError::ExecutionFailed { name: "bash".into(), reason: e.to_string() })?;
+            .map_err(|e| ToolError::ExecutionFailed {
+                name: "bash".into(),
+                reason: e.to_string(),
+            })?;
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
         Ok(serde_json::Value::String(stdout))
     }
@@ -69,8 +111,12 @@ impl Tool for BashTool {
 
 pub struct GrepTool;
 impl Tool for GrepTool {
-    fn name(&self) -> &str { "grep" }
-    fn description(&self) -> &str { "Search file contents with regex" }
+    fn name(&self) -> &str {
+        "grep"
+    }
+    fn description(&self) -> &str {
+        "Search file contents with regex"
+    }
     fn input_schema(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
@@ -85,18 +131,30 @@ impl Tool for GrepTool {
         let pattern = input["pattern"].as_str().unwrap_or(".*");
         let include = input["include"].as_str().unwrap_or("*");
         let output = std::process::Command::new("rg")
-            .arg("--no-heading").arg("--with-filename")
-            .arg(pattern).arg("--glob").arg(include)
+            .arg("--no-heading")
+            .arg("--with-filename")
+            .arg(pattern)
+            .arg("--glob")
+            .arg(include)
             .output()
-            .map_err(|e| ToolError::ExecutionFailed { name: "grep".into(), reason: e.to_string() })?;
-        Ok(serde_json::Value::String(String::from_utf8_lossy(&output.stdout).to_string()))
+            .map_err(|e| ToolError::ExecutionFailed {
+                name: "grep".into(),
+                reason: e.to_string(),
+            })?;
+        Ok(serde_json::Value::String(
+            String::from_utf8_lossy(&output.stdout).to_string(),
+        ))
     }
 }
 
 pub struct GlobTool;
 impl Tool for GlobTool {
-    fn name(&self) -> &str { "glob" }
-    fn description(&self) -> &str { "Find files matching a glob pattern" }
+    fn name(&self) -> &str {
+        "glob"
+    }
+    fn description(&self) -> &str {
+        "Find files matching a glob pattern"
+    }
     fn input_schema(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
@@ -107,10 +165,19 @@ impl Tool for GlobTool {
     fn execute(&self, input: serde_json::Value) -> Result<serde_json::Value, ToolError> {
         let pat = input["pattern"].as_str().unwrap_or("*");
         let output = std::process::Command::new("find")
-            .arg(".").arg("-name").arg(pat).arg("-type").arg("f")
+            .arg(".")
+            .arg("-name")
+            .arg(pat)
+            .arg("-type")
+            .arg("f")
             .output()
-            .map_err(|e| ToolError::ExecutionFailed { name: "glob".into(), reason: e.to_string() })?;
-        Ok(serde_json::Value::String(String::from_utf8_lossy(&output.stdout).to_string()))
+            .map_err(|e| ToolError::ExecutionFailed {
+                name: "glob".into(),
+                reason: e.to_string(),
+            })?;
+        Ok(serde_json::Value::String(
+            String::from_utf8_lossy(&output.stdout).to_string(),
+        ))
     }
 }
 

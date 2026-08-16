@@ -1,11 +1,11 @@
-use std::collections::HashMap;
-use std::fmt;
-use std::sync::Arc;
+use crate::error::{ModelError, ModuleError, ToolError};
+use crate::types::*;
 use async_trait::async_trait;
 use futures::stream::BoxStream;
 use parking_lot::RwLock;
-use crate::error::{ModuleError, ModelError, ToolError};
-use crate::types::*;
+use std::collections::HashMap;
+use std::fmt;
+use std::sync::Arc;
 
 // ---- Traits ----
 
@@ -91,7 +91,11 @@ pub enum ModuleState {
 pub trait Module: Send + Sync {
     fn id(&self) -> ModuleId;
     fn metadata(&self) -> ModuleMetadata;
-    fn init(&mut self, ctx: &KernelContext, register: &mut ModuleRegister) -> Result<(), ModuleError>;
+    fn init(
+        &mut self,
+        ctx: &KernelContext,
+        register: &mut ModuleRegister,
+    ) -> Result<(), ModuleError>;
     fn shutdown(&mut self) -> Result<(), ModuleError>;
 }
 
@@ -109,7 +113,11 @@ pub struct ModuleRegister {
 
 impl ModuleRegister {
     pub fn new(tools: Arc<ToolRegistry>, providers: Arc<ProviderRegistry>) -> Self {
-        Self { tools, events: vec![], providers }
+        Self {
+            tools,
+            events: vec![],
+            providers,
+        }
     }
 
     pub fn register_tool(&mut self, tool: Arc<dyn Tool>) -> Result<(), ModuleError> {
@@ -117,12 +125,19 @@ impl ModuleRegister {
         Ok(())
     }
 
-    pub fn on_event(&mut self, event: EventType, handler: Box<dyn EventHandler>) -> Result<(), ModuleError> {
+    pub fn on_event(
+        &mut self,
+        event: EventType,
+        handler: Box<dyn EventHandler>,
+    ) -> Result<(), ModuleError> {
         self.events.push((event, handler));
         Ok(())
     }
 
-    pub fn register_provider(&mut self, provider: Arc<dyn ModelProvider>) -> Result<(), ModuleError> {
+    pub fn register_provider(
+        &mut self,
+        provider: Arc<dyn ModelProvider>,
+    ) -> Result<(), ModuleError> {
         self.providers.register("default".into(), provider);
         Ok(())
     }
@@ -155,7 +170,10 @@ impl fmt::Debug for ToolEntry {
 
 /// Conflict policy when registering a tool whose name is already taken.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ReplacePolicy { Reject, Replace }
+pub enum ReplacePolicy {
+    Reject,
+    Replace,
+}
 
 pub struct ToolRegistry {
     tools: RwLock<HashMap<String, Arc<dyn Tool>>>,
@@ -172,7 +190,8 @@ impl ToolRegistry {
 
     /// Legacy register — kept for compatibility, delegates to Builtin + Reject.
     pub fn register(&self, tool: Arc<dyn Tool>) {
-        self.register_tool_with_source(tool, ToolSource::Builtin, ReplacePolicy::Reject).ok();
+        self.register_tool_with_source(tool, ToolSource::Builtin, ReplacePolicy::Reject)
+            .ok();
     }
 
     /// Register a tool with its ownership source and a conflict policy.
@@ -185,7 +204,9 @@ impl ToolRegistry {
         let name = tool.name().to_string();
         let mut tools = self.tools.write();
         if tools.contains_key(&name) && policy == ReplacePolicy::Reject {
-            return Err(ModuleError::Handler(format!("tool '{name}' already registered")));
+            return Err(ModuleError::Handler(format!(
+                "tool '{name}' already registered"
+            )));
         }
         tools.insert(name.clone(), tool);
         self.sources.write().insert(name, source);
@@ -195,7 +216,11 @@ impl ToolRegistry {
     /// Remove a tool by name, returning the removed entry (None if absent).
     pub fn unregister_tool(&self, name: &str) -> Option<ToolEntry> {
         let tool = self.tools.write().remove(name)?;
-        let source = self.sources.write().remove(name).unwrap_or(ToolSource::Builtin);
+        let source = self
+            .sources
+            .write()
+            .remove(name)
+            .unwrap_or(ToolSource::Builtin);
         Some(ToolEntry { tool, source })
     }
 
@@ -237,11 +262,15 @@ impl ToolRegistry {
     }
 
     pub fn definitions(&self) -> Vec<ToolDefinition> {
-        self.tools.read().values().map(|t| ToolDefinition {
-            name: t.name().into(),
-            description: t.description().into(),
-            input_schema: t.input_schema(),
-        }).collect()
+        self.tools
+            .read()
+            .values()
+            .map(|t| ToolDefinition {
+                name: t.name().into(),
+                description: t.description().into(),
+                input_schema: t.input_schema(),
+            })
+            .collect()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -250,7 +279,9 @@ impl ToolRegistry {
 }
 
 impl Default for ToolRegistry {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 pub struct ProviderRegistry {
@@ -260,7 +291,10 @@ pub struct ProviderRegistry {
 
 impl ProviderRegistry {
     pub fn new() -> Self {
-        Self { providers: RwLock::new(HashMap::new()), default: RwLock::new(None) }
+        Self {
+            providers: RwLock::new(HashMap::new()),
+            default: RwLock::new(None),
+        }
     }
 
     pub fn register(&self, name: String, provider: Arc<dyn ModelProvider>) {
@@ -271,7 +305,9 @@ impl ProviderRegistry {
     }
 
     pub fn get_default(&self) -> Option<Arc<dyn ModelProvider>> {
-        self.default.read().as_ref()
+        self.default
+            .read()
+            .as_ref()
             .and_then(|name| self.providers.read().get(name).cloned())
     }
 
@@ -281,7 +317,9 @@ impl ProviderRegistry {
 }
 
 impl Default for ProviderRegistry {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 // ---- Session & Config ----
@@ -289,7 +327,11 @@ impl Default for ProviderRegistry {
 /// Session lifecycle status. Contract-first (v0.1 signature, v0.2 semantics) —
 /// see design §Session 生命周期契约 (decision #14).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum SessionStatus { Active, Archived, Deleted }
+pub enum SessionStatus {
+    Active,
+    Archived,
+    Deleted,
+}
 
 pub trait SessionStore: Send + Sync {
     fn create(&self) -> Result<SessionId, ModuleError>;
@@ -355,17 +397,29 @@ pub struct KernelContext {
 // 预留访问器方法（v0.2+ Kernel 服务定位通道的契约，纯加性，零破坏）：
 // 未来方法内部可从"硬编码字段"换成 ModuleResolver::resolve()，模块代码零改动。
 impl KernelContext {
-    pub fn session(&self) -> Arc<dyn SessionStore> { self.session.clone() }
-    pub fn tools(&self) -> Arc<ToolRegistry> { self.tools.clone() }
-    pub fn providers(&self) -> Arc<ProviderRegistry> { self.providers.clone() }
-    pub fn config(&self) -> Arc<dyn ConfigProvider> { self.config.clone() }
+    pub fn session(&self) -> Arc<dyn SessionStore> {
+        self.session.clone()
+    }
+    pub fn tools(&self) -> Arc<ToolRegistry> {
+        self.tools.clone()
+    }
+    pub fn providers(&self) -> Arc<ProviderRegistry> {
+        self.providers.clone()
+    }
+    pub fn config(&self) -> Arc<dyn ConfigProvider> {
+        self.config.clone()
+    }
 }
 
 // ---- Kernel Message ----
 
 #[derive(Debug, Clone)]
 pub enum KernelMessage {
-    UserRequest { session_id: SessionId, content: String, attachments: Vec<Attachment> },
+    UserRequest {
+        session_id: SessionId,
+        content: String,
+        attachments: Vec<Attachment>,
+    },
     Shutdown,
 }
 
@@ -382,19 +436,41 @@ mod tests {
 
     struct TestModule;
     impl Module for TestModule {
-        fn id(&self) -> ModuleId { "test".into() }
-        fn metadata(&self) -> ModuleMetadata {
-            ModuleMetadata { id: "test".into(), name: "Test".into(), version: "0.1".into(), description: "".into(), author: "".into() }
+        fn id(&self) -> ModuleId {
+            "test".into()
         }
-        fn init(&mut self, _ctx: &KernelContext, _register: &mut ModuleRegister) -> Result<(), ModuleError> { Ok(()) }
-        fn shutdown(&mut self) -> Result<(), ModuleError> { Ok(()) }
+        fn metadata(&self) -> ModuleMetadata {
+            ModuleMetadata {
+                id: "test".into(),
+                name: "Test".into(),
+                version: "0.1".into(),
+                description: "".into(),
+                author: "".into(),
+            }
+        }
+        fn init(
+            &mut self,
+            _ctx: &KernelContext,
+            _register: &mut ModuleRegister,
+        ) -> Result<(), ModuleError> {
+            Ok(())
+        }
+        fn shutdown(&mut self) -> Result<(), ModuleError> {
+            Ok(())
+        }
     }
 
     struct DummyTool;
     impl Tool for DummyTool {
-        fn name(&self) -> &str { "dummy" }
-        fn description(&self) -> &str { "" }
-        fn input_schema(&self) -> serde_json::Value { serde_json::json!({}) }
+        fn name(&self) -> &str {
+            "dummy"
+        }
+        fn description(&self) -> &str {
+            ""
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({})
+        }
         fn execute(&self, _input: serde_json::Value) -> Result<serde_json::Value, ToolError> {
             Ok(serde_json::Value::String("ok".into()))
         }
@@ -402,9 +478,15 @@ mod tests {
 
     struct OtherTool;
     impl Tool for OtherTool {
-        fn name(&self) -> &str { "other" }
-        fn description(&self) -> &str { "" }
-        fn input_schema(&self) -> serde_json::Value { serde_json::json!({}) }
+        fn name(&self) -> &str {
+            "other"
+        }
+        fn description(&self) -> &str {
+            ""
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({})
+        }
         fn execute(&self, _input: serde_json::Value) -> Result<serde_json::Value, ToolError> {
             Ok(serde_json::Value::String("ok".into()))
         }
@@ -428,18 +510,44 @@ mod tests {
     #[test]
     fn register_with_source_and_conflict_policy() {
         let registry = ToolRegistry::new();
-        registry.register_tool_with_source(Arc::new(DummyTool), ToolSource::Builtin, ReplacePolicy::Reject).unwrap();
+        registry
+            .register_tool_with_source(
+                Arc::new(DummyTool),
+                ToolSource::Builtin,
+                ReplacePolicy::Reject,
+            )
+            .unwrap();
         // same name, same source, Reject → error
-        assert!(registry.register_tool_with_source(Arc::new(DummyTool), ToolSource::Builtin, ReplacePolicy::Reject).is_err());
+        assert!(
+            registry
+                .register_tool_with_source(
+                    Arc::new(DummyTool),
+                    ToolSource::Builtin,
+                    ReplacePolicy::Reject
+                )
+                .is_err()
+        );
         // Replace → overwrites, still 1 entry
-        registry.register_tool_with_source(Arc::new(DummyTool), ToolSource::Builtin, ReplacePolicy::Replace).unwrap();
+        registry
+            .register_tool_with_source(
+                Arc::new(DummyTool),
+                ToolSource::Builtin,
+                ReplacePolicy::Replace,
+            )
+            .unwrap();
         assert_eq!(registry.definitions().len(), 1);
     }
 
     #[test]
     fn unregister_tool_removes_by_name() {
         let registry = ToolRegistry::new();
-        registry.register_tool_with_source(Arc::new(DummyTool), ToolSource::Builtin, ReplacePolicy::Reject).unwrap();
+        registry
+            .register_tool_with_source(
+                Arc::new(DummyTool),
+                ToolSource::Builtin,
+                ReplacePolicy::Reject,
+            )
+            .unwrap();
         let removed = registry.unregister_tool("dummy");
         assert!(removed.is_some());
         assert!(registry.get("dummy").is_none());
@@ -449,9 +557,27 @@ mod tests {
     #[test]
     fn unregister_by_source_removes_all_and_counts() {
         let registry = ToolRegistry::new();
-        registry.register_tool_with_source(Arc::new(DummyTool), ToolSource::Mcp { server_id: "srv".into() }, ReplacePolicy::Reject).unwrap();
-        registry.register_tool_with_source(Arc::new(OtherTool), ToolSource::Plugin { plugin_id: "p1".into() }, ReplacePolicy::Reject).unwrap();
-        let removed = registry.unregister_by_source(&ToolSource::Mcp { server_id: "srv".into() });
+        registry
+            .register_tool_with_source(
+                Arc::new(DummyTool),
+                ToolSource::Mcp {
+                    server_id: "srv".into(),
+                },
+                ReplacePolicy::Reject,
+            )
+            .unwrap();
+        registry
+            .register_tool_with_source(
+                Arc::new(OtherTool),
+                ToolSource::Plugin {
+                    plugin_id: "p1".into(),
+                },
+                ReplacePolicy::Reject,
+            )
+            .unwrap();
+        let removed = registry.unregister_by_source(&ToolSource::Mcp {
+            server_id: "srv".into(),
+        });
         assert_eq!(removed, 1);
         assert_eq!(registry.definitions().len(), 1);
         assert_eq!(registry.get("other").unwrap().name(), "other");
@@ -491,10 +617,18 @@ mod tests {
     // status/archive/delete — proves existing stores keep compiling.
     struct ContractOnlyStore;
     impl SessionStore for ContractOnlyStore {
-        fn create(&self) -> Result<SessionId, ModuleError> { Ok("s".into()) }
-        fn append(&self, _s: &SessionId, _m: ChatMessage) -> Result<(), ModuleError> { Ok(()) }
-        fn get(&self, _s: &SessionId) -> Result<Vec<ChatMessage>, ModuleError> { Ok(vec![]) }
-        fn estimate_tokens(&self, _s: &SessionId) -> Result<usize, ModuleError> { Ok(0) }
+        fn create(&self) -> Result<SessionId, ModuleError> {
+            Ok("s".into())
+        }
+        fn append(&self, _s: &SessionId, _m: ChatMessage) -> Result<(), ModuleError> {
+            Ok(())
+        }
+        fn get(&self, _s: &SessionId) -> Result<Vec<ChatMessage>, ModuleError> {
+            Ok(vec![])
+        }
+        fn estimate_tokens(&self, _s: &SessionId) -> Result<usize, ModuleError> {
+            Ok(0)
+        }
     }
 
     #[test]

@@ -8,11 +8,15 @@ use agentj_core::types::{ChatMessage, Role, ToolCall};
 pub struct ContextPipeline;
 
 impl ContextPipeline {
-    pub fn new() -> Self { Self }
+    pub fn new() -> Self {
+        Self
+    }
 }
 
 impl Default for ContextPipeline {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ContextPipelineTrait for ContextPipeline {
@@ -50,8 +54,6 @@ impl ContextPipelineTrait for ContextPipeline {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agentj_core::module::ContextPipeline as _;
-    use agentj_core::types::*;
 
     #[test]
     fn assemble_builds_system_prompt_and_history() {
@@ -70,7 +72,11 @@ mod tests {
     fn reflux_appends_tool_result() {
         let pipeline = ContextPipeline::new();
         let mut history = vec![ChatMessage::user("hi")];
-        let tc = ToolCall { id: "call-1".into(), name: "read".into(), arguments: serde_json::json!({}) };
+        let tc = ToolCall {
+            id: "call-1".into(),
+            name: "read".into(),
+            arguments: serde_json::json!({}),
+        };
         pipeline.reflux(&mut history, &tc, "file content".into());
         assert_eq!(history.len(), 3);
         assert_eq!(history[1].role, Role::Assistant);

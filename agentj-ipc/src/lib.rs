@@ -1,7 +1,4 @@
 //! Unified Connection abstraction (design 决策 #1/#2) — transport-agnostic serve.
-use std::io::Write;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 use agentj_core::agent_loop::{AgentEvent, AgentLoop};
 use agentj_core::error::{IpcError, KernelError, ModuleError};
 use agentj_core::kernel::Kernel;
@@ -10,12 +7,19 @@ use agentj_core::types::SessionId;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::io::Write;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::task::JoinHandle;
 
 /// Transport kind — new transports (Tcp / UnixSocket) add a variant + impl, serve loop unchanged.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TransportKind { Stdio, Tcp, UnixSocket }
+pub enum TransportKind {
+    Stdio,
+    Tcp,
+    UnixSocket,
+}
 
 /// Unified connection abstraction (design 决策 #1): stdio/TCP/Unix-socket are implementations.
 /// v0.1 only ships `StdioConnection`; `TcpConnection` lands in v0.3 (daemon-kernel plan).
@@ -97,6 +101,35 @@ struct JsonRpcError {
     message: String,
 }
 
+/// Method-dispatch failure carrying the JSON-RPC 2.0 standard error code
+/// (design 决策 #4). `handle_request` echoes the request `id` alongside this
+/// code so every error path round-trips the correlation id.
+struct DispatchError {
+    code: i32,
+    message: String,
+}
+
+impl DispatchError {
+    fn invalid_params(msg: impl Into<String>) -> Self {
+        Self {
+            code: -32602,
+            message: msg.into(),
+        }
+    }
+    fn method_not_found(method: &str) -> Self {
+        Self {
+            code: -32601,
+            message: format!("method not found: {method}"),
+        }
+    }
+    fn internal(msg: impl Into<String>) -> Self {
+        Self {
+            code: -32603,
+            message: msg.into(),
+        }
+    }
+}
+
 pub struct IpcServer {
     agent_loop: Arc<AgentLoop>,
     kernel: Kernel,
@@ -133,7 +166,9 @@ impl IpcServer {
 
     /// Send the Shutdown message to the kernel (idempotent — safe to call repeatedly).
     pub fn signal_shutdown(&self) -> Result<(), IpcError> {
-        self.kernel.sender().send(KernelMessage::Shutdown)
+        self.kernel
+            .sender()
+            .send(KernelMessage::Shutdown)
             .map_err(|e| IpcError::InvalidRequest(e.to_string()))
     }
 
@@ -147,71 +182,99 @@ impl IpcServer {
     pub async fn await_shutdown(&mut self) -> Result<(), KernelError> {
         if let Some(handle) = self.kernel_handle.take() {
             handle.await.map_err(|e| KernelError::MessageRouteFailed {
-                msg: "kernel loop".into(), reason: format!("join failed: {e}"),
+                msg: "kernel loop".into(),
+                reason: format!("join failed: {e}"),
             })??;
         }
         Ok(())
     }
 
     /// Handle a single JSON-RPC request, returning a JSON-RPC response string.
+    /// Every error path echoes the request `id` (JSON-RPC 2.0 §5) with the
+    /// semantically correct standard code, never falling through to `serve_stdio`.
     pub async fn handle_request(&self, raw: &str) -> Result<String, IpcError> {
         let req: JsonRpcRequest = match serde_json::from_str(raw) {
             Ok(r) => r,
             Err(e) => {
                 let err_resp = JsonRpcResponse {
-                    jsonrpc: "2.0".into(), id: Value::Null, result: None,
-                    error: Some(JsonRpcError { code: -32700, message: format!("Parse error: {e}") }),
+                    jsonrpc: "2.0".into(),
+                    id: Value::Null,
+                    result: None,
+                    error: Some(JsonRpcError {
+                        code: -32700,
+                        message: format!("Parse error: {e}"),
+                    }),
                 };
                 return Ok(serde_json::to_string(&err_resp)?);
             }
         };
 
         let result = match req.method.as_str() {
-            "session/new" => {
-                let sid = self.agent_loop.create_session()
-                    .map_err(|e| IpcError::InvalidRequest(e.to_string()))?;
-                Ok(serde_json::json!({ "session_id": sid }))
-            }
-            "session/run" => {
-                let params = req.params.ok_or_else(|| IpcError::InvalidRequest("missing params".into()))?;
-                let sid = params["session_id"].as_str()
-                    .ok_or_else(|| IpcError::InvalidRequest("missing session_id".into()))?;
-                let content = params["content"].as_str().unwrap_or("");
-                let mut rx = self.agent_loop.run_turn_stream(&sid.to_string(), content);
-                let mut text = String::new();
-                let mut tc_list = vec![];
-                while let Some(event) = rx.recv().await {
-                    match event {
-                        AgentEvent::Delta(d) => text.push_str(&d),
-                        AgentEvent::Done { tool_calls, .. } => { tc_list = tool_calls; break; }
-                        AgentEvent::Error(e) => return Err(IpcError::InvalidRequest(e)),
-                        _ => {}
-                    }
-                }
-                Ok(serde_json::json!({ "response": text, "tool_calls": tc_list }))
-            }
-            "shutdown" => {
-                // real shutdown: signal the kernel, graceful teardown happens in serve loop
-                self.signal_shutdown()?;
-                self.shutdown_requested.store(true, Ordering::SeqCst);
-                Ok(serde_json::json!({ "status": "ok" }))
-            }
-            _ => Err(IpcError::InvalidRequest(format!("unknown method: {}", req.method))),
+            "session/new" => self.dispatch_session_new(),
+            "session/run" => self.dispatch_session_run(&req).await,
+            "shutdown" => self.dispatch_shutdown(),
+            other => Err(DispatchError::method_not_found(other)),
         };
 
-        match result {
-            Ok(r) => {
-                let resp = JsonRpcResponse { jsonrpc: "2.0".into(), id: req.id, result: Some(r), error: None };
-                Ok(serde_json::to_string(&resp)?)
-            }
-            Err(e) => {
-                let resp = JsonRpcResponse {
-                    jsonrpc: "2.0".into(), id: req.id, result: None,
-                    error: Some(JsonRpcError { code: -32601, message: e.to_string() }),
-                };
-                Ok(serde_json::to_string(&resp)?)
+        let resp = match result {
+            Ok(r) => JsonRpcResponse {
+                jsonrpc: "2.0".into(),
+                id: req.id,
+                result: Some(r),
+                error: None,
+            },
+            Err(e) => JsonRpcResponse {
+                jsonrpc: "2.0".into(),
+                id: req.id,
+                result: None,
+                error: Some(JsonRpcError {
+                    code: e.code,
+                    message: e.message,
+                }),
+            },
+        };
+        Ok(serde_json::to_string(&resp)?)
+    }
+
+    fn dispatch_session_new(&self) -> Result<Value, DispatchError> {
+        let sid = self
+            .agent_loop
+            .create_session()
+            .map_err(|e| DispatchError::internal(e.to_string()))?;
+        Ok(serde_json::json!({ "session_id": sid }))
+    }
+
+    async fn dispatch_session_run(&self, req: &JsonRpcRequest) -> Result<Value, DispatchError> {
+        let params = req
+            .params
+            .as_ref()
+            .ok_or_else(|| DispatchError::invalid_params("missing params"))?;
+        let sid = params["session_id"]
+            .as_str()
+            .ok_or_else(|| DispatchError::invalid_params("missing session_id"))?;
+        let content = params["content"].as_str().unwrap_or("");
+        let mut rx = self.agent_loop.run_turn_stream(&sid.to_string(), content);
+        let mut text = String::new();
+        let mut tc_list = vec![];
+        while let Some(event) = rx.recv().await {
+            match event {
+                AgentEvent::Delta(d) => text.push_str(&d),
+                AgentEvent::Done { tool_calls, .. } => {
+                    tc_list = tool_calls;
+                    break;
+                }
+                AgentEvent::Error(e) => return Err(DispatchError::internal(e)),
+                _ => {}
             }
         }
+        Ok(serde_json::json!({ "response": text, "tool_calls": tc_list }))
+    }
+
+    fn dispatch_shutdown(&self) -> Result<Value, DispatchError> {
+        self.signal_shutdown()
+            .map_err(|e| DispatchError::internal(e.to_string()))?;
+        self.shutdown_requested.store(true, Ordering::SeqCst);
+        Ok(serde_json::json!({ "status": "ok" }))
     }
 
     /// Run the server in stdio mode via the unified Connection serve loop (design 决策 #2).
@@ -237,7 +300,10 @@ impl IpcServer {
         };
         tokio::pin!(kernel_done);
         loop {
-            let conn = self.registry.conns.get_mut(&conn_id)
+            let conn = self
+                .registry
+                .conns
+                .get_mut(&conn_id)
                 .ok_or_else(|| IpcError::InvalidRequest("stdio connection missing".into()))?;
             let line = tokio::select! {
                 res = conn.recv() => {
@@ -250,14 +316,23 @@ impl IpcServer {
                 _ = &mut kernel_done => { kernel_finished = true; break; } // signal-triggered shutdown
             };
             let trimmed = line.trim().to_string();
-            if trimmed.is_empty() { continue; }
+            if trimmed.is_empty() {
+                continue;
+            }
             let response = self.handle_request(&trimmed).await.unwrap_or_else(|e| {
-                format!(r#"{{"jsonrpc":"2.0","id":null,"error":{{"code":-32603,"message":"{e}"}}}}"#)
+                format!(
+                    r#"{{"jsonrpc":"2.0","id":null,"error":{{"code":-32603,"message":"{e}"}}}}"#
+                )
             });
-            let conn = self.registry.conns.get(&conn_id)
+            let conn = self
+                .registry
+                .conns
+                .get(&conn_id)
                 .ok_or_else(|| IpcError::InvalidRequest("stdio connection missing".into()))?;
             conn.send(&response)?;
-            if self.shutdown_requested() { break; } // graceful shutdown requested
+            if self.shutdown_requested() {
+                break;
+            } // graceful shutdown requested
         }
         // Graceful teardown. When the loop exited via kernel_done the kernel already ran
         // its shutdown chain — re-awaiting the completed handle would panic, so skip. On
@@ -268,7 +343,9 @@ impl IpcServer {
             if !self.shutdown_requested() {
                 let _ = self.kernel.sender().send(KernelMessage::Shutdown);
             }
-            self.await_shutdown().await.map_err(|e| IpcError::InvalidRequest(e.to_string()))?;
+            self.await_shutdown()
+                .await
+                .map_err(|e| IpcError::InvalidRequest(e.to_string()))?;
         }
         Ok(())
     }
@@ -297,8 +374,12 @@ impl Default for StdioConnection {
 
 #[async_trait]
 impl Connection for StdioConnection {
-    fn id(&self) -> String { self.id.clone() }
-    fn kind(&self) -> TransportKind { TransportKind::Stdio }
+    fn id(&self) -> String {
+        self.id.clone()
+    }
+    fn kind(&self) -> TransportKind {
+        TransportKind::Stdio
+    }
     fn send(&self, msg: &str) -> Result<(), IpcError> {
         // Sync trait method — std blocking stdout; tokio stdout's block_on panics
         // when called from within the serve loop's async context.
@@ -316,48 +397,66 @@ impl Connection for StdioConnection {
             Err(e) => Some(Err(IpcError::InvalidRequest(e.to_string()))),
         }
     }
-    fn peer_desc(&self) -> String { "stdio".into() }
+    fn peer_desc(&self) -> String {
+        "stdio".into()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agentj_context::ContextPipeline;
     use agentj_core::agent_loop::AgentLoop;
     use agentj_core::kernel::Kernel;
     use agentj_core::module::*;
     use agentj_core::types::*;
-    use agentj_context::ContextPipeline;
     use agentj_model::mock::MockModelProvider;
     use agentj_session::InMemoryStore;
     use std::sync::Arc;
 
     struct MockConfig;
     impl ConfigProvider for MockConfig {
-        fn get_str(&self, _k: &str) -> Option<String> { None }
-        fn get_int(&self, _k: &str) -> Option<i64> { None }
-        fn providers(&self) -> Vec<(String, String)> { vec![] }
+        fn get_str(&self, _k: &str) -> Option<String> {
+            None
+        }
+        fn get_int(&self, _k: &str) -> Option<i64> {
+            None
+        }
+        fn providers(&self) -> Vec<(String, String)> {
+            vec![]
+        }
     }
 
     fn stub_agent_loop() -> AgentLoop {
         let tools = Arc::new(ToolRegistry::new());
         let providers = Arc::new(ProviderRegistry::new());
-        providers.register("mock".into(), Arc::new(MockModelProvider::new(vec![
-            Ok(ModelEvent::Delta("hello".into())),
-            Ok(ModelEvent::Done),
-        ])));
+        providers.register(
+            "mock".into(),
+            Arc::new(MockModelProvider::new(vec![
+                Ok(ModelEvent::Delta("hello".into())),
+                Ok(ModelEvent::Done),
+            ])),
+        );
         let ctx = KernelContext {
             session: Arc::new(InMemoryStore::new()),
             tools,
             providers,
             config: Arc::new(MockConfig),
         };
-        AgentLoop::new(ctx, Arc::new(ContextPipeline::new()), "You are helpful.".into())
+        AgentLoop::new(
+            ctx,
+            Arc::new(ContextPipeline::new()),
+            "You are helpful.".into(),
+        )
     }
 
     #[tokio::test]
     async fn session_new_returns_valid_id() {
         let server = IpcServer::new(stub_agent_loop(), Kernel::new());
-        let resp = server.handle_request(r#"{"jsonrpc":"2.0","id":1,"method":"session/new"}"#).await.unwrap();
+        let resp = server
+            .handle_request(r#"{"jsonrpc":"2.0","id":1,"method":"session/new"}"#)
+            .await
+            .unwrap();
         let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
         assert!(v["result"]["session_id"].is_string());
         assert!(!v["result"]["session_id"].as_str().unwrap().is_empty());
@@ -374,16 +473,62 @@ mod tests {
     #[tokio::test]
     async fn unknown_method_returns_error() {
         let server = IpcServer::new(stub_agent_loop(), Kernel::new());
-        let resp = server.handle_request(r#"{"jsonrpc":"2.0","id":3,"method":"bad/method"}"#).await.unwrap();
+        let resp = server
+            .handle_request(r#"{"jsonrpc":"2.0","id":3,"method":"bad/method"}"#)
+            .await
+            .unwrap();
         let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
         assert!(v["error"].is_object());
         assert_eq!(v["error"]["code"], -32601); // Method not found
+        assert_eq!(v["id"], 3, "error response must echo request id");
+    }
+
+    #[tokio::test]
+    async fn session_run_missing_params_echoes_id_and_invalid_params() {
+        let server = IpcServer::new(stub_agent_loop(), Kernel::new());
+        let resp = server
+            .handle_request(r#"{"jsonrpc":"2.0","id":10,"method":"session/run"}"#)
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(
+            v["id"], 10,
+            "error response must echo request id, got: {resp}"
+        );
+        assert_eq!(
+            v["error"]["code"], -32602,
+            "missing params is Invalid params, got: {resp}"
+        );
+        assert!(v["error"]["message"].is_string());
+    }
+
+    #[tokio::test]
+    async fn session_run_missing_session_id_echoes_id_and_invalid_params() {
+        let server = IpcServer::new(stub_agent_loop(), Kernel::new());
+        let resp = server
+            .handle_request(
+                r#"{"jsonrpc":"2.0","id":7,"method":"session/run","params":{"content":"hi"}}"#,
+            )
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(
+            v["id"], 7,
+            "error response must echo request id, got: {resp}"
+        );
+        assert_eq!(
+            v["error"]["code"], -32602,
+            "missing session_id is Invalid params, got: {resp}"
+        );
     }
 
     #[tokio::test]
     async fn shutdown_runs_kernel_graceful_shutdown() {
         let mut server = IpcServer::new(stub_agent_loop(), Kernel::new());
-        let resp = server.handle_request(r#"{"jsonrpc":"2.0","id":4,"method":"shutdown"}"#).await.unwrap();
+        let resp = server
+            .handle_request(r#"{"jsonrpc":"2.0","id":4,"method":"shutdown"}"#)
+            .await
+            .unwrap();
         let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
         assert_eq!(v["result"]["status"], "ok");
 
@@ -419,7 +564,9 @@ mod tests {
             server.serve_stdio().await.unwrap();
         });
         signal.await.unwrap();
-        tokio::time::timeout(std::time::Duration::from_secs(5), run).await
-            .expect("serve_stdio must exit after kernel shutdown").unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), run)
+            .await
+            .expect("serve_stdio must exit after kernel shutdown")
+            .unwrap();
     }
 }
