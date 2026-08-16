@@ -65,7 +65,7 @@ fn permission_request_notified_and_timeout_denies() {
         r#"{{"jsonrpc":"2.0","id":1,"method":"session/new"}}"#
     )
     .unwrap();
-    write!(stdin, "\n").unwrap();
+    writeln!(stdin).unwrap();
     stdin.flush().unwrap();
     line.clear();
     assert!(
@@ -82,7 +82,7 @@ fn permission_request_notified_and_timeout_denies() {
         r#"{{"jsonrpc":"2.0","id":3,"method":"session/run","params":{{"session_id":"s1","content":"run"}}}}"#
     )
     .unwrap();
-    write!(stdin, "\n").unwrap();
+    writeln!(stdin).unwrap();
     stdin.flush().unwrap();
 
     // 3. Read notifications: expect $/permissionRequest; write a respond deny
@@ -107,7 +107,7 @@ fn permission_request_notified_and_timeout_denies() {
                 request_id = request_id,
             );
             write!(stdin, "{respond}").unwrap();
-            write!(stdin, "\n").unwrap();
+            writeln!(stdin).unwrap();
             stdin.flush().unwrap();
         }
         if line.contains("\"result\"") && line.contains("\"response\"") {
@@ -125,4 +125,5 @@ fn permission_request_notified_and_timeout_denies() {
     );
 
     let _ = child.kill();
+    let _ = child.wait();
 }
