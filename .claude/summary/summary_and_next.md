@@ -10,8 +10,8 @@
 | ✅ 完成 | IPC 协议契约（`agentj-protocol` + 31 schemas + registry + spec + TS binding） | 无 | P0 | 已完成 |
 | ✅ 完成 | **v0.1 核心内核**（`2026-08-09-agentj-v0.1-plan.md`，25 任务全部 PASS，测试验收通过，v0.1.1 发布） | 无 | P0 | 已完成 |
 | ✅ 完成 | **v0.2 权限审批系统**（`2026-08-15-agentj-permission-plan.md`，13 任务 T0-T12 全部 PASS；权限闭环：per-tool Allow/Ask/Deny + path/command rules + IPC 审批流；**测试验收通过，3 Bug 修复 BUG-001/002/003，v0.2.1 发布**） | v0.1 内核 | P0 | **已完成（本阶段）** |
-| Plan 2 | v0.2 生态扩展（Hook / ModuleResolver / Sub-Agent / Skills / Plugin / Ollama / MCP 长驻连接 / Session 过期 / FileBackedStore） | Plan 1 | P1 | — |
-| Plan 3 | v0.3 商业扩展（守护内核常驻 serve / Web Dashboard / 用量统计 / License，T0/T3/T4 已改写） | Plan 2 | P2 | — |
+| Plan 2 | **v0.3 生态扩展**（Hook / ModuleResolver / Sub-Agent / Skills / Plugin / Ollama / MCP 长驻连接 / Session 过期 / FileBackedStore，计划文档 `2026-08-09-agentj-v0.2-plan.md`） | Plan 1 | P1 | — |
+| Plan 3 | **v0.4 商业扩展**（守护内核常驻 serve / Web Dashboard / 用量统计 / License，T0/T3/T4 已改写） | Plan 2 | P2 | — |
 
 ## Phase: v0.2 权限审批系统 测试验收完成 ✅（本次完成）
 
@@ -30,9 +30,9 @@
 - **pending 超时条目不回收**：`await_approval` 超时分支不移除 pending map 条目（仅 respond/cancel/shutdown 移除）——v0.2 CLI 短生命周期可接受；**v0.3 常驻 daemon 前必须修**（超时分支内加移除，map 锁内安全）。
 - **`$/cancelRequest` 可达性**：IPC 层已接线（T9 fix 记录 in-flight session），但 stdio 顺序模型下取消与审批竞争窗口极小；多客户端模型下需按 v0.3 设计重审。
 - **Windows 限制**：ToolExecutor 进程组 kill 为已知限制（设计遗留）。
-- **多 provider 路由**：ProviderRegistry `get_default` 恒返回首个 provider，多 provider 按 default_model 路由属 v0.2 生态范围。
+- **多 provider 路由**：ProviderRegistry `get_default` 恒返回首个 provider，多 provider 按 default_model 路由属 v0.3 生态范围。
 
 ### 下一步
 
-- 运行 `/jskill-feature-next` 识别 v0.2 下一个功能（Hook / ModuleResolver / Sub-Agent / Skills / Plugin / Ollama / MCP 长驻连接 / Session 过期 / FileBackedStore），进入 design → plan → dev 管线。
+- 运行 `/jskill-feature-next` 识别 v0.3 下一个功能（Hook / ModuleResolver / Sub-Agent / Skills / Plugin / Ollama / MCP 长驻连接 / Session 过期 / FileBackedStore），进入 design → plan → dev 管线。
 - 每阶段完成后：运行测试 + lint 门禁 → 版本号 bump → 自动同步 AGENTS.md / README.md / 本文件（仅保留当前功能内容）→ 更新「待实施」表。

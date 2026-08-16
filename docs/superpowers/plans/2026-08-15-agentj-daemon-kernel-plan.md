@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Introduce the unified `Connection` transport abstraction (stdio/TCP) as a v0.1 contract with a v0.3 multi-client resident-kernel serving capability, so all UIs on one PC share one kernel instance and can resume tasks.
+**Goal:** Introduce the unified `Connection` transport abstraction (stdio/TCP) as a v0.1 contract with a v0.4 multi-client resident-kernel serving capability, so all UIs on one PC share one kernel instance and can resume tasks.
 
-**Architecture:** `agentj-ipc` gains a `Connection` trait (stdio/TCP/Unix-socket are implementations) plus a `ConnectionRegistry` (connection_id → Connection, session_id → owner). Protocol extensions are strictly additive: `initialize` gains `multi_client` capability + `connection_id`, new `session/subscribe` / `session/unsubscribe` methods, `$/permissionRequest` gains `origin_client`, new error codes `-32805 SessionBusy` / `-32806 NotAuthorized`. Contract lands in v0.1 (T13 builds `StdioConnection` directly), serving capability lands in v0.3 (`TcpConnection` + `serve --port` / `run --attach`).
+**Architecture:** `agentj-ipc` gains a `Connection` trait (stdio/TCP/Unix-socket are implementations) plus a `ConnectionRegistry` (connection_id → Connection, session_id → owner). Protocol extensions are strictly additive: `initialize` gains `multi_client` capability + `connection_id`, new `session/subscribe` / `session/unsubscribe` methods, `$/permissionRequest` gains `origin_client`, new error codes `-32805 SessionBusy` / `-32806 NotAuthorized`. Contract lands in v0.1 (T13 builds `StdioConnection` directly), serving capability lands in v0.4 (`TcpConnection` + `serve --port` / `run --attach`).
 
 **Tech Stack:** Rust (tokio, serde, schemars), JSON-RPC 2.0 over NDJSON, TypeScript bindings (json-schema-to-typescript).
 
@@ -23,12 +23,12 @@
 
 ## Scope Boundaries (delegations to other plans)
 
-This plan covers the protocol contract (T1-T8) and plan/spec alignment (T9-T12) for the daemon-kernel capability. Two design goals are **explicitly delegated to the v0.2 plan** (not tasks here — they are v0.2-dependencies per the design spec):
+This plan covers the protocol contract (T1-T8) and plan/spec alignment (T9-T12) for the daemon-kernel capability. Two design goals are **explicitly delegated to the v0.3 ecosystem plan** (not tasks here — they are v0.3-dependencies per the design spec; version renumbering 2026-08-16: ecosystem = v0.3, commercial incl. this daemon-kernel capability = v0.4):
 
-- **G3 历史级接续** (FileBackedStore session disk persistence + startup recovery) → v0.2 plan (`2026-08-09-agentj-v0.2-plan.md`), design spec §会话持久化与恢复. Not re-implemented here.
-- **G5 资源级复用** (McpConnectionManager long-lived connections, allow_always session state, model catalog cache) → v0.2 plan, design spec §MCP 连接生命周期 (v0.2). The shared-single-kernel mechanism is designed here (T10); the resource reuse internals land in v0.2.
+- **G3 历史级接续** (FileBackedStore session disk persistence + startup recovery) → v0.3 plan (file `2026-08-09-agentj-v0.2-plan.md`, Plan 2/v0.3), design spec §会话持久化与恢复. Not re-implemented here.
+- **G5 资源级复用** (McpConnectionManager long-lived connections, allow_always session state, model catalog cache) → v0.3 plan, design spec §MCP 连接生命周期 (v0.3). The shared-single-kernel mechanism is designed here (T10); the resource reuse internals land in v0.3.
 
-Executor note: T9/T10 rework the v0.1/v0.3 plan docs to *reference* these delegations; no v0.2 code is written in this plan.
+Executor note: T9/T10 rework the v0.1/v0.4 plan docs to *reference* these delegations; no v0.3 code is written in this plan.
 
 ---
 ---
@@ -644,7 +644,7 @@ git commit -m "feat(bindings): regenerate TS types for subscribe/permission wire
 
 # Part B — Plan & Spec Alignment (docs, executable NOW)
 
-> These tasks update the v0.1/v0.3 implementation plans and the human-readable protocol spec so the Connection contract and TCP serving capability are correctly scoped. No kernel code exists yet — these are planning documents.
+> These tasks update the v0.1/v0.4 implementation plans and the human-readable protocol spec so the Connection contract and TCP serving capability are correctly scoped. No kernel code exists yet — these are planning documents.
 
 ## T9: Rework v0.1 plan T13/T14 to the Connection model
 
@@ -706,25 +706,25 @@ git commit -m "docs(plan): rework v0.1 T13/T14 to the Connection contract model"
 
 ---
 
-## T10: Rework v0.3 plan T0/T3/T4 for the resident-kernel serving capability
+## T10: Rework v0.4 plan T0/T3/T4 for the resident-kernel serving capability
 
 **Files:**
 - Modify: `docs/superpowers/plans/2026-08-09-agentj-v0.3-plan.md`
 - Test: content assertions via grep
 
 **Interfaces:**
-- Consumes: T9 v0.1 Connection contract (v0.3 T0 builds on it), design spec 决策 #3/#4/#5/#9
-- Produces: v0.3 T0 becomes "Add TcpConnection + multi-client serving"; T3 dashboard consumes subscribe; T4 CLI gains serve --port / run --attach; design-pending items (auth/max-connections) finalized
+- Consumes: T9 v0.1 Connection contract (v0.4 T0 builds on it), design spec 决策 #3/#4/#5/#9
+- Produces: v0.4 T0 becomes "Add TcpConnection + multi-client serving"; T3 dashboard consumes subscribe; T4 CLI gains serve --port / run --attach; design-pending items (auth/max-connections) finalized
 
 - [ ] **Step 1: Write the failing test (grep assertions)**
 
 Run: `grep -n "TcpConnection\|serve --port\|session/subscribe" docs/superpowers/plans/2026-08-09-agentj-v0.3-plan.md`
 Expected: FAIL — T0 currently only mentions `TcpIpcServer` (no `TcpConnection` trait impl); no `serve --port` / `session/subscribe`
 
-- [ ] **Step 2: Rework T0 in the v0.3 plan**
+- [ ] **Step 2: Rework T0 in the v0.4 plan**
 
 ```markdown
-# Replace v0.3 T0's design-pending framing with the finalized design:
+# Replace v0.4 T0's design-pending framing with the finalized design:
 
 - id: T0
   title: "Add the TcpConnection transport and multi-client serving to agentj-ipc"
@@ -751,7 +751,7 @@ Expected: FAIL — T0 currently only mentions `TcpIpcServer` (no `TcpConnection`
   #   - concurrent session/run on same session → -32805 SessionBusy
 ```
 
-- [ ] **Step 3: Rework T3 and T4 in the v0.3 plan**
+- [ ] **Step 3: Rework T3 and T4 in the v0.4 plan**
 
 ```markdown
 # T3 (Web Dashboard): note subscribe consumption + connection_id from initialize result:
@@ -776,7 +776,7 @@ Expected: ≥ 1 match
 
 ```bash
 git add docs/superpowers/plans/2026-08-09-agentj-v0.3-plan.md
-git commit -m "docs(plan): rework v0.3 T0/T3/T4 for resident-kernel serving capability"
+git commit -m "docs(plan): rework v0.4 T0/T3/T4 for resident-kernel serving capability"
 ```
 
 ---
@@ -882,7 +882,7 @@ Expected: FAIL — README still says "12 个 v0.1 方法" and lists 12 methods
   / `permission/respond` / `kernel/status` / `$/permissionRequest` / `$/cancelRequest` / `$/progress`
 
 # Architecture section — add a note:
-- 守护内核（设计已批准，v0.1 契约 / v0.3 能力）：Connection trait 统一 stdio/TCP 传输；
+- 守护内核（设计已批准，v0.1 契约 / v0.4 能力）：Connection trait 统一 stdio/TCP 传输；
   `agentj serve --port` 常驻内核多客户端共享；协议加性扩展（multi_client / subscribe / permission 定向）
   — 见 docs/superpowers/specs/2026-08-15-agentj-daemon-kernel-design.md
 ```
@@ -895,8 +895,8 @@ Expected: FAIL — README still says "12 个 v0.1 方法" and lists 12 methods
   / `session/status` / `session/archive` / `session/delete` / `session/subscribe` / `session/unsubscribe`
   / `permission/respond` / `kernel/status` / `$/permissionRequest` / `$/cancelRequest` / `$/progress`
 
-# Features checklist — add (设计批准, 待 v0.1/v0.3 落地):
-- [ ] 守护内核：Connection 统一传输抽象 + 常驻 API 服务（设计已批准，v0.1 契约 / v0.3 能力）
+# Features checklist — add (设计批准, 待 v0.1/v0.4 落地):
+- [ ] 守护内核：Connection 统一传输抽象 + 常驻 API 服务（设计已批准，v0.1 契约 / v0.4 能力）
 ```
 
 - [ ] **Step 4: Update summary_and_next.md**
@@ -907,12 +907,12 @@ Expected: FAIL — README still says "12 个 v0.1 方法" and lists 12 methods
 > 当前实现计划：docs/superpowers/plans/2026-08-15-agentj-daemon-kernel-plan.md
 
 ## Phase: 守护内核（常驻 API 服务）设计（2026-08-15）✅（设计 + 契约）
-- ✅ 设计批准：统一 Connection 抽象（stdio/TCP/Unix socket），契约 v0.1、能力 v0.3；
+- ✅ 设计批准：统一 Connection 抽象（stdio/TCP/Unix socket），契约 v0.1、能力 v0.4；
   协议加性扩展（multi_client / session/subscribe / permission 定向 / -32805/-32806）
 - ✅ 协议契约落地：4 新 wire 类型 + 4 新 schema + 注册表 12→16 方法 + contract tests + TS 绑定
-- ✅ 计划衔接：v0.1 T13/T14 改为 Connection 模型；v0.3 T0/T3/T4 改为多客户端常驻
+- ✅ 计划衔接：v0.1 T13/T14 改为 Connection 模型；v0.4 T0/T3/T4 改为多客户端常驻
 - ⏳ 待 v0.1 计划执行：agentj-core / agentj-ipc / agentj-cli（T0-T24）消费 agentj-protocol 类型
-- ⏳ 待 v0.3 计划执行：TcpConnection + serve --port / run --attach（T0/T3/T4）
+- ⏳ 待 v0.4 计划执行：TcpConnection + serve --port / run --attach（T0/T3/T4）
 ```
 
 - [ ] **Step 5: Run full verification gate**
@@ -958,7 +958,7 @@ graph TD
     T5 --> T8["T8: TS bindings"]
     T5 --> T11["T11: ipc-protocol.md"]
     T6 --> T11
-    T9 --> T10["T10: v0.3 plan T0/T3/T4"]
+    T9 --> T10["T10: v0.4 plan T0/T3/T4"]
     T8 --> T12["T12: Doc sync + gate"]
     T10 --> T12
     T11 --> T12

@@ -1204,7 +1204,7 @@
     #   3. 基础协议 — RequestMessage/NotificationMessage/ResponseMessage 信封; Id 规则(会话内不复用;
     #      解析错误响应允许 id=null, JSON-RPC 2.0 §5); ErrorObject; 错误码表(JSON-RPC 保留段
     #      -32700..-32000 + -32000..-32099 实现自定义 + agentj 块 -32800..-32804); `$/` 扩展约定;
-    #      batch 语义保留但 v0.1 未启用 (v0.2+ 再议, 见设计 遗留问题)
+    #      batch 语义保留但 v0.1 未启用 (v0.3+ 再议, 见设计 遗留问题)
     #   4. 生命周期 — initialize/initialized/shutdown/exit; 协议版本协商(semver) + 能力交换;
     #      版本不兼容 -> -32804 InvalidVersion
     #   5. 消息顺序与并发 — 响应大致按序、顺序无关时可重排

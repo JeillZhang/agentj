@@ -2,11 +2,11 @@
 
 AI 编码代理工具（Rust）——Linux 内核式「内核调度 + 可插拔模块」架构。内核通过统一的 JSON-RPC 2.0 协议（stdio，未来 TCP / WebSocket）对外暴露能力；CLI、TUI、Web Dashboard、IDE 插件均可作为协议消费者，**任意语言**可开发前端连接内核。
 
-> 当前版本：**v0.2.1**——IPC 协议契约（14 方法）+ 11 crate 内核已落地：Agent 循环（流式）、内置工具、**权限审批系统**（`$/permissionRequest` + `permission/respond`）、MCP 桥、JSON-RPC stdio IPC、CLI run/serve、模型提供方（DeepSeek + opencode-go）；守护内核（常驻 API 服务）设计已批准，待 v0.3。
+> 当前版本：**v0.2.1**——IPC 协议契约（14 方法）+ 11 crate 内核已落地：Agent 循环（流式）、内置工具、**权限审批系统**（`$/permissionRequest` + `permission/respond`）、MCP 桥、JSON-RPC stdio IPC、CLI run/serve、模型提供方（DeepSeek + opencode-go）；守护内核（常驻 API 服务）设计已批准，待 v0.4。
 
 ## Features
 
-- [x] **IPC 协议契约**：JSON-RPC 2.0 信封 + 错误码 + 14 个方法（lifecycle 4 / session 5 / kernel/status 1 / `$/cancelRequest` `$/progress` 通知 2 + `permission/respond` `$/permissionRequest` 2；`session/subscribe` / `session/unsubscribe` 为守护内核 v0.3 计划）
+- [x] **IPC 协议契约**：JSON-RPC 2.0 信封 + 错误码 + 14 个方法（lifecycle 4 / session 5 / kernel/status 1 / `$/cancelRequest` `$/progress` 通知 2 + `permission/respond` `$/permissionRequest` 2；`session/subscribe` / `session/unsubscribe` 为守护内核 v0.4 计划）
 - [x] **权限审批系统**：`$/permissionRequest` 通知（S→C）+ `permission/respond` 请求（C→S）+ 审批流（request_id 解耦、60s 超时自动 Deny、allow_always 会话级内存态、取消即拒绝）
 - [x] **JSON Schema**：31 个机器可读 Schema（`schemars` 从 Rust 类型生成，提交件 + 漂移门禁）
 - [x] **方法注册表** `protocol/methods.json`（语言无关，method ↔ schema/方向/类型）
@@ -19,9 +19,9 @@ AI 编码代理工具（Rust）——Linux 内核式「内核调度 + 可插拔�
 - [x] **JSON-RPC stdio IPC**：14 方法服务循环 + 优雅退出
 - [x] **CLI run/serve**：`agentj run "prompt"` / `agentj serve`
 - [x] **模型提供方**：DeepSeek + opencode-go 统一订阅（Chat Completions / Responses / Anthropic 三线格式，ProviderFactory 按 `kind` 实例化）
-- [ ] **守护内核**：统一 Connection 传输抽象（stdio/TCP/Unix socket）+ 常驻 API 服务（`agentj serve --port` 多客户端共享、可接续任务）——设计已批准，能力 v0.3
-- [ ] v0.2 生态：Hook System / Skills / 插件 / MCP 长驻连接
-- [ ] v0.3 商业：Web Dashboard / 用量统计 / License
+- [ ] **守护内核**：统一 Connection 传输抽象（stdio/TCP/Unix socket）+ 常驻 API 服务（`agentj serve --port` 多客户端共享、可接续任务）——设计已批准，能力 v0.4
+- [ ] v0.3 生态：Hook System / Skills / 插件 / MCP 长驻连接
+- [ ] v0.4 商业：Web Dashboard / 用量统计 / License
 
 ## Project Structure
 
@@ -80,7 +80,7 @@ effect = "deny"
 - 规范：`docs/specs/ipc-protocol.md`（v0.2.0）
 - Schema：`schemas/*.json`
 - 方法注册表：`protocol/methods.json`
-- 方法面（14）：`initialize` / `initialized` / `shutdown` / `exit` / `session/new` / `session/run` / `session/status` / `session/archive` / `session/delete` / `kernel/status` / `$/cancelRequest` / `$/progress` / `permission/respond` / `$/permissionRequest`（`session/subscribe` / `session/unsubscribe` 为守护内核 v0.3 计划）
+- 方法面（14）：`initialize` / `initialized` / `shutdown` / `exit` / `session/new` / `session/run` / `session/status` / `session/archive` / `session/delete` / `kernel/status` / `$/cancelRequest` / `$/progress` / `permission/respond` / `$/permissionRequest`（`session/subscribe` / `session/unsubscribe` 为守护内核 v0.4 计划）
 
 ## Development
 
