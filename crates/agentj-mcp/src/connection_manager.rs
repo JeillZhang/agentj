@@ -16,7 +16,7 @@ use agentj_core::module::{EventType, Tool, ToolRegistry, ToolSource};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 use tokio::process::Command;
@@ -49,9 +49,18 @@ pub struct McpConnection {
 type Reply<T> = Sender<Result<T, String>>;
 
 enum TransportOp {
-    Connect { command: String, reply: Reply<()> },
-    Request { method: String, params: Value, reply: Reply<Value> },
-    Shutdown { reply: Reply<()> },
+    Connect {
+        command: String,
+        reply: Reply<()>,
+    },
+    Request {
+        method: String,
+        params: Value,
+        reply: Reply<Value>,
+    },
+    Shutdown {
+        reply: Reply<()>,
+    },
 }
 
 /// Handle to a connection's dedicated transport thread. Every method blocks on
@@ -68,13 +77,19 @@ impl TransportHandle {
             .name("mcp-transport".into())
             .spawn(move || transport_loop(rx))
             .map_err(|e| format!("transport thread spawn failed: {e}"))?;
-        Ok(Self { tx, _thread: thread })
+        Ok(Self {
+            tx,
+            _thread: thread,
+        })
     }
 
     fn connect(&self, command: String) -> Result<(), String> {
         let (reply_tx, reply_rx) = channel();
         self.tx
-            .send(TransportOp::Connect { command, reply: reply_tx })
+            .send(TransportOp::Connect {
+                command,
+                reply: reply_tx,
+            })
             .map_err(|e| e.to_string())?;
         reply_rx
             .recv_timeout(OP_TIMEOUT)
@@ -123,7 +138,10 @@ fn reply_error(op: TransportOp, msg: &str) {
 }
 
 fn transport_loop(rx: Receiver<TransportOp>) {
-    let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+    let rt = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
         Ok(rt) => rt,
         Err(e) => {
             let msg = format!("transport runtime build failed: {e}");
@@ -148,9 +166,15 @@ fn transport_loop(rx: Receiver<TransportOp>) {
                     }
                 }
             }
-            TransportOp::Request { method, params, reply } => {
+            TransportOp::Request {
+                method,
+                params,
+                reply,
+            } => {
                 let result = match &mut transport {
-                    Some(t) => rt.block_on(t.request(&method, params)).map_err(|e| e.to_string()),
+                    Some(t) => rt
+                        .block_on(t.request(&method, params))
+                        .map_err(|e| e.to_string()),
                     None => Err("transport not connected".to_string()),
                 };
                 let _ = reply.send(result);
@@ -265,9 +289,16 @@ impl McpConnectionManager {
     }
 
     pub fn release(&self, server_id: &str) {
-        if let Some(conn) = self.connections.read().ok().and_then(|g| g.get(server_id).cloned()) {
+        if let Some(conn) = self
+            .connections
+            .read()
+            .ok()
+            .and_then(|g| g.get(server_id).cloned())
+        {
             let remaining = conn.refs.fetch_sub(1, Ordering::SeqCst).saturating_sub(1);
-            if remaining == 0 && let Ok(mut idle) = conn.idle_since.lock() {
+            if remaining == 0
+                && let Ok(mut idle) = conn.idle_since.lock()
+            {
                 *idle = Some(Instant::now());
             }
         }
@@ -301,7 +332,11 @@ impl McpConnectionManager {
 
     // `self: &Arc<Self>` so registered tools can hold an Arc clone of the manager
     // for delegated execution (see McpSharedTool) — callers already hold Arc.
-    pub async fn connect(self: &Arc<Self>, server_id: String, command: String) -> Result<(), ToolError> {
+    pub async fn connect(
+        self: &Arc<Self>,
+        server_id: String,
+        command: String,
+    ) -> Result<(), ToolError> {
         self.publish(&EventType::McpConnecting(server_id.clone()));
         let conn = match self.handshake(&server_id, &command).await {
             Ok(conn) => conn,
@@ -317,7 +352,11 @@ impl McpConnectionManager {
             self.fail(&server_id, &e.to_string()).await;
             return Err(e);
         }
-        if let Some(c) = self.connections.read().ok().and_then(|g| g.get(&server_id).cloned())
+        if let Some(c) = self
+            .connections
+            .read()
+            .ok()
+            .and_then(|g| g.get(&server_id).cloned())
             && let Ok(mut s) = c.state.lock()
         {
             *s = ConnectionState::Ready;
@@ -327,12 +366,13 @@ impl McpConnectionManager {
     }
 
     async fn handshake(&self, server_id: &str, command: &str) -> Result<McpConnection, ToolError> {
-        let handle = Arc::new(TransportHandle::spawn().map_err(|e| {
-            ToolError::ServerUnavailable {
-                server_id: server_id.into(),
-                reason: e,
-            }
-        })?);
+        let handle =
+            Arc::new(
+                TransportHandle::spawn().map_err(|e| ToolError::ServerUnavailable {
+                    server_id: server_id.into(),
+                    reason: e,
+                })?,
+            );
         let cmd = command.to_string();
         let connect_handle = Arc::clone(&handle);
         tokio::task::spawn_blocking(move || connect_handle.connect(cmd))
@@ -355,7 +395,11 @@ impl McpConnectionManager {
         })
     }
 
-    async fn register_tools(self: &Arc<Self>, server_id: &str, _command: &str) -> Result<(), ToolError> {
+    async fn register_tools(
+        self: &Arc<Self>,
+        server_id: &str,
+        _command: &str,
+    ) -> Result<(), ToolError> {
         let handle = self
             .connections
             .read()
@@ -392,11 +436,17 @@ impl McpConnectionManager {
             };
             let _ = self.registry.register_tool_with_source(
                 Arc::new(tool),
-                ToolSource::Mcp { server_id: server_id.into() },
+                ToolSource::Mcp {
+                    server_id: server_id.into(),
+                },
                 agentj_core::module::ReplacePolicy::Replace,
             );
         }
-        if let Some(c) = self.connections.read().ok().and_then(|g| g.get(server_id).cloned())
+        if let Some(c) = self
+            .connections
+            .read()
+            .ok()
+            .and_then(|g| g.get(server_id).cloned())
             && let Ok(mut reg) = c.registered_tools.lock()
         {
             *reg = names;
@@ -443,8 +493,9 @@ impl McpConnectionManager {
             Ok(r) => Ok(r["content"][0]["text"].clone()),
             Err(e) => {
                 // mid-call crash → unregister ghosts, transition to Reconnecting
-                self.registry
-                    .unregister_by_source(&ToolSource::Mcp { server_id: server_id.into() });
+                self.registry.unregister_by_source(&ToolSource::Mcp {
+                    server_id: server_id.into(),
+                });
                 self.publish(&EventType::McpDisconnected(server_id.into()));
                 if let Ok(mut map) = self.connections.write() {
                     map.remove(server_id);
@@ -466,10 +517,15 @@ impl McpConnectionManager {
                 }
                 // tool diff (design M3): start from a clean slate so a tool that
                 // disappeared from the new tools/list is not left registered
-                self.registry
-                    .unregister_by_source(&ToolSource::Mcp { server_id: server_id.into() });
+                self.registry.unregister_by_source(&ToolSource::Mcp {
+                    server_id: server_id.into(),
+                });
                 if self.register_tools(server_id, command).await.is_ok() {
-                    if let Some(c) = self.connections.read().ok().and_then(|g| g.get(server_id).cloned())
+                    if let Some(c) = self
+                        .connections
+                        .read()
+                        .ok()
+                        .and_then(|g| g.get(server_id).cloned())
                         && let Ok(mut s) = c.state.lock()
                     {
                         *s = ConnectionState::Ready;
@@ -484,11 +540,17 @@ impl McpConnectionManager {
             }
             delay = (delay * 2).min(Duration::from_secs(30)); // 500ms ×2, cap 30s
         }
-        self.fail(server_id, "max reconnect attempts exceeded").await;
+        self.fail(server_id, "max reconnect attempts exceeded")
+            .await;
     }
 
     async fn close(&self, server_id: &str) {
-        if let Some(conn) = self.connections.read().ok().and_then(|g| g.get(server_id).cloned()) {
+        if let Some(conn) = self
+            .connections
+            .read()
+            .ok()
+            .and_then(|g| g.get(server_id).cloned())
+        {
             if let Ok(mut s) = conn.state.lock() {
                 *s = ConnectionState::Closing;
             }
@@ -504,8 +566,9 @@ impl McpConnectionManager {
                 *s = ConnectionState::Closed;
             }
         }
-        self.registry
-            .unregister_by_source(&ToolSource::Mcp { server_id: server_id.into() });
+        self.registry.unregister_by_source(&ToolSource::Mcp {
+            server_id: server_id.into(),
+        });
         self.publish(&EventType::McpClosed(server_id.into()));
     }
 
@@ -516,15 +579,20 @@ impl McpConnectionManager {
             .ok()
             .is_some_and(|g| g.contains_key(server_id));
         if exists
-            && let Some(c) = self.connections.read().ok().and_then(|g| g.get(server_id).cloned())
+            && let Some(c) = self
+                .connections
+                .read()
+                .ok()
+                .and_then(|g| g.get(server_id).cloned())
             && let Ok(mut s) = c.state.lock()
         {
             *s = ConnectionState::Failed;
         } else if !exists {
             self.insert_failed(server_id).await;
         }
-        self.registry
-            .unregister_by_source(&ToolSource::Mcp { server_id: server_id.into() });
+        self.registry.unregister_by_source(&ToolSource::Mcp {
+            server_id: server_id.into(),
+        });
         self.publish(&EventType::McpDisconnected(server_id.into()));
         tracing::warn!(server_id, reason, "MCP connection failed");
     }
@@ -625,7 +693,12 @@ mod tests {
         assert_eq!(mgr.state("srv1"), Some(ConnectionState::Ready));
         let tools = registry.tools();
         assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0].source, ToolSource::Mcp { server_id: "srv1".into() });
+        assert_eq!(
+            tools[0].source,
+            ToolSource::Mcp {
+                server_id: "srv1".into()
+            }
+        );
     }
 
     #[tokio::test]
@@ -633,7 +706,10 @@ mod tests {
         let registry = Arc::new(ToolRegistry::new());
         let mgr = manager(registry.clone(), Duration::from_secs(60));
         mgr.connect("srv1".into(), echo_script()).await.unwrap();
-        let out = mgr.execute("srv1", "echo", serde_json::json!({"text": "hello"})).await.unwrap();
+        let out = mgr
+            .execute("srv1", "echo", serde_json::json!({"text": "hello"}))
+            .await
+            .unwrap();
         assert_eq!(out.as_str().unwrap(), "echo: hello");
     }
 
@@ -654,15 +730,32 @@ mod tests {
     async fn crash_mid_call_triggers_unavailable_and_reconnect() {
         let registry = Arc::new(ToolRegistry::new());
         let mgr = manager(registry.clone(), Duration::from_secs(60));
-        let crash = format!("{}/tests/fixtures/mcp_crash_after_2.sh", env!("CARGO_MANIFEST_DIR"));
+        let crash = format!(
+            "{}/tests/fixtures/mcp_crash_after_2.sh",
+            env!("CARGO_MANIFEST_DIR")
+        );
         mgr.connect("srv1".into(), crash).await.unwrap();
         // the fixture serves exactly 2 tool calls, then exits; calls 1-2 succeed, call 3
         // hits a dead server → ServerUnavailable → reconnect (fresh process) → tool works again
-        assert!(mgr.execute("srv1", "echo", serde_json::json!({"text": "a"})).await.is_ok());
-        assert!(mgr.execute("srv1", "echo", serde_json::json!({"text": "b"})).await.is_ok());
-        let result = mgr.execute("srv1", "echo", serde_json::json!({"text": "c"})).await;
-        assert!(matches!(result, Err(ToolError::ServerUnavailable { server_id, .. }) if server_id == "srv1"));
-        let out = mgr.execute("srv1", "echo", serde_json::json!({"text": "d"})).await;
+        assert!(
+            mgr.execute("srv1", "echo", serde_json::json!({"text": "a"}))
+                .await
+                .is_ok()
+        );
+        assert!(
+            mgr.execute("srv1", "echo", serde_json::json!({"text": "b"}))
+                .await
+                .is_ok()
+        );
+        let result = mgr
+            .execute("srv1", "echo", serde_json::json!({"text": "c"}))
+            .await;
+        assert!(
+            matches!(result, Err(ToolError::ServerUnavailable { server_id, .. }) if server_id == "srv1")
+        );
+        let out = mgr
+            .execute("srv1", "echo", serde_json::json!({"text": "d"}))
+            .await;
         assert!(out.is_ok(), "tool must work after reconnect, got: {out:?}");
     }
 
@@ -673,12 +766,15 @@ mod tests {
         mgr.connect("srv1".into(), echo_script()).await.unwrap();
         assert_eq!(registry.tools().len(), 1);
         mgr.acquire("srv1").unwrap(); // refcount 2
-        mgr.release("srv1");          // 1
-        mgr.release("srv1");          // 0 → idle timer starts
+        mgr.release("srv1"); // 1
+        mgr.release("srv1"); // 0 → idle timer starts
         tokio::time::sleep(Duration::from_millis(150)).await;
         mgr.reap_idle().await;
         assert_eq!(mgr.state("srv1"), Some(ConnectionState::Closed));
-        assert!(registry.tools().is_empty(), "ghost tools must be unregistered on close");
+        assert!(
+            registry.tools().is_empty(),
+            "ghost tools must be unregistered on close"
+        );
     }
 
     #[tokio::test]
@@ -686,7 +782,9 @@ mod tests {
         let registry = Arc::new(ToolRegistry::new());
         let mgr = manager(registry.clone(), Duration::from_secs(60));
         // /nonexistent script → every reconnect attempt fails; after max_reconnect → Failed
-        mgr.connect("srv1".into(), "/nonexistent/mcp_server.sh".into()).await.unwrap_err();
+        mgr.connect("srv1".into(), "/nonexistent/mcp_server.sh".into())
+            .await
+            .unwrap_err();
         assert_eq!(mgr.state("srv1"), Some(ConnectionState::Failed));
     }
 }

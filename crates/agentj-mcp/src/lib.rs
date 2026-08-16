@@ -115,8 +115,20 @@ async fn call_server(command: &str, name: &str, input: Value) -> Result<Value, T
     let stdin = child.stdin.take().unwrap();
     let stdout = child.stdout.take().unwrap();
     let mut transport = McpTransport::new(stdin, stdout, child);
-    transport.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05", "capabilities": {}, "clientInfo": { "name": "agentj", "version": "0.1" } })).await
-        .map_err(|e| ToolError::ExecutionFailed { name: name.to_string(), reason: e.to_string() })?;
+    transport
+        .request(
+            "initialize",
+            serde_json::json!({
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": { "name": "agentj", "version": "0.1" }
+            }),
+        )
+        .await
+        .map_err(|e| ToolError::ExecutionFailed {
+            name: name.to_string(),
+            reason: e.to_string(),
+        })?;
     // The fixture server emits the tools/call result only on its third round,
     // so mirror the discovery handshake before invoking the tool.
     transport
