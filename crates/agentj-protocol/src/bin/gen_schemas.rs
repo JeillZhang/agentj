@@ -3,7 +3,7 @@ use std::fs;
 use std::path::Path;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../schemas");
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../schemas");
     fs::create_dir_all(&dir)?;
     let schemas = generate_schemas();
     let count = schemas.len();

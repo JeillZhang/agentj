@@ -30,6 +30,8 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
 
 ## Architecture
 
+> 全部 11 个 crate 位于 `crates/` 目录（工作区成员 `crates/*`），下文 `agentj-*` 均为 `crates/agentj-*`。
+
 - `agentj-protocol`（leaf crate）：IPC 协议契约的权威 wire 类型（JSON-RPC 2.0 信封、错误码、14 个方法 params/result、流式类型、订阅/权限类型），serde + schemars，零内核耦合。v0.1 的 `agentj-core`/`agentj-ipc` 应消费其类型（导入而非重定义）。
 - `agentj-core`（内核）：Kernel 调度 + 模块 trait 注册表（`module.rs`：ModelProvider / SessionStore / ToolRegistry / ContextPipeline / ConfigProvider）、AgentLoop 流式 API（`run_turn_stream` → `mpsc::Receiver<AgentEvent>`，`run_turn` 聚合）、错误/类型（`error.rs`/`types.rs`）。
 - `agentj-config`：TOML 配置（`[model]`：`provider` + `providers[]`（name/base_url/api_key_env/**kind**）+ `default_model`；`[permission]`：per-tool `ToolPolicy`（mode/path_rules/command_rules）），ConfigProvider 读取。

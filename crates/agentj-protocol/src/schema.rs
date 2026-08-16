@@ -79,7 +79,7 @@ mod tests {
     use std::fs;
 
     fn schemas_dir() -> std::path::PathBuf {
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../schemas")
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../schemas")
     }
 
     #[test]

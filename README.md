@@ -26,17 +26,18 @@ AI 编码代理工具（Rust）——Linux 内核式「内核调度 + 可插拔�
 ## Project Structure
 
 ```
-agentj-protocol/     # IPC 协议契约 crate（wire 类型 + schema 生成，零内核耦合）
-agentj-core/         # 内核：Kernel 调度 + 模块 trait 注册表 + AgentLoop 流式 API
-agentj-config/       # TOML 配置（[model] provider/providers[]/kind/default_model）
-agentj-session/      # 会话生命周期（状态机 SessionStatus + 快照恢复）
-agentj-model/        # 模型提供方：三线格式 + OpenCodeGo 门面 + ProviderFactory + Mock
-agentj-tools/        # 内置工具（bash/glob/grep/read/write）+ ToolExecutor
-agentj-permission/   # 权限系统：决策引擎 + 策略模型（[permission] 配置）+ PermissionModule
-agentj-context/      # 上下文管线（纯消息构造器）
-agentj-mcp/          # MCP 客户端（子进程连接 + 工具发现注册）
-agentj-ipc/          # JSON-RPC 2.0 stdio IPC 服务
-agentj-cli/          # agentj 二进制（run / serve）
+crates/              # 11 个 workspace crate（统一目录）
+  agentj-protocol/   # IPC 协议契约 crate（wire 类型 + schema 生成，零内核耦合）
+  agentj-core/       # 内核：Kernel 调度 + 模块 trait 注册表 + AgentLoop 流式 API
+  agentj-config/     # TOML 配置（[model] provider/providers[]/kind/default_model）
+  agentj-session/    # 会话生命周期（状态机 SessionStatus + 快照恢复）
+  agentj-model/      # 模型提供方：三线格式 + OpenCodeGo 门面 + ProviderFactory + Mock
+  agentj-tools/      # 内置工具（bash/glob/grep/read/write）+ ToolExecutor
+  agentj-permission/ # 权限系统：决策引擎 + 策略模型（[permission] 配置）+ PermissionModule
+  agentj-context/    # 上下文管线（纯消息构造器）
+  agentj-mcp/        # MCP 客户端（子进程连接 + 工具发现注册）
+  agentj-ipc/        # JSON-RPC 2.0 stdio IPC 服务
+  agentj-cli/        # agentj 二进制（run / serve）
 models/              # 模型目录 models/opencode-go.json（opencode-go 路由事实来源）
 schemas/             # 31 个 JSON Schema（schemars 生成，机器事实来源）
 protocol/            # 方法注册表 methods.json

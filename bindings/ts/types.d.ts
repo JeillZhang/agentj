@@ -96,6 +96,58 @@ export interface NotificationMessage {
 }
 
 /**
+ * Decision value in `PermissionRespondParams`. `Unknown` tolerates forward
+ * values (serde(other)); schema lists only the known values.
+ */
+export type PermissionDecision = "allow" | "deny" | "allow_always";
+
+/**
+ * S→C notification: a tool call is awaiting user approval (`Ask` decision).
+ */
+export interface PermissionRequestParams {
+  /**
+   * Raw tool arguments (contains `cmd` for bash, `path` for file tools).
+   */
+  args: {
+    [k: string]: unknown;
+  };
+  /**
+   * Human-readable reason (tool default mode / matched rule).
+   */
+  reason: string;
+  /**
+   * Opaque id decoupled from the JSON-RPC request id (like $/progress token).
+   */
+  request_id: string;
+  /**
+   * Tool name, e.g. "bash".
+   */
+  tool: string;
+  [k: string]: unknown;
+}
+
+/**
+ * Decision value in `PermissionRespondParams`. `Unknown` tolerates forward
+ * values (serde(other)); schema lists only the known values.
+ */
+
+/**
+ * C→S request: the client's decision on a pending permission request.
+ */
+export interface PermissionRespondParams {
+  decision: PermissionDecision;
+  request_id: string;
+  [k: string]: unknown;
+}
+
+/**
+ * `permission/respond` success result — empty object.
+ */
+export interface PermissionRespondResult {
+  [k: string]: unknown;
+}
+
+/**
  * Streaming progress token — independent of the request id (design 决策 #3).
  */
 export type ProgressToken = number | string;
