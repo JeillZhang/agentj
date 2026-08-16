@@ -115,7 +115,9 @@ async fn main() -> anyhow::Result<()> {
     // Extract before `config` is boxed into the KernelContext — its config field
     // is Arc<dyn ConfigProvider>, which erases the concrete Config type.
     let permission_cfg = config.inner().permission.clone().unwrap_or_default();
-    permission_cfg.validate().expect("invalid [permission] config");
+    permission_cfg
+        .validate()
+        .expect("invalid [permission] config");
     let permission_policies = permission_policies_from_config(&config);
 
     let ctx = KernelContext {
@@ -264,7 +266,12 @@ mod tests {
         "#,
         );
         assert!(
-            cfg.inner().permission.clone().unwrap_or_default().validate().is_err()
+            cfg.inner()
+                .permission
+                .clone()
+                .unwrap_or_default()
+                .validate()
+                .is_err()
         );
     }
 }
