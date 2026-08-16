@@ -1,0 +1,15 @@
+[model]
+provider = "mock"
+
+[[model.providers]]
+name = "mock"
+kind = "mock"
+base_url = "mock://local"
+api_key_env = ""
+
+[permission.tools.bash]
+mode = "ask"
+
+[[permission.tools.bash.command_rules]]
+effect = "deny"
+prefix = "rm -rf"

@@ -2,8 +2,10 @@ use std::sync::Arc;
 
 use agentj_core::error::ModelError;
 use agentj_core::module::ModelProvider;
+use agentj_core::types::{ModelEvent, ToolCall};
 
 use crate::anthropic::AnthropicProvider;
+use crate::mock::MockModelProvider;
 use crate::openai_compat::OpenAICompatibleProvider;
 use crate::opencode_go::OpenCodeGoProvider;
 use crate::responses::ResponsesProvider;
@@ -29,6 +31,18 @@ impl ProviderFactory {
             "responses" => Arc::new(ResponsesProvider::new(base_url.to_string(), api_key)),
             "anthropic" => Arc::new(AnthropicProvider::new(base_url.to_string(), api_key)),
             "opencode-go" => Arc::new(OpenCodeGoProvider::new(api_key)),
+            // "mock" scripts a scripted tool call + reply — used by the E2E
+            // permission test (T11). The command falls through to mode=ask: it
+            // must not match the fixture's deny rule (deny short-circuits).
+            "mock" => Arc::new(MockModelProvider::new(vec![
+                Ok(ModelEvent::ToolCall(ToolCall {
+                    id: "call_1".into(),
+                    name: "bash".into(),
+                    arguments: serde_json::json!({"cmd": "curl http://example.com"}),
+                })),
+                Ok(ModelEvent::Delta("done".into())),
+                Ok(ModelEvent::Done),
+            ])),
             other => {
                 return Err(ModelError::Stream(format!(
                     "unknown provider kind: {other}"
@@ -74,6 +88,12 @@ mod tests {
             "k".into(),
         );
         assert!(og.is_ok());
+    }
+
+    #[test]
+    fn factory_creates_mock_provider() {
+        let mock = ProviderFactory::create("mock", "mock", "mock://local", String::new());
+        assert!(mock.is_ok());
     }
 
     #[test]
