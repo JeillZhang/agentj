@@ -1,5 +1,70 @@
 // T1 (v0.3 ecosystem): ModuleResolver service location + KernelMessage::ServiceCall.
-// Tests only — implementation lands in the follow-up commit.
+use std::any::Any;
+use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
+use serde_json::Value;
+use crate::types::ModuleId;
+
+/// v0.3 service-location channel (design §7 预留接口 #1): capability interfaces stay
+/// `&self + Send + Sync`; this is how the Kernel reaches them without message routing.
+pub trait ModuleResolver: Send + Sync {
+    fn resolve<T: 'static + Send + Sync>(&self, id: &ModuleId) -> Option<Arc<T>>;
+}
+
+/// A routable service invoked by KernelMessage::ServiceCall.
+pub trait KernelService: Send + Sync {
+    fn call(&self, method: &str, params: Value) -> Result<Value, String>;
+}
+
+/// Reply channel for KernelMessage::ServiceCall: `Arc` keeps the enum Clone-able;
+/// `take()` releases the oneshot after the first (and only) reply.
+pub type ServiceCallReply =
+    Arc<std::sync::Mutex<Option<tokio::sync::oneshot::Sender<Result<Value, String>>>>>;
+
+#[derive(Default)]
+pub struct ServiceRegistry {
+    // Concrete-type service location (design §7 #1): Arc<dyn Any>::downcast requires
+    // Sized, so this map serves resolve::<T> with CONCRETE types only.
+    services: RwLock<HashMap<ModuleId, Arc<dyn Any + Send + Sync>>>,
+    // KernelService routing map (KernelMessage::ServiceCall): trait objects cannot go
+    // through the Any map (E0277: dyn KernelService is unsized) — a dedicated map keeps
+    // the enum routing type-safe without ?Sized gymnastics.
+    kernel_services: RwLock<HashMap<ModuleId, Arc<dyn KernelService>>>,
+}
+
+impl ServiceRegistry {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn register<T: 'static + Send + Sync>(&self, id: ModuleId, service: Arc<T>) {
+        self.services.write().unwrap().insert(id, service);
+    }
+
+    pub fn register_kernel_service(&self, id: ModuleId, service: Arc<dyn KernelService>) {
+        self.kernel_services.write().unwrap().insert(id, service);
+    }
+
+    pub fn unregister(&self, id: &ModuleId) {
+        self.services.write().unwrap().remove(id);
+        self.kernel_services.write().unwrap().remove(id);
+    }
+
+    pub fn get<T: 'static + Send + Sync>(&self, id: &ModuleId) -> Option<Arc<T>> {
+        let svc = self.services.read().unwrap().get(id)?.clone();
+        svc.downcast::<T>().ok()
+    }
+
+    pub fn get_kernel_service(&self, id: &ModuleId) -> Option<Arc<dyn KernelService>> {
+        self.kernel_services.read().unwrap().get(id).cloned()
+    }
+}
+
+impl ModuleResolver for ServiceRegistry {
+    fn resolve<T: 'static + Send + Sync>(&self, id: &ModuleId) -> Option<Arc<T>> {
+        self.get(id)
+    }
+}
 
 #[cfg(test)]
 mod tests {

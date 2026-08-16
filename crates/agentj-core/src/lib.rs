@@ -9,6 +9,8 @@ pub mod permission;
 pub mod resolver;
 pub mod types;
 
+pub use resolver::{KernelService, ModuleResolver, ServiceRegistry};
+
 pub fn add(left: u64, right: u64) -> u64 {
     left + right
 }

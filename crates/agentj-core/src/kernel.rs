@@ -1,6 +1,8 @@
 use crate::error::KernelError;
 use crate::hooks::EventBus;
 use crate::module::{EventType, KernelContext, KernelMessage, KernelModule, ModuleRegister, ModuleState};
+use crate::resolver::{ModuleResolver, ServiceRegistry};
+use crate::types::ModuleId;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
@@ -40,6 +42,7 @@ pub struct Kernel {
     overall_timeout: Duration, // design #13: total graceful-shutdown budget
     events: Arc<EventBus>,
     ctx: Arc<RwLock<Option<KernelContext>>>, // retained at first register_module
+    services: Arc<ServiceRegistry>,          // v0.3 service location (design §7 #1)
 }
 
 impl Kernel {
@@ -63,11 +66,23 @@ impl Kernel {
             overall_timeout,
             events: Arc::new(EventBus::new()),
             ctx: Arc::new(RwLock::new(None)),
+            services: Arc::new(ServiceRegistry::new()),
         }
     }
 
     pub fn sender(&self) -> KernelSender {
         self.sender.clone()
+    }
+
+    /// The kernel's service registry — register capability services here or via
+    /// `ModuleRegister::register_service` during module init.
+    pub fn services(&self) -> Arc<ServiceRegistry> {
+        self.services.clone()
+    }
+
+    /// Locate a concrete-typed capability service (design §7 #1 service channel).
+    pub fn resolve<T: 'static + Send + Sync>(&self, id: &ModuleId) -> Option<Arc<T>> {
+        self.services.resolve(id)
     }
 
     /// The kernel's event bus. Register handlers here (or via `ModuleRegister::on_event`)
@@ -134,6 +149,7 @@ impl Kernel {
         let order = Arc::clone(&self.order);
         let states = Arc::clone(&self.states);
         let events = Arc::clone(&self.events);
+        let services = Arc::clone(&self.services);
         let shutdown_timeout = self.shutdown_timeout;
         let overall_timeout = self.overall_timeout;
         let mut rx = self.rx.take().unwrap_or_else(|| {
@@ -144,6 +160,25 @@ impl Kernel {
             while let Some(msg) = rx.recv().await {
                 if matches!(msg, KernelMessage::Shutdown) {
                     break; // graceful shutdown handled below — NOT broadcast via handle()
+                }
+                // v0.3 service routing (design §7 #1): ServiceCall is served by the
+                // registry BEFORE module broadcast; unknown services get an error
+                // reply so the caller never hangs.
+                if let KernelMessage::ServiceCall {
+                    service,
+                    method,
+                    params,
+                    reply,
+                } = &msg
+                {
+                    let out = match services.get_kernel_service(service) {
+                        Some(svc) => svc.call(method, params.clone()),
+                        None => Err(format!("service '{service}' not found")),
+                    };
+                    if let Some(tx) = reply.lock().unwrap().take() {
+                        let _ = tx.send(out);
+                    }
+                    continue;
                 }
                 let mut guard = modules.lock().unwrap();
                 for module in guard.values_mut() {
