@@ -38,7 +38,7 @@ impl ProviderFactory {
                 Ok(ModelEvent::ToolCall(ToolCall {
                     id: "call_1".into(),
                     name: "bash".into(),
-                    arguments: serde_json::json!({"cmd": "curl http://example.com"}),
+                    arguments: serde_json::json!({"command": "curl http://example.com"}),
                 })),
                 Ok(ModelEvent::Delta("done".into())),
                 Ok(ModelEvent::Done),

@@ -176,20 +176,36 @@ impl PermissionModule {
 
     fn eval_builtin(&self, ctx: &PermissionContext, policy: &ToolPolicy) -> EvalOutcome {
         if ctx.tool == "bash" {
-            let cmd = ctx.args.get("cmd").and_then(|v| v.as_str()).unwrap_or("");
-            self.engine.eval_command(policy, cmd)
-        } else if let Some(path) = ctx.args.get("path").and_then(|v| v.as_str()) {
-            self.engine.eval_path(policy, &ctx.workspace_root, path)
+            let cmd = bash_arg(&ctx.args).unwrap_or("");
+            return self.engine.eval_command(policy, cmd);
+        }
+        // File/glob tools: path rules bind on whichever path-like arg is
+        // present — "path" (read/write), "pattern"/"include" (glob/grep).
+        // Deny > Allow: any decisive outcome wins, later args included.
+        let mut any_allow = false;
+        for key in ["path", "pattern", "include"] {
+            let Some(arg) = ctx.args.get(key).and_then(|v| v.as_str()) else {
+                continue;
+            };
+            match self.engine.eval_path(policy, &ctx.workspace_root, arg) {
+                EvalOutcome::Deny => return EvalOutcome::Deny,
+                EvalOutcome::Allow => any_allow = true,
+                EvalOutcome::Mode(_) => {}
+            }
+        }
+        if any_allow {
+            EvalOutcome::Allow
         } else {
             EvalOutcome::Mode(policy.mode)
         }
     }
 
     fn eval_external(&self, ctx: &PermissionContext, policy: &ToolPolicy) -> EvalOutcome {
-        // MCP/plugin tools: an allow rule wins; otherwise Ask (no default Allow).
+        // MCP/plugin tools: rules evaluate first (Deny > Allow), only a miss
+        // falls back to Ask (no default Allow for external tools).
         if let Some(path) = ctx.args.get("path").and_then(|v| v.as_str()) {
             let o = self.engine.eval_path(policy, &ctx.workspace_root, path);
-            if o == EvalOutcome::Allow {
+            if o != EvalOutcome::Mode(policy.mode) {
                 return o;
             }
         }
@@ -224,13 +240,19 @@ impl PermissionModule {
     }
 }
 
-/// Fingerprint key for a tool invocation: bash → cmd, file tools → path.
+/// Read the bash command argument: the REAL schema field is "command"
+/// (BashTool input_schema); "cmd" is tolerated as a legacy fallback so old
+/// callers/tests keep working. Missing/empty → "" (matches no rule).
+fn bash_arg(args: &serde_json::Value) -> Option<&str> {
+    args.get("command")
+        .or_else(|| args.get("cmd"))
+        .and_then(|v| v.as_str())
+}
+
+/// Fingerprint key for a tool invocation: bash → command, file tools → path.
 fn rule_key_for(tool: &str, args: &serde_json::Value) -> String {
     if tool == "bash" {
-        args.get("cmd")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string()
+        bash_arg(args).unwrap_or("").to_string()
     } else {
         args.get("path")
             .and_then(|v| v.as_str())
@@ -364,9 +386,26 @@ mod tests {
             session_id: "s1".into(),
             tool: "bash".into(),
             source: ToolSource::Builtin,
-            args: serde_json::json!({"cmd": cmd}),
+            // Real bash schema field (BashTool input_schema); "cmd" is legacy.
+            args: serde_json::json!({"command": cmd}),
             workspace_root: PathBuf::from("/ws"),
         }
+    }
+
+    fn bash_deny_policy() -> std::collections::HashMap<String, ToolPolicy> {
+        let mut policies = std::collections::HashMap::new();
+        policies.insert(
+            "bash".to_string(),
+            ToolPolicy {
+                mode: PermissionMode::Ask,
+                path_rules: vec![],
+                command_rules: vec![CommandRule {
+                    effect: PermissionEffect::Deny,
+                    prefix: "rm -rf".into(),
+                }],
+            },
+        );
+        policies
     }
 
     #[tokio::test]
@@ -501,5 +540,178 @@ mod tests {
         } else {
             panic!("expected Ask");
         }
+    }
+
+    /// H1 regression: the REAL bash schema field is "command" (BashTool
+    /// input_schema). A deny command rule must bind on it — a model-scripted
+    /// `{"command": "rm -rf /x"}` ToolCall must be Denied, never slip through
+    /// as an empty command that matches no rule.
+    #[test]
+    fn bash_command_field_is_checked() {
+        let m = PermissionModule::new(bash_deny_policy(), Duration::from_millis(50));
+        let c = PermissionContext {
+            session_id: "s1".into(),
+            tool: "bash".into(),
+            source: ToolSource::Builtin,
+            args: serde_json::json!({"command": "rm -rf /x"}),
+            workspace_root: PathBuf::from("/ws"),
+        };
+        assert_eq!(
+            m.check(&c),
+            PermissionDecision::Deny {
+                reason: "matched deny rule".into()
+            }
+        );
+    }
+
+    /// H1 regression: an allow_always grant must be scoped to the EXACT
+    /// "command" argument — no session-wide bash wildcard collapse. The grant
+    /// fingerprint derives from the stored args, so if the engine read only
+    /// "cmd" (legacy), the fingerprint would be "" and every bash command in
+    /// the session would be allowed.
+    #[tokio::test]
+    async fn allow_always_scoped_to_exact_command() {
+        let m = PermissionModule::new(bash_deny_policy(), Duration::from_millis(50));
+        let c = ctx(&m, "npm test");
+        if let PermissionDecision::Ask { request_id } = m.check(&c) {
+            let handle = tokio::spawn({
+                let m = m.clone();
+                let rid = request_id.clone();
+                async move { m.await_approval(&rid).await }
+            });
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            m.respond(&request_id, ApprovalDecision::AllowAlways);
+            assert_eq!(handle.await.unwrap(), PermissionDecision::Allow);
+            // The same "command" arg in the same session: allowed via grant.
+            assert_eq!(m.check(&c), PermissionDecision::Allow);
+            // A DIFFERENT command must NOT hit the grant — deny rule binds.
+            let c2 = ctx(&m, "rm -rf /x");
+            assert_eq!(
+                m.check(&c2),
+                PermissionDecision::Deny {
+                    reason: "matched deny rule".into()
+                }
+            );
+        } else {
+            panic!("expected Ask");
+        }
+    }
+
+    /// Backward compat: the legacy "cmd" field must still be honored.
+    #[test]
+    fn legacy_cmd_field_still_denied() {
+        let m = PermissionModule::new(bash_deny_policy(), Duration::from_millis(50));
+        let c = PermissionContext {
+            session_id: "s1".into(),
+            tool: "bash".into(),
+            source: ToolSource::Builtin,
+            args: serde_json::json!({"cmd": "rm -rf /x"}),
+            workspace_root: PathBuf::from("/ws"),
+        };
+        assert_eq!(
+            m.check(&c),
+            PermissionDecision::Deny {
+                reason: "matched deny rule".into()
+            }
+        );
+    }
+
+    /// M2 regression: an MCP/plugin-sourced tool with a deny path rule must
+    /// short-circuit to Deny (Deny > Allow > Ask holds for external tools too,
+    /// not only builtins).
+    #[test]
+    fn external_tool_deny_path_rule_short_circuits() {
+        let mut policies = std::collections::HashMap::new();
+        policies.insert(
+            "mcp-fetch".to_string(),
+            ToolPolicy {
+                mode: PermissionMode::Ask,
+                path_rules: vec![PathRule {
+                    effect: PermissionEffect::Deny,
+                    pattern: ".env".into(),
+                }],
+                command_rules: vec![],
+            },
+        );
+        let m = PermissionModule::new(policies, Duration::from_millis(50));
+        let c = PermissionContext {
+            session_id: "s1".into(),
+            tool: "mcp-fetch".into(),
+            source: ToolSource::Mcp {
+                server_id: "srv".into(),
+            },
+            args: serde_json::json!({"path": ".env"}),
+            workspace_root: PathBuf::from("/ws"),
+        };
+        assert_eq!(
+            m.check(&c),
+            PermissionDecision::Deny {
+                reason: "matched deny rule".into()
+            }
+        );
+    }
+
+    /// M3 regression: grep's file-scope args ("pattern"/"include") must be
+    /// evaluated against path rules — a deny rule for `.env` must bind.
+    #[test]
+    fn grep_pattern_arg_binds_path_deny_rule() {
+        let mut policies = std::collections::HashMap::new();
+        policies.insert(
+            "grep".to_string(),
+            ToolPolicy {
+                mode: PermissionMode::Ask,
+                path_rules: vec![PathRule {
+                    effect: PermissionEffect::Deny,
+                    pattern: ".env".into(),
+                }],
+                command_rules: vec![],
+            },
+        );
+        let m = PermissionModule::new(policies, Duration::from_millis(50));
+        let c = PermissionContext {
+            session_id: "s1".into(),
+            tool: "grep".into(),
+            source: ToolSource::Builtin,
+            args: serde_json::json!({"pattern": ".*", "include": ".env"}),
+            workspace_root: PathBuf::from("/ws"),
+        };
+        assert_eq!(
+            m.check(&c),
+            PermissionDecision::Deny {
+                reason: "matched deny rule".into()
+            }
+        );
+    }
+
+    /// M3 regression: glob's "pattern" arg is a workspace-relative glob and
+    /// must be evaluated against path rules too.
+    #[test]
+    fn glob_pattern_arg_binds_path_deny_rule() {
+        let mut policies = std::collections::HashMap::new();
+        policies.insert(
+            "glob".to_string(),
+            ToolPolicy {
+                mode: PermissionMode::Ask,
+                path_rules: vec![PathRule {
+                    effect: PermissionEffect::Deny,
+                    pattern: ".env".into(),
+                }],
+                command_rules: vec![],
+            },
+        );
+        let m = PermissionModule::new(policies, Duration::from_millis(50));
+        let c = PermissionContext {
+            session_id: "s1".into(),
+            tool: "glob".into(),
+            source: ToolSource::Builtin,
+            args: serde_json::json!({"pattern": ".env"}),
+            workspace_root: PathBuf::from("/ws"),
+        };
+        assert_eq!(
+            m.check(&c),
+            PermissionDecision::Deny {
+                reason: "matched deny rule".into()
+            }
+        );
     }
 }
