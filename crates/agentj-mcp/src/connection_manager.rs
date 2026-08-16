@@ -137,6 +137,40 @@ fn reply_error(op: TransportOp, msg: &str) {
     }
 }
 
+fn handle_connect(
+    rt: &tokio::runtime::Runtime,
+    transport: &mut Option<McpTransport>,
+    command: String,
+    reply: Reply<()>,
+) {
+    let result = rt.block_on(spawn_and_init(&command));
+    match result {
+        Ok(t) => {
+            *transport = Some(t);
+            let _ = reply.send(Ok(()));
+        }
+        Err(e) => {
+            let _ = reply.send(Err(e));
+        }
+    }
+}
+
+fn handle_request(
+    rt: &tokio::runtime::Runtime,
+    transport: &mut Option<McpTransport>,
+    method: String,
+    params: Value,
+    reply: Reply<Value>,
+) {
+    let result = match transport {
+        Some(t) => rt
+            .block_on(t.request(&method, params))
+            .map_err(|e| e.to_string()),
+        None => Err("transport not connected".to_string()),
+    };
+    let _ = reply.send(result);
+}
+
 fn transport_loop(rx: Receiver<TransportOp>) {
     let rt = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -155,29 +189,14 @@ fn transport_loop(rx: Receiver<TransportOp>) {
     while let Ok(op) = rx.recv() {
         match op {
             TransportOp::Connect { command, reply } => {
-                let result = rt.block_on(spawn_and_init(&command));
-                match result {
-                    Ok(t) => {
-                        transport = Some(t);
-                        let _ = reply.send(Ok(()));
-                    }
-                    Err(e) => {
-                        let _ = reply.send(Err(e));
-                    }
-                }
+                handle_connect(&rt, &mut transport, command, reply);
             }
             TransportOp::Request {
                 method,
                 params,
                 reply,
             } => {
-                let result = match &mut transport {
-                    Some(t) => rt
-                        .block_on(t.request(&method, params))
-                        .map_err(|e| e.to_string()),
-                    None => Err("transport not connected".to_string()),
-                };
-                let _ = reply.send(result);
+                handle_request(&rt, &mut transport, method, params, reply);
             }
             TransportOp::Shutdown { reply } => {
                 if let Some(t) = transport.as_mut() {
@@ -395,6 +414,25 @@ impl McpConnectionManager {
         })
     }
 
+    fn register_one_tool(self: &Arc<Self>, server_id: &str, def: &Value, names: &mut Vec<String>) {
+        let name = def["name"].as_str().unwrap_or("unknown").to_string();
+        names.push(name.clone());
+        let tool = McpSharedTool {
+            server_id: server_id.into(),
+            name: name.clone(),
+            description: def["description"].as_str().unwrap_or("").to_string(),
+            input_schema: def["inputSchema"].clone(),
+            manager: Arc::clone(self), // registered tools delegate execution to the manager
+        };
+        let _ = self.registry.register_tool_with_source(
+            Arc::new(tool),
+            ToolSource::Mcp {
+                server_id: server_id.into(),
+            },
+            agentj_core::module::ReplacePolicy::Replace,
+        );
+    }
+
     async fn register_tools(
         self: &Arc<Self>,
         server_id: &str,
@@ -425,22 +463,7 @@ impl McpConnectionManager {
         let tools = tools_resp["tools"].as_array().cloned().unwrap_or_default();
         let mut names = vec![];
         for def in tools {
-            let name = def["name"].as_str().unwrap_or("unknown").to_string();
-            names.push(name.clone());
-            let tool = McpSharedTool {
-                server_id: server_id.into(),
-                name: name.clone(),
-                description: def["description"].as_str().unwrap_or("").to_string(),
-                input_schema: def["inputSchema"].clone(),
-                manager: Arc::clone(self), // registered tools delegate execution to the manager
-            };
-            let _ = self.registry.register_tool_with_source(
-                Arc::new(tool),
-                ToolSource::Mcp {
-                    server_id: server_id.into(),
-                },
-                agentj_core::module::ReplacePolicy::Replace,
-            );
+            self.register_one_tool(server_id, &def, &mut names);
         }
         if let Some(c) = self
             .connections
@@ -452,6 +475,24 @@ impl McpConnectionManager {
             *reg = names;
         }
         Ok(())
+    }
+
+    async fn handle_execute_error(
+        self: &Arc<Self>,
+        server_id: &str,
+        command: &str,
+        e: ToolError,
+    ) -> ToolError {
+        // mid-call crash → unregister ghosts, transition to Reconnecting
+        self.registry.unregister_by_source(&ToolSource::Mcp {
+            server_id: server_id.into(),
+        });
+        self.publish(&EventType::McpDisconnected(server_id.into()));
+        if let Ok(mut map) = self.connections.write() {
+            map.remove(server_id);
+        }
+        self.reconnect(server_id, command).await;
+        e
     }
 
     pub async fn execute(
@@ -491,18 +532,7 @@ impl McpConnectionManager {
             });
         match resp {
             Ok(r) => Ok(r["content"][0]["text"].clone()),
-            Err(e) => {
-                // mid-call crash → unregister ghosts, transition to Reconnecting
-                self.registry.unregister_by_source(&ToolSource::Mcp {
-                    server_id: server_id.into(),
-                });
-                self.publish(&EventType::McpDisconnected(server_id.into()));
-                if let Ok(mut map) = self.connections.write() {
-                    map.remove(server_id);
-                }
-                self.reconnect(server_id, &conn.command).await;
-                Err(e)
-            }
+            Err(e) => Err(self.handle_execute_error(server_id, &conn.command, e).await),
         }
     }
 

@@ -1,6 +1,7 @@
 //! JSON-RPC 2.0 stdio transport for MCP server subprocesses (extracted from v0.1 lib.rs).
 //! Shared by the v0.1 `McpClient` (per-call) and the v0.2 `McpConnectionManager`
-//! (long-lived, wrapped in `Arc<Mutex<McpTransport>>` for concurrent use).
+//! (long-lived: each connection owns a dedicated transport thread that drives this
+//! transport on its own runtime; callers send ops over a channel and block on the reply).
 
 use serde_json::Value;
 use std::time::{Duration, Instant};
