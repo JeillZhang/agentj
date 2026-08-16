@@ -14,6 +14,7 @@ agentj-config = { path = "../agentj-config" }
 agentj-context = { path = "../agentj-context" }
 agentj-ipc = { path = "../agentj-ipc" }
 agentj-model = { path = "../agentj-model" }
+agentj-permission = { path = "../agentj-permission" }
 agentj-session = { path = "../agentj-session" }
 agentj-tools = { path = "../agentj-tools" }
 anyhow = "1"
