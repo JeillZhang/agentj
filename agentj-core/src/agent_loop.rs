@@ -2,7 +2,7 @@
 //! history persistence.
 
 use crate::error::{KernelError, ModuleError};
-use crate::module::{ContextPipeline, KernelContext};
+use crate::module::{ContextPipeline, KernelContext, ToolSource};
 use crate::types::*;
 use futures::StreamExt;
 use std::sync::Arc;
@@ -143,6 +143,7 @@ impl AgentLoop {
             model,
             ..Default::default()
         };
+        let workspace_root = std::env::current_dir().map_err(|e| route("cwd", e.to_string()))?;
 
         for _iter in 0..max_iter {
             let mut stream = provider
@@ -182,6 +183,8 @@ impl AgentLoop {
                 &tc_list,
                 &mut all_tool_calls,
                 &tx,
+                &session_id,
+                &workspace_root,
             )
             .await?;
         }
@@ -191,6 +194,9 @@ impl AgentLoop {
         Ok(())
     }
 
+    // 8 params are mandated by the permission-system plan (session_id +
+    // workspace_root are part of the execute_async routing contract).
+    #[allow(clippy::too_many_arguments)]
     async fn execute_tool_calls(
         ctx: &KernelContext,
         pipeline: &dyn ContextPipeline,
@@ -198,36 +204,38 @@ impl AgentLoop {
         tc_list: &[ToolCall],
         all_tool_calls: &mut Vec<ToolCall>,
         tx: &mpsc::Sender<AgentEvent>,
+        session_id: &str,
+        workspace_root: &std::path::Path,
     ) -> Result<(), KernelError> {
         for tc in tc_list {
             let _ = tx.send(AgentEvent::ToolCall(tc.clone())).await;
             all_tool_calls.push(tc.clone());
-            if let Some(tool) = ctx.tools.get(&tc.name) {
-                let result = tokio::task::spawn_blocking({
-                    let tool = tool.clone();
-                    let args = tc.arguments.clone();
-                    move || tool.execute(args)
+            let source = ctx.tools.source_of(&tc.name).unwrap_or(ToolSource::Builtin);
+            let perm_ctx = crate::permission::PermissionContext {
+                session_id: session_id.to_string(),
+                tool: tc.name.clone(),
+                source,
+                args: tc.arguments.clone(),
+                workspace_root: workspace_root.to_path_buf(),
+            };
+            let result = ctx
+                .tools
+                .execute_async(&tc.name, tc.arguments.clone(), &perm_ctx)
+                .await;
+            let result_str = match result {
+                Ok(val) => val
+                    .as_str()
+                    .map(String::from)
+                    .unwrap_or_else(|| val.to_string()),
+                Err(e) => format!("Error: {e}"),
+            };
+            let _ = tx
+                .send(AgentEvent::ToolResult {
+                    call_id: tc.id.clone(),
+                    result: result_str.clone(),
                 })
-                .await
-                .map_err(|e| KernelError::MessageRouteFailed {
-                    msg: "tool panic".into(),
-                    reason: e.to_string(),
-                })?;
-                let result_str = match result {
-                    Ok(val) => val
-                        .as_str()
-                        .map(String::from)
-                        .unwrap_or_else(|| val.to_string()),
-                    Err(e) => format!("Error: {e}"),
-                };
-                let _ = tx
-                    .send(AgentEvent::ToolResult {
-                        call_id: tc.id.clone(),
-                        result: result_str.clone(),
-                    })
-                    .await;
-                pipeline.reflux(messages, tc, result_str);
-            }
+                .await;
+            pipeline.reflux(messages, tc, result_str);
         }
         Ok(())
     }
@@ -238,6 +246,9 @@ mod tests {
     use super::*;
     use crate::error::*;
     use crate::module::*;
+    use crate::permission::{
+        PermissionChecker, PermissionContext, PermissionDecision, PermissionRequestId,
+    };
     use async_trait::async_trait;
     use futures::stream::{self, BoxStream};
     use std::sync::{Arc, Mutex};
@@ -451,5 +462,135 @@ mod tests {
         }
         let recorded = models.lock().unwrap().clone();
         assert_eq!(recorded, vec!["opencode-go/kimi-k3".to_string()]);
+    }
+
+    // Minimal tool for the loop tests (agent_loop.rs tests cannot see module.rs's
+    // private DummyTool — define a local one).
+    struct LoopTool;
+    impl crate::module::Tool for LoopTool {
+        fn name(&self) -> &str {
+            "dummy"
+        }
+        fn description(&self) -> &str {
+            ""
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({})
+        }
+        fn execute(
+            &self,
+            _input: serde_json::Value,
+        ) -> Result<serde_json::Value, crate::error::ToolError> {
+            Ok(serde_json::Value::String("ok".into()))
+        }
+    }
+
+    struct AllowAll;
+    #[async_trait]
+    impl PermissionChecker for AllowAll {
+        fn check(&self, _ctx: &PermissionContext) -> PermissionDecision {
+            PermissionDecision::Allow
+        }
+        async fn await_approval(&self, _rid: &PermissionRequestId) -> PermissionDecision {
+            PermissionDecision::Allow
+        }
+    }
+
+    fn loop_test_ctx(tools: ToolRegistry) -> KernelContext {
+        KernelContext {
+            session: Arc::new(MockSession {
+                history: Mutex::new(vec![]),
+            }),
+            tools: Arc::new(tools),
+            providers: Arc::new(ProviderRegistry::new()),
+            config: Arc::new(MockConfig), // local mock — v0.1 T11 pattern
+        }
+    }
+
+    #[tokio::test]
+    async fn tool_loop_goes_through_execute_async() {
+        let tools = ToolRegistry::new();
+        tools.set_permission_checker(Arc::new(AllowAll));
+        tools.register(Arc::new(LoopTool));
+        let ctx = loop_test_ctx(tools);
+        let pipeline = MockPipeline;
+        let mut messages = vec![];
+        let mut all_tool_calls = vec![];
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+        let tc = ToolCall {
+            id: "c1".into(),
+            name: "dummy".into(),
+            arguments: serde_json::json!({}),
+        };
+        AgentLoop::execute_tool_calls(
+            &ctx,
+            &pipeline,
+            &mut messages,
+            &[tc],
+            &mut all_tool_calls,
+            &tx,
+            "session-1", // real session id — never ""
+            std::path::Path::new("/ws"),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(rx.recv().await.unwrap(), AgentEvent::ToolCall(_)));
+        let event = rx.recv().await.unwrap();
+        assert!(matches!(event, AgentEvent::ToolResult { call_id, .. } if call_id == "c1"));
+    }
+
+    #[tokio::test]
+    async fn tool_loop_denied_returns_denied_result() {
+        struct DenyAll;
+        #[async_trait]
+        impl PermissionChecker for DenyAll {
+            fn check(&self, _ctx: &PermissionContext) -> PermissionDecision {
+                PermissionDecision::Deny {
+                    reason: "denied".into(),
+                }
+            }
+            async fn await_approval(&self, _rid: &PermissionRequestId) -> PermissionDecision {
+                PermissionDecision::Deny {
+                    reason: "denied".into(),
+                }
+            }
+        }
+        let tools = ToolRegistry::new();
+        tools.set_permission_checker(Arc::new(DenyAll));
+        tools.register(Arc::new(LoopTool));
+        let ctx = loop_test_ctx(tools);
+        let pipeline = MockPipeline;
+        let mut messages = vec![];
+        let mut all_tool_calls = vec![];
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+        let tc = ToolCall {
+            id: "c1".into(),
+            name: "dummy".into(),
+            arguments: serde_json::json!({}),
+        };
+        AgentLoop::execute_tool_calls(
+            &ctx,
+            &pipeline,
+            &mut messages,
+            &[tc],
+            &mut all_tool_calls,
+            &tx,
+            "session-1",
+            std::path::Path::new("/ws"),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(rx.recv().await.unwrap(), AgentEvent::ToolCall(_)));
+        let event = rx.recv().await.unwrap();
+        match event {
+            AgentEvent::ToolResult { call_id, result } => {
+                assert_eq!(call_id, "c1");
+                assert!(
+                    result.contains("permission denied") || result.contains("denied"),
+                    "got: {result}"
+                );
+            }
+            other => panic!("expected ToolResult, got {other:?}"),
+        }
     }
 }

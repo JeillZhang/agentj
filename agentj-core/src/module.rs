@@ -178,6 +178,7 @@ pub enum ReplacePolicy {
 pub struct ToolRegistry {
     tools: RwLock<HashMap<String, Arc<dyn Tool>>>,
     sources: RwLock<HashMap<String, ToolSource>>,
+    checker: RwLock<Option<Arc<dyn crate::permission::PermissionChecker>>>,
 }
 
 impl ToolRegistry {
@@ -185,6 +186,7 @@ impl ToolRegistry {
         Self {
             tools: RwLock::new(HashMap::new()),
             sources: RwLock::new(HashMap::new()),
+            checker: RwLock::new(None),
         }
     }
 
@@ -275,6 +277,71 @@ impl ToolRegistry {
 
     pub fn is_empty(&self) -> bool {
         self.tools.read().is_empty()
+    }
+
+    /// Set the permission checker (called once at kernel startup by the CLI).
+    pub fn set_permission_checker(&self, checker: Arc<dyn crate::permission::PermissionChecker>) {
+        *self.checker.write() = Some(checker);
+    }
+
+    /// Read-only source lookup (v0.1 T16 maintains the sources map; expose it).
+    pub fn source_of(&self, name: &str) -> Option<ToolSource> {
+        self.sources.read().get(name).cloned()
+    }
+
+    /// The configured permission checker, if any (design §7 KernelContext injection
+    /// is satisfied through the registry the context already owns).
+    pub fn checker(&self) -> Option<Arc<dyn crate::permission::PermissionChecker>> {
+        self.checker.read().clone()
+    }
+
+    /// Unified async execution entry (design #17 interception point): permission
+    /// gate first, then spawn_blocking delegate to the synchronous Tool::execute.
+    /// Without a checker, executes directly (v0.1 pre-permission behavior).
+    pub async fn execute_async(
+        &self,
+        name: &str,
+        args: serde_json::Value,
+        perm_ctx: &crate::permission::PermissionContext,
+    ) -> Result<serde_json::Value, ToolError> {
+        let checker = self.checker.read().clone();
+        if let Some(checker) = checker {
+            match checker.check(perm_ctx) {
+                crate::permission::PermissionDecision::Allow => {}
+                crate::permission::PermissionDecision::Deny { reason } => {
+                    return Err(ToolError::PermissionDenied {
+                        name: name.into(),
+                        reason,
+                    });
+                }
+                crate::permission::PermissionDecision::Ask { request_id } => {
+                    match checker.await_approval(&request_id).await {
+                        crate::permission::PermissionDecision::Allow => {}
+                        crate::permission::PermissionDecision::Deny { reason } => {
+                            return Err(ToolError::PermissionDenied {
+                                name: name.into(),
+                                reason,
+                            });
+                        }
+                        crate::permission::PermissionDecision::Ask { .. } => {
+                            return Err(ToolError::PermissionDenied {
+                                name: name.into(),
+                                reason: "unexpected nested approval request".into(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        let tool = self
+            .get(name)
+            .ok_or_else(|| ToolError::ToolNotFound { name: name.into() })?;
+        tokio::task::spawn_blocking(move || tool.execute(args))
+            .await
+            .map_err(|e| ToolError::ExecutionFailed {
+                name: name.into(),
+                reason: format!("tool panic: {e}"),
+            })?
     }
 }
 
@@ -408,6 +475,9 @@ impl KernelContext {
     }
     pub fn config(&self) -> Arc<dyn ConfigProvider> {
         self.config.clone()
+    }
+    pub fn permission(&self) -> Option<Arc<dyn crate::permission::PermissionChecker>> {
+        self.tools.checker()
     }
 }
 
@@ -637,5 +707,177 @@ mod tests {
         assert_eq!(store.status(&"s1".into()).unwrap(), SessionStatus::Active);
         assert!(store.archive(&"s1".into()).is_err());
         assert!(store.delete(&"s1".into()).is_err());
+    }
+
+    // ---- T6: permission-gated tool execution ----
+    use crate::permission::{
+        PermissionChecker, PermissionContext, PermissionDecision, PermissionRequestId,
+    };
+
+    #[derive(Clone)]
+    struct FixedChecker {
+        decision: PermissionDecision,
+    }
+    #[async_trait]
+    impl PermissionChecker for FixedChecker {
+        fn check(&self, _ctx: &PermissionContext) -> PermissionDecision {
+            self.decision.clone()
+        }
+        async fn await_approval(&self, _rid: &PermissionRequestId) -> PermissionDecision {
+            match &self.decision {
+                PermissionDecision::Ask { .. } => PermissionDecision::Allow,
+                other => other.clone(),
+            }
+        }
+    }
+
+    // Local config mock — v0.1 T11 pattern (no ConfigProviderImpl in v0.1).
+    struct MockConfig;
+    impl crate::module::ConfigProvider for MockConfig {
+        fn get_str(&self, _k: &str) -> Option<String> {
+            None
+        }
+        fn get_int(&self, _k: &str) -> Option<i64> {
+            None
+        }
+        fn providers(&self) -> Vec<(String, String)> {
+            vec![]
+        }
+    }
+
+    #[test]
+    fn source_of_returns_registered_source() {
+        let registry = ToolRegistry::new();
+        registry
+            .register_tool_with_source(
+                Arc::new(DummyTool),
+                ToolSource::Mcp {
+                    server_id: "srv-1".into(),
+                },
+                ReplacePolicy::Reject,
+            )
+            .unwrap();
+        assert_eq!(
+            registry.source_of("dummy"),
+            Some(ToolSource::Mcp {
+                server_id: "srv-1".into()
+            })
+        );
+        assert_eq!(registry.source_of("missing"), None);
+    }
+
+    #[test]
+    fn kernel_context_permission_accessor_resolves() {
+        let registry = ToolRegistry::new();
+        registry.set_permission_checker(Arc::new(FixedChecker {
+            decision: PermissionDecision::Allow,
+        }));
+        let ctx = KernelContext {
+            session: Arc::new(ContractOnlyStore),
+            tools: Arc::new(registry),
+            providers: Arc::new(ProviderRegistry::new()),
+            config: Arc::new(MockConfig), // local mock — v0.1 T11 pattern (no ConfigProviderImpl in v0.1)
+        };
+        assert!(ctx.permission().is_some());
+    }
+
+    #[tokio::test]
+    async fn execute_async_allow_runs_tool() {
+        let registry = ToolRegistry::new();
+        registry
+            .register_tool_with_source(
+                Arc::new(DummyTool),
+                ToolSource::Builtin,
+                ReplacePolicy::Reject,
+            )
+            .unwrap();
+        registry.set_permission_checker(Arc::new(FixedChecker {
+            decision: PermissionDecision::Allow,
+        }));
+        let ctx = PermissionContext {
+            session_id: "s1".into(),
+            tool: "dummy".into(),
+            source: ToolSource::Builtin,
+            args: serde_json::json!({}),
+            workspace_root: std::path::PathBuf::from("/ws"),
+        };
+        let result = registry
+            .execute_async("dummy", serde_json::json!({}), &ctx)
+            .await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), serde_json::Value::String("ok".into()));
+    }
+
+    #[tokio::test]
+    async fn execute_async_deny_blocks_tool() {
+        let registry = ToolRegistry::new();
+        registry
+            .register_tool_with_source(
+                Arc::new(DummyTool),
+                ToolSource::Builtin,
+                ReplacePolicy::Reject,
+            )
+            .unwrap();
+        registry.set_permission_checker(Arc::new(FixedChecker {
+            decision: PermissionDecision::Deny {
+                reason: "denied".into(),
+            },
+        }));
+        let ctx = PermissionContext {
+            session_id: "s1".into(),
+            tool: "dummy".into(),
+            source: ToolSource::Builtin,
+            args: serde_json::json!({}),
+            workspace_root: std::path::PathBuf::from("/ws"),
+        };
+        let result = registry
+            .execute_async("dummy", serde_json::json!({}), &ctx)
+            .await;
+        assert!(matches!(result, Err(ToolError::PermissionDenied { .. })));
+    }
+
+    #[tokio::test]
+    async fn execute_async_ask_then_allow_runs() {
+        let registry = ToolRegistry::new();
+        registry
+            .register_tool_with_source(
+                Arc::new(DummyTool),
+                ToolSource::Builtin,
+                ReplacePolicy::Reject,
+            )
+            .unwrap();
+        registry.set_permission_checker(Arc::new(FixedChecker {
+            decision: PermissionDecision::Ask {
+                request_id: PermissionRequestId("r1".into()),
+            },
+        }));
+        let ctx = PermissionContext {
+            session_id: "s1".into(),
+            tool: "dummy".into(),
+            source: ToolSource::Builtin,
+            args: serde_json::json!({}),
+            workspace_root: std::path::PathBuf::from("/ws"),
+        };
+        let result = registry
+            .execute_async("dummy", serde_json::json!({}), &ctx)
+            .await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn execute_async_without_checker_runs() {
+        let registry = ToolRegistry::new();
+        registry.register(Arc::new(DummyTool));
+        let ctx = PermissionContext {
+            session_id: "s1".into(),
+            tool: "dummy".into(),
+            source: ToolSource::Builtin,
+            args: serde_json::json!({}),
+            workspace_root: std::path::PathBuf::from("/ws"),
+        };
+        let result = registry
+            .execute_async("dummy", serde_json::json!({}), &ctx)
+            .await;
+        assert!(result.is_ok());
     }
 }

@@ -79,6 +79,14 @@ enum Commands {
     Serve,
 }
 
+/// Build the per-tool policy map from the [permission] config section
+/// (empty map when absent — the engine falls back to factory defaults).
+fn permission_policies_from_config(
+    cfg: &agentj_config::Config,
+) -> std::collections::HashMap<String, agentj_permission::ToolPolicy> {
+    cfg.inner().permission.clone().unwrap_or_default().tools
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
@@ -103,6 +111,14 @@ async fn main() -> anyhow::Result<()> {
         let provider = ProviderFactory::create(&pcfg.kind, &pcfg.name, &pcfg.base_url, api_key)?;
         providers.register(pcfg.name.clone(), provider);
     }
+
+    // Extract before `config` is boxed into the KernelContext — its config field
+    // is Arc<dyn ConfigProvider>, which erases the concrete Config type.
+    let permission_cfg = config.inner().permission.clone().unwrap_or_default();
+    permission_cfg
+        .validate()
+        .expect("invalid [permission] config");
+    let permission_policies = permission_policies_from_config(&config);
 
     let ctx = KernelContext {
         session,
@@ -129,7 +145,23 @@ async fn main() -> anyhow::Result<()> {
         &mut register,
     )?;
 
+    // Permission wiring (design #17): construct from [permission] config with
+    // fail-fast rule validation, register with the kernel so graceful shutdown
+    // clears grants + pending approvals, install the checker on the ToolRegistry,
+    // and hand the module to the IPC server for permission/respond.
+    let permission_module = Arc::new(agentj_permission::PermissionModule::new(
+        permission_policies,
+        std::time::Duration::from_secs(60),
+    ));
+    ctx.tools.set_permission_checker(permission_module.clone());
+    kernel.register_module(
+        Box::new(permission_module.as_ref().clone()),
+        &ctx,
+        &mut register,
+    )?;
+
     let mut ipc_server = IpcServer::new(agent_loop, kernel);
+    ipc_server.permission_module = Some(permission_module);
 
     // design #13: SIGINT/SIGTERM → same graceful shutdown chain as stdin EOF.
     // The sender is cloned so the signal task doesn't borrow ipc_server; serve_stdio
@@ -177,4 +209,69 @@ async fn main() -> anyhow::Result<()> {
     // runtime would wait for that thread while a client keeps stdin open.
     // Graceful shutdown already ran above — exit directly.
     std::process::exit(0);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Local helper: Config::load reads a file, so materialize the TOML at a
+    // per-process temp path. Thread id disambiguates parallel test threads,
+    // which share the process id (the brief's pid-only path races).
+    fn load_test_config(toml: &str) -> agentj_config::Config {
+        let dir = std::env::temp_dir().join(format!(
+            "agentj-cli-cfg-{:?}-{}",
+            std::thread::current().id(),
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.toml");
+        std::fs::write(&path, toml).unwrap();
+        agentj_config::Config::load(Some(path)).unwrap()
+    }
+
+    #[test]
+    fn permission_module_built_from_config() {
+        let cfg = load_test_config(
+            r#"
+            [permission.tools.bash]
+            mode = "ask"
+            [[permission.tools.bash.command_rules]]
+            effect = "allow"
+            prefix = "npm test"
+        "#,
+        );
+        let policies = permission_policies_from_config(&cfg);
+        assert_eq!(policies.len(), 1);
+        assert!(policies.contains_key("bash"));
+        assert_eq!(policies["bash"].command_rules[0].prefix, "npm test");
+    }
+
+    #[test]
+    fn permission_module_defaults_without_section() {
+        let cfg = load_test_config("");
+        let policies = permission_policies_from_config(&cfg);
+        assert!(policies.is_empty()); // engine falls back to factory defaults
+    }
+
+    #[test]
+    fn invalid_permission_config_fails_fast() {
+        let cfg = load_test_config(
+            r#"
+            [permission.tools.write]
+            mode = "ask"
+            [[permission.tools.write.path_rules]]
+            effect = "allow"
+            pattern = "[**"
+        "#,
+        );
+        assert!(
+            cfg.inner()
+                .permission
+                .clone()
+                .unwrap_or_default()
+                .validate()
+                .is_err()
+        );
+    }
 }

@@ -8,6 +8,9 @@ use crate::base::{
     ErrorObject, Id, NotificationMessage, ProgressToken, RequestMessage, ResponseMessage,
 };
 use crate::lifecycle::{ClientInfo, InitializeParams, InitializeResult, ServerInfo};
+use crate::permission::{
+    PermissionDecision, PermissionRequestParams, PermissionRespondParams, PermissionRespondResult,
+};
 use crate::session::{
     SessionIdParams, SessionNewResult, SessionRunParams, SessionRunResult, SessionStatusResult,
 };
@@ -54,6 +57,19 @@ pub fn generate_schemas() -> BTreeMap<String, Schema> {
     m.insert("CancelParams".into(), schema_for!(CancelParams));
     m.insert("KernelStatusResult".into(), schema_for!(KernelStatusResult));
     m.insert("ModuleInfo".into(), schema_for!(ModuleInfo));
+    m.insert(
+        "PermissionRequestParams".into(),
+        schema_for!(PermissionRequestParams),
+    );
+    m.insert(
+        "PermissionRespondParams".into(),
+        schema_for!(PermissionRespondParams),
+    );
+    m.insert(
+        "PermissionRespondResult".into(),
+        schema_for!(PermissionRespondResult),
+    );
+    m.insert("PermissionDecision".into(), schema_for!(PermissionDecision));
     m
 }
 

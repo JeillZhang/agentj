@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "PermissionRespondParams",
+  "description": "C→S request: the client's decision on a pending permission request.",
+  "type": "object",
+  "properties": {
+    "decision": {
+      "$ref": "#/$defs/PermissionDecision"
+    },
+    "request_id": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "request_id",
+    "decision"
+  ],
+  "$defs": {
+    "PermissionDecision": {
+      "description": "Decision value in `PermissionRespondParams`. `Unknown` tolerates forward\nvalues (serde(other)); schema lists only the known values.",
+      "type": "string",
+      "enum": [
+        "allow",
+        "deny",
+        "allow_always"
+      ]
+    }
+  }
+}

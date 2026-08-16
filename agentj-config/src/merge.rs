@@ -12,6 +12,9 @@ pub fn merge_config(base: AgentJConfig, file: AgentJConfig) -> AgentJConfig {
     if !file.model.default_model.is_empty() {
         config.model.default_model = file.model.default_model;
     }
+    if file.permission.is_some() {
+        config.permission = file.permission;
+    }
     config
 }
 
@@ -42,6 +45,7 @@ mod tests {
                 }],
                 default_model: "opencode-go/kimi-k3".into(),
             },
+            permission: None,
         };
         let merged = merge_config(base, file);
         assert_eq!(merged.model.providers.len(), 1);
@@ -59,6 +63,7 @@ mod tests {
                 providers: vec![],
                 default_model: String::new(), // empty → keep base
             },
+            permission: None,
         };
         let merged = merge_config(base, file);
         assert_eq!(merged.model.default_model, "deepseek-chat");

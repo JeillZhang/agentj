@@ -1,6 +1,7 @@
 //! AgentJ IPC protocol contract — canonical wire types + schema generation.
 pub mod base;
 pub mod lifecycle;
+pub mod permission;
 pub mod schema;
 pub mod session;
 pub mod streaming;
