@@ -30,10 +30,12 @@ fn registry_lists_all_v01_methods() {
         "kernel/status",
         "$/cancelRequest",
         "$/progress",
+        "$/permissionRequest",
+        "permission/respond",
     ] {
         assert!(names.contains(&expected), "missing method {expected}");
     }
-    assert_eq!(methods.len(), 12, "unexpected method count");
+    assert_eq!(methods.len(), 14, "unexpected method count");
 }
 
 #[test]
