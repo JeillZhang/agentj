@@ -8,6 +8,7 @@ use std::path::PathBuf;
 
 use crate::module::ToolSource;
 use crate::types::SessionId;
+use async_trait::async_trait;
 
 /// Opaque approval-request id (uuid), decoupled from the JSON-RPC request id.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -39,6 +40,7 @@ pub struct PermissionContext {
 }
 
 /// Capability interface consumed by ToolRegistry::execute_async (design §7).
+#[async_trait]
 pub trait PermissionChecker: Send + Sync {
     /// Synchronous decision: Allow / Deny / Ask. Ask means the implementation
     /// registered a pending request and emitted the $/permissionRequest
@@ -47,10 +49,7 @@ pub trait PermissionChecker: Send + Sync {
 
     /// Await the Ask decision (async; internally awaits the IPC response
     /// channel; timeout/cancel → Deny). Only called after check() returns Ask.
-    fn await_approval(
-        &self,
-        request_id: &PermissionRequestId,
-    ) -> impl std::future::Future<Output = PermissionDecision> + Send;
+    async fn await_approval(&self, request_id: &PermissionRequestId) -> PermissionDecision;
 }
 
 #[cfg(test)]
@@ -60,6 +59,7 @@ mod tests {
     use std::path::PathBuf;
 
     struct MockChecker;
+    #[async_trait]
     impl PermissionChecker for MockChecker {
         fn check(&self, _ctx: &PermissionContext) -> PermissionDecision {
             PermissionDecision::Ask {
