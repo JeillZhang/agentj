@@ -34,7 +34,6 @@ fn read_json_line<R: BufRead>(stdout: &mut R, line: &mut String) -> bool {
 }
 
 #[test]
-#[ignore] // e2e — run with -- --ignored (mirrors existing e2e convention)
 fn permission_request_notified_and_timeout_denies() {
     let dir = std::env::temp_dir().join(format!("agentj-e2e-perm-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
