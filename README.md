@@ -2,7 +2,7 @@
 
 AI 编码代理工具（Rust）——Linux 内核式「内核调度 + 可插拔模块」架构。内核通过统一的 JSON-RPC 2.0 协议（stdio，未来 TCP / WebSocket）对外暴露能力；CLI、TUI、Web Dashboard、IDE 插件均可作为协议消费者，**任意语言**可开发前端连接内核。
 
-> 当前版本：**v0.2.0**——IPC 协议契约（14 方法）+ 11 crate 内核已落地：Agent 循环（流式）、内置工具、**权限审批系统**（`$/permissionRequest` + `permission/respond`）、MCP 桥、JSON-RPC stdio IPC、CLI run/serve、模型提供方（DeepSeek + opencode-go）；守护内核（常驻 API 服务）设计已批准，待 v0.3。
+> 当前版本：**v0.2.1**——IPC 协议契约（14 方法）+ 11 crate 内核已落地：Agent 循环（流式）、内置工具、**权限审批系统**（`$/permissionRequest` + `permission/respond`）、MCP 桥、JSON-RPC stdio IPC、CLI run/serve、模型提供方（DeepSeek + opencode-go）；守护内核（常驻 API 服务）设计已批准，待 v0.3。
 
 ## Features
 
@@ -85,7 +85,7 @@ effect = "deny"
 ## Development
 
 ```bash
-cargo test --workspace            # 全量测试（185 个：protocol 47 + permission 34 + 其余 9 crate 104）
+cargo test --workspace            # 全量测试（192 个：protocol 47 + permission 40 + e2e_permission 1 + 其余 9 crate 104）
 cargo clippy --workspace -- -D warnings
 cargo bench -p agentj-model       # 模型流式基准（criterion）
 cargo run -p agentj-protocol --bin gen_schemas   # 重新生成 schemas/*.json

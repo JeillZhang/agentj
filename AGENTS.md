@@ -1,6 +1,6 @@
 # AGENTS.md
 
-> Updated 2026-08-16 — v0.2.0 released (11 crates, permission system + 2 new protocol methods); daemon-kernel design approved for v0.3.
+> Updated 2026-08-16 — v0.2.1 released (11 crates, permission system + 2 new protocol methods, acceptance fixes BUG-001/002/003); daemon-kernel design approved for v0.3.
 
 ## Project Status
 
@@ -14,7 +14,7 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
 
 ## Commands
 
-- `cargo test --workspace` — 全量测试（185 个：agentj-protocol 37 单元 + 7 契约 + 3 注册表，agentj-permission 34，其余 9 crate 104 个）
+- `cargo test --workspace` — 全量测试（192 个：agentj-protocol 37 单元 + 7 契约 + 3 注册表，agentj-permission 40，agentj-cli e2e_permission 1，其余 9 crate 104 个）
 - `cargo clippy --workspace -- -D warnings` — lint 门禁（零警告）
 - `cargo bench -p agentj-model` — 模型流式基准（criterion：`mock_stream_10_events`）
 - `cargo run -p agentj-protocol --bin gen_schemas` — 重新生成 `schemas/*.json`
@@ -25,7 +25,7 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
 
 - `.github/workflows/ci.yml` — 单元测试流水线（PR + push main + 手动）：`cargo fmt --all --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace --locked`、覆盖率门禁 `cargo llvm-cov --workspace --fail-under-lines 50`（门槛随开发上调至 80%）
 - `.github/workflows/smoke.yml` — 冒烟流水线（PR + push main + 手动）：`cargo build --release --locked` + `agentj --version/--help/run --help/serve --help` 退出码断言 + `cargo test -p agentj-core -- smoke`
-- `.github/workflows/e2e.yml` — E2E 流水线（main 合并后 + 手动）：`cargo build --release --locked` + `cargo test --release --test e2e_cli`（Mock LLM 密封测试，无真实 API key）
+- `.github/workflows/e2e.yml` — E2E 流水线（main 合并后 + 手动）：`cargo build --release --locked` + `cargo test --release --test e2e_cli --test e2e_permission`（Mock LLM 密封测试，无真实 API key）
 - 本地校验：`scripts/validate-workflow.sh <workflow-file> <jobs...>`（依赖-free，可选 PyYAML 严格解析）
 
 ## Architecture
