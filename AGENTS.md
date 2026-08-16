@@ -1,10 +1,10 @@
 # AGENTS.md
 
-> Updated 2026-08-16 — v0.1.1 released (10 crates, test acceptance passed, 7 bugs fixed); daemon-kernel design approved for v0.3.
+> Updated 2026-08-16 — v0.2.0 released (11 crates, permission system + 2 new protocol methods); daemon-kernel design approved for v0.3.
 
 ## Project Status
 
-AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + 可插拔模块」架构。v0.1 已落地：**IPC 协议契约**（12 方法）+ **10 crate 内核**（agentj-core 等，见 Architecture）——内核调度 + 模块 trait 注册表、AgentLoop 流式 API、内置工具、MCP 桥、JSON-RPC stdio IPC、CLI run/serve、模型提供方（DeepSeek + opencode-go 三线格式统一订阅）；**守护内核（常驻 API 服务）设计已批准**——统一 Connection 传输抽象契约 v0.1 固化、多客户端常驻能力 v0.3 落地（见 v0.3 计划）。
+AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + 可插拔模块」架构。v0.2 已落地：**IPC 协议契约**（14 方法）+ **11 crate 内核**（agentj-core 等，见 Architecture）——内核调度 + 模块 trait 注册表、AgentLoop 流式 API、**权限审批系统**（`$/permissionRequest` + `permission/respond`，设计决策 #17）、内置工具、MCP 桥、JSON-RPC stdio IPC、CLI run/serve、模型提供方（DeepSeek + opencode-go 三线格式统一订阅）；**守护内核（常驻 API 服务）设计已批准**——统一 Connection 传输抽象契约 v0.1 固化、多客户端常驻能力 v0.3 落地（见 v0.3 计划）。
 
 ## Setup
 
@@ -14,7 +14,7 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
 
 ## Commands
 
-- `cargo test --workspace` — 全量测试（121 个：agentj-protocol 31 单元 + 7 契约 + 3 注册表，其余 9 crate 80 个）
+- `cargo test --workspace` — 全量测试（178 个：agentj-protocol 47 单元 + 7 契约 + 3 注册表，agentj-permission 28，其余 9 crate 103 个）
 - `cargo clippy --workspace -- -D warnings` — lint 门禁（零警告）
 - `cargo bench -p agentj-model` — 模型流式基准（criterion：`mock_stream_10_events`）
 - `cargo run -p agentj-protocol --bin gen_schemas` — 重新生成 `schemas/*.json`
@@ -30,10 +30,11 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
 
 ## Architecture
 
-- `agentj-protocol`（leaf crate）：IPC 协议契约的权威 wire 类型（JSON-RPC 2.0 信封、错误码、12 个方法 params/result、流式类型、订阅/权限类型），serde + schemars，零内核耦合。v0.1 的 `agentj-core`/`agentj-ipc` 应消费其类型（导入而非重定义）。
+- `agentj-protocol`（leaf crate）：IPC 协议契约的权威 wire 类型（JSON-RPC 2.0 信封、错误码、14 个方法 params/result、流式类型、订阅/权限类型），serde + schemars，零内核耦合。v0.1 的 `agentj-core`/`agentj-ipc` 应消费其类型（导入而非重定义）。
 - `agentj-core`（内核）：Kernel 调度 + 模块 trait 注册表（`module.rs`：ModelProvider / SessionStore / ToolRegistry / ContextPipeline / ConfigProvider）、AgentLoop 流式 API（`run_turn_stream` → `mpsc::Receiver<AgentEvent>`，`run_turn` 聚合）、错误/类型（`error.rs`/`types.rs`）。
-- `agentj-config`：TOML 配置（`[model]`：`provider` + `providers[]`（name/base_url/api_key_env/**kind**）+ `default_model`），ConfigProvider 读取。
+- `agentj-config`：TOML 配置（`[model]`：`provider` + `providers[]`（name/base_url/api_key_env/**kind**）+ `default_model`；`[permission]`：per-tool `ToolPolicy`（mode/path_rules/command_rules）），ConfigProvider 读取。
 - `agentj-session`：会话生命周期（InMemoryStore：状态机 SessionStatus + 快照恢复）。
+- `agentj-permission`：权限系统——决策引擎（规则求值 Deny > Allow > Mode）+ 策略模型（`ToolPolicy`、`[permission]` 配置）+ `PermissionModule`（审批等待/超时 60s 自动 Deny、allow_always 会话级内存态、取消即拒绝）。
 - `agentj-model`：模型提供方——三线 wire-format 提供器（`openai_compat` / `responses` / `anthropic`）+ `opencode_go` 门面（OpenCodeGoProvider，按 `models/opencode-go.json` 目录路由）+ `factory`（ProviderFactory，按 kind 实例化）+ `mock`（MockModelProvider）。
 - `agentj-tools`：内置工具（bash/glob/grep/read/write）+ ToolExecutor。
 - `agentj-context`：上下文管线（纯消息构造器）。

@@ -10,7 +10,7 @@
 
 - **传输层**：每种传输各自的帧格式（stdio / TCP 使用 NDJSON，WebSocket 使用原生帧）。
 - **基础协议**：传输无关的 JSON-RPC 2.0 消息信封、错误对象与错误码。
-- **方法面**：v0.2 支持的 16 个方法及其参数 / 结果结构。
+- **方法面**：v0.2 支持的 14 个方法（注册表 `protocol/methods.json` 收录；另 `session/subscribe` / `session/unsubscribe` 为守护内核 v0.3 计划，设计已批准、注册表未收录）及其参数 / 结果结构。
 
 本文档适用于所有传输。任何传输都必须遵循基础协议与方法面的全部规则。
 
@@ -330,13 +330,30 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
     → session/run 最终响应（完整 content + tool_calls）
 ```
 
+### 7.5 权限审批流（`@since 0.2.0`）
+
+模型请求调用工具时，若工具策略判定为 **Ask**（见 §8.15 与 `[permission]` 配置），内核暂停该工具执行，向客户端发送 `$/permissionRequest` 通知（S→C），等待客户端裁决；客户端通过 `permission/respond` 请求（C→S）返回决策。完整 wire 形状见 §8.13 与 §8.15，此处记录流程语义：
+
+```
+工具调用（Ask 判定）→ $/permissionRequest {request_id, tool, args, reason}
+    → permission/respond {request_id, decision: allow | deny | allow_always}
+    → 工具执行继续 / 被拒绝（Deny）
+```
+
+- **request_id 与 JSON-RPC 请求 id 解耦**：`request_id` 是不透明标识，沿用 `$/progress` 的 token 解耦模式（见 §7.2），**独立于**触发该审批的 `session/run` 请求 id。客户端凭 `request_id` 关联通知与响应，无需预注册。
+- **60s 默认超时 → 自动 Deny**：内核等待审批默认 60s；超时未收到 `permission/respond`，该工具调用自动以 `Deny` 裁决（错误链 `RequestTimeout` → `Deny`），`session/run` 继续而非挂起。
+- **allow_always 会话级作用域（内存态）**：`allow_always` 仅写入当前 session 的 `SessionAllowState`（会话级内存态），**会话结束即失效，永不写回 `[permission]` 配置**；跨会话白名单须显式配置 `[permission]` 规则（见 `agentj-permission` 设计）。
+- **取消即拒绝**：`$/cancelRequest` 取消进行中的 `session/run` 时，该 session 所有**待审批**请求解析为 `Deny`（reason `cancelled`），不悬挂审批。
+- **定向与归属**：`$/permissionRequest` 定向发送给发起该 run 的客户端连接（`session_owner`）；非 owner 连接调用 `permission/respond` → `-32806 NotAuthorized`（多客户端语义见 §4.5 与守护内核设计）。
+- **内置工具默认策略**：`bash` / `write` = **Ask**；`read` / `glob` / `grep` = **Allow**；MCP / 插件工具 = **Ask**（未知工具保守 Ask）。均可经 `[permission]` 配置覆盖。
+
 ## 8. 方法面
 
 本节为每个方法单独成节，采用 LSP 六段式：**能力声明 → 请求 → 响应 → 部分结果 → error.data**。wire 上所有字段一律 **snake_case**（见 §11 的命名归一化决策）。
 
 ### 8.1 方法总表
 
-与 `protocol/methods.json` 完全一致：
+与 `protocol/methods.json` 一致（注册表收录 14 个；`session/subscribe` / `session/unsubscribe` 为守护内核 v0.3 计划，设计已批准、注册表未收录，见 8.11 / 8.12）：
 
 | 方法 | 类型 | 方向 | params | result | 说明 |
 |------|------|------|--------|--------|------|
@@ -349,9 +366,9 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 | `session/status` | request | C→S | SessionIdParams | SessionStatusResult | 查询会话状态 |
 | `session/archive` | request | C→S | SessionIdParams | null | 软删除 |
 | `session/delete` | request | C→S | SessionIdParams | null | 硬删除 |
-| `session/subscribe` | request | C→S | SessionSubscribeParams | null | 订阅会话运行进度（`@since 0.2.0`） |
-| `session/unsubscribe` | request | C→S | SessionIdParams | null | 退订会话进度（`@since 0.2.0`） |
-| `permission/respond` | request | C→S | PermissionRespondParams | null | 响应审批（`@since 0.2.0`） |
+| `session/subscribe` | request | C→S | SessionSubscribeParams | null | 订阅会话运行进度（守护内核 v0.3 计划） |
+| `session/unsubscribe` | request | C→S | SessionIdParams | null | 退订会话进度（守护内核 v0.3 计划） |
+| `permission/respond` | request | C→S | PermissionRespondParams | PermissionRespondResult | 响应审批（`@since 0.2.0`） |
 | `kernel/status` | request | C→S | — | KernelStatusResult | 内核与模块状态 |
 | `$/permissionRequest` | notification | S→C | PermissionRequestParams | — | 审批请求通知（`@since 0.2.0`） |
 | `$/cancelRequest` | notification | both | CancelParams | — | 取消进行中的请求 |
@@ -478,7 +495,7 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 - **部分结果**：无。
 - **error.data**：`-32802 SessionNotFound`；对已删除会话重复删除 → `-32803 SessionInactive`。
 
-### 8.11 session/subscribe（请求，`@since 0.2.0`）
+### 8.11 session/subscribe（请求，守护内核 v0.3 计划，设计已批准）
 
 - **能力声明**：多客户端能力 `multi_client`（见 §4.2）。
 - **请求**：`SessionSubscribeParams`。
@@ -500,7 +517,7 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 - **部分结果**：无。
 - **error.data**：`-32802 SessionNotFound`；`-32803 SessionInactive`（archived / deleted 会话不可订阅）。
 
-### 8.12 session/unsubscribe（请求，`@since 0.2.0`）
+### 8.12 session/unsubscribe（请求，守护内核 v0.3 计划，设计已批准）
 
 - **能力声明**：多客户端能力 `multi_client`（见 §4.2）。
 - **请求**：`SessionIdParams`（`session_id` 必填）。
@@ -526,7 +543,7 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 | `request_id` | string | 是 | 对应 `$/permissionRequest` 的通知 id（独立于 JSON-RPC 请求 id） |
 | `decision` | PermissionDecision | 是 | `allow` \| `deny` \| `allow_always`（未知值见 §9） |
 
-- **响应**：`null`。
+- **响应**：`PermissionRespondResult`（空对象 `{}`）。
 - **归属校验**：服务端按 `session_owner` 校验发起方——**只有发起该 run 的客户端连接**可以响应对应审批；非 owner 连接响应 → `-32806 NotAuthorized`。
 - **allow_always 语义**：将（工具, 命中规则指纹）写入当前 session 的 `SessionAllowState`（会话级内存态，会话结束即失效；跨会话白名单需显式配置 `[permission]` 规则）。
 - **部分结果**：无。
@@ -563,20 +580,18 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
   "request_id": "req-9",
   "tool": "bash",
   "args": { "cmd": "rm -rf /tmp/x" },
-  "origin_client": "conn-a",
   "reason": "tool default ask"
 } }
 ```
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| `request_id` | string | 是 | 审批请求 id（uuid，独立于 JSON-RPC 请求 id） |
+| `request_id` | string | 是 | 审批请求 id（uuid，独立于 JSON-RPC 请求 id，见 §7.5） |
 | `tool` | string | 是 | 需要审批的工具名 |
 | `args` | object | 是 | 工具原始参数 |
-| `origin_client` | string | 是 | 发起该 run 的客户端连接 id（`InitializeResult.connection_id`） |
 | `reason` | string | 否 | 审批原因（如命中的规则 / 默认模式） |
 
-- **定向路由**：服务端按 `session_owner` **定向**发送给发起该 run 的客户端连接（设计决策 #5），其余客户端不收到该通知。
+- **定向路由**：服务端按 `session_owner` **定向**发送给发起该 run 的客户端连接（设计决策 #5），其余客户端不收到该通知。守护内核（v0.3）将加性增加 `origin_client` 字段以显式标识发起连接（`@since 0.3.0` 计划）。
 - **响应**：无（通知不响应）；发起方通过 `permission/respond`（见 8.13）响应。
 - **部分结果**：不适用。
 - **error.data**：不适用。
@@ -601,7 +616,7 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 
 ### 9.1 值枚举
 
-v0.1 定义三个字符串值枚举：
+v0.2 定义四个字符串值枚举：
 
 | 枚举 | 已知值 | 用于 |
 |------|--------|------|
@@ -649,7 +664,7 @@ v0.1 定义三个字符串值枚举：
 | `session/delete` | `SessionIdParams.json` | — |
 | `session/subscribe` | `SessionSubscribeParams.json` | — |
 | `session/unsubscribe` | `SessionIdParams.json` | — |
-| `permission/respond` | `PermissionRespondParams.json` | — |
+| `permission/respond` | `PermissionRespondParams.json` | `PermissionRespondResult.json` |
 | `kernel/status` | — | `KernelStatusResult.json` |
 | `$/permissionRequest` | `PermissionRequestParams.json` | — |
 | `$/cancelRequest` | `CancelParams.json` | — |
@@ -692,9 +707,10 @@ v0.1 定义三个字符串值枚举：
 - 记录 snake_case 命名归一化决策。
 - 明确 batch 语义保留但 v0.1 未启用。
 
-#### 0.2.0（当前，守护内核契约）
+#### 0.2.0（当前，权限系统 + 守护内核契约）
 
-- 方法面 12 → **16**：新增 `session/subscribe`、`session/unsubscribe`、`permission/respond`（请求）与 `$/permissionRequest`（通知），支撑守护内核（常驻 API 服务）的多客户端能力。
+- 方法面 12 → **14**（注册表）：新增 `permission/respond`（请求）与 `$/permissionRequest`（通知），支撑工具审批流（见 §7.5）。`session/subscribe` / `session/unsubscribe` 为守护内核 v0.3 计划（设计已批准，注册表未收录）。
+- 新增**权限审批流**（设计决策 #17）：`request_id` 与 JSON-RPC 请求 id 解耦（沿用 `$/progress` token 模式）；60s 默认审批超时 → 自动 `Deny`；`allow_always` 仅写入会话级内存态 `SessionAllowState`，不写回 `[permission]` 配置；`$/cancelRequest` → 待审批解析为 `Deny`（reason `cancelled`）。
 - 错误码新增 2 个：`-32805 SessionBusy`（同 session 并发 run 互斥）、`-32806 NotAuthorized`（非 owner 的 respond / cancel、`--token` 不匹配）。
 - `initialize` 结果新增可选字段 `connection_id`；服务端能力新增 `multi_client` 标志（见 §4.2）。
 - `shutdown` 多客户端语义细化：断开请求方连接；最后一条连接断开触发优雅关闭（见 §4.5）。
