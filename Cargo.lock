@@ -99,6 +99,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "tokio-util",
  "wiremock",
 ]
 
@@ -116,6 +117,16 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "agentj-plugin"
+version = "0.2.1"
+dependencies = [
+ "agentj-core",
+ "serde",
+ "thiserror",
+ "toml",
 ]
 
 [[package]]
