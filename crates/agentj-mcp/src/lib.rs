@@ -1,13 +1,16 @@
+pub mod connection_manager;
+pub mod transport;
+
+pub use connection_manager::{ConnectionState, McpConnectionManager};
+
+use crate::transport::McpTransport;
 use agentj_core::error::ToolError;
 use agentj_core::module::{Tool, ToolRegistry};
 use serde_json::Value;
 use std::sync::Arc;
-use std::time::Duration;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStdin, ChildStdout, Command};
+use tokio::process::Command;
 
 pub struct McpClient;
-
 impl McpClient {
     /// Connect to an MCP server subprocess, discover its tools, and register them.
     pub async fn connect_and_register(
@@ -53,49 +56,6 @@ impl McpClient {
             registry.register(Arc::new(tool));
         }
         Ok(())
-    }
-}
-
-struct McpTransport {
-    stdin: ChildStdin,
-    stdout: BufReader<ChildStdout>,
-    _child: Child,
-    next_id: u64,
-}
-
-impl McpTransport {
-    fn new(stdin: ChildStdin, stdout: ChildStdout, child: Child) -> Self {
-        Self {
-            stdin,
-            stdout: BufReader::new(stdout),
-            _child: child,
-            next_id: 0,
-        }
-    }
-
-    async fn request(
-        &mut self,
-        method: &str,
-        params: Value,
-    ) -> Result<Value, Box<dyn std::error::Error>> {
-        let id = self.next_id;
-        self.next_id += 1;
-        let req =
-            serde_json::json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
-        let line = serde_json::to_string(&req)? + "\n";
-        self.stdin.write_all(line.as_bytes()).await?;
-
-        let mut response_line = String::new();
-        tokio::time::timeout(
-            Duration::from_secs(30),
-            self.stdout.read_line(&mut response_line),
-        )
-        .await??;
-        let resp: Value = serde_json::from_str(&response_line)?;
-        if let Some(err) = resp.get("error") {
-            return Err(format!("MCP error: {err}").into());
-        }
-        Ok(resp["result"].clone())
     }
 }
 
