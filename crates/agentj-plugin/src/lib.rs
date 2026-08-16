@@ -2,6 +2,23 @@
 //! The kernel only ever sees `PluginInstance::as_module()`; loading mechanism and
 //! lifecycle are decoupled (design decision #12).
 
+pub mod manifest;
+pub use manifest::{PluginError, PluginManifest};
+
+/// A loaded plugin, bridged to the kernel as a `Module` (design §插件生命周期).
+/// The kernel only ever sees this — loading mechanism and lifecycle are decoupled.
+pub trait PluginInstance: Send + Sync {
+    fn manifest(&self) -> &PluginManifest;
+    fn as_module(&self) -> &dyn agentj_core::module::Module;
+}
+
+/// Abstracts the plugin loading mechanism (design decision #12): `LibloadingLoader`
+/// is v0.3's first loader, `WasmLoader` is deferred/optional.
+pub trait PluginLoader: Send + Sync {
+    fn load(&self, manifest: &PluginManifest) -> Result<Box<dyn PluginInstance>, PluginError>;
+    fn unload(&self, instance: Box<dyn PluginInstance>) -> Result<(), PluginError>;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
