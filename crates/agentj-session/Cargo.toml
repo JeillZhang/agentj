@@ -6,4 +6,5 @@ rust-version.workspace = true
 
 [dependencies]
 agentj-core = { path = "../agentj-core" }
+tokio = { version = "1.53.1", features = ["time", "rt"] }
 uuid = { version = "1", features = ["v4"] }
