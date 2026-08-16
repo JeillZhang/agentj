@@ -272,8 +272,16 @@ fn rule_key_for(tool: &str, args: &serde_json::Value) -> String {
             let include = args.get("include").and_then(|v| v.as_str()).unwrap_or("");
             format!("{pattern}\u{0}{include}")
         }
-        "glob" => args.get("pattern").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-        _ => args.get("path").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        "glob" => args
+            .get("pattern")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        _ => args
+            .get("path")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
     }
 }
 
