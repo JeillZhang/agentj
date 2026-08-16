@@ -1,6 +1,72 @@
 //! Sub-Agent Dispatcher — spawns parallel AgentLoop instances on cloned
 //! KernelContexts, one fresh session each.
 
+use crate::agent_loop::AgentLoop;
+use crate::error::KernelError;
+use crate::module::{ContextPipeline, KernelContext};
+use crate::types::SessionId;
+use std::sync::Arc;
+use tokio::task::JoinHandle;
+
+/// One parallel sub-task: a fresh session run through its own AgentLoop instance.
+#[derive(Debug, Clone)]
+pub struct TaskSpec {
+    pub prompt: String,
+    pub system_prompt: Option<String>,
+}
+
+#[derive(Debug)]
+pub struct SubAgentResult {
+    pub session_id: SessionId,
+    pub final_response: String,
+}
+
+/// Spawns parallel sub-agents (design v0.3 Sub-Agent Dispatcher). Each dispatch clones the
+/// shared KernelContext (trait objects are Arc-shared) and runs a fresh session.
+#[derive(Clone)]
+pub struct Dispatcher {
+    ctx: KernelContext,
+    pipeline: Arc<dyn ContextPipeline>,
+    default_system_prompt: String,
+}
+
+impl Dispatcher {
+    pub fn new(
+        ctx: KernelContext,
+        pipeline: Arc<dyn ContextPipeline>,
+        default_system_prompt: String,
+    ) -> Self {
+        Self {
+            ctx,
+            pipeline,
+            default_system_prompt,
+        }
+    }
+
+    pub fn dispatch(&self, spec: TaskSpec) -> JoinHandle<Result<SubAgentResult, String>> {
+        let ctx = self.ctx.clone();
+        let pipeline = Arc::clone(&self.pipeline);
+        let system = spec
+            .system_prompt
+            .unwrap_or_else(|| self.default_system_prompt.clone());
+        tokio::spawn(async move {
+            let agent = AgentLoop::new(ctx, pipeline, system);
+            let sid = agent.create_session().map_err(|e| e.to_string())?;
+            let response = agent
+                .run_turn(&sid, &spec.prompt)
+                .await
+                .map_err(|e| match e {
+                    KernelError::MessageRouteFailed { reason, .. } => reason,
+                    other => other.to_string(),
+                })?;
+            Ok(SubAgentResult {
+                session_id: sid,
+                final_response: response,
+            })
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -136,6 +202,9 @@ mod tests {
         let rb = rb.unwrap().unwrap();
         assert_eq!(ra.final_response, "Hello world");
         assert_eq!(rb.final_response, "Hello world");
-        assert_ne!(ra.session_id, rb.session_id, "each sub-agent gets its own session");
+        assert_ne!(
+            ra.session_id, rb.session_id,
+            "each sub-agent gets its own session"
+        );
     }
 }
