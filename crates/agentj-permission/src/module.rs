@@ -261,15 +261,19 @@ fn bash_arg(args: &serde_json::Value) -> Option<&str> {
         .and_then(|v| v.as_str())
 }
 
-/// Fingerprint key for a tool invocation: bash → command, file tools → path.
+/// Fingerprint key for a tool invocation, tool-specific: bash → command;
+/// grep → pattern+include (both delimit one search); glob → pattern;
+/// read/write (and unknown builtins) → path.
 fn rule_key_for(tool: &str, args: &serde_json::Value) -> String {
-    if tool == "bash" {
-        bash_arg(args).unwrap_or("").to_string()
-    } else {
-        args.get("path")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string()
+    match tool {
+        "bash" => bash_arg(args).unwrap_or("").to_string(),
+        "grep" => {
+            let pattern = args.get("pattern").and_then(|v| v.as_str()).unwrap_or("");
+            let include = args.get("include").and_then(|v| v.as_str()).unwrap_or("");
+            format!("{pattern}\u{0}{include}")
+        }
+        "glob" => args.get("pattern").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        _ => args.get("path").and_then(|v| v.as_str()).unwrap_or("").to_string(),
     }
 }
 
@@ -604,6 +608,151 @@ mod tests {
                     reason: "matched deny rule".into()
                 }
             );
+        } else {
+            panic!("expected Ask");
+        }
+    }
+
+    /// BUG-002 regression: allow_always for grep must scope to BOTH `pattern`
+    /// and `include` — a different search term or file scope must re-Ask, not
+    /// silently hit the grant (previously `rule_key_for` read only `path`,
+    /// which grep lacks → fingerprint collapsed to "" → session wildcard).
+    #[tokio::test]
+    async fn allow_always_scoped_to_grep_pattern_and_include() {
+        let mut policies = std::collections::HashMap::new();
+        policies.insert(
+            "grep".to_string(),
+            ToolPolicy {
+                mode: PermissionMode::Ask,
+                path_rules: vec![],
+                command_rules: vec![],
+            },
+        );
+        let m = PermissionModule::new(policies, Duration::from_millis(50));
+        let c1 = PermissionContext {
+            session_id: "s1".into(),
+            tool: "grep".into(),
+            source: ToolSource::Builtin,
+            args: serde_json::json!({"pattern": "TODO"}),
+            workspace_root: PathBuf::from("/ws"),
+        };
+        if let PermissionDecision::Ask { request_id } = m.check(&c1) {
+            let handle = tokio::spawn({
+                let m = m.clone();
+                let rid = request_id.clone();
+                async move { m.await_approval(&rid).await }
+            });
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            m.respond(&request_id, ApprovalDecision::AllowAlways);
+            assert_eq!(handle.await.unwrap(), PermissionDecision::Allow);
+            // Same invocation: grant hit.
+            assert_eq!(m.check(&c1), PermissionDecision::Allow);
+            // Different pattern: must re-Ask (no wildcard collapse).
+            let c2 = PermissionContext {
+                session_id: "s1".into(),
+                tool: "grep".into(),
+                source: ToolSource::Builtin,
+                args: serde_json::json!({"pattern": "SECRET_PASSWORD"}),
+                workspace_root: PathBuf::from("/ws"),
+            };
+            assert!(matches!(m.check(&c2), PermissionDecision::Ask { .. }));
+            // Same pattern, different include (file scope): must re-Ask.
+            let c3 = PermissionContext {
+                session_id: "s1".into(),
+                tool: "grep".into(),
+                source: ToolSource::Builtin,
+                args: serde_json::json!({"pattern": "TODO", "include": "*.rs"}),
+                workspace_root: PathBuf::from("/ws"),
+            };
+            assert!(matches!(m.check(&c3), PermissionDecision::Ask { .. }));
+        } else {
+            panic!("expected Ask");
+        }
+    }
+
+    /// BUG-002 regression: allow_always for glob must scope to its `pattern`
+    /// arg — a different glob must re-Ask (previously collapsed to "").
+    #[tokio::test]
+    async fn allow_always_scoped_to_glob_pattern() {
+        let mut policies = std::collections::HashMap::new();
+        policies.insert(
+            "glob".to_string(),
+            ToolPolicy {
+                mode: PermissionMode::Ask,
+                path_rules: vec![],
+                command_rules: vec![],
+            },
+        );
+        let m = PermissionModule::new(policies, Duration::from_millis(50));
+        let c1 = PermissionContext {
+            session_id: "s1".into(),
+            tool: "glob".into(),
+            source: ToolSource::Builtin,
+            args: serde_json::json!({"pattern": "src/**"}),
+            workspace_root: PathBuf::from("/ws"),
+        };
+        if let PermissionDecision::Ask { request_id } = m.check(&c1) {
+            let handle = tokio::spawn({
+                let m = m.clone();
+                let rid = request_id.clone();
+                async move { m.await_approval(&rid).await }
+            });
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            m.respond(&request_id, ApprovalDecision::AllowAlways);
+            assert_eq!(handle.await.unwrap(), PermissionDecision::Allow);
+            assert_eq!(m.check(&c1), PermissionDecision::Allow);
+            let c2 = PermissionContext {
+                session_id: "s1".into(),
+                tool: "glob".into(),
+                source: ToolSource::Builtin,
+                args: serde_json::json!({"pattern": "docs/**"}),
+                workspace_root: PathBuf::from("/ws"),
+            };
+            assert!(matches!(m.check(&c2), PermissionDecision::Ask { .. }));
+        } else {
+            panic!("expected Ask");
+        }
+    }
+
+    /// BUG-002 regression: read/write still bind the fingerprint on `path`
+    /// (unchanged behavior) — allow_always on one path must not allow another.
+    #[tokio::test]
+    async fn allow_always_scoped_to_read_write_path() {
+        let mut policies = std::collections::HashMap::new();
+        policies.insert(
+            "read".to_string(),
+            ToolPolicy {
+                mode: PermissionMode::Ask,
+                path_rules: vec![],
+                command_rules: vec![],
+            },
+        );
+        let m = PermissionModule::new(policies, Duration::from_millis(50));
+        let c1 = PermissionContext {
+            session_id: "s1".into(),
+            tool: "read".into(),
+            source: ToolSource::Builtin,
+            args: serde_json::json!({"path": "a.txt"}),
+            workspace_root: PathBuf::from("/ws"),
+        };
+        if let PermissionDecision::Ask { request_id } = m.check(&c1) {
+            let handle = tokio::spawn({
+                let m = m.clone();
+                let rid = request_id.clone();
+                async move { m.await_approval(&rid).await }
+            });
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            m.respond(&request_id, ApprovalDecision::AllowAlways);
+            assert_eq!(handle.await.unwrap(), PermissionDecision::Allow);
+            assert_eq!(m.check(&c1), PermissionDecision::Allow);
+            let c2 = PermissionContext {
+                session_id: "s1".into(),
+                tool: "read".into(),
+                source: ToolSource::Builtin,
+                args: serde_json::json!({"path": "b.txt"}),
+                workspace_root: PathBuf::from("/ws"),
+            };
+            assert!(matches!(m.check(&c2), PermissionDecision::Ask { .. }));
         } else {
             panic!("expected Ask");
         }
