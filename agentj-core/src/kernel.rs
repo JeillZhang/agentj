@@ -119,7 +119,7 @@ impl Kernel {
                     break; // graceful shutdown handled below — NOT broadcast via handle()
                 }
                 let mut guard = modules.lock().unwrap();
-                for (_, module) in guard.iter_mut() {
+                for module in guard.values_mut() {
                     if let Err(e) = module.handle(&msg) {
                         tracing::error!(?e, "module handler error");
                     }
