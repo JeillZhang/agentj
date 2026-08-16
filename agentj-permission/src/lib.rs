@@ -4,9 +4,11 @@
 pub mod engine;
 pub mod error;
 pub mod policy;
+pub mod session_allow;
 
 pub use engine::PermissionEngine;
 pub use error::PermissionError;
 pub use policy::{
     CommandRule, PathRule, PermissionEffect, PermissionMode, ToolPolicy, builtin_default_mode,
 };
+pub use session_allow::SessionAllowState;
