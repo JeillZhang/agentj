@@ -14,7 +14,7 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
 
 ## Commands
 
-- `cargo test --workspace` — 全量测试（178 个：agentj-protocol 47 单元 + 7 契约 + 3 注册表，agentj-permission 28，其余 9 crate 103 个）
+- `cargo test --workspace` — 全量测试（178 个：agentj-protocol 37 单元 + 7 契约 + 3 注册表，agentj-permission 28，其余 9 crate 103 个）
 - `cargo clippy --workspace -- -D warnings` — lint 门禁（零警告）
 - `cargo bench -p agentj-model` — 模型流式基准（criterion：`mock_stream_10_events`）
 - `cargo run -p agentj-protocol --bin gen_schemas` — 重新生成 `schemas/*.json`

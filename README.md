@@ -70,7 +70,7 @@ kind = "openai-compat"   # openai-compat | responses | anthropic | opencode-go
 mode = "ask"                       # allow | ask | deny
 
 [[permission.tools.bash.command_rules]]
-pattern = "^rm -rf "
+prefix = "rm -rf"   # 字面前缀匹配（非正则）
 effect = "deny"
 ```
 
