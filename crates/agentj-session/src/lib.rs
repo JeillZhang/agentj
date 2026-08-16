@@ -1,4 +1,5 @@
 pub mod file_store;
+pub use file_store::FileBackedStore;
 
 use agentj_core::error::{ModuleError, SessionError};
 use agentj_core::hooks::EventBus;
