@@ -41,7 +41,7 @@ impl ModelCatalog {
     /// Load the committed artifact at compile time (drift gate: any manual edit that
     /// breaks the format fails the T22 validation tests).
     pub fn builtin() -> Self {
-        Self::from_json(include_str!("../../models/opencode-go.json"))
+        Self::from_json(include_str!("../../../models/opencode-go.json"))
     }
 
     pub fn from_json(json: &str) -> Self {
