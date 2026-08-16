@@ -59,6 +59,16 @@ pub enum EventType {
     SessionArchived(SessionId),
     SessionDeleted(SessionId),
     SessionExpired(SessionId),
+    // v0.3 扩展（design §7 #4）：插件生命周期 + MCP 连接生命周期事件
+    ModuleLoading(ModuleId),
+    ModuleDisabled(ModuleId),
+    ModuleEnabled(ModuleId),
+    ModuleReloaded(ModuleId),
+    McpConnecting(String),
+    McpConnected(String),
+    McpDisconnected(String),
+    McpReconnecting(String),
+    McpClosed(String),
 }
 
 pub trait EventHandler: Send + Sync {

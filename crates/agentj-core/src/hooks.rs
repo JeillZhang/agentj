@@ -1,6 +1,77 @@
 //! Event bus (publish/subscribe) — v0.3 T0. Tests land first (TDD); the EventBus
 //! implementation is added in the follow-up commit.
 
+use crate::module::{EventHandler, EventType, KernelContext};
+use std::sync::{Arc, Mutex, RwLock};
+
+/// Event bus: publish(event) fans out to every handler whose subscribed event matches.
+/// v0.3 consumes the v0.1 EventType/EventHandler contract (design §7 预留接口 #4).
+/// The KernelContext handed to handlers is stored on the bus (Kernel sets it at first
+/// register_module); non-module publishers (session store, MCP manager) use the Kernel's
+/// bus in production or `with_ctx` in tests.
+/// Handlers are `Arc<dyn EventHandler>` (shared, cloneable — tests register an Arc and
+/// keep a clone to assert on after publish). The Kernel converts v0.1's Box registrations
+/// from `ModuleRegister.events` via `Arc::from(box)` at register time.
+/// Locks are handled poison-safe: a panicked handler thread must not crash the kernel.
+type HandlerEntry = (EventType, Arc<dyn EventHandler>);
+
+pub struct EventBus {
+    handlers: Arc<Mutex<Vec<HandlerEntry>>>,
+    ctx: Arc<RwLock<Option<Arc<KernelContext>>>>,
+}
+
+impl EventBus {
+    pub fn new() -> Self {
+        Self {
+            handlers: Arc::new(Mutex::new(vec![])),
+            ctx: Arc::new(RwLock::new(None)),
+        }
+    }
+
+    pub fn with_ctx(ctx: Arc<KernelContext>) -> Self {
+        Self {
+            handlers: Arc::new(Mutex::new(vec![])),
+            ctx: Arc::new(RwLock::new(Some(ctx))),
+        }
+    }
+
+    pub fn set_ctx(&self, ctx: Option<Arc<KernelContext>>) {
+        if let Ok(mut guard) = self.ctx.write() {
+            *guard = ctx;
+        }
+    }
+
+    pub fn register(&self, event: EventType, handler: Arc<dyn EventHandler>) {
+        if let Ok(mut guard) = self.handlers.lock() {
+            guard.push((event, handler));
+        }
+    }
+
+    pub fn publish(&self, event: &EventType) {
+        let ctx = match self.ctx.read() {
+            Ok(guard) => guard.clone(),
+            Err(_) => return,
+        };
+        let Some(ctx) = ctx else { return };
+        let Ok(handlers) = self.handlers.lock() else { return };
+        for (sub, handler) in handlers.iter() {
+            if sub == event {
+                handler.on_event(event, &ctx);
+            }
+        }
+    }
+
+    pub fn handler_count(&self) -> usize {
+        self.handlers.lock().map(|guard| guard.len()).unwrap_or(0)
+    }
+}
+
+impl Default for EventBus {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
