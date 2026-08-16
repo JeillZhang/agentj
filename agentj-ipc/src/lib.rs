@@ -262,13 +262,13 @@ impl IpcServer {
         let resp = match result {
             Ok(r) => JsonRpcResponse {
                 jsonrpc: "2.0".into(),
-                id: req.id,
+                id: req.id.clone(),
                 result: Some(r),
                 error: None,
             },
             Err(e) => JsonRpcResponse {
                 jsonrpc: "2.0".into(),
-                id: req.id,
+                id: req.id.clone(),
                 result: None,
                 error: Some(JsonRpcError {
                     code: e.code,
@@ -276,6 +276,11 @@ impl IpcServer {
                 }),
             },
         };
+        if req.id == Value::Null {
+            // JSON-RPC 2.0 §2.1: a notification (no id) must not get a response
+            // line. The handler above still ran — the side effect is delivered.
+            return Ok(String::new());
+        }
         Ok(serde_json::to_string(&resp)?)
     }
 
@@ -442,7 +447,9 @@ impl IpcServer {
                 .conns
                 .get(&conn_id)
                 .ok_or_else(|| IpcError::InvalidRequest("stdio connection missing".into()))?;
-            conn.send(&response)?;
+            if !response.is_empty() {
+                conn.send(&response)?;
+            }
             if self.shutdown_requested() {
                 break;
             } // graceful shutdown requested
@@ -610,7 +617,7 @@ mod tests {
                 ToolCall {
                     id: "call_1".into(),
                     name: "bash".into(),
-                    arguments: serde_json::json!({"cmd": "curl x"}),
+                    arguments: serde_json::json!({"command": "curl x"}),
                 },
             ))])),
         );
@@ -639,7 +646,7 @@ mod tests {
             session_id: "s1".into(),
             tool: "bash".into(),
             source: ToolSource::Builtin,
-            args: serde_json::json!({"cmd": "curl x"}),
+            args: serde_json::json!({"command": "curl x"}),
             workspace_root: std::path::PathBuf::from("/ws"),
         };
         let d = module.check(&ctx);
@@ -649,7 +656,10 @@ mod tests {
             let handle = tokio::spawn(async move { module2.await_approval(&rid).await });
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             let raw = format!(
-                r#"{{"jsonrpc":"2.0","id":7,"method":"permission/respond","params":{{"request_id":"{}","decision":"allow"}}}}"#,
+                concat!(
+                    r#"{{"jsonrpc":"2.0","id":7,"method":"permission/respond","#,
+                    r#""params":{{"request_id":"{}","decision":"allow"}}}}"#,
+                ),
                 request_id.0
             );
             let resp = server.handle_request(&raw).await.unwrap();
@@ -663,7 +673,10 @@ mod tests {
     #[tokio::test]
     async fn permission_respond_unknown_request_id_errors() {
         let (server, _module) = permission_server();
-        let raw = r#"{"jsonrpc":"2.0","id":8,"method":"permission/respond","params":{"request_id":"nope","decision":"allow"}}"#;
+        let raw = concat!(
+            r#"{"jsonrpc":"2.0","id":8,"method":"permission/respond","#,
+            r#""params":{"request_id":"nope","decision":"allow"}}"#,
+        );
         let resp = server.handle_request(raw).await.unwrap();
         assert!(resp.contains("\"error\""));
         assert!(
@@ -679,7 +692,7 @@ mod tests {
             session_id: "s1".into(),
             tool: "bash".into(),
             source: ToolSource::Builtin,
-            args: serde_json::json!({"cmd": "curl x"}),
+            args: serde_json::json!({"command": "curl x"}),
             workspace_root: std::path::PathBuf::from("/ws"),
         };
         if let PermissionDecision::Ask { request_id } = module.check(&ctx) {
@@ -707,6 +720,25 @@ mod tests {
         }
     }
 
+    /// M1 regression: JSON-RPC 2.0 §2.1 — a notification (request without an
+    /// id, e.g. $/cancelRequest) must produce NO response line, while a
+    /// request WITH an id still gets its response.
+    #[tokio::test]
+    async fn id_less_notification_gets_no_response() {
+        let server = IpcServer::new(stub_agent_loop(), Kernel::new());
+        let resp = server
+            .handle_request(r#"{"jsonrpc":"2.0","method":"session/new"}"#)
+            .await
+            .unwrap();
+        assert!(resp.is_empty(), "notification must not respond: {resp}");
+        let resp = server
+            .handle_request(r#"{"jsonrpc":"2.0","id":1,"method":"session/new"}"#)
+            .await
+            .unwrap();
+        assert!(!resp.is_empty(), "id'd request must respond");
+        assert!(resp.contains("\"result\""));
+    }
+
     /// Poll until the in-flight session is recorded (proves the write side).
     async fn wait_for_inflight_session(
         server: &Arc<IpcServer>,
@@ -732,7 +764,7 @@ mod tests {
             session_id: sid.to_string(),
             tool: "bash".into(),
             source: ToolSource::Builtin,
-            args: serde_json::json!({"cmd": "curl x"}),
+            args: serde_json::json!({"command": "curl x"}),
             workspace_root: std::path::PathBuf::from("/ws"),
         };
         if let PermissionDecision::Ask { request_id } = module.check(&ctx) {
@@ -808,7 +840,11 @@ mod tests {
     #[tokio::test]
     async fn session_run_streams_delta() {
         let server = IpcServer::new(stub_agent_loop(), Kernel::new());
-        let resp = server.handle_request(r#"{"jsonrpc":"2.0","id":2,"method":"session/run","params":{"session_id":"s1","content":"hi"}}"#).await.unwrap();
+        let raw = concat!(
+            r#"{"jsonrpc":"2.0","id":2,"method":"session/run","#,
+            r#""params":{"session_id":"s1","content":"hi"}}"#,
+        );
+        let resp = server.handle_request(raw).await.unwrap();
         let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
         assert_eq!(v["result"]["response"], "hello");
     }
