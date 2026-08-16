@@ -179,11 +179,11 @@ impl PermissionModule {
             let cmd = bash_arg(&ctx.args).unwrap_or("");
             return self.engine.eval_command(policy, cmd);
         }
-        // File/glob tools: path rules bind on whichever path-like arg is
-        // present — "path" (read/write), "pattern"/"include" (glob/grep).
-        // Deny > Allow: any decisive outcome wins, later args included.
+        // File/glob tools: path rules bind on the path-semantic arg ONLY, and
+        // that key is tool-specific (path_arg_keys). Deny > Allow: any decisive
+        // outcome wins.
         let mut any_allow = false;
-        for key in ["path", "pattern", "include"] {
+        for key in path_arg_keys(&ctx.tool) {
             let Some(arg) = ctx.args.get(key).and_then(|v| v.as_str()) else {
                 continue;
             };
@@ -237,6 +237,18 @@ impl PermissionModule {
             f(&params);
         }
         PermissionDecision::Ask { request_id }
+    }
+}
+
+/// Path-semantic argument keys per builtin tool. grep's `pattern` is a regex
+/// search term (GrepTool passes it to `rg <pattern>`), NOT a path — only its
+/// `include` arg (`rg --glob`) is path-like. glob's `pattern` IS a path glob;
+/// read/write (and unknown builtins) bind on `path`.
+fn path_arg_keys(tool: &str) -> &'static [&'static str] {
+    match tool {
+        "grep" => &["include"],
+        "glob" => &["pattern"],
+        _ => &["path"],
     }
 }
 
@@ -651,10 +663,12 @@ mod tests {
         );
     }
 
-    /// M3 regression: grep's file-scope args ("pattern"/"include") must be
-    /// evaluated against path rules — a deny rule for `.env` must bind.
+    /// M3 regression: grep's `include` arg is the path-semantic key (it maps to
+    /// `rg --glob` file scope), so a deny rule for `.env` must bind on `include`
+    /// — NOT on `pattern` (the regex search term). This test exercises the
+    /// `include` trigger explicitly with a non-path `pattern`.
     #[test]
-    fn grep_pattern_arg_binds_path_deny_rule() {
+    fn grep_include_arg_binds_path_deny_rule() {
         let mut policies = std::collections::HashMap::new();
         policies.insert(
             "grep".to_string(),
@@ -673,6 +687,67 @@ mod tests {
             tool: "grep".into(),
             source: ToolSource::Builtin,
             args: serde_json::json!({"pattern": ".*", "include": ".env"}),
+            workspace_root: PathBuf::from("/ws"),
+        };
+        assert_eq!(
+            m.check(&c),
+            PermissionDecision::Deny {
+                reason: "matched deny rule".into()
+            }
+        );
+    }
+
+    /// BUG-001 regression: grep's `pattern` is a REGEX search term (see
+    /// GrepTool — it is passed verbatim to `rg <pattern>`), NOT a file path.
+    /// A `grep {"pattern": ".env"}` with no `include` must NOT bind the `.env`
+    /// path deny rule — it falls back to the tool's default mode (Ask).
+    #[test]
+    fn grep_pattern_is_regex_not_a_path_for_rules() {
+        let mut policies = std::collections::HashMap::new();
+        policies.insert(
+            "grep".to_string(),
+            ToolPolicy {
+                mode: PermissionMode::Ask,
+                path_rules: vec![PathRule {
+                    effect: PermissionEffect::Deny,
+                    pattern: ".env".into(),
+                }],
+                command_rules: vec![],
+            },
+        );
+        let m = PermissionModule::new(policies, Duration::from_millis(50));
+        let c = PermissionContext {
+            session_id: "s1".into(),
+            tool: "grep".into(),
+            source: ToolSource::Builtin,
+            args: serde_json::json!({"pattern": ".env"}),
+            workspace_root: PathBuf::from("/ws"),
+        };
+        assert!(matches!(m.check(&c), PermissionDecision::Ask { .. }));
+    }
+
+    /// read/write regression: `path` remains the path-semantic key for file
+    /// tools — a deny rule for `.env` must bind on write's `path` arg.
+    #[test]
+    fn write_path_arg_binds_path_deny_rule() {
+        let mut policies = std::collections::HashMap::new();
+        policies.insert(
+            "write".to_string(),
+            ToolPolicy {
+                mode: PermissionMode::Ask,
+                path_rules: vec![PathRule {
+                    effect: PermissionEffect::Deny,
+                    pattern: ".env".into(),
+                }],
+                command_rules: vec![],
+            },
+        );
+        let m = PermissionModule::new(policies, Duration::from_millis(50));
+        let c = PermissionContext {
+            session_id: "s1".into(),
+            tool: "write".into(),
+            source: ToolSource::Builtin,
+            args: serde_json::json!({"path": ".env", "content": "x"}),
             workspace_root: PathBuf::from("/ws"),
         };
         assert_eq!(
@@ -713,5 +788,32 @@ mod tests {
                 reason: "matched deny rule".into()
             }
         );
+    }
+
+    /// M3 regression: glob's `pattern` keeps path semantics (unlike grep's
+    /// regex `pattern`) — an allow rule `src/**` must bind on it.
+    #[test]
+    fn glob_pattern_arg_binds_path_allow_rule() {
+        let mut policies = std::collections::HashMap::new();
+        policies.insert(
+            "glob".to_string(),
+            ToolPolicy {
+                mode: PermissionMode::Ask,
+                path_rules: vec![PathRule {
+                    effect: PermissionEffect::Allow,
+                    pattern: "src/**".into(),
+                }],
+                command_rules: vec![],
+            },
+        );
+        let m = PermissionModule::new(policies, Duration::from_millis(50));
+        let c = PermissionContext {
+            session_id: "s1".into(),
+            tool: "glob".into(),
+            source: ToolSource::Builtin,
+            args: serde_json::json!({"pattern": "src/**"}),
+            workspace_root: PathBuf::from("/ws"),
+        };
+        assert_eq!(m.check(&c), PermissionDecision::Allow);
     }
 }
