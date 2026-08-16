@@ -300,6 +300,7 @@ mod tests {
         let connected = EventType::McpConnected("srv".into());
         let closed = EventType::McpClosed("srv".into());
         assert_ne!(loading, enabled);
+        assert_ne!(disabled, reloaded);
         assert_ne!(connecting, closed);
         assert_ne!(connected, closed);
         assert_eq!(closed, EventType::McpClosed("srv".into()));
