@@ -84,7 +84,7 @@ effect = "deny"
 ## Development
 
 ```bash
-cargo test --workspace            # 全量测试（178 个：protocol 47 + permission 28 + 其余 9 crate 103）
+cargo test --workspace            # 全量测试（185 个：protocol 47 + permission 34 + 其余 9 crate 104）
 cargo clippy --workspace -- -D warnings
 cargo bench -p agentj-model       # 模型流式基准（criterion）
 cargo run -p agentj-protocol --bin gen_schemas   # 重新生成 schemas/*.json
