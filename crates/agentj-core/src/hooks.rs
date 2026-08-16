@@ -53,7 +53,9 @@ impl EventBus {
             Err(_) => return,
         };
         let Some(ctx) = ctx else { return };
-        let Ok(handlers) = self.handlers.lock() else { return };
+        let Ok(handlers) = self.handlers.lock() else {
+            return;
+        };
         for (sub, handler) in handlers.iter() {
             if sub == event {
                 handler.on_event(event, &ctx);
@@ -81,7 +83,9 @@ mod tests {
     use crate::types::*;
     use std::sync::{Arc, Mutex};
 
-    struct SpyHandler { events: Arc<Mutex<Vec<EventType>>> }
+    struct SpyHandler {
+        events: Arc<Mutex<Vec<EventType>>>,
+    }
     impl EventHandler for SpyHandler {
         fn on_event(&self, event: &EventType, _ctx: &KernelContext) {
             self.events.lock().unwrap().push(event.clone());
@@ -91,15 +95,33 @@ mod tests {
     /// Minimal module used to exercise the kernel's lifecycle event publishing.
     struct LifecycleModule;
     impl Module for LifecycleModule {
-        fn id(&self) -> ModuleId { "lm".into() }
-        fn metadata(&self) -> ModuleMetadata {
-            ModuleMetadata { id: "lm".into(), name: "lm".into(), version: "1".into(), description: "".into(), author: "".into() }
+        fn id(&self) -> ModuleId {
+            "lm".into()
         }
-        fn init(&mut self, _ctx: &KernelContext, _r: &mut ModuleRegister) -> Result<(), ModuleError> { Ok(()) }
-        fn shutdown(&mut self) -> Result<(), ModuleError> { Ok(()) }
+        fn metadata(&self) -> ModuleMetadata {
+            ModuleMetadata {
+                id: "lm".into(),
+                name: "lm".into(),
+                version: "1".into(),
+                description: "".into(),
+                author: "".into(),
+            }
+        }
+        fn init(
+            &mut self,
+            _ctx: &KernelContext,
+            _r: &mut ModuleRegister,
+        ) -> Result<(), ModuleError> {
+            Ok(())
+        }
+        fn shutdown(&mut self) -> Result<(), ModuleError> {
+            Ok(())
+        }
     }
     impl KernelModule for LifecycleModule {
-        fn handle(&mut self, _msg: &KernelMessage) -> Result<KernelResponse, ModuleError> { Ok(KernelResponse::Handled) }
+        fn handle(&mut self, _msg: &KernelMessage) -> Result<KernelResponse, ModuleError> {
+            Ok(KernelResponse::Handled)
+        }
     }
 
     fn dummy_context() -> KernelContext {
@@ -112,22 +134,38 @@ mod tests {
     }
     struct NoopSession;
     impl SessionStore for NoopSession {
-        fn create(&self) -> Result<SessionId, ModuleError> { Ok("s".into()) }
-        fn append(&self, _s: &SessionId, _m: ChatMessage) -> Result<(), ModuleError> { Ok(()) }
-        fn get(&self, _s: &SessionId) -> Result<Vec<ChatMessage>, ModuleError> { Ok(vec![]) }
-        fn estimate_tokens(&self, _s: &SessionId) -> Result<usize, ModuleError> { Ok(0) }
+        fn create(&self) -> Result<SessionId, ModuleError> {
+            Ok("s".into())
+        }
+        fn append(&self, _s: &SessionId, _m: ChatMessage) -> Result<(), ModuleError> {
+            Ok(())
+        }
+        fn get(&self, _s: &SessionId) -> Result<Vec<ChatMessage>, ModuleError> {
+            Ok(vec![])
+        }
+        fn estimate_tokens(&self, _s: &SessionId) -> Result<usize, ModuleError> {
+            Ok(0)
+        }
     }
     struct NoopConfig;
     impl ConfigProvider for NoopConfig {
-        fn get_str(&self, _k: &str) -> Option<String> { None }
-        fn get_int(&self, _k: &str) -> Option<i64> { None }
-        fn providers(&self) -> Vec<(String, String)> { vec![] }
+        fn get_str(&self, _k: &str) -> Option<String> {
+            None
+        }
+        fn get_int(&self, _k: &str) -> Option<i64> {
+            None
+        }
+        fn providers(&self) -> Vec<(String, String)> {
+            vec![]
+        }
     }
 
     #[test]
     fn event_bus_publishes_to_matching_handlers() {
         let bus = EventBus::with_ctx(Arc::new(dummy_context()));
-        let spy = Arc::new(SpyHandler { events: Arc::new(Mutex::new(vec![])) });
+        let spy = Arc::new(SpyHandler {
+            events: Arc::new(Mutex::new(vec![])),
+        });
         bus.register(EventType::ModuleLoaded("m".into()), spy.clone());
         bus.register(EventType::ModuleStopped("m".into()), spy.clone());
         bus.publish(&EventType::ModuleLoaded("m".into()));
@@ -138,7 +176,9 @@ mod tests {
     #[test]
     fn event_bus_filters_non_matching_events() {
         let bus = EventBus::with_ctx(Arc::new(dummy_context()));
-        let spy = Arc::new(SpyHandler { events: Arc::new(Mutex::new(vec![])) });
+        let spy = Arc::new(SpyHandler {
+            events: Arc::new(Mutex::new(vec![])),
+        });
         bus.register(EventType::ModuleLoaded("m".into()), spy.clone());
         bus.publish(&EventType::ModuleFailed("m".into()));
         assert!(spy.events.lock().unwrap().is_empty());
@@ -147,7 +187,9 @@ mod tests {
     #[test]
     fn event_bus_without_ctx_is_a_noop() {
         let bus = EventBus::new();
-        let spy = Arc::new(SpyHandler { events: Arc::new(Mutex::new(vec![])) });
+        let spy = Arc::new(SpyHandler {
+            events: Arc::new(Mutex::new(vec![])),
+        });
         bus.register(EventType::ModuleLoaded("m".into()), spy.clone());
         bus.publish(&EventType::ModuleLoaded("m".into()));
         assert!(spy.events.lock().unwrap().is_empty());
@@ -157,46 +199,95 @@ mod tests {
     async fn kernel_publishes_lifecycle_events() {
         // design §模块生命周期状态机「查询与事件」: Kernel auto-publishes ModuleLoaded on
         // register success and ModuleStopped after graceful shutdown.
-        let spy = Arc::new(SpyHandler { events: Arc::new(Mutex::new(vec![])) });
+        let spy = Arc::new(SpyHandler {
+            events: Arc::new(Mutex::new(vec![])),
+        });
         let mut kernel = Kernel::new();
-        kernel.events().register(EventType::ModuleLoaded("lm".into()), spy.clone());
-        kernel.events().register(EventType::ModuleStopped("lm".into()), spy.clone());
-        let mut register = ModuleRegister::new(Arc::new(ToolRegistry::new()), Arc::new(ProviderRegistry::new()));
-        kernel.register_module(Box::new(LifecycleModule), &dummy_context(), &mut register).unwrap();
+        kernel
+            .events()
+            .register(EventType::ModuleLoaded("lm".into()), spy.clone());
+        kernel
+            .events()
+            .register(EventType::ModuleStopped("lm".into()), spy.clone());
+        let mut register = ModuleRegister::new(
+            Arc::new(ToolRegistry::new()),
+            Arc::new(ProviderRegistry::new()),
+        );
+        kernel
+            .register_module(Box::new(LifecycleModule), &dummy_context(), &mut register)
+            .unwrap();
 
         let handle = kernel.start();
         kernel.sender().send(KernelMessage::Shutdown).unwrap();
         handle.await.unwrap().unwrap();
 
         let events = spy.events.lock().unwrap();
-        assert!(events.contains(&EventType::ModuleLoaded("lm".into())), "ModuleLoaded must be published on register");
-        assert!(events.contains(&EventType::ModuleStopped("lm".into())), "ModuleStopped must be published after shutdown");
+        assert!(
+            events.contains(&EventType::ModuleLoaded("lm".into())),
+            "ModuleLoaded must be published on register"
+        );
+        assert!(
+            events.contains(&EventType::ModuleStopped("lm".into())),
+            "ModuleStopped must be published after shutdown"
+        );
     }
 
     /// init() failure must publish ModuleFailed (design §模块生命周期状态机「查询与事件」).
     struct FailingModule;
     impl Module for FailingModule {
-        fn id(&self) -> ModuleId { "fm".into() }
-        fn metadata(&self) -> ModuleMetadata {
-            ModuleMetadata { id: "fm".into(), name: "fm".into(), version: "1".into(), description: "".into(), author: "".into() }
+        fn id(&self) -> ModuleId {
+            "fm".into()
         }
-        fn init(&mut self, _ctx: &KernelContext, _r: &mut ModuleRegister) -> Result<(), ModuleError> {
+        fn metadata(&self) -> ModuleMetadata {
+            ModuleMetadata {
+                id: "fm".into(),
+                name: "fm".into(),
+                version: "1".into(),
+                description: "".into(),
+                author: "".into(),
+            }
+        }
+        fn init(
+            &mut self,
+            _ctx: &KernelContext,
+            _r: &mut ModuleRegister,
+        ) -> Result<(), ModuleError> {
             Err(ModuleError::Init("boom".into()))
         }
-        fn shutdown(&mut self) -> Result<(), ModuleError> { Ok(()) }
+        fn shutdown(&mut self) -> Result<(), ModuleError> {
+            Ok(())
+        }
     }
     impl KernelModule for FailingModule {
-        fn handle(&mut self, _msg: &KernelMessage) -> Result<KernelResponse, ModuleError> { Ok(KernelResponse::Handled) }
+        fn handle(&mut self, _msg: &KernelMessage) -> Result<KernelResponse, ModuleError> {
+            Ok(KernelResponse::Handled)
+        }
     }
 
     #[tokio::test]
     async fn kernel_publishes_module_failed_on_init_error() {
-        let spy = Arc::new(SpyHandler { events: Arc::new(Mutex::new(vec![])) });
+        let spy = Arc::new(SpyHandler {
+            events: Arc::new(Mutex::new(vec![])),
+        });
         let mut kernel = Kernel::new();
-        kernel.events().register(EventType::ModuleFailed("fm".into()), spy.clone());
-        let mut register = ModuleRegister::new(Arc::new(ToolRegistry::new()), Arc::new(ProviderRegistry::new()));
-        assert!(kernel.register_module(Box::new(FailingModule), &dummy_context(), &mut register).is_err());
-        assert!(spy.events.lock().unwrap().contains(&EventType::ModuleFailed("fm".into())));
+        kernel
+            .events()
+            .register(EventType::ModuleFailed("fm".into()), spy.clone());
+        let mut register = ModuleRegister::new(
+            Arc::new(ToolRegistry::new()),
+            Arc::new(ProviderRegistry::new()),
+        );
+        assert!(
+            kernel
+                .register_module(Box::new(FailingModule), &dummy_context(), &mut register)
+                .is_err()
+        );
+        assert!(
+            spy.events
+                .lock()
+                .unwrap()
+                .contains(&EventType::ModuleFailed("fm".into()))
+        );
     }
 
     #[test]

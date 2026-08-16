@@ -23,24 +23,49 @@ pub trait PluginLoader: Send + Sync {
 mod tests {
     use super::*;
     use agentj_core::error::ModuleError;
-    use agentj_core::module::{Module, ModuleMetadata, KernelContext, ModuleRegister};
+    use agentj_core::module::{KernelContext, Module, ModuleMetadata, ModuleRegister};
     use agentj_core::types::ModuleId;
 
     // ---- fake module used by the fake loader ----
-    struct FakeModule { id: ModuleId }
+    struct FakeModule {
+        id: ModuleId,
+    }
     impl Module for FakeModule {
-        fn id(&self) -> ModuleId { self.id.clone() }
-        fn metadata(&self) -> ModuleMetadata {
-            ModuleMetadata { id: self.id.clone(), name: "fake".into(), version: "0.1".into(), description: "".into(), author: "".into() }
+        fn id(&self) -> ModuleId {
+            self.id.clone()
         }
-        fn init(&mut self, _ctx: &KernelContext, _r: &mut ModuleRegister) -> Result<(), ModuleError> { Ok(()) }
-        fn shutdown(&mut self) -> Result<(), ModuleError> { Ok(()) }
+        fn metadata(&self) -> ModuleMetadata {
+            ModuleMetadata {
+                id: self.id.clone(),
+                name: "fake".into(),
+                version: "0.1".into(),
+                description: "".into(),
+                author: "".into(),
+            }
+        }
+        fn init(
+            &mut self,
+            _ctx: &KernelContext,
+            _r: &mut ModuleRegister,
+        ) -> Result<(), ModuleError> {
+            Ok(())
+        }
+        fn shutdown(&mut self) -> Result<(), ModuleError> {
+            Ok(())
+        }
     }
 
-    struct FakeInstance { manifest: PluginManifest, module: FakeModule }
+    struct FakeInstance {
+        manifest: PluginManifest,
+        module: FakeModule,
+    }
     impl PluginInstance for FakeInstance {
-        fn manifest(&self) -> &PluginManifest { &self.manifest }
-        fn as_module(&self) -> &dyn Module { &self.module }
+        fn manifest(&self) -> &PluginManifest {
+            &self.manifest
+        }
+        fn as_module(&self) -> &dyn Module {
+            &self.module
+        }
     }
 
     struct FakeLoader;
@@ -48,10 +73,14 @@ mod tests {
         fn load(&self, manifest: &PluginManifest) -> Result<Box<dyn PluginInstance>, PluginError> {
             Ok(Box::new(FakeInstance {
                 manifest: manifest.clone(),
-                module: FakeModule { id: manifest.id.clone() },
+                module: FakeModule {
+                    id: manifest.id.clone(),
+                },
             }))
         }
-        fn unload(&self, _instance: Box<dyn PluginInstance>) -> Result<(), PluginError> { Ok(()) }
+        fn unload(&self, _instance: Box<dyn PluginInstance>) -> Result<(), PluginError> {
+            Ok(())
+        }
     }
 
     #[test]
@@ -75,7 +104,14 @@ mod tests {
 
     #[test]
     fn fake_loader_loads_and_bridges_to_module() {
-        let manifest = PluginManifest { id: "p1".into(), name: "P1".into(), version: "1".into(), description: "".into(), author: "".into(), dependencies: vec![] };
+        let manifest = PluginManifest {
+            id: "p1".into(),
+            name: "P1".into(),
+            version: "1".into(),
+            description: "".into(),
+            author: "".into(),
+            dependencies: vec![],
+        };
         let loader = FakeLoader;
         let instance = loader.load(&manifest).unwrap();
         assert_eq!(instance.manifest().id, "p1");

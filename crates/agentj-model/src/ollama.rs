@@ -2,8 +2,8 @@ use agentj_core::error::ModelError;
 use agentj_core::module::ModelProvider;
 use agentj_core::types::*;
 use async_trait::async_trait;
-use futures::stream::{self, BoxStream};
 use futures::StreamExt;
+use futures::stream::{self, BoxStream};
 use reqwest::Client;
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -75,7 +75,10 @@ impl OllamaProvider {
                 if json.get("done").and_then(|d| d.as_bool()).unwrap_or(false) {
                     return Some((Ok(ModelEvent::Done), reader));
                 }
-                let content = json["message"]["content"].as_str().unwrap_or("").to_string();
+                let content = json["message"]["content"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string();
                 if !content.is_empty() {
                     return Some((Ok(ModelEvent::Delta(content)), reader));
                 }
@@ -125,7 +128,10 @@ impl ModelProvider for OllamaProvider {
             .json()
             .await
             .map_err(|e| ModelError::Network(e.to_string()))?;
-        let content = json["message"]["content"].as_str().unwrap_or("").to_string();
+        let content = json["message"]["content"]
+            .as_str()
+            .unwrap_or("")
+            .to_string();
         Ok(ChatResponse {
             content,
             tool_calls: vec![],

@@ -1,6 +1,8 @@
 use crate::error::KernelError;
 use crate::hooks::EventBus;
-use crate::module::{EventType, KernelContext, KernelMessage, KernelModule, ModuleRegister, ModuleState};
+use crate::module::{
+    EventType, KernelContext, KernelMessage, KernelModule, ModuleRegister, ModuleState,
+};
 use crate::resolver::{ModuleResolver, ServiceRegistry};
 use crate::types::ModuleId;
 use std::collections::HashMap;
