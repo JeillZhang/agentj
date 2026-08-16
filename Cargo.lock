@@ -147,6 +147,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "agentj-skills"
+version = "0.2.1"
+dependencies = [
+ "tempfile",
+ "tracing",
+]
+
+[[package]]
 name = "agentj-tools"
 version = "0.2.1"
 dependencies = [
