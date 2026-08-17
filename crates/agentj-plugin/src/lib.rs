@@ -13,7 +13,7 @@ pub use plugin_manager::{
 pub use state_machine::{PluginState, PluginStateMachine};
 
 pub mod libloading_loader;
-pub use libloading_loader::ABI_VERSION;
+pub use libloading_loader::{ABI_VERSION, LibloadingLoader};
 
 /// A loaded plugin, bridged to the kernel as a `Module` (design §插件生命周期).
 /// The kernel only ever sees this — loading mechanism and lifecycle are decoupled.
