@@ -1,10 +1,10 @@
 # AGENTS.md
 
-> Updated 2026-08-16 — v0.2.1 released (11 crates, permission system + 2 new protocol methods, acceptance fixes BUG-001/002/003); daemon-kernel design approved for v0.4. Version renumbering: ecosystem expansion = v0.3, commercial (incl. daemon-kernel) = v0.4.
+> Updated 2026-08-17 — v0.3.0 released (13 crates, event bus + 子代理调度 + skills 加载 + 插件加载 + MCP 长驻连接 + 会话过期 + 磁盘持久化 + Ollama provider)；守护内核（常驻 API 服务）设计已批准，能力 v0.4 落地。Version renumbering: ecosystem expansion = v0.3, commercial (incl. daemon-kernel) = v0.4.
 
 ## Project Status
 
-AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + 可插拔模块」架构。v0.2 已落地：**IPC 协议契约**（14 方法）+ **11 crate 内核**（agentj-core 等，见 Architecture）——内核调度 + 模块 trait 注册表、AgentLoop 流式 API、**权限审批系统**（`$/permissionRequest` + `permission/respond`，设计决策 #17）、内置工具、MCP 桥、JSON-RPC stdio IPC、CLI run/serve、模型提供方（DeepSeek + opencode-go 三线格式统一订阅）；**守护内核（常驻 API 服务）设计已批准**——统一 Connection 传输抽象契约 v0.1 固化、多客户端常驻能力 v0.4 落地（见 v0.4 计划）。
+AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + 可插拔模块」架构。v0.3 已落地：**事件总线**（`EventBus` + 订阅/发布，全生命周期事件）、**子代理调度器**、**skills 加载器**（`.aj/.agents/.claude/skills` 优先级合并）、**插件系统**（manifest 解析 + 生命周期状态机 + 依赖图 + libloading 动态加载）、**MCP 长驻连接管理**（`McpConnectionManager`：引用计数共享 + 空闲回收 + 指数退避重连）、**会话过期清理 + FileBackedStore 磁盘持久化**、**Ollama provider**；v0.2 已落地能力全保留：**IPC 协议契约**（14 方法）+ **权限审批系统**（`$/permissionRequest` + `permission/respond`）、内置工具、JSON-RPC stdio IPC、CLI run/serve、DeepSeek + opencode-go 统一订阅。守护内核（常驻 API 服务）设计已批准——统一 Connection 传输抽象契约 v0.1 固化、多客户端常驻能力 v0.4 落地（见 v0.4 计划）。
 
 ## Setup
 
@@ -14,7 +14,7 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
 
 ## Commands
 
-- `cargo test --workspace` — 全量测试（192 个：agentj-protocol 37 单元 + 7 契约 + 3 注册表，agentj-permission 40，agentj-cli e2e_permission 1，其余 9 crate 104 个）
+- `cargo test --workspace` — 全量测试（233 个：agentj-protocol 47（37 单元 + 7 契约 + 3 注册表），agentj-permission 40，agentj-core 51（50 单元 + integration_agent_loop 1），agentj-cli 6（3 单元 + e2e_cli 2 + e2e_permission 1），其余 9 crate 89 个）
 - `cargo clippy --workspace -- -D warnings` — lint 门禁（零警告）
 - `cargo bench -p agentj-model` — 模型流式基准（criterion：`mock_stream_10_events`）
 - `cargo run -p agentj-protocol --bin gen_schemas` — 重新生成 `schemas/*.json`
@@ -30,19 +30,22 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
 
 ## Architecture
 
-> 全部 11 个 crate 位于 `crates/` 目录（工作区成员 `crates/*`），下文 `agentj-*` 均为 `crates/agentj-*`。
+> 全部 13 个 crate 位于 `crates/` 目录（工作区成员 `crates/*`），下文 `agentj-*` 均为 `crates/agentj-*`。
 
 - `agentj-protocol`（leaf crate）：IPC 协议契约的权威 wire 类型（JSON-RPC 2.0 信封、错误码、14 个方法 params/result、流式类型、订阅/权限类型），serde + schemars，零内核耦合。v0.1 的 `agentj-core`/`agentj-ipc` 应消费其类型（导入而非重定义）。
 - `agentj-core`（内核）：Kernel 调度 + 模块 trait 注册表（`module.rs`：ModelProvider / SessionStore / ToolRegistry / ContextPipeline / ConfigProvider）、AgentLoop 流式 API（`run_turn_stream` → `mpsc::Receiver<AgentEvent>`，`run_turn` 聚合）、错误/类型（`error.rs`/`types.rs`）。
 - `agentj-config`：TOML 配置（`[model]`：`provider` + `providers[]`（name/base_url/api_key_env/**kind**）+ `default_model`；`[permission]`：per-tool `ToolPolicy`（mode/path_rules/command_rules）），ConfigProvider 读取。
-- `agentj-session`：会话生命周期（InMemoryStore：状态机 SessionStatus + 快照恢复）。
+- `agentj-session`：会话生命周期（InMemoryStore：状态机 SessionStatus + 快照恢复；FileBackedStore 磁盘持久化 + 过期清理 `spawn_expiry_loop`）。
 - `agentj-permission`：权限系统——决策引擎（规则求值 Deny > Allow > Mode）+ 策略模型（`ToolPolicy`、`[permission]` 配置）+ `PermissionModule`（审批等待/超时 60s 自动 Deny、allow_always 会话级内存态、取消即拒绝）。
-- `agentj-model`：模型提供方——三线 wire-format 提供器（`openai_compat` / `responses` / `anthropic`）+ `opencode_go` 门面（OpenCodeGoProvider，按 `models/opencode-go.json` 目录路由）+ `factory`（ProviderFactory，按 kind 实例化）+ `mock`（MockModelProvider）。
+- `agentj-model`：模型提供方——三线 wire-format 提供器（`openai_compat` / `responses` / `anthropic`）+ `opencode_go` 门面（OpenCodeGoProvider，按 `models/opencode-go.json` 目录路由）+ `factory`（ProviderFactory，按 kind 实例化）+ `mock`（MockModelProvider）+ `ollama`（OllamaProvider）。
 - `agentj-tools`：内置工具（bash/glob/grep/read/write）+ ToolExecutor。
 - `agentj-context`：上下文管线（纯消息构造器）。
-- `agentj-mcp`：MCP 客户端（子进程连接 + 工具发现注册）。
+- `agentj-mcp`：MCP 客户端——短生命周期子进程连接 + 工具发现注册，以及 **McpConnectionManager**（v0.3 长驻连接：引用计数共享 + 空闲超时回收 + 指数退避重连 + 级联 ghost-tool 注销）。
+- `agentj-skills`：skills 加载器（`.aj/.agents/.claude/skills` 优先级合并，同名校验 SKILL.md，注册语义随 manifest-compat 研究延后）。
+- `agentj-plugin`：插件系统（manifest 解析 + 生命周期状态机 + 依赖图 + libloading 动态加载，`plugin-manager` / `state_machine` / `libloading_loader`）。
 - `agentj-ipc`：JSON-RPC 2.0 stdio IPC 服务（消费 protocol 类型，serve 循环 + 优雅退出）。
-- `agentj-cli`：`agentj` 二进制（`run "prompt"` / `serve`，AgentLoop 以模块注册进 Kernel）。
+- `agentj-cli`：`agentj` 二进制（`run "prompt"` / `serve`，AgentLoop 以模块注册进 Kernel；v0.3 接线：McpConnectionManager 空闲回收 task + 会话过期循环 + skills 加载）。
+- `agentj-plugin-fixture`（dev-only）：插件 cdylib 测试夹具（`libloading_loader` 集成测试用）。
 - `schemas/*.json`：schemars 从 Rust 类型生成的 31 个 JSON Schema（机器事实来源，提交件 + CI 漂移门禁）。
 - `protocol/methods.json`：方法注册表（method ↔ params/result schema、方向、类型）。
 - `docs/specs/ipc-protocol.md`：人类可读协议规范（11 节，中文）。
