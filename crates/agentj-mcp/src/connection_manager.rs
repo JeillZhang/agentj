@@ -531,7 +531,24 @@ impl McpConnectionManager {
                 reason: e,
             });
         match resp {
-            Ok(r) => Ok(r["content"][0]["text"].clone()),
+            Ok(r) => {
+                if r["isError"].as_bool().unwrap_or(false) {
+                    return Err(ToolError::ExecutionFailed {
+                        name: tool.into(),
+                        reason: r["content"][0]["text"]
+                            .as_str()
+                            .map(str::to_string)
+                            .unwrap_or_else(|| "MCP tool returned isError=true".into()),
+                    });
+                }
+                r["content"][0]["text"]
+                    .as_str()
+                    .map(|s| Value::String(s.to_string()))
+                    .ok_or_else(|| ToolError::ExecutionFailed {
+                        name: tool.into(),
+                        reason: "MCP tool returned no text content".into(),
+                    })
+            }
             Err(e) => Err(self.handle_execute_error(server_id, &conn.command, e).await),
         }
     }
@@ -741,6 +758,46 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(out.as_str().unwrap(), "echo: hello");
+    }
+
+    #[tokio::test]
+    async fn execute_surfaces_is_error() {
+        // BUG-007: a tools/call response with isError:true must surface as a
+        // ToolError, not be swallowed into an Ok payload.
+        let registry = Arc::new(ToolRegistry::new());
+        let mgr = manager(registry.clone(), Duration::from_secs(60));
+        let err_script = format!(
+            "{}/tests/fixtures/mcp_error.sh",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        mgr.connect("srv1".into(), err_script).await.unwrap();
+        let result = mgr
+            .execute("srv1", "echo", serde_json::json!({"text": "hello"}))
+            .await;
+        assert!(
+            matches!(&result, Err(ToolError::ExecutionFailed { name, .. }) if name == "echo"),
+            "isError response must surface as ExecutionFailed, got: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_surfaces_empty_content() {
+        // BUG-007: a tools/call response with no text content must surface as a
+        // ToolError instead of returning Ok(Null).
+        let registry = Arc::new(ToolRegistry::new());
+        let mgr = manager(registry.clone(), Duration::from_secs(60));
+        let empty_script = format!(
+            "{}/tests/fixtures/mcp_empty.sh",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        mgr.connect("srv1".into(), empty_script).await.unwrap();
+        let result = mgr
+            .execute("srv1", "echo", serde_json::json!({"text": "hello"}))
+            .await;
+        assert!(
+            matches!(&result, Err(ToolError::ExecutionFailed { name, .. }) if name == "echo"),
+            "empty content must surface as ExecutionFailed, got: {result:?}"
+        );
     }
 
     #[tokio::test]
