@@ -43,7 +43,13 @@ pub fn load_skills(base: &Path) -> Result<Vec<Skill>, Box<dyn std::error::Error>
                 continue;
             }
             let name = entry.file_name().to_string_lossy().to_string();
-            let description = std::fs::read_to_string(&md_path)?;
+            let description = match std::fs::read_to_string(&md_path) {
+                Ok(desc) => desc,
+                Err(err) => {
+                    tracing::warn!(skill = %name, path = %md_path.display(), error = %err, "skipping skill: cannot read SKILL.md");
+                    continue;
+                }
+            };
             let candidate = Skill {
                 name: name.clone(),
                 path: skill_dir,
@@ -101,5 +107,20 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let skills = load_skills(dir.path()).unwrap();
         assert!(skills.is_empty());
+    }
+
+    #[test]
+    fn non_utf8_skill_md_is_skipped_not_fatal() {
+        let dir = tempfile::TempDir::new().unwrap();
+        write_skill(&dir.path().join(".aj/skills"), "good", "GOOD");
+        // SKILL.md with invalid UTF-8 bytes (0xFF is not valid in UTF-8).
+        let bad_dir = dir.path().join(".aj/skills/bad");
+        std::fs::create_dir_all(&bad_dir).unwrap();
+        std::fs::write(bad_dir.join("SKILL.md"), [0xFF, 0xFE, 0x00]).unwrap();
+
+        let skills = load_skills(dir.path()).unwrap();
+        assert_eq!(skills.len(), 1, "bad skill skipped, good skill still loaded");
+        assert_eq!(skills[0].name, "good");
+        assert_eq!(skills[0].description, "GOOD");
     }
 }
