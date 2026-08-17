@@ -286,9 +286,7 @@ mod tests {
         let server = MockServer::start().await;
         // Body ends without a done:true line — simulates a mid-stream transport
         // interruption (EOF before completion).
-        let body = concat!(
-            "{\"model\":\"llama3\",\"message\":{\"role\":\"assistant\",\"content\":\"Hello\"},\"done\":false}\n"
-        );
+        let body = "{\"model\":\"llama3\",\"message\":{\"role\":\"assistant\",\"content\":\"Hello\"},\"done\":false}\n";
         Mock::given(method("POST"))
             .and(path("/api/chat"))
             .respond_with(
