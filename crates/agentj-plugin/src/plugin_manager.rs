@@ -2,6 +2,107 @@
 //! The state-machine types are imported here so the tests module (`use super::*`) can
 //! reach them: `use crate::state_machine::{PluginState, PluginStateMachine};`
 
+use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
+
+use agentj_core::module::{ReplacePolicy, Tool, ToolRegistry, ToolSource};
+
+use crate::manifest::{PluginError, PluginManifest};
+#[cfg(test)]
+use crate::state_machine::{PluginState, PluginStateMachine};
+
+/// Kahn's algorithm over manifest dependencies. Cycle → PluginError::DependencyCycle.
+pub fn resolve_init_order(manifests: &[PluginManifest]) -> Result<Vec<String>, PluginError> {
+    let deps: HashMap<String, Vec<String>> = manifests
+        .iter()
+        .map(|m| (m.id.clone(), m.dependencies.clone()))
+        .collect();
+    let mut order = Vec::with_capacity(manifests.len());
+    let mut frontier: VecDeque<String> = deps
+        .iter()
+        .filter(|(_, d)| d.is_empty())
+        .map(|(id, _)| id.clone())
+        .collect();
+    // Decrement in-degree style: repeatedly pick plugins whose deps are all in `order`.
+    while let Some(id) = frontier.pop_front() {
+        if order.contains(&id) {
+            continue;
+        }
+        order.push(id.clone());
+        for (cand, cand_deps) in deps.iter() {
+            if order.contains(cand) {
+                continue;
+            }
+            if cand_deps.iter().all(|d| order.contains(d)) {
+                frontier.push_back(cand.clone());
+            }
+        }
+    }
+    if order.len() != manifests.len() {
+        let leftover: Vec<String> = manifests
+            .iter()
+            .map(|m| m.id.clone())
+            .filter(|id| !order.contains(id))
+            .collect();
+        return Err(PluginError::DependencyCycle(leftover));
+    }
+    Ok(order)
+}
+
+/// Reverse-topological shutdown: reverse of the init order (dependencies exit last).
+pub fn resolve_shutdown_order(init_order: &[impl AsRef<str>]) -> Vec<String> {
+    init_order
+        .iter()
+        .rev()
+        .map(|s| s.as_ref().to_string())
+        .collect()
+}
+
+/// Register a plugin-owned tool. With `ReplacePolicy::Reject` (design P5 default), a
+/// name already taken by any source fails with `PluginError::ToolConflict` carrying the
+/// existing owner's source; `Replace` overwrites (the plugin explicitly declared intent).
+pub fn register_plugin_tool(
+    registry: &ToolRegistry,
+    tool: Arc<dyn Tool>,
+    plugin_id: &str,
+    policy: ReplacePolicy,
+) -> Result<(), PluginError> {
+    let name = tool.name().to_string();
+    let existing = registry
+        .tools()
+        .iter()
+        .find(|e| e.tool.name() == name)
+        .map(|e| e.source.clone());
+    if let Some(existing) = existing
+        && policy == ReplacePolicy::Reject
+    {
+        return Err(PluginError::ToolConflict { name, existing });
+    }
+    registry
+        .register_tool_with_source(
+            tool,
+            ToolSource::Plugin {
+                plugin_id: plugin_id.into(),
+            },
+            policy,
+        )
+        .map_err(|_| PluginError::ToolConflict {
+            name,
+            existing: ToolSource::Builtin,
+        })
+}
+
+/// Enable/disable a plugin's tools (design P1 缺口闭环): disable removes its tools from
+/// the model tool list (definitions) while keeping the registry entries; enable restores.
+pub fn set_plugin_enabled(registry: &ToolRegistry, plugin_id: &str, enabled: bool) {
+    registry.set_source_enabled(
+        &ToolSource::Plugin {
+            plugin_id: plugin_id.into(),
+        },
+        enabled,
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -22,7 +123,11 @@ mod tests {
 
     #[test]
     fn topological_init_dependencies_first() {
-        let manifests = vec![deps("c", vec!["a"]), deps("b", vec!["a"]), deps("a", vec![])];
+        let manifests = vec![
+            deps("c", vec!["a"]),
+            deps("b", vec!["a"]),
+            deps("a", vec![]),
+        ];
         let order = resolve_init_order(&manifests).unwrap();
         // HashMap iteration order is not deterministic — assert the invariant, not an
         // exact sequence: a must precede b and c; b and c are mutually unordered.
@@ -70,14 +175,23 @@ mod tests {
         // existing owner's source
         let registry = ToolRegistry::new();
         registry
-            .register_tool_with_source(Arc::new(DummyTool), ToolSource::Builtin, ReplacePolicy::Reject)
+            .register_tool_with_source(
+                Arc::new(DummyTool),
+                ToolSource::Builtin,
+                ReplacePolicy::Reject,
+            )
             .unwrap();
         let err = register_plugin_tool(&registry, Arc::new(DummyTool), "p1", ReplacePolicy::Reject)
             .unwrap_err();
-        assert!(matches!(err, PluginError::ToolConflict { ref name, ref existing }
-            if name == "dummy" && *existing == ToolSource::Builtin));
+        assert!(
+            matches!(err, PluginError::ToolConflict { ref name, ref existing }
+            if name == "dummy" && *existing == ToolSource::Builtin)
+        );
         // Replace policy overwrites and succeeds
-        assert!(register_plugin_tool(&registry, Arc::new(DummyTool), "p1", ReplacePolicy::Replace).is_ok());
+        assert!(
+            register_plugin_tool(&registry, Arc::new(DummyTool), "p1", ReplacePolicy::Replace)
+                .is_ok()
+        );
     }
 
     #[test]
@@ -88,14 +202,23 @@ mod tests {
         registry
             .register_tool_with_source(
                 Arc::new(DummyTool),
-                ToolSource::Plugin { plugin_id: "p1".into() },
+                ToolSource::Plugin {
+                    plugin_id: "p1".into(),
+                },
                 ReplacePolicy::Reject,
             )
             .unwrap();
         assert_eq!(registry.definitions().len(), 1);
         set_plugin_enabled(&registry, "p1", false);
-        assert!(registry.definitions().is_empty(), "disabled plugin tools must not reach the model tool list");
-        assert_eq!(registry.tools().len(), 1, "entries stay registered while disabled");
+        assert!(
+            registry.definitions().is_empty(),
+            "disabled plugin tools must not reach the model tool list"
+        );
+        assert_eq!(
+            registry.tools().len(),
+            1,
+            "entries stay registered while disabled"
+        );
         set_plugin_enabled(&registry, "p1", true);
         assert_eq!(registry.definitions().len(), 1);
     }

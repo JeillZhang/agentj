@@ -5,12 +5,12 @@
 pub mod manifest;
 pub use manifest::{PluginError, PluginManifest};
 
-pub mod state_machine;
 pub mod plugin_manager;
-pub use state_machine::{PluginState, PluginStateMachine};
+pub mod state_machine;
 pub use plugin_manager::{
     register_plugin_tool, resolve_init_order, resolve_shutdown_order, set_plugin_enabled,
 };
+pub use state_machine::{PluginState, PluginStateMachine};
 
 /// A loaded plugin, bridged to the kernel as a `Module` (design §插件生命周期).
 /// The kernel only ever sees this — loading mechanism and lifecycle are decoupled.
