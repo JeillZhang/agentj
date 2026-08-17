@@ -119,7 +119,11 @@ mod tests {
         std::fs::write(bad_dir.join("SKILL.md"), [0xFF, 0xFE, 0x00]).unwrap();
 
         let skills = load_skills(dir.path()).unwrap();
-        assert_eq!(skills.len(), 1, "bad skill skipped, good skill still loaded");
+        assert_eq!(
+            skills.len(),
+            1,
+            "bad skill skipped, good skill still loaded"
+        );
         assert_eq!(skills[0].name, "good");
         assert_eq!(skills[0].description, "GOOD");
     }

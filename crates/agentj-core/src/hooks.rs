@@ -88,7 +88,7 @@ mod tests {
     use crate::kernel::Kernel;
     use crate::module::*;
     use crate::types::*;
-    use std::sync::{mpsc, Arc, Mutex};
+    use std::sync::{Arc, Mutex, mpsc};
     use std::time::Duration;
 
     struct SpyHandler {
@@ -269,7 +269,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn kernel_publishes_lifecycle_events() {        // design §模块生命周期状态机「查询与事件」: Kernel auto-publishes ModuleLoaded on
+    async fn kernel_publishes_lifecycle_events() {
+        // design §模块生命周期状态机「查询与事件」: Kernel auto-publishes ModuleLoaded on
         // register success and ModuleStopped after graceful shutdown.
         let spy = Arc::new(SpyHandler {
             events: Arc::new(Mutex::new(vec![])),

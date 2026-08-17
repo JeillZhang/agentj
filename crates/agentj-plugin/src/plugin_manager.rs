@@ -249,9 +249,17 @@ mod tests {
         let mut sm = PluginStateMachine::new("p1");
         assert_eq!(sm.state(), PluginState::Unloaded);
         sm.initialized();
-        assert_eq!(sm.state(), PluginState::Unloaded, "initialized from Unloaded");
+        assert_eq!(
+            sm.state(),
+            PluginState::Unloaded,
+            "initialized from Unloaded"
+        );
         sm.reload_failed();
-        assert_eq!(sm.state(), PluginState::Unloaded, "reload_failed from Unloaded");
+        assert_eq!(
+            sm.state(),
+            PluginState::Unloaded,
+            "reload_failed from Unloaded"
+        );
         sm.stopping();
         assert_eq!(sm.state(), PluginState::Unloaded, "stopping from Unloaded");
         sm.stopped();
@@ -259,7 +267,11 @@ mod tests {
         sm.begin_loading();
         assert_eq!(sm.state(), PluginState::Loading);
         sm.reload_failed(); // rollback only valid from Reloading
-        assert_eq!(sm.state(), PluginState::Loading, "reload_failed from Loading");
+        assert_eq!(
+            sm.state(),
+            PluginState::Loading,
+            "reload_failed from Loading"
+        );
         sm.stopped();
         assert_eq!(sm.state(), PluginState::Loading, "stopped from Loading");
         sm.initialized();

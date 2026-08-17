@@ -79,9 +79,7 @@ impl OllamaProvider {
                             if !done_seen {
                                 terminated = true;
                                 return Some((
-                                    Err(ModelError::Stream(
-                                        "stream ended before done:true".into(),
-                                    )),
+                                    Err(ModelError::Stream("stream ended before done:true".into())),
                                     (reader, done_seen, false, terminated),
                                 ));
                             }

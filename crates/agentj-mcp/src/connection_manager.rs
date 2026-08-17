@@ -766,10 +766,7 @@ mod tests {
         // ToolError, not be swallowed into an Ok payload.
         let registry = Arc::new(ToolRegistry::new());
         let mgr = manager(registry.clone(), Duration::from_secs(60));
-        let err_script = format!(
-            "{}/tests/fixtures/mcp_error.sh",
-            env!("CARGO_MANIFEST_DIR")
-        );
+        let err_script = format!("{}/tests/fixtures/mcp_error.sh", env!("CARGO_MANIFEST_DIR"));
         mgr.connect("srv1".into(), err_script).await.unwrap();
         let result = mgr
             .execute("srv1", "echo", serde_json::json!({"text": "hello"}))
@@ -786,10 +783,7 @@ mod tests {
         // ToolError instead of returning Ok(Null).
         let registry = Arc::new(ToolRegistry::new());
         let mgr = manager(registry.clone(), Duration::from_secs(60));
-        let empty_script = format!(
-            "{}/tests/fixtures/mcp_empty.sh",
-            env!("CARGO_MANIFEST_DIR")
-        );
+        let empty_script = format!("{}/tests/fixtures/mcp_empty.sh", env!("CARGO_MANIFEST_DIR"));
         mgr.connect("srv1".into(), empty_script).await.unwrap();
         let result = mgr
             .execute("srv1", "echo", serde_json::json!({"text": "hello"}))
