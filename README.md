@@ -2,7 +2,7 @@
 
 AI 编码代理工具（Rust）——Linux 内核式「内核调度 + 可插拔模块」架构。内核通过统一的 JSON-RPC 2.0 协议（stdio，未来 TCP / WebSocket）对外暴露能力；CLI、TUI、Web Dashboard、IDE 插件均可作为协议消费者，**任意语言**可开发前端连接内核。
 
-> 当前版本：**v0.3.0**——生态扩展落地（13 crate）：事件总线 + 子代理调度 + skills 加载 + 插件加载（libloading）+ MCP 长驻连接 + 会话过期 + 磁盘持久化 + Ollama provider；v0.2 全保留：IPC 协议契约（14 方法）+ 权限审批系统 + JSON-RPC stdio IPC + CLI run/serve；守护内核（常驻 API 服务）设计已批准，能力 v0.4。
+> 当前版本：**v0.3.0**——生态扩展落地（14 crate）：事件总线 + 子代理调度 + skills 加载 + 插件加载（libloading）+ MCP 长驻连接 + 会话过期 + 磁盘持久化 + Ollama provider；v0.2 全保留：IPC 协议契约（14 方法）+ 权限审批系统 + JSON-RPC stdio IPC + CLI run/serve；守护内核（常驻 API 服务）设计已批准，能力 v0.4。
 
 ## Features
 
