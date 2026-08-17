@@ -53,13 +53,18 @@ impl EventBus {
             Err(_) => return,
         };
         let Some(ctx) = ctx else { return };
-        let Ok(handlers) = self.handlers.lock() else {
-            return;
+        let snapshot = {
+            let Ok(handlers) = self.handlers.lock() else {
+                return;
+            };
+            handlers
+                .iter()
+                .filter(|(sub, _)| sub == event)
+                .cloned()
+                .collect::<Vec<HandlerEntry>>()
         };
-        for (sub, handler) in handlers.iter() {
-            if sub == event {
-                handler.on_event(event, &ctx);
-            }
+        for (_, handler) in snapshot {
+            handler.on_event(event, &ctx);
         }
     }
 
@@ -81,7 +86,8 @@ mod tests {
     use crate::kernel::Kernel;
     use crate::module::*;
     use crate::types::*;
-    use std::sync::{Arc, Mutex};
+    use std::sync::{mpsc, Arc, Mutex};
+    use std::time::Duration;
 
     struct SpyHandler {
         events: Arc<Mutex<Vec<EventType>>>,
@@ -193,6 +199,49 @@ mod tests {
         bus.register(EventType::ModuleLoaded("m".into()), spy.clone());
         bus.publish(&EventType::ModuleLoaded("m".into()));
         assert!(spy.events.lock().unwrap().is_empty());
+    }
+
+    /// Handler that re-enters the bus (register + publish) from inside on_event.
+    /// BUG-001: publish held the handlers mutex while invoking handlers, so
+    /// re-entry deadlocked on the (non-reentrant) std mutex.
+    struct ReentrantHandler {
+        bus: Arc<EventBus>,
+        tx: Mutex<Option<mpsc::Sender<()>>>,
+    }
+    impl EventHandler for ReentrantHandler {
+        fn on_event(&self, _event: &EventType, _ctx: &KernelContext) {
+            self.bus.register(
+                EventType::ModuleFailed("m".into()),
+                Arc::new(SpyHandler {
+                    events: Arc::new(Mutex::new(vec![])),
+                }),
+            );
+            self.bus.publish(&EventType::ModuleFailed("m".into()));
+            if let Some(tx) = self.tx.lock().unwrap().take() {
+                tx.send(()).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn publish_snapshots_handlers_so_handler_can_reenter_bus() {
+        let bus = Arc::new(EventBus::with_ctx(Arc::new(dummy_context())));
+        let (tx, rx) = mpsc::channel();
+        bus.register(
+            EventType::ModuleLoaded("m".into()),
+            Arc::new(ReentrantHandler {
+                bus: bus.clone(),
+                tx: Mutex::new(Some(tx)),
+            }),
+        );
+        let bus_clone = bus.clone();
+        let t = std::thread::spawn(move || {
+            bus_clone.publish(&EventType::ModuleLoaded("m".into()));
+        });
+        // A deadlock (old impl) never sends on the channel; the timeout fails the test.
+        rx.recv_timeout(Duration::from_secs(5))
+            .expect("handler re-entering the bus must not deadlock publish");
+        t.join().expect("publish thread must terminate");
     }
 
     #[tokio::test]
