@@ -188,13 +188,18 @@ impl SessionStore for FileBackedStore {
     }
 
     fn delete(&self, sid: &SessionId) -> Result<(), ModuleError> {
-        if !lock_guard(&self.statuses).contains_key(sid) {
-            return Err(ModuleError::Session(SessionError::NotFound(sid.clone())));
+        match lock_guard(&self.statuses).get(sid).copied() {
+            None => return Err(ModuleError::Session(SessionError::NotFound(sid.clone()))),
+            Some(SessionStatus::Deleted) => return Ok(()), // idempotent, matches InMemoryStore
+            Some(_) => {}
         }
         lock_guard(&self.statuses).insert(sid.clone(), SessionStatus::Deleted);
         lock_guard(&self.sessions).remove(sid);
-        fs::remove_file(self.path_for(sid)).map_err(|e| persistence_err(e.to_string()))?;
-        Ok(())
+        match fs::remove_file(self.path_for(sid)) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(persistence_err(e.to_string())),
+        }
     }
 
     fn snapshot(&self, sid: &SessionId) -> Result<SessionSnapshot, ModuleError> {
@@ -298,6 +303,34 @@ mod tests {
             sessions.join("bad.json.corrupt").exists(),
             "corrupt file must be backed up, not lost"
         );
+    }
+
+    #[test]
+    fn delete_is_idempotent_like_inmemory() -> Result<(), ModuleError> {
+        let d = dir();
+        let path = d.path().to_path_buf();
+        let store = FileBackedStore::new(&path)?;
+        let sid = store.create()?;
+
+        store.delete(&sid)?;
+        assert!(!path.join(format!("{sid}.json")).exists());
+
+        // BUG-013 regression: second delete must be Ok (idempotent, matching
+        // InMemoryStore) — NOT PersistenceFailed from fs::remove_file ENOENT
+        store.delete(&sid)?;
+        assert_eq!(store.status(&sid)?, SessionStatus::Deleted);
+        Ok(())
+    }
+
+    #[test]
+    fn delete_missing_session_returns_not_found() -> Result<(), ModuleError> {
+        let d = dir();
+        let store = FileBackedStore::new(d.path())?;
+        assert!(matches!(
+            store.delete(&"nonexistent".into()),
+            Err(ModuleError::Session(SessionError::NotFound(_)))
+        ));
+        Ok(())
     }
 
     #[test]
