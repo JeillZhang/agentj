@@ -3,7 +3,9 @@
 //! init/shutdown run in the real process; stdin EOF and signals share the same
 //! graceful-shutdown chain (design #13).
 
+use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 
@@ -13,11 +15,13 @@ use agentj_core::error::ModuleError;
 use agentj_core::kernel::Kernel;
 use agentj_core::module::{
     KernelContext, KernelMessage, KernelModule, KernelResponse, Module, ModuleMetadata,
-    ModuleRegister, ProviderRegistry, ToolRegistry,
+    ModuleRegister, ProviderRegistry, SessionStore, ToolRegistry,
 };
 use agentj_ipc::IpcServer;
+use agentj_mcp::McpConnectionManager;
 use agentj_model::factory::ProviderFactory;
 use agentj_session::InMemoryStore;
+use agentj_skills::load_skills;
 use agentj_tools::builtins::register_builtins;
 
 /// Wraps the AgentLoop as a kernel Module so init/shutdown run in the production process.
@@ -97,7 +101,10 @@ async fn main() -> anyhow::Result<()> {
     let tools = Arc::new(ToolRegistry::new());
     register_builtins(&tools);
     let providers = Arc::new(ProviderRegistry::new());
-    let session = Arc::new(InMemoryStore::new());
+    // Keep a concrete Arc before the ctx move: spawn_expiry_loop is inherent on
+    // InMemoryStore and is NOT callable through ctx.session: Arc<dyn SessionStore>.
+    let session_store = Arc::new(InMemoryStore::new());
+    let session: Arc<dyn SessionStore> = session_store.clone();
 
     // design 4.3: instantiate each configured provider through the factory — kind
     // decides the wire format (openai-compat / responses / anthropic / opencode-go).
@@ -159,6 +166,34 @@ async fn main() -> anyhow::Result<()> {
         &ctx,
         &mut register,
     )?;
+
+    // v0.3 ecosystem wiring (T11): take shared handles before the kernel is moved
+    // into IpcServer, then spawn the MCP idle reaper + session expiry loop as
+    // background tasks and load skills for observability (registration deferred
+    // to the manifest-compat research).
+    let events = kernel.events();
+    let mcp_manager = Arc::new(McpConnectionManager::new(
+        Arc::clone(&ctx.tools),
+        Duration::from_secs(60),
+        Duration::from_millis(500),
+        5,
+        events.clone(),
+    ));
+    tokio::spawn({
+        let m = mcp_manager.clone();
+        async move {
+            loop {
+                m.reap_idle().await;
+                tokio::time::sleep(Duration::from_secs(10)).await;
+            }
+        }
+    });
+    session_store.spawn_expiry_loop(events, Duration::from_secs(3600), Duration::from_secs(60));
+
+    let skills = load_skills(Path::new(".")).unwrap_or_default();
+    for skill in &skills {
+        tracing::info!(skill = %skill.name, priority = ?skill.priority, "loaded");
+    }
 
     let mut ipc_server = IpcServer::new(agent_loop, kernel);
     ipc_server.permission_module = Some(permission_module);
