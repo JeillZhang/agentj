@@ -58,42 +58,81 @@ impl OllamaProvider {
             .bytes_stream()
             .map(|r| r.map_err(std::io::Error::other));
         let reader = BufReader::new(StreamReader::new(byte_stream));
-        // State: (reader, pending_done). pending_done means a done:true line carried
-        // content whose Delta was already emitted; emit Done on the next poll.
-        let stream = stream::unfold((reader, false), |(mut reader, mut pending_done)| async move {
-            if pending_done {
-                return Some((Ok(ModelEvent::Done), (reader, false)));
-            }
-            let mut line = String::new();
-            loop {
-                match reader.read_line(&mut line).await {
-                    Ok(0) => return None, // EOF
-                    Ok(_) => {}
-                    Err(_) => return None, // transport error ends the stream
+        // State: (reader, done_seen, pending_done, terminated).
+        // - done_seen: a done:true line was emitted (or a truncation error was).
+        // - pending_done: a done:true line carried content; emit Done next.
+        // - terminated: a truncation error was emitted; end the stream.
+        let stream = stream::unfold(
+            (reader, false, false, false),
+            |(mut reader, mut done_seen, pending_done, mut terminated)| async move {
+                if terminated {
+                    return None;
                 }
-                let trimmed = line.trim().to_string();
-                line.clear();
-                let json: Value = match serde_json::from_str(&trimmed) {
-                    Ok(v) => v,
-                    Err(_) => continue,
-                };
-                let content = json["message"]["content"]
-                    .as_str()
-                    .unwrap_or("")
-                    .to_string();
-                let done = json.get("done").and_then(|d| d.as_bool()).unwrap_or(false);
-                if done {
-                    if !content.is_empty() {
-                        // BUG-010: emit delta before done for done-line content.
-                        return Some((Ok(ModelEvent::Delta(content)), (reader, true)));
+                if pending_done {
+                    return Some((Ok(ModelEvent::Done), (reader, true, false, false)));
+                }
+                let mut line = String::new();
+                loop {
+                    match reader.read_line(&mut line).await {
+                        Ok(0) => {
+                            // EOF before done:true → truncated stream, never silent.
+                            if !done_seen {
+                                terminated = true;
+                                return Some((
+                                    Err(ModelError::Stream(
+                                        "stream ended before done:true".into(),
+                                    )),
+                                    (reader, done_seen, false, terminated),
+                                ));
+                            }
+                            return None; // normal end after done
+                        }
+                        Ok(_) => {}
+                        Err(e) => {
+                            // Transport error before done:true → truncated stream.
+                            if !done_seen {
+                                terminated = true;
+                                return Some((
+                                    Err(ModelError::Stream(format!(
+                                        "stream error before done:true: {e}"
+                                    ))),
+                                    (reader, done_seen, false, terminated),
+                                ));
+                            }
+                            return None;
+                        }
                     }
-                    return Some((Ok(ModelEvent::Done), (reader, false)));
+                    let trimmed = line.trim().to_string();
+                    line.clear();
+                    let json: Value = match serde_json::from_str(&trimmed) {
+                        Ok(v) => v,
+                        Err(_) => continue,
+                    };
+                    let content = json["message"]["content"]
+                        .as_str()
+                        .unwrap_or("")
+                        .to_string();
+                    let done = json.get("done").and_then(|d| d.as_bool()).unwrap_or(false);
+                    if done {
+                        done_seen = true;
+                        if !content.is_empty() {
+                            // BUG-010: emit delta before done for done-line content.
+                            return Some((
+                                Ok(ModelEvent::Delta(content)),
+                                (reader, done_seen, true, false),
+                            ));
+                        }
+                        return Some((Ok(ModelEvent::Done), (reader, done_seen, false, false)));
+                    }
+                    if !content.is_empty() {
+                        return Some((
+                            Ok(ModelEvent::Delta(content)),
+                            (reader, done_seen, false, false),
+                        ));
+                    }
                 }
-                if !content.is_empty() {
-                    return Some((Ok(ModelEvent::Delta(content)), (reader, false)));
-                }
-            }
-        });
+            },
+        );
         Ok(Box::pin(stream))
     }
 }
@@ -240,6 +279,60 @@ mod tests {
         }
         assert!(saw_done, "done:true line must yield a Done event");
         assert_eq!(chunks.join(""), "Hello world");
+    }
+
+    #[tokio::test]
+    async fn truncated_stream_without_done_emits_error() {
+        let server = MockServer::start().await;
+        // Body ends without a done:true line — simulates a mid-stream transport
+        // interruption (EOF before completion).
+        let body = concat!(
+            "{\"model\":\"llama3\",\"message\":{\"role\":\"assistant\",\"content\":\"Hello\"},\"done\":false}\n"
+        );
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(body)
+                    .insert_header("content-type", "application/x-ndjson"),
+            )
+            .mount(&server)
+            .await;
+
+        let provider = OllamaProvider::new(server.uri(), "llama3".into());
+        let mut stream = provider
+            .chat_stream(
+                vec![ChatMessage::user("hi")],
+                vec![],
+                ModelOptions {
+                    model: "llama3".into(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let mut chunks = vec![];
+        let mut saw_error = false;
+        while let Some(result) = stream.next().await {
+            match result {
+                Ok(ModelEvent::Delta(t)) => chunks.push(t),
+                Ok(ModelEvent::Done) => break,
+                Err(e) => {
+                    saw_error = true;
+                    assert!(
+                        matches!(e, ModelError::Stream(_)),
+                        "truncation must surface as a stream error, got: {e}"
+                    );
+                    break;
+                }
+                _ => {}
+            }
+        }
+        assert!(
+            saw_error,
+            "truncated stream must emit an error, not end silently"
+        );
+        assert_eq!(chunks.join(""), "Hello");
     }
 
     #[tokio::test]
