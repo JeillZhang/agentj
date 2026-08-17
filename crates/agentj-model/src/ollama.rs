@@ -58,7 +58,12 @@ impl OllamaProvider {
             .bytes_stream()
             .map(|r| r.map_err(std::io::Error::other));
         let reader = BufReader::new(StreamReader::new(byte_stream));
-        let stream = stream::unfold(reader, |mut reader| async move {
+        // State: (reader, pending_done). pending_done means a done:true line carried
+        // content whose Delta was already emitted; emit Done on the next poll.
+        let stream = stream::unfold((reader, false), |(mut reader, mut pending_done)| async move {
+            if pending_done {
+                return Some((Ok(ModelEvent::Done), (reader, false)));
+            }
             let mut line = String::new();
             loop {
                 match reader.read_line(&mut line).await {
@@ -72,15 +77,20 @@ impl OllamaProvider {
                     Ok(v) => v,
                     Err(_) => continue,
                 };
-                if json.get("done").and_then(|d| d.as_bool()).unwrap_or(false) {
-                    return Some((Ok(ModelEvent::Done), reader));
-                }
                 let content = json["message"]["content"]
                     .as_str()
                     .unwrap_or("")
                     .to_string();
+                let done = json.get("done").and_then(|d| d.as_bool()).unwrap_or(false);
+                if done {
+                    if !content.is_empty() {
+                        // BUG-010: emit delta before done for done-line content.
+                        return Some((Ok(ModelEvent::Delta(content)), (reader, true)));
+                    }
+                    return Some((Ok(ModelEvent::Done), (reader, false)));
+                }
                 if !content.is_empty() {
-                    return Some((Ok(ModelEvent::Delta(content)), reader));
+                    return Some((Ok(ModelEvent::Delta(content)), (reader, false)));
                 }
             }
         });
@@ -184,6 +194,51 @@ mod tests {
                 _ => {}
             }
         }
+        assert_eq!(chunks.join(""), "Hello world");
+    }
+
+    #[tokio::test]
+    async fn done_line_with_content_emits_delta_before_done() {
+        let server = MockServer::start().await;
+        let body = concat!(
+            "{\"model\":\"llama3\",\"message\":{\"role\":\"assistant\",\"content\":\"Hello\"},\"done\":false}\n",
+            "{\"model\":\"llama3\",\"message\":{\"role\":\"assistant\",\"content\":\" world\"},\"done\":true}\n"
+        );
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(body)
+                    .insert_header("content-type", "application/x-ndjson"),
+            )
+            .mount(&server)
+            .await;
+
+        let provider = OllamaProvider::new(server.uri(), "llama3".into());
+        let mut stream = provider
+            .chat_stream(
+                vec![ChatMessage::user("hi")],
+                vec![],
+                ModelOptions {
+                    model: "llama3".into(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let mut chunks = vec![];
+        let mut saw_done = false;
+        while let Some(result) = stream.next().await {
+            match result.unwrap() {
+                ModelEvent::Delta(t) => chunks.push(t),
+                ModelEvent::Done => {
+                    saw_done = true;
+                    break;
+                }
+                _ => {}
+            }
+        }
+        assert!(saw_done, "done:true line must yield a Done event");
         assert_eq!(chunks.join(""), "Hello world");
     }
 
