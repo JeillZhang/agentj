@@ -87,7 +87,6 @@ impl PluginLoader for LibloadingLoader {
 mod tests {
     use super::*;
     use crate::manifest::PluginManifest;
-    use agentj_core::module::Module;
 
     #[test]
     fn libloading_loader_loads_fixture_plugin() {
