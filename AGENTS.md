@@ -1,6 +1,6 @@
 # AGENTS.md
 
-> Updated 2026-08-17 — v0.3.0 released (13 crates, event bus + 子代理调度 + skills 加载 + 插件加载 + MCP 长驻连接 + 会话过期 + 磁盘持久化 + Ollama provider)；守护内核（常驻 API 服务）设计已批准，能力 v0.4 落地。Version renumbering: ecosystem expansion = v0.3, commercial (incl. daemon-kernel) = v0.4.
+> Updated 2026-08-17 — v0.3.0 released (14 crates, event bus + 子代理调度 + skills 加载 + 插件加载 + MCP 长驻连接 + 会话过期 + 磁盘持久化 + Ollama provider)；守护内核（常驻 API 服务）设计已批准，能力 v0.4 落地。Version renumbering: ecosystem expansion = v0.3, commercial (incl. daemon-kernel) = v0.4.
 
 ## Project Status
 
@@ -30,10 +30,10 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
 
 ## Architecture
 
-> 全部 13 个 crate 位于 `crates/` 目录（工作区成员 `crates/*`），下文 `agentj-*` 均为 `crates/agentj-*`。
+> 全部 14 个 crate 位于 `crates/` 目录（工作区成员 `crates/*`），下文 `agentj-*` 均为 `crates/agentj-*`。
 
 - `agentj-protocol`（leaf crate）：IPC 协议契约的权威 wire 类型（JSON-RPC 2.0 信封、错误码、14 个方法 params/result、流式类型、订阅/权限类型），serde + schemars，零内核耦合。v0.1 的 `agentj-core`/`agentj-ipc` 应消费其类型（导入而非重定义）。
-- `agentj-core`（内核）：Kernel 调度 + 模块 trait 注册表（`module.rs`：ModelProvider / SessionStore / ToolRegistry / ContextPipeline / ConfigProvider）、AgentLoop 流式 API（`run_turn_stream` → `mpsc::Receiver<AgentEvent>`，`run_turn` 聚合）、错误/类型（`error.rs`/`types.rs`）。
+- `agentj-core`（内核）：Kernel 调度 + 模块 trait 注册表（`module.rs`：ModelProvider / SessionStore / ToolRegistry / ContextPipeline / ConfigProvider）、`ModuleResolver` 服务定位（`resolver.rs`，ServiceRegistry 按 id 解析具体类型能力）、AgentLoop 流式 API（`run_turn_stream` → `mpsc::Receiver<AgentEvent>`，`run_turn` 聚合）、错误/类型（`error.rs`/`types.rs`）。
 - `agentj-config`：TOML 配置（`[model]`：`provider` + `providers[]`（name/base_url/api_key_env/**kind**）+ `default_model`；`[permission]`：per-tool `ToolPolicy`（mode/path_rules/command_rules）），ConfigProvider 读取。
 - `agentj-session`：会话生命周期（InMemoryStore：状态机 SessionStatus + 快照恢复；FileBackedStore 磁盘持久化 + 过期清理 `spawn_expiry_loop`）。
 - `agentj-permission`：权限系统——决策引擎（规则求值 Deny > Allow > Mode）+ 策略模型（`ToolPolicy`、`[permission]` 配置）+ `PermissionModule`（审批等待/超时 60s 自动 Deny、allow_always 会话级内存态、取消即拒绝）。
