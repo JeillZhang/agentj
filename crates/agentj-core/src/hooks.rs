@@ -64,7 +64,9 @@ impl EventBus {
                 .collect::<Vec<HandlerEntry>>()
         };
         for (_, handler) in snapshot {
-            handler.on_event(event, &ctx);
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                handler.on_event(event, &ctx);
+            }));
         }
     }
 
@@ -244,9 +246,30 @@ mod tests {
         t.join().expect("publish thread must terminate");
     }
 
+    /// Handler that panics inside on_event. BUG-002: a panicking handler must
+    /// not poison the bus mutex nor propagate the panic to the publisher.
+    struct PanicHandler;
+    impl EventHandler for PanicHandler {
+        fn on_event(&self, _event: &EventType, _ctx: &KernelContext) {
+            panic!("handler boom");
+        }
+    }
+
+    #[test]
+    fn publish_isolates_handler_panic_and_keeps_bus_functional() {
+        let bus = EventBus::with_ctx(Arc::new(dummy_context()));
+        let spy = Arc::new(SpyHandler {
+            events: Arc::new(Mutex::new(vec![])),
+        });
+        bus.register(EventType::ModuleLoaded("m".into()), Arc::new(PanicHandler));
+        bus.register(EventType::ModuleLoaded("m".into()), spy.clone());
+        bus.publish(&EventType::ModuleLoaded("m".into()));
+        bus.publish(&EventType::ModuleLoaded("m".into()));
+        assert_eq!(spy.events.lock().unwrap().len(), 2);
+    }
+
     #[tokio::test]
-    async fn kernel_publishes_lifecycle_events() {
-        // design §模块生命周期状态机「查询与事件」: Kernel auto-publishes ModuleLoaded on
+    async fn kernel_publishes_lifecycle_events() {        // design §模块生命周期状态机「查询与事件」: Kernel auto-publishes ModuleLoaded on
         // register success and ModuleStopped after graceful shutdown.
         let spy = Arc::new(SpyHandler {
             events: Arc::new(Mutex::new(vec![])),
