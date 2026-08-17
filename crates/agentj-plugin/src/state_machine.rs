@@ -41,11 +41,15 @@ impl PluginStateMachine {
     }
 
     pub fn begin_loading(&mut self) {
-        self.state = PluginState::Loading;
+        if matches!(self.state, PluginState::Unloaded) {
+            self.state = PluginState::Loading;
+        }
     }
 
     pub fn initialized(&mut self) {
-        self.state = PluginState::Ready;
+        if matches!(self.state, PluginState::Loading | PluginState::Reloading) {
+            self.state = PluginState::Ready;
+        }
     }
 
     pub fn disable(&mut self) {
@@ -67,8 +71,10 @@ impl PluginStateMachine {
     }
 
     pub fn reload_failed(&mut self) {
-        self.state = PluginState::Ready;
-        self.last_error = Some("reload failed".into());
+        if matches!(self.state, PluginState::Reloading) {
+            self.state = PluginState::Ready;
+            self.last_error = Some("reload failed".into());
+        }
     }
 
     pub fn mark_failed(&mut self, err: &str) {
@@ -77,10 +83,20 @@ impl PluginStateMachine {
     }
 
     pub fn stopping(&mut self) {
-        self.state = PluginState::Stopping;
+        if matches!(
+            self.state,
+            PluginState::Ready
+                | PluginState::Disabled
+                | PluginState::Reloading
+                | PluginState::Failed
+        ) {
+            self.state = PluginState::Stopping;
+        }
     }
 
     pub fn stopped(&mut self) {
-        self.state = PluginState::Stopped;
+        if matches!(self.state, PluginState::Stopping) {
+            self.state = PluginState::Stopped;
+        }
     }
 }

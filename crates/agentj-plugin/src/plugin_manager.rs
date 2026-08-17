@@ -241,4 +241,40 @@ mod tests {
         assert_eq!(sm.state(), PluginState::Ready);
         assert_eq!(sm.last_error(), Some("reload failed".to_string()));
     }
+
+    #[test]
+    fn illegal_transitions_are_rejected() {
+        // BUG-012: unguarded transitions must not jump into arbitrary states;
+        // an illegal call keeps the current state.
+        let mut sm = PluginStateMachine::new("p1");
+        assert_eq!(sm.state(), PluginState::Unloaded);
+        sm.initialized();
+        assert_eq!(sm.state(), PluginState::Unloaded, "initialized from Unloaded");
+        sm.reload_failed();
+        assert_eq!(sm.state(), PluginState::Unloaded, "reload_failed from Unloaded");
+        sm.stopping();
+        assert_eq!(sm.state(), PluginState::Unloaded, "stopping from Unloaded");
+        sm.stopped();
+        assert_eq!(sm.state(), PluginState::Unloaded, "stopped from Unloaded");
+        sm.begin_loading();
+        assert_eq!(sm.state(), PluginState::Loading);
+        sm.reload_failed(); // rollback only valid from Reloading
+        assert_eq!(sm.state(), PluginState::Loading, "reload_failed from Loading");
+        sm.stopped();
+        assert_eq!(sm.state(), PluginState::Loading, "stopped from Loading");
+        sm.initialized();
+        assert_eq!(sm.state(), PluginState::Ready);
+        sm.stopping();
+        assert_eq!(sm.state(), PluginState::Stopping);
+        sm.stopped();
+        assert_eq!(sm.state(), PluginState::Stopped);
+        // failure may arrive from any stage, and stopping recovers from Failed
+        let mut failed_sm = PluginStateMachine::new("p2");
+        failed_sm.mark_failed("boom");
+        assert_eq!(failed_sm.state(), PluginState::Failed);
+        failed_sm.stopping();
+        assert_eq!(failed_sm.state(), PluginState::Stopping);
+        failed_sm.stopped();
+        assert_eq!(failed_sm.state(), PluginState::Stopped);
+    }
 }
