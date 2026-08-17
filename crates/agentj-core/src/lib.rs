@@ -1,11 +1,16 @@
 //! AgentJ kernel — shared types, traits, and event loop.
 
 pub mod agent_loop;
+pub mod dispatcher;
 pub mod error;
+pub mod hooks;
 pub mod kernel;
 pub mod module;
 pub mod permission;
+pub mod resolver;
 pub mod types;
+
+pub use resolver::{KernelService, ModuleResolver, ServiceRegistry};
 
 pub fn add(left: u64, right: u64) -> u64 {
     left + right

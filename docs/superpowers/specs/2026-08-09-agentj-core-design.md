@@ -1229,8 +1229,8 @@ clap = { version = "4", features = ["derive"] }
 - **ModelProvider 切换**（低优先级）：v0.1 支持多厂商（DeepSeek + opencode-go 全模型，配置层选择），但**运行时切换/重连状态机**属 v0.2 模型扩展（v0.1 为进程启动时静态选择）
 - **opencode-go 模型目录为静态快照**：`models/opencode-go.json` 是提交的静态工件，opencode-go 新增模型需随 AgentJ 版本更新；动态 `/v1/models` 拉取属 v0.2 增强项（v0.1 非目标）
 - **IPC 多连接**（低优先级）：v0.1 stdio 单客户端模型（EOF 即关）简单可靠；v0.3 Web Dashboard 多连接时的连接生命周期再设计
-- **Session 过期回收（expire）**：契约已固化（决策 #14），TTL 扫描回收实现属 v0.2
-- **运行级续跑（run resumption）**：会话历史持久化已设计（决策 #16），但 `session/run` 中断后的续跑（run 状态机 + 检查点 + 协议 resume 语义）属 v0.2+ 独立设计——协议 §3 当前明文"`session/run` 不可重试"，改动需走协议版本升级流程
+- **Session 过期回收（expire）**：✅ **v0.3 已实现**（契约已固化于决策 #14）——`scan_expired(ttl, now, bus)` TTL 扫描归档 + `EventType::SessionExpired` 发布 + `spawn_expiry_loop` 后台定时回收，CLI 布线 3600s TTL / 60s 间隔
+- **运行级续跑（run resumption）**：会话历史持久化已实现（决策 #16，v0.3 FileBackedStore），但 `session/run` 中断后的续跑（run 状态机 + 检查点 + 协议 resume 语义）仍属 v0.2+ 独立设计——协议 §3 当前明文"`session/run` 不可重试"，改动需走协议版本升级流程
 - **allow_always 持久化**：v0.1 会话级内存态（决策 #17），不回写配置文件；跨会话白名单需用户显式配置 `[permission]` 规则。`allow_always` 持久化交互（"允许并保存"）属 v0.2 增强项
 - **沙箱化执行**：权限控制（决策 #17）解决"能否执行"，`ToolExecutor` 进程组隔离解决"超时整树终止"；但**无 OS 级沙箱**（chroot/seccomp/bubblewrap）限制工具进程能力边界——属 v0.2 插件 WASM 沙箱（P4）之外的独立增强项，v0.1 不覆盖
-- **内核调度未兑现**：v0.1-v0.2 为"注册表 + 生命周期管理"式内核，编排直调（`AgentLoop` 直接调 trait 对象），与"内核调度 + 可插拔模块"理念存在差距（见「内核调度：现状与理念的差距」章节 + 决策 #18）——**v0.3 期间全量重构**，v1.0 稳定。前置依赖：v0.2 `ModuleResolver` + `ServiceCall`（v0.2 计划 T1）+ KernelMessage 全变体接线
+- **内核调度未兑现**：v0.1-v0.3 为"注册表 + 生命周期管理"式内核，编排直调（`AgentLoop` 直接调 trait 对象），与"内核调度 + 可插拔模块"理念存在差距（见「内核调度：现状与理念的差距」章节 + 决策 #18）——**v0.3 期间全量重构**，v1.0 稳定。✅ v0.3 已落地前置依赖：`ModuleResolver` + `KernelMessage::ServiceCall`（v0.3 计划 T1）；待续：KernelMessage 全变体接线 + AgentLoop/Sub-Agent 全量迁入总线（守护内核 v0.4 计划）

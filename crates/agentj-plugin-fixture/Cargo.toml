@@ -1,0 +1,13 @@
+[package]
+name = "agentj-plugin-fixture"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+agentj-plugin = { path = "../agentj-plugin" }
+agentj-core = { path = "../agentj-core" }

@@ -1,20 +1,41 @@
+pub mod file_store;
+pub use file_store::FileBackedStore;
+
 use agentj_core::error::{ModuleError, SessionError};
-use agentj_core::module::{SessionStatus, SessionStore};
+use agentj_core::hooks::EventBus;
+use agentj_core::module::{EventType, SessionStatus, SessionStore};
 use agentj_core::types::{ChatMessage, SessionId, SessionSnapshot, now_epoch_secs};
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 pub struct InMemoryStore {
     sessions: Mutex<HashMap<SessionId, Vec<ChatMessage>>>,
     statuses: Mutex<HashMap<SessionId, SessionStatus>>, // v0.1 lifecycle contract
+    // v0.3 T9: unix-seconds ledger of last activity per session (create/append stamp it)
+    last_activity: Mutex<HashMap<SessionId, u64>>,
+    // v0.3 T9: injectable clock for deterministic expiry tests (SystemTime by default)
+    clock: fn() -> u64,
 }
 
 impl InMemoryStore {
     pub fn new() -> Self {
+        Self::with_clock(now_epoch_secs)
+    }
+
+    /// Test-only clock injection: drives the last_activity timestamps recorded by
+    /// create()/append() so scan_expired can be asserted against an explicit now_epoch.
+    pub fn with_clock(clock: fn() -> u64) -> Self {
         Self {
             sessions: Mutex::new(HashMap::new()),
             statuses: Mutex::new(HashMap::new()),
+            last_activity: Mutex::new(HashMap::new()),
+            clock,
         }
+    }
+
+    fn now(&self) -> u64 {
+        (self.clock)()
     }
 
     fn require_active(&self, session: &SessionId) -> Result<(), ModuleError> {
@@ -42,6 +63,10 @@ impl SessionStore for InMemoryStore {
             .lock()
             .unwrap()
             .insert(id.clone(), SessionStatus::Active);
+        self.last_activity
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(id.clone(), self.now());
         Ok(id)
     }
 
@@ -49,6 +74,10 @@ impl SessionStore for InMemoryStore {
         self.require_active(session)?; // inactive → SessionError::InactiveSession
         let mut map = self.sessions.lock().unwrap();
         map.entry(session.clone()).or_default().push(message);
+        self.last_activity
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(session.clone(), self.now());
         Ok(())
     }
 
@@ -145,12 +174,77 @@ impl SessionStore for InMemoryStore {
     // load_all: keep the trait default (empty) — InMemory carries no persistence
 }
 
+impl InMemoryStore {
+    // ---- v0.3 T9 expiry scan (design 遗留问题「Session 过期回收」) ----
+
+    /// Archive every Active session idle longer than `ttl`, publishing
+    /// EventType::SessionExpired per archived session; returns the archived count.
+    pub fn scan_expired(
+        &self,
+        ttl: Duration,
+        now_epoch: u64,
+        bus: &EventBus,
+    ) -> Result<usize, ModuleError> {
+        let ledger: Vec<(SessionId, u64)> = self
+            .last_activity
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .iter()
+            .map(|(sid, last)| (sid.clone(), *last))
+            .collect();
+        let mut expired = Vec::new();
+        for (sid, last) in ledger {
+            // saturating: a now_epoch predating last_activity is never treated as expired
+            if now_epoch.saturating_sub(last) > ttl.as_secs() && self.is_active(&sid) {
+                expired.push(sid);
+            }
+        }
+        for sid in &expired {
+            self.archive(sid)?;
+            bus.publish(&EventType::SessionExpired(sid.clone()));
+        }
+        Ok(expired.len())
+    }
+
+    fn is_active(&self, session: &SessionId) -> bool {
+        matches!(
+            self.statuses
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .get(session),
+            Some(SessionStatus::Active)
+        )
+    }
+
+    /// Production expiry loop: every `interval`, scan with the current unix time.
+    /// T11 CLI wiring spawns this; the JoinHandle lets the owner abort the loop.
+    pub fn spawn_expiry_loop(
+        self: Arc<Self>,
+        bus: Arc<EventBus>,
+        ttl: Duration,
+        interval: Duration,
+    ) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(interval);
+            loop {
+                ticker.tick().await;
+                let _ = self.scan_expired(ttl, now_epoch_secs(), &bus);
+            }
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use agentj_core::error::{ModuleError, SessionError};
-    use agentj_core::module::{SessionStatus, SessionStore};
+    use agentj_core::hooks::EventBus;
+    use agentj_core::module::{
+        ConfigProvider, EventHandler, EventType, KernelContext, ProviderRegistry, SessionStatus,
+        SessionStore, ToolRegistry,
+    };
     use agentj_core::types::{ChatMessage, Role};
+    use std::sync::Arc;
 
     #[test]
     fn create_and_append_session() -> Result<(), ModuleError> {
@@ -341,5 +435,73 @@ mod tests {
         for h in handles {
             h.join().unwrap();
         }
+    }
+
+    // ---- v0.3 T9 expiry scan (design 遗留问题「Session 过期回收」) ----
+
+    struct ExpirySpy {
+        events: Arc<Mutex<Vec<EventType>>>,
+    }
+
+    impl EventHandler for ExpirySpy {
+        fn on_event(&self, event: &EventType, _ctx: &KernelContext) {
+            self.events.lock().unwrap().push(event.clone());
+        }
+    }
+
+    struct NoopCfg;
+    impl ConfigProvider for NoopCfg {
+        fn get_str(&self, _k: &str) -> Option<String> {
+            None
+        }
+        fn get_int(&self, _k: &str) -> Option<i64> {
+            None
+        }
+        fn providers(&self) -> Vec<(String, String)> {
+            vec![]
+        }
+    }
+
+    #[test]
+    fn scan_expired_archives_and_publishes() -> Result<(), ModuleError> {
+        // injectable clock: everything is created at t=90s (deterministic — last_activity
+        // must be comparable against the explicit now_epoch, NOT the real wall clock)
+        let store = Arc::new(InMemoryStore::with_clock(|| 90));
+        let sid = store.create()?;
+        store.append(&sid, ChatMessage::user("hello"))?;
+
+        // ctx-carrying bus: the store publishes through it; the ctx reuses the store itself
+        let ctx = KernelContext {
+            session: store.clone(),
+            tools: Arc::new(ToolRegistry::new()),
+            providers: Arc::new(ProviderRegistry::new()),
+            config: Arc::new(NoopCfg),
+        };
+        let bus = EventBus::with_ctx(Arc::new(ctx));
+        let spy = Arc::new(ExpirySpy {
+            events: Arc::new(Mutex::new(vec![])),
+        });
+        // EventBus matches by exact equality (T0) — subscribe to the ACTUAL session id
+        bus.register(EventType::SessionExpired(sid.clone()), spy.clone());
+
+        // now = 100, ttl = 5s → last_activity (90) is stale → expired
+        let count = store.scan_expired(std::time::Duration::from_secs(5), 100, &bus)?;
+        assert_eq!(count, 1);
+        assert_eq!(store.status(&sid)?, SessionStatus::Archived);
+        assert!(matches!(
+            spy.events.lock().unwrap()[0],
+            EventType::SessionExpired(ref s) if *s == sid
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn scan_keeps_fresh_sessions_active() -> Result<(), ModuleError> {
+        let store = Arc::new(InMemoryStore::new());
+        let sid = store.create()?;
+        let count = store.scan_expired(std::time::Duration::from_secs(60), 0, &EventBus::new())?;
+        assert_eq!(count, 0);
+        assert_eq!(store.status(&sid)?, SessionStatus::Active);
+        Ok(())
     }
 }

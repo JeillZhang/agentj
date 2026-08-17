@@ -1,9 +1,10 @@
 use crate::error::{ModelError, ModuleError, ToolError};
+use crate::resolver::ServiceRegistry;
 use crate::types::*;
 use async_trait::async_trait;
 use futures::stream::BoxStream;
 use parking_lot::RwLock;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::Arc;
 
@@ -59,6 +60,16 @@ pub enum EventType {
     SessionArchived(SessionId),
     SessionDeleted(SessionId),
     SessionExpired(SessionId),
+    // v0.3 扩展（design §7 #4）：插件生命周期 + MCP 连接生命周期事件
+    ModuleLoading(ModuleId),
+    ModuleDisabled(ModuleId),
+    ModuleEnabled(ModuleId),
+    ModuleReloaded(ModuleId),
+    McpConnecting(String),
+    McpConnected(String),
+    McpDisconnected(String),
+    McpReconnecting(String),
+    McpClosed(String),
 }
 
 pub trait EventHandler: Send + Sync {
@@ -109,14 +120,26 @@ pub struct ModuleRegister {
     pub tools: Arc<ToolRegistry>,
     pub events: Vec<(EventType, Box<dyn EventHandler>)>,
     pub providers: Arc<ProviderRegistry>,
+    /// v0.3 service location (design §7 #1): modules register capability services here.
+    pub services: Arc<ServiceRegistry>,
 }
 
 impl ModuleRegister {
     pub fn new(tools: Arc<ToolRegistry>, providers: Arc<ProviderRegistry>) -> Self {
+        Self::with_services(tools, providers, Arc::new(ServiceRegistry::new()))
+    }
+
+    /// Like `new`, but shares the caller's service registry (e.g. the Kernel's own).
+    pub fn with_services(
+        tools: Arc<ToolRegistry>,
+        providers: Arc<ProviderRegistry>,
+        services: Arc<ServiceRegistry>,
+    ) -> Self {
         Self {
             tools,
             events: vec![],
             providers,
+            services,
         }
     }
 
@@ -139,6 +162,26 @@ impl ModuleRegister {
         provider: Arc<dyn ModelProvider>,
     ) -> Result<(), ModuleError> {
         self.providers.register("default".into(), provider);
+        Ok(())
+    }
+
+    /// Register a concrete-typed capability service (resolved via `Kernel::resolve`).
+    pub fn register_service<T: 'static + Send + Sync>(
+        &self,
+        id: ModuleId,
+        service: Arc<T>,
+    ) -> Result<(), ModuleError> {
+        self.services.register(id, service);
+        Ok(())
+    }
+
+    /// Register a routable service (invoked via `KernelMessage::ServiceCall`).
+    pub fn register_kernel_service(
+        &self,
+        id: ModuleId,
+        service: Arc<dyn crate::resolver::KernelService>,
+    ) -> Result<(), ModuleError> {
+        self.services.register_kernel_service(id, service);
         Ok(())
     }
 }
@@ -179,6 +222,9 @@ pub struct ToolRegistry {
     tools: RwLock<HashMap<String, Arc<dyn Tool>>>,
     sources: RwLock<HashMap<String, ToolSource>>,
     checker: RwLock<Option<Arc<dyn crate::permission::PermissionChecker>>>,
+    // design P1 缺口闭环: sources whose tools must not reach the model tool list.
+    // Empty in new() → definitions() output is byte-identical to v0.1.
+    disabled: RwLock<HashSet<ToolSource>>,
 }
 
 impl ToolRegistry {
@@ -187,6 +233,7 @@ impl ToolRegistry {
             tools: RwLock::new(HashMap::new()),
             sources: RwLock::new(HashMap::new()),
             checker: RwLock::new(None),
+            disabled: RwLock::new(HashSet::new()),
         }
     }
 
@@ -264,15 +311,40 @@ impl ToolRegistry {
     }
 
     pub fn definitions(&self) -> Vec<ToolDefinition> {
+        let disabled = self.disabled.read();
         self.tools
             .read()
-            .values()
-            .map(|t| ToolDefinition {
-                name: t.name().into(),
+            .iter()
+            .filter(|(name, _)| {
+                let source = self
+                    .sources
+                    .read()
+                    .get(*name)
+                    .cloned()
+                    .unwrap_or(ToolSource::Builtin);
+                !disabled.contains(&source)
+            })
+            .map(|(name, t)| ToolDefinition {
+                name: name.clone(),
                 description: t.description().into(),
                 input_schema: t.input_schema(),
             })
             .collect()
+    }
+
+    /// Enable/disable an entire source (design P1 primitive; T5's set_plugin_enabled
+    /// consumes this). Disabled sources stay registered but leave `definitions()`.
+    pub fn set_source_enabled(&self, source: &ToolSource, enabled: bool) {
+        let mut disabled = self.disabled.write();
+        if enabled {
+            disabled.remove(source);
+        } else {
+            disabled.insert(source.clone());
+        }
+    }
+
+    pub fn is_source_enabled(&self, source: &ToolSource) -> bool {
+        !self.disabled.read().contains(source)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -489,6 +561,14 @@ pub enum KernelMessage {
         session_id: SessionId,
         content: String,
         attachments: Vec<Attachment>,
+    },
+    /// v0.3 service routing (design §7 #1): handled by the kernel BEFORE module
+    /// broadcast; unknown services get an error reply so the caller never hangs.
+    ServiceCall {
+        service: ModuleId,
+        method: String,
+        params: serde_json::Value,
+        reply: crate::resolver::ServiceCallReply,
     },
     Shutdown,
 }
