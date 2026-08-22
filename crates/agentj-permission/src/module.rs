@@ -232,6 +232,7 @@ impl PermissionModule {
             tool: ctx.tool.clone(),
             args: ctx.args.clone(),
             reason: format!("tool '{}' default mode is ask", ctx.tool),
+            origin_client: None,
         };
         if let Some(f) = self.notifier.lock().unwrap().clone() {
             f(&params);
