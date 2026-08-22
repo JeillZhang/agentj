@@ -38,6 +38,15 @@ pub struct SessionStatusResult {
     pub status: SessionStatus,
 }
 
+/// `session/subscribe` params — subscribe to a session's running progress
+/// (design 决策 #4: broadcast subscription). `$/progress` broadcasts to all subscribers.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SessionSubscribeParams {
+    pub session_id: SessionId,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub progress_token: Option<ProgressToken>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -99,5 +108,23 @@ mod tests {
         let back: SessionIdParams =
             serde_json::from_str(&serde_json::to_string(&p).unwrap()).unwrap();
         assert_eq!(back.session_id, "s9");
+    }
+
+    #[test]
+    fn session_subscribe_params_serialize() {
+        let p = SessionSubscribeParams {
+            session_id: "s1".into(),
+            progress_token: Some(ProgressToken::Str("tok".into())),
+        };
+        let json = serde_json::to_value(&p).unwrap();
+        assert_eq!(json["session_id"], "s1");
+        assert_eq!(json["progress_token"], "tok");
+    }
+
+    #[test]
+    fn session_subscribe_params_progress_token_optional() {
+        let p = SessionSubscribeParams { session_id: "s1".into(), progress_token: None };
+        let json = serde_json::to_value(&p).unwrap();
+        assert!(json.get("progress_token").is_none());
     }
 }
