@@ -45,6 +45,7 @@ fn initialize_response_wire_shape() {
                 name: "agentj".into(),
                 version: "0.1.0".into(),
             },
+            connection_id: None,
         })
         .unwrap(),
     };

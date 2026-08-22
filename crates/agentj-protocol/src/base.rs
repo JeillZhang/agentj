@@ -78,6 +78,8 @@ pub mod error_codes {
     pub const SESSION_NOT_FOUND: i32 = -32802;
     pub const SESSION_INACTIVE: i32 = -32803;
     pub const INVALID_VERSION: i32 = -32804;
+    pub const SESSION_BUSY: i32 = -32805; // same session already running (design 错误处理)
+    pub const NOT_AUTHORIZED: i32 = -32806; // non-owner permission/respond or $/cancelRequest
 }
 
 #[cfg(test)]
@@ -162,6 +164,8 @@ mod tests {
         assert_eq!(error_codes::SESSION_NOT_FOUND, -32802);
         assert_eq!(error_codes::SESSION_INACTIVE, -32803);
         assert_eq!(error_codes::INVALID_VERSION, -32804);
+        assert_eq!(error_codes::SESSION_BUSY, -32805); // new
+        assert_eq!(error_codes::NOT_AUTHORIZED, -32806); // new
     }
 
     #[test]
