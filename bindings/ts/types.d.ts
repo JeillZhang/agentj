@@ -57,6 +57,11 @@ export interface InitializeParams {
   capabilities?: unknown;
   client_info?: ClientInfo | null;
   protocol_version: string;
+  /**
+   * Access token required by a token-gated resident kernel (--token).
+   * Absent when the kernel runs without auth — additive.
+   */
+  token?: string | null;
   [k: string]: unknown;
 }
 
