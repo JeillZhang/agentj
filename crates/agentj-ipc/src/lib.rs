@@ -7,7 +7,10 @@ use agentj_core::kernel::Kernel;
 use agentj_core::module::KernelMessage;
 use agentj_core::types::SessionId;
 use agentj_permission::{ApprovalDecision, PermissionModule};
+use agentj_protocol::base::error_codes;
+use agentj_protocol::lifecycle::InitializeParams;
 use agentj_protocol::permission::{PermissionRequestParams, PermissionRespondParams};
+use agentj_protocol::session::{SessionIdParams, SessionSubscribeParams};
 use agentj_protocol::streaming::CancelParams;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -198,6 +201,9 @@ pub struct IpcServer {
     /// and the T8 sync notifier. Sync lock (send/recv paths never await while
     /// held — serve_stdio detaches a connection before its await points).
     registry: Arc<std::sync::RwLock<ConnectionRegistry>>,
+    /// Shared access token for authorized clients (daemon-kernel --token);
+    /// checked by `initialize` dispatch when Some.
+    token: std::sync::Mutex<Option<String>>,
     /// Optional PermissionModule: `permission/respond` and `$/cancelRequest` dispatch into it.
     pub permission_module: Option<Arc<PermissionModule>>,
     /// In-flight session id — the mapping `$/cancelRequest` reads to reach the module.
@@ -228,6 +234,22 @@ impl Drop for InflightSessionGuard {
     }
 }
 
+/// RAII guard releasing the per-session run mutex (决策 #7): acquired at
+/// dispatch entry; Drop covers every exit path so a crashed run never leaves
+/// `-32805 SessionBusy` stuck on.
+struct RunGuard {
+    registry: Arc<std::sync::RwLock<ConnectionRegistry>>,
+    sid: String,
+}
+
+impl Drop for RunGuard {
+    fn drop(&mut self) {
+        if let Ok(mut reg) = self.registry.write() {
+            reg.release_run(&self.sid);
+        }
+    }
+}
+
 impl IpcServer {
     pub fn new(agent_loop: AgentLoop, mut kernel: Kernel) -> Self {
         // kernel owns module lifecycle: start() spawns the event loop; its JoinHandle
@@ -239,6 +261,7 @@ impl IpcServer {
             kernel_handle: Some(kernel_handle),
             shutdown_requested: AtomicBool::new(false),
             registry: Arc::new(std::sync::RwLock::new(ConnectionRegistry::new())),
+            token: std::sync::Mutex::new(None),
             permission_module: None,
             session: Arc::new(tokio::sync::Mutex::new(None)),
         }
@@ -254,6 +277,13 @@ impl IpcServer {
 
     pub fn shutdown_requested(&self) -> bool {
         self.shutdown_requested.load(Ordering::SeqCst)
+    }
+
+    /// Configure the access token required by `initialize`; None disables auth.
+    pub fn set_token(&self, token: Option<String>) {
+        if let Ok(mut t) = self.token.lock() {
+            *t = token;
+        }
     }
 
     /// Send the Shutdown message to the kernel (idempotent — safe to call repeatedly).
@@ -284,10 +314,16 @@ impl IpcServer {
         Ok(())
     }
 
-    /// Handle a single JSON-RPC request, returning a JSON-RPC response string.
-    /// Every error path echoes the request `id` (JSON-RPC 2.0 §5) with the
-    /// semantically correct standard code, never falling through to `serve_stdio`.
+    /// Handle a single JSON-RPC request on the stdio sentinel connection
+    /// ("stdio") — v0.1 single-client entry, unchanged behavior.
     pub async fn handle_request(&self, raw: &str) -> Result<String, IpcError> {
+        self.handle_request_from(raw, "stdio").await
+    }
+
+    /// Handle a single JSON-RPC request from connection `conn_id`. Every error
+    /// path echoes the request `id` (JSON-RPC 2.0 §5) with the semantically
+    /// correct standard code, never falling through to the serve loop.
+    pub async fn handle_request_from(&self, raw: &str, conn_id: &str) -> Result<String, IpcError> {
         let req: JsonRpcRequest = match serde_json::from_str(raw) {
             Ok(r) => r,
             Err(e) => {
@@ -305,10 +341,13 @@ impl IpcServer {
         };
 
         let result = match req.method.as_str() {
-            "session/new" => self.dispatch_session_new(),
-            "session/run" => self.dispatch_session_run(&req).await,
+            "initialize" => self.dispatch_initialize(&req, conn_id),
+            "session/new" => self.dispatch_session_new(conn_id),
+            "session/run" => self.dispatch_session_run(&req, conn_id).await,
+            "session/subscribe" => self.dispatch_subscribe(&req, conn_id),
+            "session/unsubscribe" => self.dispatch_unsubscribe(&req, conn_id),
             "shutdown" => self.dispatch_shutdown(),
-            "permission/respond" => self.dispatch_permission_respond(&req),
+            "permission/respond" => self.dispatch_permission_respond(&req, conn_id).await,
             "$/cancelRequest" => self.dispatch_cancel_request(&req).await,
             other => Err(DispatchError::method_not_found(other)),
         };
@@ -338,15 +377,82 @@ impl IpcServer {
         Ok(serde_json::to_string(&resp)?)
     }
 
-    fn dispatch_session_new(&self) -> Result<Value, DispatchError> {
+    fn dispatch_initialize(
+        &self,
+        req: &JsonRpcRequest,
+        conn_id: &str,
+    ) -> Result<Value, DispatchError> {
+        let params: InitializeParams =
+            serde_json::from_value(req.params.clone().unwrap_or(serde_json::json!({})))
+                .map_err(|e| DispatchError::invalid_params(e.to_string()))?;
+        if let Ok(expected) = self.token.lock()
+            && let Some(expected) = expected.as_deref()
+            && params.token.as_deref().unwrap_or("") != expected
+        {
+            return Err(DispatchError {
+                code: error_codes::NOT_AUTHORIZED,
+                message: "NotAuthorized".into(),
+            });
+        }
+        let version = env!("CARGO_PKG_VERSION");
+        Ok(serde_json::json!({
+            "protocol_version": version,
+            "capabilities": { "multi_client": true },
+            "server_info": { "name": "agentj", "version": version },
+            "connection_id": conn_id,
+        }))
+    }
+
+    fn dispatch_subscribe(
+        &self,
+        req: &JsonRpcRequest,
+        conn_id: &str,
+    ) -> Result<Value, DispatchError> {
+        let params: SessionSubscribeParams = serde_json::from_value(
+            req.params
+                .clone()
+                .ok_or_else(|| DispatchError::invalid_params("missing params"))?,
+        )
+        .map_err(|e| DispatchError::invalid_params(e.to_string()))?;
+        if let Ok(mut reg) = self.registry.write() {
+            reg.subscribe(&params.session_id, conn_id);
+        }
+        Ok(serde_json::json!({}))
+    }
+
+    fn dispatch_unsubscribe(
+        &self,
+        req: &JsonRpcRequest,
+        conn_id: &str,
+    ) -> Result<Value, DispatchError> {
+        let params: SessionIdParams = serde_json::from_value(
+            req.params
+                .clone()
+                .ok_or_else(|| DispatchError::invalid_params("missing params"))?,
+        )
+        .map_err(|e| DispatchError::invalid_params(e.to_string()))?;
+        if let Ok(mut reg) = self.registry.write() {
+            reg.unsubscribe(&params.session_id, conn_id);
+        }
+        Ok(serde_json::json!({}))
+    }
+
+    fn dispatch_session_new(&self, conn_id: &str) -> Result<Value, DispatchError> {
         let sid = self
             .agent_loop
             .create_session()
             .map_err(|e| DispatchError::internal(e.to_string()))?;
+        if let Ok(mut reg) = self.registry.write() {
+            reg.set_session_owner(&sid, conn_id);
+        }
         Ok(serde_json::json!({ "session_id": sid }))
     }
 
-    async fn dispatch_session_run(&self, req: &JsonRpcRequest) -> Result<Value, DispatchError> {
+    async fn dispatch_session_run(
+        &self,
+        req: &JsonRpcRequest,
+        _conn_id: &str,
+    ) -> Result<Value, DispatchError> {
         let params = req
             .params
             .as_ref()
@@ -355,6 +461,23 @@ impl IpcServer {
             .as_str()
             .ok_or_else(|| DispatchError::invalid_params("missing session_id"))?;
         let content = params["content"].as_str().unwrap_or("");
+        // Per-session run mutex (决策 #7): a concurrent run on the same session
+        // is rejected with -32805 SessionBusy instead of interleaving streams.
+        let acquired = self
+            .registry
+            .write()
+            .map(|mut r| r.try_acquire_run(&sid.to_string()))
+            .unwrap_or(false);
+        if !acquired {
+            return Err(DispatchError {
+                code: error_codes::SESSION_BUSY,
+                message: "SessionBusy".into(),
+            });
+        }
+        let _run_guard = RunGuard {
+            registry: Arc::clone(&self.registry),
+            sid: sid.to_string(),
+        };
         // Record the in-flight session so `$/cancelRequest` can reach the
         // permission module while the run executes; the guard clears it on
         // every exit path (including the AgentEvent::Error return).
@@ -385,7 +508,29 @@ impl IpcServer {
 
     /// `permission/respond`: deliver the client's decision to a pending approval.
     /// An unknown request_id is an error (-32600), never silent success.
-    fn dispatch_permission_respond(&self, req: &JsonRpcRequest) -> Result<Value, DispatchError> {
+    async fn dispatch_permission_respond(
+        &self,
+        req: &JsonRpcRequest,
+        conn_id: &str,
+    ) -> Result<Value, DispatchError> {
+        // Owner gate (决策 #5): while a session has an in-flight run, only the
+        // connection owning that session may resolve its approvals.
+        let inflight = self.session.lock().await.clone();
+        if let Some(sid) = inflight {
+            let is_owner = self
+                .registry
+                .read()
+                .ok()
+                .and_then(|r| r.session_owner(&sid).cloned())
+                .map(|owner| owner == conn_id)
+                .unwrap_or(false);
+            if !is_owner {
+                return Err(DispatchError {
+                    code: error_codes::NOT_AUTHORIZED,
+                    message: "NotAuthorized".into(),
+                });
+            }
+        }
         let params = req
             .params
             .as_ref()
@@ -1151,5 +1296,141 @@ mod tests {
         );
         reg.release_run(&"s1".to_string());
         assert!(reg.try_acquire_run(&"s1".to_string()));
+    }
+
+    fn register_fake_conn(server: &Arc<IpcServer>) -> String {
+        static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1);
+        let id = format!(
+            "fake-{}",
+            SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        );
+        let (conn, _log) = fake_conn(&id);
+        if let Ok(mut reg) = server.registry.write() {
+            reg.register(Box::new(conn));
+        }
+        id
+    }
+
+    fn extract_sid(resp: &str) -> String {
+        let v: serde_json::Value = serde_json::from_str(resp).unwrap();
+        v["result"]["session_id"].as_str().unwrap().to_string()
+    }
+
+    #[tokio::test]
+    async fn initialize_returns_connection_id_and_multi_client() {
+        let server = Arc::new(IpcServer::new(stub_agent_loop(), Kernel::new()));
+        let conn_id = register_fake_conn(&server);
+        let resp = server
+            .handle_request_from(
+                r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocol_version":"0.4.0"}}"#,
+                &conn_id,
+            )
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(v["result"]["connection_id"], conn_id);
+        assert_eq!(v["result"]["capabilities"]["multi_client"], true);
+    }
+
+    #[tokio::test]
+    async fn initialize_with_wrong_token_is_rejected() {
+        let server = Arc::new(IpcServer::new(stub_agent_loop(), Kernel::new()));
+        server.set_token(Some("secret".into()));
+        let conn_id = register_fake_conn(&server);
+        let resp = server
+            .handle_request_from(
+                r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocol_version":"0.4.0","token":"wrong"}}"#,
+                &conn_id,
+            )
+            .await
+            .unwrap();
+        assert!(
+            resp.contains(r#""code":-32806"#),
+            "wrong token must be NotAuthorized: {resp}"
+        );
+    }
+
+    #[tokio::test]
+    async fn non_owner_permission_respond_is_rejected() {
+        let (server, _module) = blocking_run_server();
+        let server = Arc::new(server);
+        let a = register_fake_conn(&server);
+        let b = register_fake_conn(&server);
+        let new_resp = server
+            .handle_request_from(r#"{"jsonrpc":"2.0","id":1,"method":"session/new"}"#, &a)
+            .await
+            .unwrap();
+        let sid = extract_sid(&new_resp);
+        let run_raw = format!(
+            r#"{{"jsonrpc":"2.0","id":2,"method":"session/run","params":{{"session_id":"{sid}","content":"hi"}}}}"#
+        );
+        let run_task = tokio::spawn({
+            let s = Arc::clone(&server);
+            let conn = a.clone();
+            async move { s.handle_request_from(&run_raw, &conn).await.unwrap() }
+        });
+        wait_for_inflight_session(&server, &sid)
+            .await
+            .expect("run must record in-flight session");
+        let resp = server
+            .handle_request_from(
+                r#"{"jsonrpc":"2.0","id":9,"method":"permission/respond","params":{"request_id":"req-x","decision":"allow"}}"#,
+                &b,
+            )
+            .await
+            .unwrap();
+        assert!(
+            resp.contains(r#""code":-32806"#),
+            "non-owner respond must be NotAuthorized: {resp}"
+        );
+        let _ = server
+            .handle_request_from(
+                r#"{"jsonrpc":"2.0","id":10,"method":"$/cancelRequest","params":{"id":5}}"#,
+                &a,
+            )
+            .await
+            .unwrap();
+        let _ = run_task.await;
+    }
+
+    #[tokio::test]
+    async fn concurrent_run_on_same_session_is_rejected() {
+        // stub mock finishes instantly — the blocking fixture keeps run1 in
+        // flight deterministically while run2 arrives.
+        let (server, _module) = blocking_run_server();
+        let server = Arc::new(server);
+        let a = register_fake_conn(&server);
+        let new_resp = server
+            .handle_request_from(r#"{"jsonrpc":"2.0","id":1,"method":"session/new"}"#, &a)
+            .await
+            .unwrap();
+        let sid = extract_sid(&new_resp);
+        let run_raw = format!(
+            r#"{{"jsonrpc":"2.0","id":2,"method":"session/run","params":{{"session_id":"{sid}","content":"hi"}}}}"#
+        );
+        let run_task = tokio::spawn({
+            let s = Arc::clone(&server);
+            let conn = a.clone();
+            async move { s.handle_request_from(&run_raw, &conn).await.unwrap() }
+        });
+        wait_for_inflight_session(&server, &sid)
+            .await
+            .expect("run1 must be in flight");
+        let run2 = format!(
+            r#"{{"jsonrpc":"2.0","id":3,"method":"session/run","params":{{"session_id":"{sid}","content":"again"}}}}"#
+        );
+        let r2 = server.handle_request_from(&run2, &a).await.unwrap();
+        assert!(
+            r2.contains(r#""code":-32805"#),
+            "second run must be SessionBusy: {r2}"
+        );
+        let _ = server
+            .handle_request_from(
+                r#"{"jsonrpc":"2.0","id":10,"method":"$/cancelRequest","params":{"id":5}}"#,
+                &a,
+            )
+            .await
+            .unwrap();
+        let _ = run_task.await;
     }
 }
