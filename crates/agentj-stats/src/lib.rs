@@ -66,6 +66,16 @@ impl UsageCollector {
         }
         total
     }
+
+    /// Records one completed turn without token counts (providers do not
+    /// report usage yet). Unlike record_token_usage this always creates the
+    /// entry so turn counts stay observable.
+    pub fn record_turn(&self, session: SessionId) {
+        if let Ok(mut map) = self.sessions.lock() {
+            let usage = map.entry(session).or_default();
+            usage.turns += 1;
+        }
+    }
 }
 
 impl Default for UsageCollector {
@@ -105,5 +115,19 @@ mod tests {
             collector.get_session_totals("s1").is_none(),
             "zero record must not create an entry"
         );
+    }
+
+    #[test]
+    fn record_turn_counts_turns_without_tokens() {
+        let collector = UsageCollector::new();
+        collector.record_turn("s1".into());
+        collector.record_turn("s1".into());
+        let s1 = collector.get_session_totals("s1").unwrap();
+        assert_eq!(s1.turns, 2);
+        assert_eq!(s1.prompt_tokens, 0);
+        assert_eq!(s1.completion_tokens, 0);
+
+        let global = collector.get_global_totals();
+        assert_eq!(global.turns, 2);
     }
 }
