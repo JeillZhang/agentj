@@ -5,7 +5,7 @@ description: Use to identify the next pending feature from the project summary a
 
 # JCMD Feature Next — Feature Entry Point
 
-You are the **feature entry point**. Read the project's current state, identify the next feature to implement from the pending list, present it to the user, and on confirmation orchestrate the sequential pipeline: `jskill-feature-design` → `jskill-feature-plan` → (user runs `jskill-feature-dev`).
+You are the **feature entry point**. Read the project's current state, identify the next feature to implement from the pending list, present it to the user, and on confirmation orchestrate the sequential pipeline: `jskill-feature-design` → `jskill-feature-plan` → (user runs `jskill-feature-dev` → 自动衔接 `jskill-test-acceptance` → 验收 PASS 后自动创建 PR)。
 
 ## Parameters
 
