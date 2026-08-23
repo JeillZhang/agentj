@@ -1,4 +1,6 @@
 //! Unified Connection abstraction (design 决策 #1/#2) — transport-agnostic serve.
+pub mod tcp;
+
 use agentj_core::agent_loop::{AgentEvent, AgentLoop};
 use agentj_core::error::{IpcError, KernelError, ModuleError};
 use agentj_core::kernel::Kernel;
@@ -255,7 +257,10 @@ impl IpcServer {
     }
 
     /// Send the Shutdown message to the kernel (idempotent — safe to call repeatedly).
+    /// Also marks shutdown as requested so transport accept-loops polling
+    /// `shutdown_requested()` observe the signal (TCP last-disconnect path).
     pub fn signal_shutdown(&self) -> Result<(), IpcError> {
+        self.shutdown_requested.store(true, Ordering::SeqCst);
         self.kernel
             .sender()
             .send(KernelMessage::Shutdown)
@@ -425,6 +430,40 @@ impl IpcServer {
         Ok(serde_json::Value::Null)
     }
 
+    /// Transport-agnostic per-connection request loop (design 决策 #2): read NDJSON
+    /// lines, dispatch each through handle_request, write responses back on the
+    /// same connection. EOF or a requested shutdown ends the loop.
+    pub async fn serve_connection(
+        &self,
+        mut conn: Box<dyn Connection>,
+        _token: Option<&str>,
+    ) -> Result<(), IpcError> {
+        loop {
+            let Some(line) = conn.recv().await else {
+                break;
+            };
+            let trimmed = match line {
+                Ok(l) => l.trim().to_string(),
+                Err(e) => return Err(e),
+            };
+            if trimmed.is_empty() {
+                continue;
+            }
+            let response = self.handle_request(&trimmed).await.unwrap_or_else(|e| {
+                format!(
+                    r#"{{"jsonrpc":"2.0","id":null,"error":{{"code":-32603,"message":"{e}"}}}}"#
+                )
+            });
+            if !response.is_empty() {
+                conn.send(&response)?;
+            }
+            if self.shutdown_requested() {
+                break;
+            }
+        }
+        Ok(())
+    }
+
     /// Run the server in stdio mode via the unified Connection serve loop (design 决策 #2).
     /// On EOF or after a shutdown request, signal the kernel and await its graceful shutdown.
     /// The read loop is interrupted when the kernel finishes (design #13: SIGINT/SIGTERM
@@ -509,9 +548,7 @@ impl IpcServer {
                     delivered = true;
                 }
                 if !delivered {
-                    return Err(IpcError::InvalidRequest(
-                        "stdio connection missing".into(),
-                    ));
+                    return Err(IpcError::InvalidRequest("stdio connection missing".into()));
                 }
             }
             if self.shutdown_requested() {
@@ -586,20 +623,18 @@ impl Connection for StdioConnection {
     }
 }
 
+/// Crate-internal fixtures shared by lib and tcp test modules.
 #[cfg(test)]
-mod tests {
-    use super::*;
+pub(crate) mod test_support {
     use agentj_context::ContextPipeline;
     use agentj_core::agent_loop::AgentLoop;
-    use agentj_core::kernel::Kernel;
     use agentj_core::module::*;
-    use agentj_core::permission::{PermissionChecker, PermissionContext, PermissionDecision};
     use agentj_core::types::*;
     use agentj_model::mock::MockModelProvider;
     use agentj_session::InMemoryStore;
     use std::sync::Arc;
 
-    struct MockConfig;
+    pub(crate) struct MockConfig;
     impl ConfigProvider for MockConfig {
         fn get_str(&self, _k: &str) -> Option<String> {
             None
@@ -612,7 +647,7 @@ mod tests {
         }
     }
 
-    fn stub_agent_loop() -> AgentLoop {
+    pub(crate) fn stub_agent_loop() -> AgentLoop {
         let tools = Arc::new(ToolRegistry::new());
         let providers = Arc::new(ProviderRegistry::new());
         providers.register(
@@ -634,6 +669,21 @@ mod tests {
             "You are helpful.".into(),
         )
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::{MockConfig, stub_agent_loop};
+    use agentj_context::ContextPipeline;
+    use agentj_core::agent_loop::AgentLoop;
+    use agentj_core::kernel::Kernel;
+    use agentj_core::module::*;
+    use agentj_core::permission::{PermissionChecker, PermissionContext, PermissionDecision};
+    use agentj_core::types::*;
+    use agentj_model::mock::MockModelProvider;
+    use agentj_session::InMemoryStore;
+    use std::sync::Arc;
 
     fn permission_server() -> (IpcServer, Arc<agentj_permission::PermissionModule>) {
         let mut policies = std::collections::HashMap::new();
