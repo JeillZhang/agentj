@@ -3,11 +3,9 @@ use agentj_core::module::ModelProvider;
 use agentj_core::types::*;
 use async_trait::async_trait;
 use futures::stream::BoxStream;
-use futures::{StreamExt, stream};
 use reqwest::Client;
 use serde_json::Value;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::time::sleep;
 
@@ -81,20 +79,9 @@ impl OpenAICompatibleProvider {
         }
 
         let byte_stream = response.bytes_stream();
-        let parser = Arc::new(Mutex::new(OpenAiChunkParser::new()));
-        let stream = byte_stream.flat_map(move |result| {
-            let bytes = match result {
-                Ok(b) => b,
-                Err(e) => return stream::iter(vec![Err(ModelError::Network(e.to_string()))]),
-            };
-            let mut events = Vec::new();
-            {
-                let mut parser = parser.lock().unwrap();
-                for line in String::from_utf8_lossy(&bytes).lines() {
-                    parser.push_line(line, &mut events);
-                }
-            }
-            stream::iter(events)
+        let mut parser = OpenAiChunkParser::new();
+        let stream = crate::sse::sse_event_stream(byte_stream, move |line, out| {
+            parser.push_line(line, out);
         });
         Ok(Box::pin(stream))
     }
