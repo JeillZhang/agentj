@@ -3,7 +3,10 @@ use agentj_protocol::base::{
     Id, NotificationMessage, ProgressToken, RequestMessage, ResponseMessage,
 };
 use agentj_protocol::lifecycle::{ClientInfo, InitializeParams, InitializeResult, ServerInfo};
-use agentj_protocol::session::{SessionNewResult, SessionRunParams, SessionRunResult};
+use agentj_protocol::permission::PermissionRequestParams;
+use agentj_protocol::session::{
+    SessionNewResult, SessionRunParams, SessionRunResult, SessionSubscribeParams,
+};
 use agentj_protocol::streaming::{ProgressParams, ProgressValue};
 use agentj_protocol::types::ToolCall;
 
@@ -141,4 +144,44 @@ fn session_run_result_roundtrip() {
     let back: SessionRunResult = serde_json::from_str(&serde_json::to_string(&r).unwrap()).unwrap();
     assert_eq!(back.content, "done");
     assert!(back.tool_calls.is_none());
+}
+
+#[test]
+fn session_subscribe_request_wire_shape() {
+    let req = RequestMessage {
+        jsonrpc: "2.0".into(),
+        id: Id::Number(11),
+        method: "session/subscribe".into(),
+        params: Some(
+            serde_json::to_value(SessionSubscribeParams {
+                session_id: "s1".into(),
+                progress_token: Some(ProgressToken::Str("tok-sub".into())),
+            })
+            .unwrap(),
+        ),
+    };
+    let json = serde_json::to_value(req).unwrap();
+    assert_eq!(json["method"], "session/subscribe");
+    assert_eq!(json["params"]["progress_token"], "tok-sub");
+}
+
+#[test]
+fn permission_request_notification_wire_shape_with_origin_client() {
+    let n = NotificationMessage {
+        jsonrpc: "2.0".into(),
+        method: "$/permissionRequest".into(),
+        params: Some(
+            serde_json::to_value(PermissionRequestParams {
+                request_id: "req-9".into(),
+                tool: "bash".into(),
+                args: serde_json::json!({"command": "ls"}),
+                reason: "tool default ask".into(),
+                origin_client: Some("conn-a".into()),
+            })
+            .unwrap(),
+        ),
+    };
+    let json = serde_json::to_value(n).unwrap();
+    assert_eq!(json["method"], "$/permissionRequest");
+    assert_eq!(json["params"]["origin_client"], "conn-a");
 }
