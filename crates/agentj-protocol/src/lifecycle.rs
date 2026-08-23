@@ -21,6 +21,10 @@ pub struct InitializeParams {
     pub capabilities: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client_info: Option<ClientInfo>,
+    /// Access token required by a token-gated resident kernel (--token).
+    /// Absent when the kernel runs without auth — additive.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -51,6 +55,7 @@ mod tests {
                 name: "cli".into(),
                 version: "0.1.0".into(),
             }),
+            token: None,
         };
         let json = serde_json::to_value(&p).unwrap();
         assert_eq!(json["protocol_version"], "0.1.0");
