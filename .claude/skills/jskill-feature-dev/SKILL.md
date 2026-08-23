@@ -1,11 +1,11 @@
 ---
 name: jskill-feature-dev
-description: Use when an implementation plan has been approved and development needs to begin. Triggers on "start development", "execute the plan", "begin implementation", or after plan approval. Covers the full development cycle from plan intake validation through feature branch, TDD execution, code review, verification, doc sync, and branch finishing.
+description: Use when an implementation plan has been approved and development needs to begin. Triggers on "start development", "execute the plan", "begin implementation", or after plan approval. Covers the full development cycle from plan intake validation through feature branch, TDD execution, code review, verification, doc sync, branch finishing, and automatic hand-off to test acceptance (which creates the PR on pass).
 ---
 
 # JCMD Feature Development
 
-Orchestrates the full Superpowers development cycle: **plan intake validation** → feature branch → TDD → subagent execution → code review → system verification → version bump + doc auto-sync → branch finishing.
+Orchestrates the full Superpowers development cycle: **plan intake validation** → feature branch → TDD → subagent execution → code review → system verification → version bump + doc auto-sync → branch finishing → **automatic hand-off to test acceptance** (which creates the PR when acceptance passes).
 
 ## Parameters
 
@@ -15,7 +15,7 @@ Orchestrates the full Superpowers development cycle: **plan intake validation** 
 
 **Example:** `jskill-feature-dev docs/superpowers/plans/2026-08-09-oauth2-auth-plan.md`
 
-## Entry: Intake → Branch → TDD → Execute → Review → Verify → Sync → Finish
+## Entry: Intake → Branch → TDD → Execute → Review → Verify → Sync → Finish → Auto Acceptance → PR
 
 ```mermaid
 flowchart TB
@@ -33,8 +33,11 @@ flowchart TB
     J --> K["Phase 6: System Verification (conditional)"]
     K --> L["Phase 7: Final Verification + Version Bump"]
     L --> M["Phase 8: Doc Auto-Sync"]
-    M --> N["Phase 9: Branch Finishing"]
-    N --> O["Phase 10: Pipeline Complete"]
+    M --> N["Phase 9: Branch Finishing (PR option removed)"]
+    N -- "默认 Continue" --> O["Phase 10: Auto Hand-off to Test Acceptance"]
+    N -- "Merge / Keep / Discard（显式退出）" --> P["跳过自动验收，输出提示"]
+    O --> Q["jskill-test-acceptance：自动验收循环"]
+    Q --> R["验收 PASS → 自动创建 PR"]
 ```
 
 ## Workflow
@@ -248,29 +251,33 @@ Run this **before** presenting any finish options. The doc sync commits must be 
 
 **Verify working directory is clean** — all changes (including doc sync) must be committed.
 
-Present the 4 options:
-1. **Merge** — merge into base branch, delete the feature branch
-2. **Create PR** — push branch (if not pushed), create GitHub PR, share link. **PR will include doc sync commits from Phase 8.**
-3. **Keep as-is** — leave branch for later.
-4. **Discard** — delete branch (requires explicit "discard" confirmation).
+**The "Create PR" option is REMOVED from the finish menu** — PR creation now happens automatically at the end of the test acceptance pipeline (so the PR includes acceptance bug-fix commits and the patch bump, per repo history e.g. PR #21). Present these 4 options:
 
-**CRITICAL:** Do NOT offer "Create PR" if the working directory is dirty or doc sync hasn't been committed yet. Go back and complete Phase 8 first.
+1. **Continue (default)** — keep the branch open. Phase 10 auto-hands-off to `jskill-test-acceptance`; on acceptance PASS the PR is created automatically. **PR will include doc sync commits from Phase 8 plus all acceptance fix commits.**
+2. **Merge** — merge into base branch, delete the feature branch. Explicit opt-out: **skips** the automatic acceptance & PR.
+3. **Keep as-is** — leave branch for later. Explicit opt-out: **skips** the automatic acceptance & PR.
+4. **Discard** — delete branch (requires explicit "discard" confirmation). Explicit opt-out: **skips** the automatic acceptance & PR.
 
-### Phase 10: Pipeline Complete
+**CRITICAL:** Do NOT hand off to acceptance (option 1) if the working directory is dirty or doc sync hasn't been committed yet. Go back and complete Phase 8 first.
 
-After branch finishing is resolved, output:
+### Phase 10: Auto Hand-off to Test Acceptance
+
+**Default path (option 1 in Phase 9):** the feature pipeline is NOT terminal anymore — hand off automatically:
+
+1. Output the development summary (branch, result).
+2. **REQUIRED SUB-SKILL:** Load `jskill-test-acceptance` via the Skill tool — this automatically starts the acceptance loop (tester → bug-fixer → regression) on the current feature branch and creates the PR on PASS. No user prompt needed; the hand-off is automatic.
+3. If the user chose **Merge / Keep as-is / Discard** in Phase 9 (explicit opt-out): do NOT hand off. Output the skip note and remind them `/jcmd-test-acceptance` remains available manually.
 
 ```
 ✅ Feature development complete.
    Branch: feature/<name>
-   Result: <merged/PR created/kept/discarded>
+   Result: <auto-handoff to acceptance / merged / kept / discarded>
 
-The feature pipeline (design → plan → dev) is finished.
-
-下一步（建议）：运行 `/jcmd-test-acceptance` 启动测试验收流程（测试 → 修复 → 回归验证）。
+默认路径：自动启动测试验收（jskill-test-acceptance）→ 验收通过后自动创建 PR。
+若在 Phase 9 显式选择 合并/保留/丢弃：已跳过自动验收，可随时手动运行 /jcmd-test-acceptance。
 ```
 
-`jskill-feature-dev` 是功能管线（design → plan → dev）的终点；测试验收由 `/jcmd-test-acceptance` 独立触发。
+`jskill-feature-dev` 是功能管线（design → plan → dev）的终点；测试验收（`jskill-test-acceptance`）在 Phase 10 **自动衔接**，验收通过后自动创建 PR。仅当用户在 Phase 9 显式选择 合并/保留/丢弃 时跳过自动验收。
 
 ## Failure Recovery
 
@@ -300,6 +307,8 @@ The feature pipeline (design → plan → dev) is finished.
 | "I'll skip the ajteam-task-reviewer gate for this one task" | Unreviewed deviations propagate downstream. The 3-round cap exists to fix, not to skip. |
 | "The plan is slightly off-template, I'll just start" | Intake validation exists to catch this. Fix the plan first. |
 | "Doc sync can wait, the user didn't ask" | AGENTS.md mandates it. Skip only if the user explicitly says so. |
+| "收尾直接选 Create PR，跳过验收" | 验收修复必须在 PR 里。PR 选项已从收尾菜单移除，由验收流程在 PASS 后自动创建。 |
+| "验收太麻烦，默认继续即可但手动确认" | 默认路径就是自动衔接，不需要用户确认；显式 合并/保留/丢弃 才退出管线。 |
 
 ## Error Handling
 
@@ -341,5 +350,5 @@ The feature pipeline (design → plan → dev) is finished.
 | 6 | System verification (conditional) | Integration/e2e green or noted skip |
 | 7 | Final verification + version bump | Clean gates, bumped version |
 | 8 | Doc auto-sync | AGENTS.md/README.md/summary committed |
-| 9 | finishing-a-development-branch | Merge/PR/Keep/Discard |
-| 10 | Pipeline complete | Terminal — no further stage |
+| 9 | finishing-a-development-branch | Continue / Merge / Keep / Discard (PR option removed — deferred) |
+| 10 | Auto hand-off to `jskill-test-acceptance` | 自动验收循环 → 验收 PASS 后自动创建 PR |
