@@ -42,8 +42,8 @@ pub trait Connection: Send + Sync {
 pub struct ConnectionRegistry {
     conns: std::collections::HashMap<String, Box<dyn Connection>>,
     session_owner: std::collections::HashMap<SessionId, String>,
-    #[allow(dead_code)]
-    pending_runs: std::collections::HashMap<SessionId, ()>, // reserved for v0.3 pending-run tracking
+    pending_runs: std::collections::HashSet<SessionId>,
+    subscribers: std::collections::HashMap<SessionId, std::collections::HashSet<String>>,
 }
 
 impl ConnectionRegistry {
@@ -51,7 +51,8 @@ impl ConnectionRegistry {
         Self {
             conns: std::collections::HashMap::new(),
             session_owner: std::collections::HashMap::new(),
-            pending_runs: std::collections::HashMap::new(),
+            pending_runs: std::collections::HashSet::new(),
+            subscribers: std::collections::HashMap::new(),
         }
     }
     /// Register a connection; v0.1 registers exactly one stdio connection.
@@ -61,6 +62,11 @@ impl ConnectionRegistry {
         id
     }
     pub fn unregister(&mut self, id: &str) -> Option<Box<dyn Connection>> {
+        self.session_owner.retain(|_, owner| owner != id);
+        for subs in self.subscribers.values_mut() {
+            subs.remove(id);
+        }
+        self.subscribers.retain(|_, s| !s.is_empty());
         self.conns.remove(id)
     }
     /// Record which connection owns a session (design 决策 #5: 审批定向路由依据).
@@ -69,6 +75,46 @@ impl ConnectionRegistry {
     }
     pub fn session_owner(&self, session: &SessionId) -> Option<&String> {
         self.session_owner.get(session)
+    }
+    /// Route a message to one connection; a vanished peer is not an error
+    /// (design 错误处理: drop the response instead of failing the caller).
+    pub fn send_to(&self, conn_id: &str, msg: &str) -> Result<(), IpcError> {
+        match self.conns.get(conn_id) {
+            Some(conn) => conn.send(msg),
+            None => Ok(()),
+        }
+    }
+    /// Subscribe a connection to a session's broadcast channel (决策 #4).
+    pub fn subscribe(&mut self, session: &SessionId, conn_id: &str) {
+        self.subscribers
+            .entry(session.clone())
+            .or_default()
+            .insert(conn_id.to_string());
+    }
+    pub fn unsubscribe(&mut self, session: &SessionId, conn_id: &str) {
+        if let Some(subs) = self.subscribers.get_mut(session) {
+            subs.remove(conn_id);
+            if subs.is_empty() {
+                self.subscribers.remove(session);
+            }
+        }
+    }
+    /// Broadcast to every subscriber of a session (决策 #4); the owner must be
+    /// registered as a subscriber by the dispatch layer to also receive it.
+    pub fn broadcast_to_session(&self, session: &SessionId, msg: &str) {
+        if let Some(subs) = self.subscribers.get(session) {
+            for conn_id in subs {
+                let _ = self.send_to(conn_id, msg);
+            }
+        }
+    }
+    /// Mutual exclusion for concurrent runs on one session (决策 #7):
+    /// returns false while a run is in flight (`-32805 SessionBusy`).
+    pub fn try_acquire_run(&mut self, session: &SessionId) -> bool {
+        self.pending_runs.insert(session.clone())
+    }
+    pub fn release_run(&mut self, session: &SessionId) {
+        self.pending_runs.remove(session);
     }
 }
 
@@ -146,7 +192,10 @@ pub struct IpcServer {
     kernel: Kernel,
     kernel_handle: Option<JoinHandle<Result<(), KernelError>>>,
     shutdown_requested: AtomicBool,
-    registry: ConnectionRegistry,
+    /// Shared registry: multi-client routing mutates it from `&self` handlers
+    /// and the T8 sync notifier. Sync lock (send/recv paths never await while
+    /// held — serve_stdio detaches a connection before its await points).
+    registry: Arc<std::sync::RwLock<ConnectionRegistry>>,
     /// Optional PermissionModule: `permission/respond` and `$/cancelRequest` dispatch into it.
     pub permission_module: Option<Arc<PermissionModule>>,
     /// In-flight session id — the mapping `$/cancelRequest` reads to reach the module.
@@ -187,7 +236,7 @@ impl IpcServer {
             kernel,
             kernel_handle: Some(kernel_handle),
             shutdown_requested: AtomicBool::new(false),
-            registry: ConnectionRegistry::new(),
+            registry: Arc::new(std::sync::RwLock::new(ConnectionRegistry::new())),
             permission_module: None,
             session: Arc::new(tokio::sync::Mutex::new(None)),
         }
@@ -386,7 +435,9 @@ impl IpcServer {
         // is transport-agnostic so v0.3's TcpConnection slots in with zero rework.
         let conn = StdioConnection::new();
         let conn_id = conn.id();
-        self.registry.register(Box::new(conn));
+        if let Ok(mut reg) = self.registry.write() {
+            reg.register(Box::new(conn));
+        }
         // Subscribe the permission notifier: an Ask request emits a $/permissionRequest
         // notification line on stdout (same blocking write path as StdioConnection::send).
         if let Some(module) = &self.permission_module {
@@ -418,10 +469,14 @@ impl IpcServer {
         };
         tokio::pin!(kernel_done);
         loop {
-            let conn = self
+            // Detach the connection so recv's await never runs under the registry
+            // lock: std guards are !Send and must not be held across await points.
+            let mut conn = self
                 .registry
+                .write()
+                .map_err(|_| IpcError::InvalidRequest("connection registry poisoned".into()))?
                 .conns
-                .get_mut(&conn_id)
+                .remove(&conn_id)
                 .ok_or_else(|| IpcError::InvalidRequest("stdio connection missing".into()))?;
             let line = tokio::select! {
                 res = conn.recv() => {
@@ -433,6 +488,9 @@ impl IpcServer {
                 }
                 _ = &mut kernel_done => { kernel_finished = true; break; } // signal-triggered shutdown
             };
+            if let Ok(mut reg) = self.registry.write() {
+                reg.conns.insert(conn_id.clone(), conn);
+            }
             let trimmed = line.trim().to_string();
             if trimmed.is_empty() {
                 continue;
@@ -442,13 +500,19 @@ impl IpcServer {
                     r#"{{"jsonrpc":"2.0","id":null,"error":{{"code":-32603,"message":"{e}"}}}}"#
                 )
             });
-            let conn = self
-                .registry
-                .conns
-                .get(&conn_id)
-                .ok_or_else(|| IpcError::InvalidRequest("stdio connection missing".into()))?;
             if !response.is_empty() {
-                conn.send(&response)?;
+                let mut delivered = false;
+                if let Ok(reg) = self.registry.read()
+                    && let Some(conn) = reg.conns.get(&conn_id)
+                {
+                    conn.send(&response)?;
+                    delivered = true;
+                }
+                if !delivered {
+                    return Err(IpcError::InvalidRequest(
+                        "stdio connection missing".into(),
+                    ));
+                }
             }
             if self.shutdown_requested() {
                 break;
@@ -947,5 +1011,95 @@ mod tests {
             .await
             .expect("serve_stdio must exit after kernel shutdown")
             .unwrap();
+    }
+
+    /// T5 fixture: `send` appends to a log the test keeps a handle to (the
+    /// boxed conn inside the registry cannot be downcast, so logs live outside).
+    struct FakeConn {
+        id: String,
+        log: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    fn fake_conn(id: &str) -> (FakeConn, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        (
+            FakeConn {
+                id: id.to_string(),
+                log: std::sync::Arc::clone(&log),
+            },
+            log,
+        )
+    }
+
+    #[async_trait]
+    impl Connection for FakeConn {
+        fn id(&self) -> String {
+            self.id.clone()
+        }
+        fn kind(&self) -> TransportKind {
+            TransportKind::Stdio
+        }
+        fn send(&self, msg: &str) -> Result<(), IpcError> {
+            if let Ok(mut log) = self.log.lock() {
+                log.push(msg.to_string());
+            }
+            Ok(())
+        }
+        async fn recv(&mut self) -> Option<Result<String, IpcError>> {
+            None
+        }
+        fn peer_desc(&self) -> String {
+            self.id.clone()
+        }
+    }
+
+    #[test]
+    fn registry_routes_broadcast_to_subscribers_only() {
+        let mut reg = ConnectionRegistry::new();
+        let (conn_a, log_a) = fake_conn("bcast-a");
+        let (conn_b, log_b) = fake_conn("bcast-b");
+        let a = reg.register(Box::new(conn_a));
+        let _b = reg.register(Box::new(conn_b));
+        reg.subscribe(&"s1".to_string(), &a);
+        reg.broadcast_to_session(&"s1".to_string(), "hello");
+        assert_eq!(
+            log_a.lock().unwrap().len(),
+            1,
+            "subscriber a must receive the broadcast"
+        );
+        assert_eq!(
+            log_b.lock().unwrap().len(),
+            0,
+            "non-subscriber b must NOT receive it"
+        );
+    }
+
+    #[test]
+    fn registry_unregister_releases_owner_and_subscriptions() {
+        let mut reg = ConnectionRegistry::new();
+        let (conn_a, log_a) = fake_conn("own-a");
+        let a = reg.register(Box::new(conn_a));
+        reg.set_session_owner(&"s1".to_string(), &a);
+        reg.subscribe(&"s1".to_string(), &a);
+        reg.unregister(&a);
+        assert!(
+            reg.session_owner(&"s1".to_string()).is_none(),
+            "owner released on disconnect"
+        );
+        // broadcast after unregister is a no-op (no panic, no delivery)
+        reg.broadcast_to_session(&"s1".to_string(), "hello");
+        assert_eq!(log_a.lock().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn registry_run_mutex_is_exclusive() {
+        let mut reg = ConnectionRegistry::new();
+        assert!(reg.try_acquire_run(&"s1".to_string()));
+        assert!(
+            !reg.try_acquire_run(&"s1".to_string()),
+            "second run must be rejected (busy)"
+        );
+        reg.release_run(&"s1".to_string());
+        assert!(reg.try_acquire_run(&"s1".to_string()));
     }
 }
