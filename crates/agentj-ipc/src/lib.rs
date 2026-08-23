@@ -634,7 +634,7 @@ impl IpcServer {
     /// Route $/permissionRequest notifications to the session owner through
     /// the registry (决策 #5). stdio falls back to stdout because its sentinel
     /// connection IS stdout. Attach once per transport entry point.
-    fn attach_permission_notifier(&self) {
+    pub(crate) fn attach_permission_notifier(&self) {
         if let Some(module) = &self.permission_module {
             let registry = Arc::clone(&self.registry);
             let notifier = Arc::new(move |p: &PermissionRequestParams, session_id: &str| {

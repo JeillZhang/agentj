@@ -98,15 +98,19 @@ impl TcpIpcServer {
         addr: &str,
         agent_loop: AgentLoop,
         kernel: Kernel,
+        permission_module: Option<Arc<agentj_permission::PermissionModule>>,
         token: Option<String>,
         max_connections: usize,
     ) -> Result<Self, IpcError> {
         let listener = TcpListener::bind(addr)
             .await
             .map_err(|e| IpcError::InvalidRequest(e.to_string()))?;
+        let mut server = IpcServer::new(agent_loop, kernel);
+        server.permission_module = permission_module;
+        server.attach_permission_notifier();
         Ok(Self {
             listener,
-            shared: Arc::new(IpcServer::new(agent_loop, kernel)),
+            shared: Arc::new(server),
             token,
             max_connections,
             active: Arc::new(AtomicUsize::new(0)),
@@ -117,6 +121,12 @@ impl TcpIpcServer {
         self.listener
             .local_addr()
             .map_err(|e| IpcError::InvalidRequest(e.to_string()))
+    }
+
+    /// Exposes the shared server's kernel sender so the CLI can trigger
+    /// graceful shutdown from a signal handler in resident mode.
+    pub fn kernel_sender(&self) -> agentj_core::kernel::KernelSender {
+        self.shared.kernel_sender()
     }
 
     /// Accept loop: refuse connections beyond `max_connections` by closing the
@@ -169,10 +179,16 @@ mod tests {
 
     #[tokio::test]
     async fn two_clients_serve_independently() {
-        let mut server =
-            TcpIpcServer::bind("127.0.0.1:0", stub_agent_loop(), Kernel::new(), None, 16)
-                .await
-                .unwrap();
+        let mut server = TcpIpcServer::bind(
+            "127.0.0.1:0",
+            stub_agent_loop(),
+            Kernel::new(),
+            None,
+            None,
+            16,
+        )
+        .await
+        .unwrap();
         let addr = server.local_addr().unwrap();
         let handle = tokio::spawn(async move { server.run().await.unwrap() });
 
@@ -201,10 +217,16 @@ mod tests {
 
     #[tokio::test]
     async fn max_connections_refuses_third_client() {
-        let mut server =
-            TcpIpcServer::bind("127.0.0.1:0", stub_agent_loop(), Kernel::new(), None, 2)
-                .await
-                .unwrap();
+        let mut server = TcpIpcServer::bind(
+            "127.0.0.1:0",
+            stub_agent_loop(),
+            Kernel::new(),
+            None,
+            None,
+            2,
+        )
+        .await
+        .unwrap();
         let addr = server.local_addr().unwrap();
         let handle = tokio::spawn(async move { server.run().await.unwrap() });
         let c1 = TcpStream::connect(addr).await.unwrap();
@@ -220,10 +242,16 @@ mod tests {
 
     #[tokio::test]
     async fn last_connection_disconnect_triggers_graceful_shutdown() {
-        let mut server =
-            TcpIpcServer::bind("127.0.0.1:0", stub_agent_loop(), Kernel::new(), None, 16)
-                .await
-                .unwrap();
+        let mut server = TcpIpcServer::bind(
+            "127.0.0.1:0",
+            stub_agent_loop(),
+            Kernel::new(),
+            None,
+            None,
+            16,
+        )
+        .await
+        .unwrap();
         let addr = server.local_addr().unwrap();
         let c = TcpStream::connect(addr).await.unwrap();
         drop(c);
