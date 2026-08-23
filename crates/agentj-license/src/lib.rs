@@ -45,11 +45,15 @@ impl LicenseValidator {
             .verify(&payload, &signature)
             .map_err(|_| LicenseError::InvalidKey)?;
 
-        let json: serde_json::Value = serde_json::from_slice(&payload)
-            .map_err(|e| LicenseError::Malformed(e.to_string()))?;
+        let json: serde_json::Value =
+            serde_json::from_slice(&payload).map_err(|e| LicenseError::Malformed(e.to_string()))?;
         let entitlements = json["entitlements"]
             .as_array()
-            .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
             .unwrap_or_default();
         let expires_at = json["expires_at"].as_u64().unwrap_or(0);
         let now = std::time::SystemTime::now()
@@ -59,7 +63,10 @@ impl LicenseValidator {
         if expires_at != 0 && now > expires_at {
             return Err(LicenseError::Expired);
         }
-        Ok(License { entitlements, expires_at })
+        Ok(License {
+            entitlements,
+            expires_at,
+        })
     }
 
     pub fn check_entitlement(&self, license: &License, feature: &str) -> bool {
@@ -104,7 +111,12 @@ mod tests {
         let validator = test_validator();
         let key = test_signed_key("dashboard", now() + 1_000_000); // far future (offset, not year*secs)
         let license = validator.validate(&key).unwrap();
-        assert!(license.entitlements.iter().any(|e| e.as_str() == "dashboard"));
+        assert!(
+            license
+                .entitlements
+                .iter()
+                .any(|e| e.as_str() == "dashboard")
+        );
         assert!(validator.check_entitlement(&license, "dashboard"));
         assert!(!validator.check_entitlement(&license, "billing"));
     }
@@ -112,14 +124,20 @@ mod tests {
     #[test]
     fn malformed_key_is_invalid() {
         let validator = test_validator();
-        assert!(matches!(validator.validate("not-a-key"), Err(LicenseError::InvalidKey)));
+        assert!(matches!(
+            validator.validate("not-a-key"),
+            Err(LicenseError::InvalidKey)
+        ));
     }
 
     #[test]
     fn expired_license_is_rejected() {
         let validator = test_validator();
         let key = test_signed_key("dashboard", now() - 1_000_000); // already past
-        assert!(matches!(validator.validate(&key), Err(LicenseError::Expired)));
+        assert!(matches!(
+            validator.validate(&key),
+            Err(LicenseError::Expired)
+        ));
     }
 
     #[test]

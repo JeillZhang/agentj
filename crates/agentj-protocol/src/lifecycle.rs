@@ -80,7 +80,10 @@ mod tests {
         let r = InitializeResult {
             protocol_version: "0.4.0".into(),
             capabilities: Some(serde_json::json!({"multi_client": true})),
-            server_info: ServerInfo { name: "agentj".into(), version: "0.4.0".into() },
+            server_info: ServerInfo {
+                name: "agentj".into(),
+                version: "0.4.0".into(),
+            },
             connection_id: Some("conn-1".into()),
         };
         let json = serde_json::to_value(&r).unwrap();
@@ -93,11 +96,17 @@ mod tests {
         let r = InitializeResult {
             protocol_version: "0.4.0".into(),
             capabilities: None,
-            server_info: ServerInfo { name: "agentj".into(), version: "0.4.0".into() },
+            server_info: ServerInfo {
+                name: "agentj".into(),
+                version: "0.4.0".into(),
+            },
             connection_id: None,
         };
         let json = serde_json::to_value(&r).unwrap();
-        assert!(json.get("connection_id").is_none(), "connection_id must be optional/additive");
+        assert!(
+            json.get("connection_id").is_none(),
+            "connection_id must be optional/additive"
+        );
     }
 
     #[test]

@@ -123,7 +123,10 @@ mod tests {
 
     #[test]
     fn session_subscribe_params_progress_token_optional() {
-        let p = SessionSubscribeParams { session_id: "s1".into(), progress_token: None };
+        let p = SessionSubscribeParams {
+            session_id: "s1".into(),
+            progress_token: None,
+        };
         let json = serde_json::to_value(&p).unwrap();
         assert!(json.get("progress_token").is_none());
     }
