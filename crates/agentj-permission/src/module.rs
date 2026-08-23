@@ -60,7 +60,7 @@ struct PendingRequest {
 }
 
 /// Notification sink for Ask requests (set once at startup by the IPC layer).
-type Notifier = Arc<dyn Fn(&PermissionRequestParams) + Send + Sync>;
+type Notifier = Arc<dyn Fn(&PermissionRequestParams, &str) + Send + Sync>;
 
 #[derive(Clone)]
 pub struct PermissionModule {
@@ -234,8 +234,10 @@ impl PermissionModule {
             reason: format!("tool '{}' default mode is ask", ctx.tool),
             origin_client: None,
         };
-        if let Some(f) = self.notifier.lock().unwrap().clone() {
-            f(&params);
+        if let Ok(guard) = self.notifier.lock()
+            && let Some(f) = guard.clone()
+        {
+            f(&params, &ctx.session_id);
         }
         PermissionDecision::Ask { request_id }
     }

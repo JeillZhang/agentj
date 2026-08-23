@@ -451,7 +451,7 @@ impl IpcServer {
     async fn dispatch_session_run(
         &self,
         req: &JsonRpcRequest,
-        _conn_id: &str,
+        conn_id: &str,
     ) -> Result<Value, DispatchError> {
         let params = req
             .params
@@ -482,12 +482,34 @@ impl IpcServer {
         // permission module while the run executes; the guard clears it on
         // every exit path (including the AgentEvent::Error return).
         let _inflight = InflightSessionGuard::record(&self.session, sid).await;
+        // The run initiator owns the session for approval routing (决策 #5)
+        // and observes $/progress without an explicit subscribe. Re-recording
+        // here also covers clients that skip session/new (hard-coded ids).
+        if let Ok(mut reg) = self.registry.write() {
+            reg.set_session_owner(&sid.to_string(), conn_id);
+            reg.subscribe(&sid.to_string(), conn_id);
+        }
+        let progress_token = params.get("progress_token").cloned();
         let mut rx = self.agent_loop.run_turn_stream(&sid.to_string(), content);
         let mut text = String::new();
         let mut tc_list = vec![];
         while let Some(event) = rx.recv().await {
             match event {
-                AgentEvent::Delta(d) => text.push_str(&d),
+                AgentEvent::Delta(d) => {
+                    text.push_str(&d);
+                    let progress = serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "method": "$/progress",
+                        "params": {
+                            "token": progress_token.clone(),
+                            "value": { "kind": "text", "delta": d },
+                        },
+                    })
+                    .to_string();
+                    if let Ok(reg) = self.registry.read() {
+                        reg.broadcast_to_session(&sid.to_string(), &progress);
+                    }
+                }
                 AgentEvent::Done { tool_calls, .. } => {
                     tc_list = tool_calls;
                     break;
@@ -609,6 +631,39 @@ impl IpcServer {
         Ok(())
     }
 
+    /// Route $/permissionRequest notifications to the session owner through
+    /// the registry (决策 #5). stdio falls back to stdout because its sentinel
+    /// connection IS stdout. Attach once per transport entry point.
+    fn attach_permission_notifier(&self) {
+        if let Some(module) = &self.permission_module {
+            let registry = Arc::clone(&self.registry);
+            let notifier = Arc::new(move |p: &PermissionRequestParams, session_id: &str| {
+                let key = session_id.to_string();
+                let owner = registry
+                    .read()
+                    .ok()
+                    .and_then(|r| r.session_owner(&key).cloned());
+                let msg = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "method": "$/permissionRequest",
+                    "params": {
+                        "request_id": p.request_id,
+                        "tool": p.tool,
+                        "args": p.args,
+                        "reason": p.reason,
+                        "origin_client": owner.clone(),
+                    },
+                });
+                if let Some(owner_id) = owner
+                    && let Ok(r) = registry.read()
+                {
+                    let _ = r.send_to(&owner_id, &msg.to_string());
+                }
+            });
+            module.set_notifier(notifier);
+        }
+    }
+
     /// Run the server in stdio mode via the unified Connection serve loop (design 决策 #2).
     /// On EOF or after a shutdown request, signal the kernel and await its graceful shutdown.
     /// The read loop is interrupted when the kernel finishes (design #13: SIGINT/SIGTERM
@@ -622,25 +677,9 @@ impl IpcServer {
         if let Ok(mut reg) = self.registry.write() {
             reg.register(Box::new(conn));
         }
-        // Subscribe the permission notifier: an Ask request emits a $/permissionRequest
-        // notification line on stdout (same blocking write path as StdioConnection::send).
-        if let Some(module) = &self.permission_module {
-            let notifier = Arc::new(|p: &PermissionRequestParams| {
-                let msg = serde_json::json!({
-                    "jsonrpc": "2.0",
-                    "method": "$/permissionRequest",
-                    "params": {
-                        "request_id": p.request_id,
-                        "tool": p.tool,
-                        "args": p.args,
-                        "reason": p.reason,
-                    },
-                });
-                let mut stdout = std::io::stdout().lock();
-                let _ = writeln!(stdout, "{msg}");
-            });
-            module.set_notifier(notifier);
-        }
+        // Subscribe the permission notifier: $/permissionRequest is routed to
+        // the session owner through the registry (决策 #5).
+        self.attach_permission_notifier();
         // Poll the kernel handle by `&mut` (taken out so the future needs no `self` borrow
         // while the loop also reads the registry); it is restored below for await_shutdown.
         let mut kernel_handle = self.kernel_handle.take();
@@ -726,7 +765,9 @@ pub struct StdioConnection {
 impl StdioConnection {
     pub fn new() -> Self {
         Self {
-            id: format!("stdio-{}", std::process::id()),
+            // Sentinel id matches handle_request_from's stdio conn_id so
+            // owner-directed routing (send_to) reaches the stdout writer.
+            id: "stdio".into(),
             reader: BufReader::new(tokio::io::stdin()),
         }
     }
@@ -1208,14 +1249,16 @@ mod tests {
             .unwrap();
     }
 
+    type SharedLog = Arc<std::sync::Mutex<Vec<String>>>;
+
     /// T5 fixture: `send` appends to a log the test keeps a handle to (the
     /// boxed conn inside the registry cannot be downcast, so logs live outside).
     struct FakeConn {
         id: String,
-        log: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+        log: SharedLog,
     }
 
-    fn fake_conn(id: &str) -> (FakeConn, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+    fn fake_conn(id: &str) -> (FakeConn, SharedLog) {
         let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         (
             FakeConn {
@@ -1298,17 +1341,35 @@ mod tests {
         assert!(reg.try_acquire_run(&"s1".to_string()));
     }
 
+    /// Connection-id → sent-message log shared between register_fake_conn and
+    /// drain_sent (the registry owns the boxed conn; logs live outside it).
+    static FAKE_LOGS: std::sync::LazyLock<
+        std::sync::Mutex<std::collections::HashMap<String, SharedLog>>,
+    > = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
     fn register_fake_conn(server: &Arc<IpcServer>) -> String {
         static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1);
         let id = format!(
             "fake-{}",
             SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
         );
-        let (conn, _log) = fake_conn(&id);
+        let (conn, log) = fake_conn(&id);
         if let Ok(mut reg) = server.registry.write() {
             reg.register(Box::new(conn));
         }
+        if let Ok(mut logs) = FAKE_LOGS.lock() {
+            logs.insert(id.clone(), log);
+        }
         id
+    }
+
+    fn drain_sent(_server: &Arc<IpcServer>, id: &str) -> Vec<String> {
+        FAKE_LOGS
+            .lock()
+            .ok()
+            .and_then(|logs| logs.get(id).cloned())
+            .map(|log| log.lock().unwrap_or_else(|p| p.into_inner()).clone())
+            .unwrap_or_default()
     }
 
     fn extract_sid(resp: &str) -> String {
@@ -1427,6 +1488,89 @@ mod tests {
         let _ = server
             .handle_request_from(
                 r#"{"jsonrpc":"2.0","id":10,"method":"$/cancelRequest","params":{"id":5}}"#,
+                &a,
+            )
+            .await
+            .unwrap();
+        let _ = run_task.await;
+    }
+
+    #[tokio::test]
+    async fn subscriber_receives_progress_broadcast() {
+        let server = Arc::new(IpcServer::new(stub_agent_loop(), Kernel::new()));
+        let a = register_fake_conn(&server);
+        let b = register_fake_conn(&server);
+        let new_resp = server
+            .handle_request_from(r#"{"jsonrpc":"2.0","id":1,"method":"session/new"}"#, &a)
+            .await
+            .unwrap();
+        let sid = extract_sid(&new_resp);
+        server
+            .handle_request_from(
+                &format!(
+                    r#"{{"jsonrpc":"2.0","id":2,"method":"session/subscribe","params":{{"session_id":"{sid}"}}}}"#
+                ),
+                &b,
+            )
+            .await
+            .unwrap();
+        server
+            .handle_request_from(
+                &format!(
+                    r#"{{"jsonrpc":"2.0","id":3,"method":"session/run","params":{{"session_id":"{sid}","content":"hi"}}}}"#
+                ),
+                &a,
+            )
+            .await
+            .unwrap();
+        let b_sent = drain_sent(&server, &b);
+        assert!(
+            b_sent
+                .iter()
+                .any(|m| m.contains("$/progress") && m.contains("hello")),
+            "subscriber B must receive $/progress deltas: {b_sent:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn permission_request_is_routed_to_owner_only() {
+        let (server, _module) = blocking_run_server();
+        let server = Arc::new(server);
+        server.attach_permission_notifier();
+        let a = register_fake_conn(&server);
+        let b = register_fake_conn(&server);
+        let new_resp = server
+            .handle_request_from(r#"{"jsonrpc":"2.0","id":1,"method":"session/new"}"#, &a)
+            .await
+            .unwrap();
+        let sid = extract_sid(&new_resp);
+        let run_raw = format!(
+            r#"{{"jsonrpc":"2.0","id":2,"method":"session/run","params":{{"session_id":"{sid}","content":"hi"}}}}"#
+        );
+        let run_task = tokio::spawn({
+            let s = Arc::clone(&server);
+            let conn = a.clone();
+            async move { s.handle_request_from(&run_raw, &conn).await.unwrap() }
+        });
+        wait_for_inflight_session(&server, &sid)
+            .await
+            .expect("run must be in flight");
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let a_sent = drain_sent(&server, &a);
+        let b_sent = drain_sent(&server, &b);
+        assert!(
+            a_sent
+                .iter()
+                .any(|m| m.contains("$/permissionRequest") && m.contains("\"origin_client\":\"")),
+            "owner A must receive $/permissionRequest with origin_client: {a_sent:?}"
+        );
+        assert!(
+            !b_sent.iter().any(|m| m.contains("$/permissionRequest")),
+            "non-owner B must NOT receive $/permissionRequest: {b_sent:?}"
+        );
+        let _ = server
+            .handle_request_from(
+                r#"{"jsonrpc":"2.0","id":9,"method":"$/cancelRequest","params":{"id":5}}"#,
                 &a,
             )
             .await
