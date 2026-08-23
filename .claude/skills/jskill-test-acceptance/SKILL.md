@@ -1,6 +1,6 @@
 ---
 name: jskill-test-acceptance
-description: 测试验收流程编排。在需求开发命令结束后触发，驱动「测试 agent 发现 Bug → Bug-fix agent 修复 → 测试 agent 回归验证」循环直至所有 Bug 修复完成。每 Bug 一提交，禁止一提交多 Bug。Triggers on "test acceptance", "验收", "run acceptance", "测试验收", "验收测试".
+description: 测试验收流程编排。在需求开发命令结束后触发（feature-dev 默认路径自动衔接），驱动「测试 agent 发现 Bug → Bug-fix agent 修复 → 测试 agent 回归验证」循环直至所有 Bug 修复完成；验收通过后自动创建 PR（用户负责合并）。每 Bug 一提交，禁止一提交多 Bug。Triggers on "test acceptance", "验收", "run acceptance", "测试验收", "验收测试".
 ---
 
 # JCMD Test Acceptance
@@ -13,11 +13,11 @@ description: 测试验收流程编排。在需求开发命令结束后触发，�
 |-----------|----------|-------------|
 | `scope` | ❌ | 可选。验收焦点（如「仅 CLI 模块」）。缺省时对整个当前特性范围验收 |
 
-## Entry: 初始化 → 测试 → 修复 → 回归 → 判定 → 收尾
+## Entry: 初始化 → 测试 → 修复 → 回归 → 判定 → 自动 PR
 
 ```mermaid
 flowchart TB
-    A["/jcmd-test-acceptance"] --> B["Phase 0: 初始化/恢复 Bug 清单"]
+    A["/jcmd-test-acceptance（或 feature-dev 自动衔接）"] --> B["Phase 0: 初始化/恢复 Bug 清单"]
     B --> C["Phase 1: 测试阶段（ajteam-tester）"]
     C --> D{"发现新 Bug?"}
     D -- "零 Bug" --> Z["验收通过 ✅"]
@@ -29,7 +29,10 @@ flowchart TB
     H -- "是" --> E
     H -- "否，全 verified" --> I["Phase 4: 版本 bump + 收尾"]
     I --> Z
-    Z --> J["输出验收报告"]
+    Z --> J["Phase 5: 判定与报告"]
+    J --> K{"验收 PASS?"}
+    K -- "是，且处于功能分支" --> M["Phase 6: 自动创建 PR"]
+    K -- "否（STOP/未收敛）" --> L["结束：交用户决策，不建 PR"]
 ```
 
 ## 工作流
@@ -83,6 +86,28 @@ flowchart TB
    版本：<bump 至 x.y.z / 跳过>
    提交：<每 Bug 的 fix commit 列表>
 ```
+
+### Phase 6: 自动创建 PR（仅验收 PASS 后）
+
+**前置条件（全部满足才执行，否则跳过并说明原因）：**
+
+- Phase 5 判定为 **PASS**；STOP / 未收敛 → **不建 PR**，输出完整清单交用户决策
+- 当前处于**功能分支**（非 base branch）——若用户在 feature-dev 收尾时已合并/丢弃则跳过
+- 工作区干净，全部提交（含修复、版本 bump、文档同步）已完成
+
+**步骤：**
+
+1. `git push origin <feature-branch>`（若尚未推送）
+2. 用 `gh pr create` 创建 PR（遵循 AGENTS.md：「create the PR and share the link — the user handles merge」）：
+   ```bash
+   gh pr create --base <base-branch> --head <feature-branch> \
+     --title "<conventional-commits 风格标题>" --body "<描述>"
+   ```
+3. **Title 遵循仓库惯例**（conventional commits），如：`feat: <特性简述> + acceptance fixes (BUG-00N...) + bump to x.y.z`
+4. **Body 包含**：功能摘要（来自 summary / spec）、验收结果（Bug 总数/级别、回归轮次、门禁结果、版本 bump）、fix 提交列表
+5. 输出 PR 链接
+
+**失败处理：** `gh` 不可用或创建失败 → 输出错误与推送状态，提示用户手工创建，不静默跳过、不虚构链接。
 
 ## 派发模板
 
@@ -149,6 +174,8 @@ CONTEXT: Bug 条目 = <id/标题/级别/重现步骤>；特性范围 = <...>；�
 | 回归验证发现 fixed Bug 仍失败 | 该 Bug 回退 open（同一 bug-id），回 Phase 2 重新修复 |
 | 会话中断 | 读 bugs.md 恢复，从第一个非 verified 继续 |
 | 工作区不干净 | 提示用户先处理 |
+| `gh` 不可用 / PR 创建失败 | 输出错误与推送状态，提示手工创建，不虚构 PR 链接 |
+| 验收 STOP / 未收敛 | 不建 PR，输出完整清单交用户决策 |
 
 ## 反模式
 
@@ -158,6 +185,8 @@ CONTEXT: Bug 条目 = <id/标题/级别/重现步骤>；特性范围 = <...>；�
 | "回归失败就再修一轮" | 3 轮上限，超限上报 |
 | "没有 cargo 就虚构几个 Bug" | 不虚构，如实报告无可测软件 |
 | "修复时顺手清理其他文件" | 范围外变更引入新 Bug，禁止 |
+| "验收未收敛也先建 PR 占位" | PR 只在 PASS 后创建；STOP 时交用户决策 |
+| "PR 里只写功能描述" | Body 必须含验收结果与 fix 提交列表，PR 反映完整变更 |
 
 ## 快速参考
 
@@ -169,3 +198,4 @@ CONTEXT: Bug 条目 = <id/标题/级别/重现步骤>；特性范围 = <...>；�
 | 3 | 派发 tester（regression） | 全 verified / 回退 open / 新 Bug |
 | 4 | 版本 bump + 文档同步 | 产品 patch bump |
 | 5 | 验收报告 | PASS / STOP |
+| 6 | 自动创建 PR（仅 PASS + 功能分支） | PR 链接（用户负责合并） |
