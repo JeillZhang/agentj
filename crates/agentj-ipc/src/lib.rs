@@ -597,18 +597,47 @@ impl IpcServer {
         Ok(serde_json::Value::Null)
     }
 
-    /// Transport-agnostic per-connection request loop (design 决策 #2): read NDJSON
-    /// lines, dispatch each through handle_request, write responses back on the
-    /// same connection. EOF or a requested shutdown ends the loop.
+    /// Transport-agnostic per-connection request loop (design 决策 #2): read
+    /// NDJSON lines, dispatch each through `handle_request_from` with the
+    /// connection's real id, write responses back on the same connection. The
+    /// connection is registered for owner routing / subscription broadcasts
+    /// and unregistered on every exit path (EOF, error, requested shutdown).
     pub async fn serve_connection(
         &self,
-        mut conn: Box<dyn Connection>,
+        conn: Box<dyn Connection>,
         _token: Option<&str>,
     ) -> Result<(), IpcError> {
+        let conn_id = conn.id();
+        if let Ok(mut reg) = self.registry.write() {
+            reg.register(conn);
+        }
+        let serve_result = self.serve_connection_requests(&conn_id).await;
+        if let Ok(mut reg) = self.registry.write() {
+            reg.unregister(&conn_id);
+        }
+        serve_result
+    }
+
+    /// Per-connection request loop body. Like `serve_stdio`, the connection is
+    /// detached from the registry while `recv` awaits (the std RwLock guard
+    /// must not be held across an await) and re-inserted before each dispatch
+    /// so handlers and the permission notifier can reach it via the registry.
+    async fn serve_connection_requests(&self, conn_id: &str) -> Result<(), IpcError> {
         loop {
+            let mut conn = self
+                .registry
+                .write()
+                .map_err(|_| IpcError::InvalidRequest("connection registry poisoned".into()))?
+                .conns
+                .remove(conn_id)
+                .ok_or_else(|| IpcError::InvalidRequest(format!("connection {conn_id} missing")))?;
             let Some(line) = conn.recv().await else {
-                break;
+                break; // EOF — connection dropped here; unregistered by the caller
             };
+            // Re-insert before dispatch so handlers/notifier can reach it.
+            if let Ok(mut reg) = self.registry.write() {
+                reg.conns.insert(conn_id.to_string(), conn);
+            }
             let trimmed = match line {
                 Ok(l) => l.trim().to_string(),
                 Err(e) => return Err(e),
@@ -616,13 +645,27 @@ impl IpcServer {
             if trimmed.is_empty() {
                 continue;
             }
-            let response = self.handle_request(&trimmed).await.unwrap_or_else(|e| {
-                format!(
-                    r#"{{"jsonrpc":"2.0","id":null,"error":{{"code":-32603,"message":"{e}"}}}}"#
-                )
-            });
+            let response = self
+                .handle_request_from(&trimmed, conn_id)
+                .await
+                .unwrap_or_else(|e| {
+                    format!(
+                        r#"{{"jsonrpc":"2.0","id":null,"error":{{"code":-32603,"message":"{e}"}}}}"#
+                    )
+                });
             if !response.is_empty() {
-                conn.send(&response)?;
+                let mut delivered = false;
+                if let Ok(reg) = self.registry.read()
+                    && let Some(conn) = reg.conns.get(conn_id)
+                {
+                    conn.send(&response)?;
+                    delivered = true;
+                }
+                if !delivered {
+                    return Err(IpcError::InvalidRequest(format!(
+                        "connection {conn_id} missing"
+                    )));
+                }
             }
             if self.shutdown_requested() {
                 break;
@@ -1291,6 +1334,50 @@ mod tests {
         }
     }
 
+    /// Test connection driven by an mpsc channel: feed lines via `tx`, read
+    /// sends from `log`, drop `tx` to EOF (recv then returns None).
+    struct ScriptedConn {
+        id: String,
+        rx: tokio::sync::mpsc::Receiver<String>,
+        log: SharedLog,
+    }
+
+    fn scripted_conn(id: &str) -> (ScriptedConn, SharedLog, tokio::sync::mpsc::Sender<String>) {
+        let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (tx, rx) = tokio::sync::mpsc::channel(16);
+        (
+            ScriptedConn {
+                id: id.to_string(),
+                rx,
+                log: std::sync::Arc::clone(&log),
+            },
+            log,
+            tx,
+        )
+    }
+
+    #[async_trait]
+    impl Connection for ScriptedConn {
+        fn id(&self) -> String {
+            self.id.clone()
+        }
+        fn kind(&self) -> TransportKind {
+            TransportKind::Tcp
+        }
+        fn send(&self, msg: &str) -> Result<(), IpcError> {
+            if let Ok(mut log) = self.log.lock() {
+                log.push(msg.to_string());
+            }
+            Ok(())
+        }
+        async fn recv(&mut self) -> Option<Result<String, IpcError>> {
+            self.rx.recv().await.map(Ok)
+        }
+        fn peer_desc(&self) -> String {
+            self.id.clone()
+        }
+    }
+
     #[test]
     fn registry_routes_broadcast_to_subscribers_only() {
         let mut reg = ConnectionRegistry::new();
@@ -1576,5 +1663,73 @@ mod tests {
             .await
             .unwrap();
         let _ = run_task.await;
+    }
+
+    #[tokio::test]
+    async fn serve_connection_two_clients_get_unique_connection_ids() {
+        let server = Arc::new(IpcServer::new(stub_agent_loop(), Kernel::new()));
+        let (conn_a, log_a, tx_a) = scripted_conn("tcp-A");
+        let (conn_b, log_b, tx_b) = scripted_conn("tcp-B");
+        let s = Arc::clone(&server);
+        let task_a = tokio::spawn(async move { s.serve_connection(Box::new(conn_a), None).await });
+        let s = Arc::clone(&server);
+        let task_b = tokio::spawn(async move { s.serve_connection(Box::new(conn_b), None).await });
+        let init = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocol_version":"0.4.0"}}"#;
+        tx_a.send(init.to_string()).await.unwrap();
+        tx_b.send(init.to_string()).await.unwrap();
+        drop(tx_a);
+        drop(tx_b);
+        task_a.await.unwrap().unwrap();
+        task_b.await.unwrap().unwrap();
+        let va: serde_json::Value = serde_json::from_str(&log_a.lock().unwrap()[0]).unwrap();
+        let vb: serde_json::Value = serde_json::from_str(&log_b.lock().unwrap()[0]).unwrap();
+        assert_eq!(va["result"]["connection_id"], "tcp-A");
+        assert_eq!(vb["result"]["connection_id"], "tcp-B");
+        assert_ne!(
+            va["result"]["connection_id"], vb["result"]["connection_id"],
+            "each TCP client must receive its own connection id"
+        );
+    }
+
+    #[tokio::test]
+    async fn serve_connection_broadcasts_progress_to_real_connection() {
+        let server = Arc::new(IpcServer::new(stub_agent_loop(), Kernel::new()));
+        let (conn_a, log_a, tx_a) = scripted_conn("tcp-A");
+        let s = Arc::clone(&server);
+        let task_a = tokio::spawn(async move { s.serve_connection(Box::new(conn_a), None).await });
+        tx_a.send(r#"{"jsonrpc":"2.0","id":1,"method":"session/new"}"#.to_string())
+            .await
+            .unwrap();
+        // Wait for the session/new response so the run dispatches against a real sid.
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if !log_a.lock().unwrap().is_empty() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("session/new response never arrived");
+        let sid = extract_sid(&log_a.lock().unwrap()[0]);
+        tx_a
+            .send(format!(
+                r#"{{"jsonrpc":"2.0","id":2,"method":"session/run","params":{{"session_id":"{sid}","content":"hi"}}}}"#
+            ))
+            .await
+            .unwrap();
+        drop(tx_a); // EOF after the run so the serve loop returns
+        task_a.await.unwrap().unwrap();
+        let a_sent = log_a.lock().unwrap().clone();
+        assert!(
+            a_sent
+                .iter()
+                .any(|m| m.contains("$/progress") && m.contains("hello")),
+            "run initiator must receive $/progress through the registry: {a_sent:?}"
+        );
+        assert!(
+            server.registry.read().unwrap().conns.is_empty(),
+            "disconnected connection must be unregistered"
+        );
     }
 }
