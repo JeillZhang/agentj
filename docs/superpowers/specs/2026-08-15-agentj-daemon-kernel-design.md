@@ -1,6 +1,8 @@
 # 设计文档：守护内核（常驻 API 服务）能力
 
 > **实现状态（2026-08-23）**：本设计已在 v0.4 落地——多客户端常驻 TCP 内核（`serve --port` / `run --attach` / `dashboard`）、统一 Connection 抽象（stdio 哨兵 / TcpConnection）、协议加性扩展（`session/subscribe`/`unsubscribe`、`$/progress` 广播、`origin_client` 属主路由、`-32805`/`-32806`、`initialize` token/`connection_id`/`multi_client`）、agentj-stats 用量钩子经 AgentLoop on-turn-complete 接线。WebSocket 网关与运行状态机/控制权转移仍为后续阶段预留。
+>
+> **实现回填（v0.4.1 复审）**：下述设计要点与 v0.4 实现存在偏差，已在正文同步修订——① 「run 即接管 owner」：实现中 `session/run` 会重写 owner 并隐式订阅发起方（非 owner 也可 run，只要无并发），与初版状态机「只有 owner 能 run」不同，见决策 #4/#7 与状态机；② 新增 `Connection`::`writer()` 半连接写句柄拆分（`ConnectionWriter`），保证 idle 订阅者不丢广播，见决策 #1；③ TCP 常驻下 `shutdown`/最后连接断开触发**全局**优雅关闭，而非仅断请求方，见决策 #7 与 §错误处理；④ `initialize` 认证字段为 `InitializeParams.token`（对应协议规范 §4.1 已补）。
 
 ## 概述
 
@@ -23,7 +25,7 @@ AgentJ 的内核架构定位是「前端无关」：CLI、TUI、Web Dashboard、
 | G1 | **统一传输抽象**：`Connection` trait 作为 stdio / TCP / Unix socket 的统一连接契约，v0.1 `serve_stdio` 直接按此构建（契约先行），v0.4 新增 TCP 传输零重构 |
 | G2 | **常驻内核**：`agentj serve` 启动常驻内核，绑定 127.0.0.1，多个客户端连接共享同一内核实例（Kernel + AgentLoop + 模块） |
 | G3 | **历史级接续**：跨 UI / 跨进程会话恢复（依赖 v0.3 FileBackedStore 地基），常驻内核下会话一致性更强 |
-| G4 | **运行级接管（订阅 + 单发起方控制）**：任意客户端可订阅某 session 的运行进度（`session/subscribe` + `$/progress` 广播）；只有发起方（owner）能控制（run/cancel/审批）；同 session 并发 run 互斥 |
+| G4 | **运行级接管（订阅 + 单发起方控制）**：任意客户端可订阅某 session 的运行进度（`session/subscribe` + `$/progress` 广播）；审批响应与取消仅属主（当前发起方）可用；同 session 并发 run 互斥 |
 | G5 | **资源级复用**：MCP 长驻连接、模型连接、allow_always 会话态、模块生命周期状态在常驻内核内跨客户端共享 |
 | G6 | **权限审批定向**：`$/permissionRequest` 定向发给发起该 run 的客户端（`origin_client` 字段），`permission/respond` 校验发起方归属 |
 | G7 | **协议加性纪律**：全部扩展走「只加不改」（新字段 / 新方法 / 新错误码），v0.1 协议面零破坏 |
@@ -55,15 +57,33 @@ pub trait Connection: Send + Sync {
     fn send(&self, msg: OutboundMessage) -> Result<(), IpcError>;
     async fn recv(&mut self) -> Option<Result<InboundMessage, IpcError>>;
     fn peer_desc(&self) -> String; // "stdio" / "tcp:127.0.0.1:54321"
+    /// Detach a send-only handle sharing this connection's writer. The serve
+    /// loop owns the reader half (`recv` needs `&mut self`, so the full
+    /// connection cannot stay registered across the await); the registry holds
+    /// this handle so broadcasts reach an idle subscriber (v0.4 实现增量).
+    fn writer(&self) -> ConnectionWriter;
 }
 
 pub struct ConnectionId(pub String); // uuid，注册表主键
 
+/// Send-only handle to a connection, registered while its serve loop owns the
+/// reader half. Kept for the connection's lifetime so an idle subscriber never
+/// drops out of broadcast reach (v0.4 实现增量 / BUG-006).
+pub struct ConnectionWriter {
+    id: ConnectionId,
+    kind: TransportKind,
+    peer: String,
+    send: ConnSend, // Arc<dyn Fn(&str) -> Result<(), IpcError>>
+}
+
 /// 多客户端共享内核的核心数据结构
 pub struct ConnectionRegistry {
     conns: HashMap<ConnectionId, Box<dyn Connection>>,
+    writers: HashMap<ConnectionId, ConnectionWriter>, // 读句柄被 serve 循环占用的连接的写句柄
     session_owner: HashMap<SessionId, ConnectionId>, // 权限审批定向路由依据
     pending_runs: HashMap<SessionId, RunHandle>,     // 运行级互斥
+    subscribers: HashMap<SessionId, HashSet<ConnectionId>>, // 订阅广播（v0.4 增量）
+    authorized: HashSet<ConnectionId>,               // token-gated 已通过 initialize 的连接（v0.4 增量）
 }
 ```
 
@@ -151,11 +171,12 @@ sequenceDiagram
 stateDiagram-v2
     [*] --> Free
     Free --> Owned: session/new（创建者成为 owner）
-    Owned --> Running: session/run（owner 发起，锁 session）
+    Owned --> Running: session/run（发起方接管 owner 并隐式订阅，锁 session）
     Running --> Owned: run 完成 / 取消
     Owned --> Free: owner 连接断开（session 保留，磁盘持久化）
+    Free --> Running: 任意空闲连接 session/run（重写 owner，-32805 仅防并发）
     Running --> Running: 其他客户端 session/subscribe（只读观测）
-    Running --> Running: 非 owner session/run → -32805 SessionBusy
+    Running --> Running: 并发 session/run → -32805 SessionBusy
     Running --> Running: owner 断线（run 继续，owner 位释放，完成后 → Free）
 ```
 
@@ -179,9 +200,11 @@ flowchart LR
 
 ### 1. 统一传输抽象：Connection trait
 
-**决策**：`agentj-ipc` 定义 `Connection` trait（`id`/`kind`/`send`/`recv`/`peer_desc`），stdio / TCP / Unix socket 均为其实现；内核通过 `ConnectionRegistry` 服务 N 个连接。CLI 成为「内核宿主 + 协议客户端」复合体。
+**决策**：`agentj-ipc` 定义 `Connection` trait（`id`/`kind`/`send`/`recv`/`peer_desc`，v0.4 新增 `writer()`），stdio / TCP / Unix socket 均为其实现；内核通过 `ConnectionRegistry` 服务 N 个连接。CLI 成为「内核宿主 + 协议客户端」复合体。
 
 **理由**：多客户端共享是本特性核心，两套连接语义（stdio 单客户端 vs TCP 多连接）并存是长期架构债；统一抽象让未来 WebSocket 只需新增一个 `Connection` 实现（方法面零改动，呼应 IPC 设计「消息内容传输无关」原则）。生态先例：Codex `app-server` 的 JSON-RPC 服务同样对 stdio/WebSocket/Unix socket 统一暴露。
+
+**实现增量（v0.4.1 复审）**：trait 初稿只有 5 个方法，落地时因 Rust 所有权约束（`recv` 需要 `&mut self`，await 期间完整连接不能留在注册表）拆出 `writer()` → `ConnectionWriter` 半连接写句柄：serve 循环独占读半部，注册表持有共享写半部，从而 idle 订阅者不会因「只有写动作才可达」而丢失 `$/progress` 广播（对应 BUG-006）。这属于纯实现细节，不改变决策语义。
 
 ### 2. 契约合并：Connection 进 v0.1 计划，serve 能力落位 v0.4
 
@@ -197,9 +220,11 @@ flowchart LR
 
 ### 4. 运行级接管：广播订阅 + 单发起方控制
 
-**决策**：任意客户端可 `session/subscribe` 订阅某 session 的运行进度（`$/progress` 广播）；只有 owner（发起方）能控制（run / cancel / 审批响应）；同 session 并发 run 互斥（`-32805 SessionBusy`）。
+**决策**：任意客户端可 `session/subscribe` 订阅某 session 的运行进度（`$/progress` 广播）；控制（审批响应、`$/cancelRequest`）仅属主（owner）可用；同 session 并发 run 互斥（`-32805 SessionBusy`）。
 
 **理由**：控制权转移（暂停/接管/重定向）依赖运行状态机 + 控制权转移协议，改动面大且 `session/run` 当前明文不可重试。常驻内核本身就是运行状态持有者——断线客户端的 run 继续执行，重连 + subscribe 即恢复观测，**无需协议层 checkpoint/resume** 就兑现「运行级接续」的核心价值。订阅/控制分离符合最小权限：观察不需要控制权。
+
+**实现回填（v0.4.1 复审）**：实现中 `session/run` 的 owner 语义与初版「只有 owner 能 run」不同——**run 即接管 owner**：任何连接只要该 session 无活动 run 即可发起 `session/run`，发起时重写 `session_owner` 为自身并隐式订阅（无需显式 `session/subscribe` 即可收 `$/progress`）。因此「owner」是「当前发起方」而非「持久所有权凭证」，互斥只防「并发」不防「非 owner 发起」。这既覆盖了走标准 `session/new` 的客户端，也兼容跳过 `session/new` 直接写死 session_id 的客户端。审批定向（决策 #5）随之按「当前 run 的发起方」路由。
 
 ### 5. 权限审批定向：发给发起方
 
@@ -212,18 +237,21 @@ flowchart LR
 | 变更 | 类型 | 说明 |
 |------|------|------|
 | `initialize` result 增加 `capabilities.multi_client: bool` + `connection_id` | 加性字段 | 客户端可感知多客户端环境、获得自身连接标识 |
+| `initialize` params 增加 `token` | 加性字段 | `--token` 模式下客户端在 `initialize` 携带访问令牌，不匹配 → `-32806 NotAuthorized`（未配置 token 时该字段缺省） |
 | `session/subscribe {session_id, progressToken?}` → `{}` | 新方法 | 订阅某 session 运行进度；`$/progress` 向所有订阅者广播 |
 | `session/unsubscribe {session_id}` → `{}` | 新方法 | 退订（连接断开时隐式退订） |
 | `$/permissionRequest` 增加 `origin_client` 字段 | 加性字段 | 服务端按 `session_owner` 定向路由 |
 | `permission/respond` 发起方校验 | 服务端行为 | 非 owner 连接响应 → `-32806 NotAuthorized` |
 | `session/run` 并发互斥 | 服务端行为 | 同 session 已有活动 run → `-32805 SessionBusy` |
-| `shutdown` 语义细化（多连接下） | 文档化 | 断开请求方连接；最后连接断开 → 内核优雅退出（信号仍可强制） |
+| `shutdown` 语义细化（多连接下） | 文档化 | 触发**全局**内核优雅关闭（信号仍可强制）；见决策 #7 回填 |
 
 ### 7. 会话所有权与并发
 
-**决策**：session 归属由 `ConnectionRegistry.session_owner` 维护（SessionId → ConnectionId）。owner 断开 → session 保留（磁盘持久化），owner 位释放，任何客户端可重新 run；运行中 owner 断开 → run 继续，owner 位释放，其他客户端可 subscribe 观测但不能控制。
+**决策**：session 归属由 `ConnectionRegistry.session_owner` 维护（SessionId → ConnectionId）。owner 断开 → session 保留（磁盘持久化），owner 位释放；运行中 owner 断开 → run 继续，owner 位释放，其他客户端可 subscribe 观测。多客户端下 `shutdown`/最后连接断开触发**全局**内核优雅关闭（SIGINT/SIGTERM 仍可强制）。
 
 **理由**：会话是跨连接共享的持久实体（呼应 FileBackedStore 设计），归属只是「当前控制权」而非「所有权凭证」——断开即释放，避免僵尸归属。并发互斥（`pending_runs`）保证同 session 不出现两个活动 run（`session/run` 一请求一响应不变式在多客户端下依然成立）。
+
+**实现回填（v0.4.1 复审）**：`owner` 是「当前 run 的发起方」且**run 时被重写**（见决策 #4 回填）——断开释放、空闲即可被下一发起方接管。`shutdown` 的**断开请求方连接**（初版语义）落地为**全局关闭**：`dispatch_shutdown` 调用 `signal_shutdown()`（置 `shutdown_requested` + 发 `KernelMessage::Shutdown`），TCP accept 循环的 50ms 轮询观察到该标志后 `run()` 返回、内核优雅退出；stdin EOF、`shutdown` 请求、最后连接断开、SIGINT/SIGTERM 四路径汇合到同一关闭链。此语义与「按需常驻、崩溃即关、要接续再启动」（决策 #3）一致，但与初版「仅断请求方、内核继续服务其它连接」不同，文档据此修订。
 
 ### 8. 资源级复用
 
@@ -249,10 +277,10 @@ flowchart LR
 ### 错误传播策略（多客户端语义细化）
 
 - **审批超时**（60s，可配置）自动 Deny——语义不变，从「内核退出」细化为「owner 连接断开或超时」
-- **owner 断开**：挂起审批全部 `Deny`（复用现有 `PermissionError::RequestCancelled` 语义），`session/run` 返回拒绝语义，不无限挂起
+- **owner 断开**：挂起审批全部 `Deny`（复用现有 `PermissionError::RequestCancelled` 语义），`session/run` 返回拒绝语义，不无限挂起。因「owner = 当前发起方」且 run 时被重写（决策 #4/#7 回填），`session_owner` 在断连时随 `unregister` 一并清除，无僵尸归属
 - **subscribe 断开**：隐式退订，无残留订阅
-- **最后连接断开**：常驻内核触发优雅关闭链（复用决策 #13 信号/EOF 汇合机制），`shutdown` 请求断开当前连接而非直接杀内核
-- **TCP 绑定**：默认 127.0.0.1（localhost 信任，生态惯例）；可选 `--token`（客户端 `initialize` 携带），token 不匹配 → `-32806 NotAuthorized`
+- **最后连接断开**：常驻内核触发优雅关闭链（复用决策 #13 信号/EOF 汇合机制）。`shutdown` 请求、最后连接断开、SIGINT/SIGTERM 与 stdin EOF 均汇合到同一关闭链；TCP 常驻下 `shutdown` 为**全局**关闭而非仅断请求方（决策 #7 回填）
+- **TCP 绑定**：默认 127.0.0.1（localhost 信任，生态惯例）；可选 `--token`（客户端 `initialize` 的 `token` 字段携带），token 不匹配 → `-32806 NotAuthorized`；token-gated 下未通过 `initialize` 的业务方法请求同样 → `-32806`
 - **`--max-connections`**（可配置，默认如 16）：超限新连接直接拒绝（关闭 socket）
 - **`session/run` 不可重试**：协议语义保持（异常断开视为失败，不重试）——常驻内核下断线客户端的 run 继续执行，重连者用 `session/subscribe` 观测而非重试
 
@@ -260,7 +288,7 @@ flowchart LR
 
 | 层级 | 范围 | 工具 | 目标 |
 |------|------|------|------|
-| **Connection 契约测试** | stdio / TCP 两端实现一致性 | 同一 serve 循环驱动两个实现 | 两端行为一致（信封/帧/关闭语义） |
+| **Connection 契约测试** | stdio / TCP 两端实现一致性（含 `writer()` 半连接写句柄拆分） | 同一 serve 循环驱动两个实现 | 两端行为一致（信封/帧/关闭语义）、idle 订阅者经写句柄可达广播 |
 | **ConnectionRegistry 测试** | 注册/注销/owner 映射/并发互斥 | 单元测试 | session_owner 映射正确、pending_runs 互斥、owner 释放 |
 | **多客户端集成测试** | 两客户端连同一内核：session 共享、subscribe 广播、审批定向 | 真实 TCP + mock AgentLoop | session/new 后 A run B 可订阅进度；Ask 审批定向 A、B respond 被拒 |
 | **协议加性测试** | `initialize` multi_client、`session/subscribe`、`-32805`/`-32806` | 契约测试 + wire 断言 | 新方法/字段 wire 形状正确、错误码映射正确 |
