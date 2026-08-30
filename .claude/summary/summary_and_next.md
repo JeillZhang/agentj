@@ -1,7 +1,7 @@
 # Summary & Next
 
 > 本文件仅保留**当前正在开发**功能设计文档的内容：进度、剩余步骤、遗留问题与下一步。同步更新时**替换**（不要追加）前一功能内容。
-> 当前功能：**v0.4 商业扩展（守护内核常驻 serve / Web Dashboard / 用量统计 / License）**——实现计划 `docs/superpowers/plans/2026-08-09-agentj-v0.3-plan.md`（13 任务 T0-T12 全部完成并通过逐任务评审；版本 0.3.0 → 0.4.0）。
+> 当前功能：**v0.4 商业扩展（守护内核常驻 serve / Web Dashboard / 用量统计 / License）**——实现计划 `docs/superpowers/plans/2026-08-09-agentj-v0.3-plan.md`（13 任务 T0-T12 全部完成并通过逐任务评审 + 测试验收 6/6 Bug 修复；版本 0.3.0 → 0.4.1）。
 
 ## 待实施
 
@@ -11,7 +11,7 @@
 | ✅ 完成 | v0.1 核心内核（25 任务，v0.1.x 发布） | 无 | P0 | 已完成 |
 | ✅ 完成 | v0.2 权限审批系统（13 任务，v0.2.x 发布） | v0.1 | P0 | 已完成 |
 | ✅ 完成 | v0.3 生态扩展（T0-T11，v0.3.0 发布：事件总线 + ModuleResolver + 子代理调度 + skills + 插件 + Ollama + MCP 长驻 + 会话过期 + FileBackedStore） | v0.1+v0.2 | P1 | 已完成 |
-| ✅ 完成（本阶段） | **v0.4 商业扩展**：守护内核常驻 serve --port / run --attach / dashboard、Web Dashboard、agentj-stats 用量统计、agentj-license 许可证校验；方法面 14→16 | v0.1-v0.3 | P2 | 已完成 |
+| ✅ 完成（本阶段） | **v0.4 商业扩展**：守护内核常驻 serve --port / run --attach / dashboard、Web Dashboard、agentj-stats 用量统计、agentj-license 许可证校验；方法面 14→16；**测试验收 6/6 verified（v0.4.1）** | v0.1-v0.3 | P2 | 已完成 |
 
 ## Phase: v0.4 商业扩展 开发完成 ✅（本次完成）
 
@@ -22,7 +22,7 @@
   - IPC 层（T5-T8）：ConnectionRegistry 多客户端路由（订阅广播 / 属主表 / run 会话互斥）、TcpConnection / TcpIpcServer 常驻服务（--token / --max-connections、末次断连优雅退出）、连接感知分发（initialize token 认证 / run 会话互斥 / permission 属主门控）、`$/progress` 广播 + 权限属主定向路由（`origin_client`）。
   - 商业件（T9-T11）：agentj-stats 用量统计（record_token_usage / record_turn，poison-tolerant）、agentj-license Ed25519 许可证校验（entitlements + 过期策略）、Web Dashboard JSON-RPC 消费端（Vite + React + vitest，kernel/status 面板 + node:net TCP 传输）。
   - 集成（T12）：CLI `serve --port [--token/--max-connections]` 常驻 / `run [--attach tcp://…]` 附着 / `dashboard --port`；UsageCollector 经 AgentLoop on-turn-complete 钩子接线；e2e_serve 密封测试（spawn → listening 行解析 → TCP session/new → 末次断连进程退出）；版本 0.3.0 → 0.4.0。
-- ✅ **验证门禁全绿**：workspace 272 测试通过 / 0 失败（含 e2e_cli 2 + e2e_permission 1 + e2e_serve 1）；clippy --workspace --all-targets -D warnings 零警告；fmt 干净；drift 门禁绿（schemas 32 个）；bindings/ts 构建绿；web-dashboard vitest + vite 构建绿。
+- ✅ **验证门禁全绿**：workspace 280 测试通过 / 0 失败（含 e2e_cli 2 + e2e_permission 1 + e2e_serve 1）；clippy --workspace --all-targets -D warnings 零警告；fmt 干净；drift 门禁绿（schemas 32 个）；bindings/ts 构建绿；web-dashboard vitest + vite 构建绿。
 - ✅ 执行方式备注：Group A 四任务经并行子代理实现；其余任务因子代理基础设施反复静默失败改由控制器直接执行（用户批准），逐任务 TDD + 报告留档于 `.superpowers/sdd/2026-08-09-agentj-v0.3-plan/`。
 
 ### 遗留问题 / 已知限制
@@ -34,6 +34,10 @@
 - 继承自 v0.3 的已知 MEDIUM 项不变（MCP 空闲回收生产布线不可达、EventBus 重入、FileBackedStore tmp 竞争等，详见 v0.3 总结归档）。
 - Web Dashboard 为协议消费端临时形态：浏览器 bundle 中 node:net 被外部化，运行时需 Node 环境或后续 WebSocket 网关。
 
+### 测试验收（2026-08-30 完成）
+
+- ✅ **6/6 Bug 全部 verified**（2 轮回归）：BUG-001 TCP 连接身份硬编码、BUG-002 token 门禁失效、BUG-003 response/content 漂移、BUG-004 progress token null、BUG-005 dashboard 不可用（kernel/status 未分发 + RpcClient 响应错配）、BUG-006 空闲订阅者收不到广播（ConnectionWriter 方案）。每 Bug 一提交（fix: BUG-00N），版本 bump 至 0.4.1。
+
 ### 下一步
 
-- 运行 `/jcmd-test-acceptance` 启动测试验收流程（测试 agent 发现 Bug → Bug-fix agent 修复 → 回归验证），验收通过后创建 PR。
+- 创建 PR 合并 feature/v0.4-commercial。

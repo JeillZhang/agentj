@@ -1,6 +1,6 @@
 # AGENTS.md
 
-> Updated 2026-08-23 — v0.4.0 released (16 crates，守护内核落地：多客户端常驻 TCP 内核 `serve --port` / `run --attach` / `dashboard`、方法面 14→16（`session/subscribe`/`session/unsubscribe`）、`$/progress` 广播 + 权限属主路由、agentj-stats 用量统计、agentj-license Ed25519 许可证校验、Web Dashboard JSON-RPC 消费端)；v0.3 全保留：event bus + 子代理调度 + skills 加载 + 插件加载 + MCP 长驻连接 + 会话过期 + 磁盘持久化 + Ollama provider。
+> Updated 2026-08-30 — v0.4.1 released (16 crates，守护内核落地：多客户端常驻 TCP 内核 `serve --port` / `run --attach` / `dashboard`、方法面 14→16（`session/subscribe`/`session/unsubscribe`）、`$/progress` 广播 + 权限属主路由、agentj-stats 用量统计、agentj-license Ed25519 许可证校验、Web Dashboard JSON-RPC 消费端)；v0.3 全保留：event bus + 子代理调度 + skills 加载 + 插件加载 + MCP 长驻连接 + 会话过期 + 磁盘持久化 + Ollama provider。
 
 ## Project Status
 
@@ -14,7 +14,7 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
 
 ## Commands
 
-- `cargo test --workspace` — 全量测试（272 通过；v0.4 起新增 e2e_serve 常驻内核生命周期密封测试、stats/license 单测、tcp 多客户端与生命周期单测、protocol 订阅 wire-shape 测试）
+- `cargo test --workspace` — 全量测试（280 通过；v0.4 起新增 e2e_serve 常驻内核生命周期密封测试、stats/license 单测、tcp 多客户端与生命周期单测、protocol 订阅 wire-shape 测试）
 - `cargo clippy --workspace -- -D warnings` — lint 门禁（零警告）
 - `cargo bench -p agentj-model` — 模型流式基准（criterion：`mock_stream_10_events`）
 - `cargo run -p agentj-protocol --bin gen_schemas` — 重新生成 `schemas/*.json`

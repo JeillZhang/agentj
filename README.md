@@ -2,7 +2,7 @@
 
 AI 编码代理工具（Rust）——Linux 内核式「内核调度 + 可插拔模块」架构。内核通过统一的 JSON-RPC 2.0 协议（stdio / TCP，未来 WebSocket）对外暴露能力；CLI、TUI、Web Dashboard、IDE 插件均可作为协议消费者，**任意语言**可开发前端连接内核。
 
-> 当前版本：**v0.4.0**——守护内核落地（16 crate）：多客户端常驻 TCP 内核（`serve --port` / `run --attach` / `dashboard`）+ Web Dashboard（JSON-RPC 消费端）+ 用量统计（agentj-stats）+ License 校验（agentj-license）+ 方法面 14→16（`session/subscribe`/`session/unsubscribe`）；v0.3 全保留：事件总线 + 子代理调度 + skills 加载 + 插件加载（libloading）+ MCP 长驻连接 + 会话过期 + 磁盘持久化 + Ollama provider；v0.2 全保留：IPC 协议契约 + 权限审批系统 + JSON-RPC stdio IPC + CLI run/serve。
+> 当前版本：**v0.4.1**——守护内核落地（验收修复 6 Bug 后）（16 crate）：多客户端常驻 TCP 内核（`serve --port` / `run --attach` / `dashboard`）+ Web Dashboard（JSON-RPC 消费端）+ 用量统计（agentj-stats）+ License 校验（agentj-license）+ 方法面 14→16（`session/subscribe`/`session/unsubscribe`）；v0.3 全保留：事件总线 + 子代理调度 + skills 加载 + 插件加载（libloading）+ MCP 长驻连接 + 会话过期 + 磁盘持久化 + Ollama provider；v0.2 全保留：IPC 协议契约 + 权限审批系统 + JSON-RPC stdio IPC + CLI run/serve。
 
 ## Features
 
@@ -102,7 +102,7 @@ effect = "deny"
 ## Development
 
 ```bash
-cargo test --workspace            # 全量测试（272 通过，含 e2e_cli/e2e_permission/e2e_serve 密封测试）
+cargo test --workspace            # 全量测试（280 通过，含 e2e_cli/e2e_permission/e2e_serve 密封测试）
 cargo clippy --workspace -- -D warnings
 cargo bench -p agentj-model       # 模型流式基准（criterion）
 cargo run -p agentj-protocol --bin gen_schemas   # 重新生成 schemas/*.json
