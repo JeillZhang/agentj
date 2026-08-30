@@ -43,7 +43,6 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
 - `agentj-stats`：用量统计（UsageCollector：per-session/global totals 与 turns 计数；poison-tolerant；由 CLI 经 AgentLoop on-turn-complete 接线）。
 - `agentj-license`：Ed25519 许可证校验（`base64(payload).base64(sig)` 密钥格式，entitlements + 过期策略；design-pending 商用门控接入）。
 - `agentj-mcp`：MCP 客户端——短生命周期子进程连接 + 工具发现注册，以及 **McpConnectionManager**（v0.3 长驻连接：引用计数共享 + 空闲超时回收 + 指数退避重连 + 级联 ghost-tool 注销）。 已保留，v0.5 接线不变。
-- `agentj-mcp`：MCP 客户端——短生命周期子进程连接 + 工具发现注册，以及 **McpConnectionManager**（v0.3 长驻连接：引用计数共享 + 空闲超时回收 + 指数退避重连 + 级联 ghost-tool 注销）。
 - `agentj-skills`：skills 加载器（`.aj/.agents/.claude/skills` 优先级合并，同名校验 SKILL.md，注册语义随 manifest-compat 研究延后）。
 - `agentj-plugin`：插件系统（manifest 解析 + 生命周期状态机 + 依赖图 + libloading 动态加载，`plugin-manager` / `state_machine` / `libloading_loader`）。
 - `agentj-ipc`：JSON-RPC 2.0 IPC 服务（stdio + TCP 多客户端）。统一 Connection 抽象（StdioConnection/TcpConnection）+ ConnectionRegistry（订阅广播/属主表/run 互斥）+ 连接感知分发（initialize token 认证、run 会话互斥 `-32805`、permission 属主门控 `-32806`、subscribe/unsubscribe）+ `$/progress` 广播与权限属主路由（`origin_client`）；TcpIpcServer 常驻模式支持 --token/--max-connections。
