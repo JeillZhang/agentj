@@ -555,12 +555,26 @@ impl KernelContext {
 
 // ---- Kernel Message ----
 
+/// Oneshot result channel for ToolCallRequest — mirrors ServiceCallReply.
+pub type ToolCallReply = Arc<
+    std::sync::Mutex<
+        Option<tokio::sync::oneshot::Sender<Result<serde_json::Value, crate::error::ToolError>>>,
+    >,
+>;
+
 #[derive(Debug, Clone)]
 pub enum KernelMessage {
     UserRequest {
         session_id: SessionId,
         content: String,
         attachments: Vec<Attachment>,
+        reply: tokio::sync::mpsc::Sender<crate::types::AgentEvent>,
+    },
+    ToolCallRequest {
+        session_id: SessionId,
+        tool_call: ToolCall,
+        target: ModuleId,
+        reply: ToolCallReply,
     },
     /// v0.3 service routing (design §7 #1): handled by the kernel BEFORE module
     /// broadcast; unknown services get an error reply so the caller never hangs.
