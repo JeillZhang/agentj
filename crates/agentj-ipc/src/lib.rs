@@ -360,6 +360,7 @@ impl IpcServer {
                 "session/run" => self.dispatch_session_run(&req, conn_id).await,
                 "session/subscribe" => self.dispatch_subscribe(&req, conn_id),
                 "session/unsubscribe" => self.dispatch_unsubscribe(&req, conn_id),
+                "kernel/status" => self.dispatch_kernel_status(),
                 "shutdown" => self.dispatch_shutdown(),
                 "permission/respond" => self.dispatch_permission_respond(&req, conn_id).await,
                 "$/cancelRequest" => self.dispatch_cancel_request(&req).await,
@@ -583,6 +584,16 @@ impl IpcServer {
             .map_err(|e| DispatchError::internal(e.to_string()))?;
         self.shutdown_requested.store(true, Ordering::SeqCst);
         Ok(serde_json::json!({ "status": "ok" }))
+    }
+
+    /// `kernel/status`: report the daemon version plus a module snapshot. The
+    /// IPC crate owns no kernel module registry, so `modules` stays empty —
+    /// the schema (KernelStatusResult) requires only `version` + `modules`.
+    fn dispatch_kernel_status(&self) -> Result<Value, DispatchError> {
+        Ok(serde_json::json!({
+            "version": env!("CARGO_PKG_VERSION"),
+            "modules": [],
+        }))
     }
 
     /// `permission/respond`: deliver the client's decision to a pending approval.
@@ -1262,6 +1273,39 @@ mod tests {
         assert!(v["error"].is_object());
         assert_eq!(v["error"]["code"], -32601); // Method not found
         assert_eq!(v["id"], 3, "error response must echo request id");
+    }
+
+    /// BUG-005: `kernel/status` must be dispatched by the IPC server — the
+    /// dashboard polls it on load, and -32601 made the panel show "kernel
+    /// unreachable". Wire shape per the KernelStatusResult schema: `version`
+    /// string + `modules` array.
+    #[tokio::test]
+    async fn kernel_status_returns_version_and_modules_array() {
+        let server = IpcServer::new(stub_agent_loop(), Kernel::new());
+        let resp = server
+            .handle_request(r#"{"jsonrpc":"2.0","id":5,"method":"kernel/status"}"#)
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(
+            v["error"],
+            serde_json::Value::Null,
+            "kernel/status must not error: {resp}"
+        );
+        assert!(
+            v["result"]["version"].is_string(),
+            "kernel/status must return a version string: {resp}"
+        );
+        assert_eq!(
+            v["result"]["version"],
+            env!("CARGO_PKG_VERSION"),
+            "version must reflect the daemon build"
+        );
+        assert!(
+            v["result"]["modules"].is_array(),
+            "kernel/status must return a modules array: {resp}"
+        );
+        assert_eq!(v["id"], 5, "response must echo request id");
     }
 
     #[tokio::test]

@@ -25,7 +25,58 @@ export interface RpcTransport {
   send: (line: string) => Promise<string>;
 }
 
+interface PendingEntry {
+  resolve: (line: string) => void;
+  reject: (err: Error) => void;
+}
+
+/// Buffers incoming NDJSON lines and resolves each request promise with the
+/// line whose `id` matches the request id. JSON-RPC notifications (no id,
+/// e.g. `$/progress`) match nothing and are ignored, so they cannot displace
+/// a real response (BUG-005).
+export class ResponseRouter {
+  private buffer = '';
+  private readonly pending = new Map<number, PendingEntry>();
+
+  requestId(line: string): number {
+    return (JSON.parse(line) as RpcRequest).id;
+  }
+
+  register(id: number, entry: PendingEntry): void {
+    this.pending.set(id, entry);
+  }
+
+  feed(chunk: string): void {
+    this.buffer += chunk;
+    let nl: number;
+    while ((nl = this.buffer.indexOf('\n')) >= 0) {
+      const raw = this.buffer.slice(0, nl).trim();
+      this.buffer = this.buffer.slice(nl + 1);
+      if (!raw) continue;
+      let msg: RpcResponse;
+      try {
+        msg = JSON.parse(raw) as RpcResponse;
+      } catch {
+        continue;
+      }
+      if (msg.id == null) continue;
+      const entry = this.pending.get(msg.id);
+      if (!entry) continue;
+      this.pending.delete(msg.id);
+      entry.resolve(raw);
+    }
+  }
+
+  rejectAll(err: Error): void {
+    for (const entry of this.pending.values()) {
+      entry.reject(err);
+    }
+    this.pending.clear();
+  }
+}
+
 export class RpcClient {
+  private static nextId = 1;
   private readonly transport: RpcTransport;
 
   constructor(transport: RpcTransport) {
@@ -36,7 +87,7 @@ export class RpcClient {
     method: string,
     params: Record<string, unknown> = {},
   ): Promise<unknown> {
-    const id = Date.now();
+    const id = RpcClient.nextId++;
     const line = JSON.stringify({ jsonrpc: '2.0', id, method, params });
     const raw = await this.transport.send(line);
     const response = JSON.parse(raw) as RpcResponse;
@@ -56,23 +107,14 @@ export class RpcClient {
 
   static connect(port: number, host = '127.0.0.1'): RpcClient {
     const socket = net.createConnection({ port, host });
-    let buffer = '';
+    const router = new ResponseRouter();
+    socket.on('data', (chunk: Buffer) => router.feed(chunk.toString()));
+    socket.on('error', (err: Error) => router.rejectAll(err));
     return new RpcClient({
       send: (line: string) =>
         new Promise<string>((resolve, reject) => {
+          router.register(router.requestId(line), { resolve, reject });
           socket.write(line + '\n');
-          const onData = (chunk: Buffer) => {
-            buffer += chunk.toString();
-            const idx = buffer.indexOf('\n');
-            if (idx >= 0) {
-              const response = buffer.slice(0, idx);
-              buffer = buffer.slice(idx + 1);
-              socket.off('data', onData);
-              resolve(response);
-            }
-          };
-          socket.on('data', onData);
-          socket.on('error', reject);
         }),
     });
   }
