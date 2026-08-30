@@ -57,11 +57,21 @@ export interface InitializeParams {
   capabilities?: unknown;
   client_info?: ClientInfo | null;
   protocol_version: string;
+  /**
+   * Access token required by a token-gated resident kernel (--token).
+   * Absent when the kernel runs without auth — additive.
+   */
+  token?: string | null;
   [k: string]: unknown;
 }
 
 export interface InitializeResult {
   capabilities?: unknown;
+  /**
+   * This connection's unique id in a multi-client kernel (design 决策 #6).
+   * Absent in single-client (stdio) mode. Capability flag: capabilities.multi_client.
+   */
+  connection_id?: string | null;
   protocol_version: string;
   server_info: ServerInfo;
   [k: string]: unknown;
@@ -111,6 +121,11 @@ export interface PermissionRequestParams {
   args: {
     [k: string]: unknown;
   };
+  /**
+   * Connection id of the client that initiated the run (design 决策 #5).
+   * Absent in single-client (stdio) mode — additive.
+   */
+  origin_client?: string | null;
   /**
    * Human-readable reason (tool default mode / matched rule).
    */
@@ -261,6 +276,20 @@ export type SessionStatus = "active" | "archived" | "deleted";
 
 export interface SessionStatusResult {
   status: SessionStatus;
+  [k: string]: unknown;
+}
+
+/**
+ * Streaming progress token — independent of the request id (design 决策 #3).
+ */
+
+/**
+ * `session/subscribe` params — subscribe to a session's running progress
+ * (design 决策 #4: broadcast subscription). `$/progress` broadcasts to all subscribers.
+ */
+export interface SessionSubscribeParams {
+  progress_token?: ProgressToken | null;
+  session_id: string;
   [k: string]: unknown;
 }
 

@@ -10,6 +10,8 @@
     { "method": "session/status", "kind": "request", "direction": "client_to_server", "params": "SessionIdParams", "result": "SessionStatusResult" },
     { "method": "session/archive", "kind": "request", "direction": "client_to_server", "params": "SessionIdParams", "result": null },
     { "method": "session/delete", "kind": "request", "direction": "client_to_server", "params": "SessionIdParams", "result": null },
+    { "method": "session/subscribe", "kind": "request", "direction": "client_to_server", "params": "SessionSubscribeParams", "result": null },
+    { "method": "session/unsubscribe", "kind": "request", "direction": "client_to_server", "params": "SessionIdParams", "result": null },
     { "method": "kernel/status", "kind": "request", "direction": "client_to_server", "params": null, "result": "KernelStatusResult" },
     { "method": "$/cancelRequest", "kind": "notification", "direction": "both", "params": "CancelParams", "result": null },
     { "method": "$/progress", "kind": "notification", "direction": "server_to_client", "params": "ProgressParams", "result": null },

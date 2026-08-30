@@ -78,9 +78,26 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// Run a single prompt and print the final response.
-    Run { prompt: String },
-    /// Serve the JSON-RPC API over stdio.
-    Serve,
+    Run {
+        prompt: String,
+        /// Attach to a resident kernel instead of an embedded one (tcp://host:port).
+        #[arg(long)]
+        attach: Option<String>,
+    },
+    /// Serve the JSON-RPC API over stdio, or over TCP with --port (resident kernel).
+    Serve {
+        /// Bind a resident multi-client TCP kernel on 127.0.0.1:<port>.
+        #[arg(long)]
+        port: Option<u16>,
+        /// Require this access token in initialize when serving TCP.
+        #[arg(long)]
+        token: Option<String>,
+        /// Max concurrent TCP connections for resident mode.
+        #[arg(long, default_value_t = 16)]
+        max_connections: usize,
+    },
+    /// Serve the JSON-RPC API over TCP for the Web Dashboard.
+    Dashboard { port: u16 },
 }
 
 /// Build the per-tool policy map from the [permission] config section
@@ -89,6 +106,106 @@ fn permission_policies_from_config(
     cfg: &agentj_config::Config,
 ) -> std::collections::HashMap<String, agentj_permission::ToolPolicy> {
     cfg.inner().permission.clone().unwrap_or_default().tools
+}
+
+fn build_ipc_server(
+    agent_loop: AgentLoop,
+    kernel: Kernel,
+    permission_module: Arc<agentj_permission::PermissionModule>,
+) -> IpcServer {
+    let mut ipc_server = IpcServer::new(agent_loop, kernel);
+    ipc_server.permission_module = Some(permission_module);
+    ipc_server
+}
+
+fn spawn_signal_task(sender: agentj_core::kernel::KernelSender) -> tokio::task::JoinHandle<()> {
+    // design #13: SIGINT/SIGTERM → same graceful shutdown chain as stdin EOF.
+    tokio::spawn(async move {
+        #[cfg(unix)]
+        {
+            let mut sigterm =
+                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).unwrap();
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {}
+                _ = sigterm.recv() => {}
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = tokio::signal::ctrl_c().await;
+        }
+        let _ = sender.send(KernelMessage::Shutdown);
+    })
+}
+
+async fn serve_tcp(
+    agent_loop: AgentLoop,
+    kernel: Kernel,
+    permission_module: Arc<agentj_permission::PermissionModule>,
+    port: u16,
+    token: Option<String>,
+    max_connections: usize,
+) -> anyhow::Result<()> {
+    let mut tcp = agentj_ipc::tcp::TcpIpcServer::bind(
+        &format!("127.0.0.1:{port}"),
+        agent_loop,
+        kernel,
+        Some(permission_module),
+        token,
+        max_connections,
+    )
+    .await?;
+    println!("listening on {}", tcp.local_addr()?);
+    let signal_task = spawn_signal_task(tcp.kernel_sender());
+    // Resident mode: exits when the last client disconnects or a shutdown
+    // request arrives (决策 #3 按需常驻).
+    tcp.run().await?;
+    signal_task.abort();
+    Ok(())
+}
+
+async fn run_attached(url: &str, prompt: &str) -> anyhow::Result<()> {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    let target = url.strip_prefix("tcp://").unwrap_or(url);
+    let stream = tokio::net::TcpStream::connect(target).await?;
+    let (r, mut w) = stream.into_split();
+    let mut reader = BufReader::new(r);
+
+    w.write_all(br#"{"jsonrpc":"2.0","id":1,"method":"session/new"}"#)
+        .await?;
+    w.write_all(b"\n").await?;
+    let mut line = String::new();
+    reader.read_line(&mut line).await?;
+    if line.is_empty() {
+        anyhow::bail!("connection closed before session/new completed");
+    }
+    let v: serde_json::Value = serde_json::from_str(line.trim())?;
+    let sid = v["result"]["session_id"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("session/new failed: {line}"))?
+        .to_string();
+
+    let run_line = format!(
+        r#"{{"jsonrpc":"2.0","id":2,"method":"session/run","params":{{"session_id":"{sid}","content":{}}}}}"#,
+        serde_json::to_string(prompt)?,
+    );
+    w.write_all(run_line.as_bytes()).await?;
+    w.write_all(b"\n").await?;
+    loop {
+        line.clear();
+        if reader.read_line(&mut line).await? == 0 {
+            anyhow::bail!("connection closed before session/run completed");
+        }
+        let v: serde_json::Value = match serde_json::from_str(line.trim()) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        if let Some(text) = v["result"]["content"].as_str() {
+            println!("{text}");
+            break;
+        }
+    }
+    Ok(())
 }
 
 #[tokio::main]
@@ -139,11 +256,16 @@ async fn main() -> anyhow::Result<()> {
     // direct per architecture note); the Kernel owns module lifecycle + graceful shutdown.
     let mut kernel = Kernel::new();
     let mut register = ModuleRegister::new(Arc::clone(&ctx.tools), Arc::clone(&ctx.providers));
-    let agent_loop = AgentLoop::new(
+    let usage = Arc::new(agentj_stats::UsageCollector::new());
+    let mut agent_loop = AgentLoop::new(
         ctx.clone(),
         Arc::new(ContextPipeline::new()),
         "You are AgentJ, an AI coding assistant.".into(),
     );
+    {
+        let usage = Arc::clone(&usage);
+        agent_loop.set_on_turn_complete(Arc::new(move |sid| usage.record_turn(sid.clone())));
+    }
     kernel.register_module(
         Box::new(AgentLoopModule {
             agent_loop: agent_loop.clone(),
@@ -195,51 +317,55 @@ async fn main() -> anyhow::Result<()> {
         tracing::info!(skill = %skill.name, priority = ?skill.priority, "loaded");
     }
 
-    let mut ipc_server = IpcServer::new(agent_loop, kernel);
-    ipc_server.permission_module = Some(permission_module);
-
-    // design #13: SIGINT/SIGTERM → same graceful shutdown chain as stdin EOF.
-    // The sender is cloned so the signal task doesn't borrow ipc_server; serve_stdio
-    // exits when the kernel finishes (read-side interruption in T13).
-    let sender = ipc_server.kernel_sender();
-    let signal_task = tokio::spawn(async move {
-        #[cfg(unix)]
-        {
-            let mut sigterm =
-                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).unwrap();
-            tokio::select! {
-                _ = tokio::signal::ctrl_c() => {}
-                _ = sigterm.recv() => {}
+    match cli.command {
+        Some(Commands::Run { prompt, attach }) => {
+            if let Some(url) = attach {
+                run_attached(&url, &prompt).await?;
+            } else {
+                let mut ipc_server = build_ipc_server(agent_loop, kernel, permission_module);
+                let signal_task = spawn_signal_task(ipc_server.kernel_sender());
+                let sid = ipc_server.create_session()?;
+                let response = ipc_server.run_turn(&sid, &prompt).await?;
+                println!("{response}");
+                // graceful shutdown: signal the kernel and wait for modules' shutdown()
+                ipc_server.signal_shutdown()?;
+                ipc_server.await_shutdown().await?;
+                signal_task.abort();
             }
         }
-        #[cfg(not(unix))]
-        {
-            let _ = tokio::signal::ctrl_c().await;
-        }
-        let _ = sender.send(KernelMessage::Shutdown);
-    });
-
-    match cli.command {
-        Some(Commands::Run { prompt }) => {
-            let sid = ipc_server.create_session()?;
-            let response = ipc_server.run_turn(&sid, &prompt).await?;
-            println!("{response}");
-            // graceful shutdown: signal the kernel and wait for modules' shutdown()
-            ipc_server.signal_shutdown()?;
-            ipc_server.await_shutdown().await?;
-        }
-        Some(Commands::Serve) => {
-            // serve_stdio exits on EOF, shutdown request, or signal-triggered kernel
-            // completion; kernel graceful shutdown runs after
+        Some(Commands::Serve { port: None, .. }) => {
+            let mut ipc_server = build_ipc_server(agent_loop, kernel, permission_module);
+            let signal_task = spawn_signal_task(ipc_server.kernel_sender());
+            // serve_stdio exits on EOF, shutdown request, or signal-triggered
+            // kernel completion; kernel graceful shutdown runs after
             ipc_server.serve_stdio().await?;
+            signal_task.abort();
+        }
+        Some(Commands::Serve {
+            port: Some(port),
+            token,
+            max_connections,
+        }) => {
+            serve_tcp(
+                agent_loop,
+                kernel,
+                permission_module,
+                port,
+                token,
+                max_connections,
+            )
+            .await?;
+        }
+        Some(Commands::Dashboard { port }) => {
+            serve_tcp(agent_loop, kernel, permission_module, port, None, 16).await?;
         }
         None => {
             println!("Use `agentj run \"your prompt\"` or `agentj serve`");
+            let mut ipc_server = build_ipc_server(agent_loop, kernel, permission_module);
             ipc_server.signal_shutdown()?;
             ipc_server.await_shutdown().await?;
         }
     }
-    signal_task.abort();
     // The serve loop reads stdin through tokio's blocking pool; dropping the
     // runtime would wait for that thread while a client keeps stdin open.
     // Graceful shutdown already ran above — exit directly.

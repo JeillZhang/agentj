@@ -17,6 +17,13 @@
     },
     "protocol_version": {
       "type": "string"
+    },
+    "token": {
+      "description": "Access token required by a token-gated resident kernel (--token).\nAbsent when the kernel runs without auth — additive.",
+      "type": [
+        "string",
+        "null"
+      ]
     }
   },
   "required": [

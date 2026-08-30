@@ -1,11 +1,16 @@
 //! Unified Connection abstraction (design 决策 #1/#2) — transport-agnostic serve.
+pub mod tcp;
+
 use agentj_core::agent_loop::{AgentEvent, AgentLoop};
 use agentj_core::error::{IpcError, KernelError, ModuleError};
 use agentj_core::kernel::Kernel;
 use agentj_core::module::KernelMessage;
 use agentj_core::types::SessionId;
 use agentj_permission::{ApprovalDecision, PermissionModule};
+use agentj_protocol::base::error_codes;
+use agentj_protocol::lifecycle::InitializeParams;
 use agentj_protocol::permission::{PermissionRequestParams, PermissionRespondParams};
+use agentj_protocol::session::{SessionIdParams, SessionSubscribeParams};
 use agentj_protocol::streaming::CancelParams;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -24,6 +29,45 @@ pub enum TransportKind {
     UnixSocket,
 }
 
+/// Send closure shared between a connection and its registered writer handle.
+pub type ConnSend = Arc<dyn Fn(&str) -> Result<(), IpcError> + Send + Sync>;
+
+/// Send-only handle to a connection, registered in the `ConnectionRegistry`
+/// so broadcasts and owner-directed routing can reach a connection while its
+/// serve loop owns the reader half (and is therefore awaiting `recv`). The
+/// handle shares the connection's writer — messages sent through it reach the
+/// same peer. Kept registered for the connection's lifetime, so an idle
+/// subscriber never drops out of broadcast reach (BUG-006).
+pub struct ConnectionWriter {
+    id: String,
+    kind: TransportKind,
+    peer: String,
+    send: ConnSend,
+}
+
+impl ConnectionWriter {
+    pub fn new(id: String, kind: TransportKind, peer: String, send: ConnSend) -> Self {
+        Self {
+            id,
+            kind,
+            peer,
+            send,
+        }
+    }
+    pub fn id(&self) -> String {
+        self.id.clone()
+    }
+    pub fn kind(&self) -> TransportKind {
+        self.kind
+    }
+    pub fn peer_desc(&self) -> String {
+        self.peer.clone()
+    }
+    pub fn send(&self, msg: &str) -> Result<(), IpcError> {
+        (self.send)(msg)
+    }
+}
+
 /// Unified connection abstraction (design 决策 #1): stdio/TCP/Unix-socket are implementations.
 /// v0.1 only ships `StdioConnection`; `TcpConnection` lands in v0.3 (daemon-kernel plan).
 /// `#[async_trait]` boxes the recv future so the trait stays dyn-compatible (edition 2024
@@ -35,23 +79,37 @@ pub trait Connection: Send + Sync {
     fn send(&self, msg: &str) -> Result<(), IpcError>;
     async fn recv(&mut self) -> Option<Result<String, IpcError>>;
     fn peer_desc(&self) -> String;
+    /// Detach a send-only handle sharing this connection's writer, so the
+    /// registry can route broadcasts to it while the serve loop owns the
+    /// reader half (`recv` needs `&mut`, so the full connection cannot stay
+    /// registered across the await).
+    fn writer(&self) -> ConnectionWriter;
 }
 
 /// Multi-client connection registry (design 决策 #1/#5) — v0.1 uses the single
 /// stdio path; session_owner routing is consumed by v0.3 permission direction.
 pub struct ConnectionRegistry {
     conns: std::collections::HashMap<String, Box<dyn Connection>>,
+    /// Send-only handles for connections whose serve loop owns the reader half
+    /// (TCP). Registered for the connection's lifetime so broadcasts reach idle
+    /// subscribers; removed on disconnect.
+    writers: std::collections::HashMap<String, ConnectionWriter>,
     session_owner: std::collections::HashMap<SessionId, String>,
-    #[allow(dead_code)]
-    pending_runs: std::collections::HashMap<SessionId, ()>, // reserved for v0.3 pending-run tracking
+    pending_runs: std::collections::HashSet<SessionId>,
+    subscribers: std::collections::HashMap<SessionId, std::collections::HashSet<String>>,
+    /// Connections that passed `initialize` auth on a token-gated server.
+    authorized: std::collections::HashSet<String>,
 }
 
 impl ConnectionRegistry {
     pub fn new() -> Self {
         Self {
             conns: std::collections::HashMap::new(),
+            writers: std::collections::HashMap::new(),
             session_owner: std::collections::HashMap::new(),
-            pending_runs: std::collections::HashMap::new(),
+            pending_runs: std::collections::HashSet::new(),
+            subscribers: std::collections::HashMap::new(),
+            authorized: std::collections::HashSet::new(),
         }
     }
     /// Register a connection; v0.1 registers exactly one stdio connection.
@@ -60,7 +118,21 @@ impl ConnectionRegistry {
         self.conns.insert(id.clone(), conn);
         id
     }
+    /// Register a send-only handle so the connection stays reachable for
+    /// broadcasts while its serve loop owns the reader half.
+    pub fn register_writer(&mut self, writer: ConnectionWriter) -> String {
+        let id = writer.id();
+        self.writers.insert(id.clone(), writer);
+        id
+    }
     pub fn unregister(&mut self, id: &str) -> Option<Box<dyn Connection>> {
+        self.authorized.remove(id);
+        self.session_owner.retain(|_, owner| owner != id);
+        for subs in self.subscribers.values_mut() {
+            subs.remove(id);
+        }
+        self.subscribers.retain(|_, s| !s.is_empty());
+        self.writers.remove(id);
         self.conns.remove(id)
     }
     /// Record which connection owns a session (design 决策 #5: 审批定向路由依据).
@@ -69,6 +141,58 @@ impl ConnectionRegistry {
     }
     pub fn session_owner(&self, session: &SessionId) -> Option<&String> {
         self.session_owner.get(session)
+    }
+    /// Record that a connection passed `initialize` auth (token-gated mode).
+    pub fn mark_authorized(&mut self, conn_id: &str) {
+        self.authorized.insert(conn_id.to_string());
+    }
+    pub fn is_authorized(&self, conn_id: &str) -> bool {
+        self.authorized.contains(conn_id)
+    }
+    /// Route a message to one connection; a vanished peer is not an error
+    /// (design 错误处理: drop the response instead of failing the caller).
+    /// Full connections (stdio) take precedence; TCP connections are reached
+    /// through their registered send-only handle.
+    pub fn send_to(&self, conn_id: &str, msg: &str) -> Result<(), IpcError> {
+        if let Some(conn) = self.conns.get(conn_id) {
+            return conn.send(msg);
+        }
+        match self.writers.get(conn_id) {
+            Some(writer) => writer.send(msg),
+            None => Ok(()),
+        }
+    }
+    /// Subscribe a connection to a session's broadcast channel (决策 #4).
+    pub fn subscribe(&mut self, session: &SessionId, conn_id: &str) {
+        self.subscribers
+            .entry(session.clone())
+            .or_default()
+            .insert(conn_id.to_string());
+    }
+    pub fn unsubscribe(&mut self, session: &SessionId, conn_id: &str) {
+        if let Some(subs) = self.subscribers.get_mut(session) {
+            subs.remove(conn_id);
+            if subs.is_empty() {
+                self.subscribers.remove(session);
+            }
+        }
+    }
+    /// Broadcast to every subscriber of a session (决策 #4); the owner must be
+    /// registered as a subscriber by the dispatch layer to also receive it.
+    pub fn broadcast_to_session(&self, session: &SessionId, msg: &str) {
+        if let Some(subs) = self.subscribers.get(session) {
+            for conn_id in subs {
+                let _ = self.send_to(conn_id, msg);
+            }
+        }
+    }
+    /// Mutual exclusion for concurrent runs on one session (决策 #7):
+    /// returns false while a run is in flight (`-32805 SessionBusy`).
+    pub fn try_acquire_run(&mut self, session: &SessionId) -> bool {
+        self.pending_runs.insert(session.clone())
+    }
+    pub fn release_run(&mut self, session: &SessionId) {
+        self.pending_runs.remove(session);
     }
 }
 
@@ -146,7 +270,13 @@ pub struct IpcServer {
     kernel: Kernel,
     kernel_handle: Option<JoinHandle<Result<(), KernelError>>>,
     shutdown_requested: AtomicBool,
-    registry: ConnectionRegistry,
+    /// Shared registry: multi-client routing mutates it from `&self` handlers
+    /// and the T8 sync notifier. Sync lock (send/recv paths never await while
+    /// held — serve_stdio detaches a connection before its await points).
+    registry: Arc<std::sync::RwLock<ConnectionRegistry>>,
+    /// Shared access token for authorized clients (daemon-kernel --token);
+    /// checked by `initialize` dispatch when Some.
+    token: std::sync::Mutex<Option<String>>,
     /// Optional PermissionModule: `permission/respond` and `$/cancelRequest` dispatch into it.
     pub permission_module: Option<Arc<PermissionModule>>,
     /// In-flight session id — the mapping `$/cancelRequest` reads to reach the module.
@@ -177,6 +307,22 @@ impl Drop for InflightSessionGuard {
     }
 }
 
+/// RAII guard releasing the per-session run mutex (决策 #7): acquired at
+/// dispatch entry; Drop covers every exit path so a crashed run never leaves
+/// `-32805 SessionBusy` stuck on.
+struct RunGuard {
+    registry: Arc<std::sync::RwLock<ConnectionRegistry>>,
+    sid: String,
+}
+
+impl Drop for RunGuard {
+    fn drop(&mut self) {
+        if let Ok(mut reg) = self.registry.write() {
+            reg.release_run(&self.sid);
+        }
+    }
+}
+
 impl IpcServer {
     pub fn new(agent_loop: AgentLoop, mut kernel: Kernel) -> Self {
         // kernel owns module lifecycle: start() spawns the event loop; its JoinHandle
@@ -187,7 +333,8 @@ impl IpcServer {
             kernel,
             kernel_handle: Some(kernel_handle),
             shutdown_requested: AtomicBool::new(false),
-            registry: ConnectionRegistry::new(),
+            registry: Arc::new(std::sync::RwLock::new(ConnectionRegistry::new())),
+            token: std::sync::Mutex::new(None),
             permission_module: None,
             session: Arc::new(tokio::sync::Mutex::new(None)),
         }
@@ -205,8 +352,18 @@ impl IpcServer {
         self.shutdown_requested.load(Ordering::SeqCst)
     }
 
+    /// Configure the access token required by `initialize`; None disables auth.
+    pub fn set_token(&self, token: Option<String>) {
+        if let Ok(mut t) = self.token.lock() {
+            *t = token;
+        }
+    }
+
     /// Send the Shutdown message to the kernel (idempotent — safe to call repeatedly).
+    /// Also marks shutdown as requested so transport accept-loops polling
+    /// `shutdown_requested()` observe the signal (TCP last-disconnect path).
     pub fn signal_shutdown(&self) -> Result<(), IpcError> {
+        self.shutdown_requested.store(true, Ordering::SeqCst);
         self.kernel
             .sender()
             .send(KernelMessage::Shutdown)
@@ -230,10 +387,16 @@ impl IpcServer {
         Ok(())
     }
 
-    /// Handle a single JSON-RPC request, returning a JSON-RPC response string.
-    /// Every error path echoes the request `id` (JSON-RPC 2.0 §5) with the
-    /// semantically correct standard code, never falling through to `serve_stdio`.
+    /// Handle a single JSON-RPC request on the stdio sentinel connection
+    /// ("stdio") — v0.1 single-client entry, unchanged behavior.
     pub async fn handle_request(&self, raw: &str) -> Result<String, IpcError> {
+        self.handle_request_from(raw, "stdio").await
+    }
+
+    /// Handle a single JSON-RPC request from connection `conn_id`. Every error
+    /// path echoes the request `id` (JSON-RPC 2.0 §5) with the semantically
+    /// correct standard code, never falling through to the serve loop.
+    pub async fn handle_request_from(&self, raw: &str, conn_id: &str) -> Result<String, IpcError> {
         let req: JsonRpcRequest = match serde_json::from_str(raw) {
             Ok(r) => r,
             Err(e) => {
@@ -250,13 +413,21 @@ impl IpcServer {
             }
         };
 
-        let result = match req.method.as_str() {
-            "session/new" => self.dispatch_session_new(),
-            "session/run" => self.dispatch_session_run(&req).await,
-            "shutdown" => self.dispatch_shutdown(),
-            "permission/respond" => self.dispatch_permission_respond(&req),
-            "$/cancelRequest" => self.dispatch_cancel_request(&req).await,
-            other => Err(DispatchError::method_not_found(other)),
+        let result = if let Some(err) = self.auth_gate(&req, conn_id) {
+            Err(err)
+        } else {
+            match req.method.as_str() {
+                "initialize" => self.dispatch_initialize(&req, conn_id),
+                "session/new" => self.dispatch_session_new(conn_id),
+                "session/run" => self.dispatch_session_run(&req, conn_id).await,
+                "session/subscribe" => self.dispatch_subscribe(&req, conn_id),
+                "session/unsubscribe" => self.dispatch_unsubscribe(&req, conn_id),
+                "kernel/status" => self.dispatch_kernel_status(),
+                "shutdown" => self.dispatch_shutdown(),
+                "permission/respond" => self.dispatch_permission_respond(&req, conn_id).await,
+                "$/cancelRequest" => self.dispatch_cancel_request(&req).await,
+                other => Err(DispatchError::method_not_found(other)),
+            }
         };
 
         let resp = match result {
@@ -284,15 +455,115 @@ impl IpcServer {
         Ok(serde_json::to_string(&resp)?)
     }
 
-    fn dispatch_session_new(&self) -> Result<Value, DispatchError> {
+    /// Token-mode auth gate: when a token is configured, only connections
+    /// that already passed `initialize` may issue business methods. The
+    /// `initialize` method itself always reaches `dispatch_initialize` (which
+    /// performs the token check and marks the connection authorized). stdio
+    /// serves with no token, so this gate is inert on that path.
+    fn auth_gate(&self, req: &JsonRpcRequest, conn_id: &str) -> Option<DispatchError> {
+        if req.method.as_str() == "initialize" {
+            return None;
+        }
+        let token_configured = self.token.lock().ok().map(|t| t.is_some()).unwrap_or(false);
+        if !token_configured {
+            return None;
+        }
+        let authorized = self
+            .registry
+            .read()
+            .ok()
+            .map(|r| r.is_authorized(conn_id))
+            .unwrap_or(false);
+        if !authorized {
+            return Some(DispatchError {
+                code: error_codes::NOT_AUTHORIZED,
+                message: "NotAuthorized".into(),
+            });
+        }
+        None
+    }
+
+    fn dispatch_initialize(
+        &self,
+        req: &JsonRpcRequest,
+        conn_id: &str,
+    ) -> Result<Value, DispatchError> {
+        let params: InitializeParams =
+            serde_json::from_value(req.params.clone().unwrap_or(serde_json::json!({})))
+                .map_err(|e| DispatchError::invalid_params(e.to_string()))?;
+        if let Ok(expected) = self.token.lock()
+            && let Some(expected) = expected.as_deref()
+            && params.token.as_deref().unwrap_or("") != expected
+        {
+            return Err(DispatchError {
+                code: error_codes::NOT_AUTHORIZED,
+                message: "NotAuthorized".into(),
+            });
+        }
+        // Successful auth: the connection may now issue business methods on a
+        // token-gated server (the non-initialize gate checks this registry).
+        if let Ok(mut reg) = self.registry.write() {
+            reg.mark_authorized(conn_id);
+        }
+        let version = env!("CARGO_PKG_VERSION");
+        Ok(serde_json::json!({
+            "protocol_version": version,
+            "capabilities": { "multi_client": true },
+            "server_info": { "name": "agentj", "version": version },
+            "connection_id": conn_id,
+        }))
+    }
+
+    fn dispatch_subscribe(
+        &self,
+        req: &JsonRpcRequest,
+        conn_id: &str,
+    ) -> Result<Value, DispatchError> {
+        let params: SessionSubscribeParams = serde_json::from_value(
+            req.params
+                .clone()
+                .ok_or_else(|| DispatchError::invalid_params("missing params"))?,
+        )
+        .map_err(|e| DispatchError::invalid_params(e.to_string()))?;
+        if let Ok(mut reg) = self.registry.write() {
+            reg.subscribe(&params.session_id, conn_id);
+        }
+        Ok(serde_json::json!({}))
+    }
+
+    fn dispatch_unsubscribe(
+        &self,
+        req: &JsonRpcRequest,
+        conn_id: &str,
+    ) -> Result<Value, DispatchError> {
+        let params: SessionIdParams = serde_json::from_value(
+            req.params
+                .clone()
+                .ok_or_else(|| DispatchError::invalid_params("missing params"))?,
+        )
+        .map_err(|e| DispatchError::invalid_params(e.to_string()))?;
+        if let Ok(mut reg) = self.registry.write() {
+            reg.unsubscribe(&params.session_id, conn_id);
+        }
+        Ok(serde_json::json!({}))
+    }
+
+    fn dispatch_session_new(&self, conn_id: &str) -> Result<Value, DispatchError> {
         let sid = self
             .agent_loop
             .create_session()
             .map_err(|e| DispatchError::internal(e.to_string()))?;
+        if let Ok(mut reg) = self.registry.write() {
+            reg.set_session_owner(&sid, conn_id);
+        }
         Ok(serde_json::json!({ "session_id": sid }))
     }
 
-    async fn dispatch_session_run(&self, req: &JsonRpcRequest) -> Result<Value, DispatchError> {
+    async fn dispatch_session_run(
+        &self,
+        req: &JsonRpcRequest,
+        conn_id: &str,
+    ) -> Result<Value, DispatchError> {
         let params = req
             .params
             .as_ref()
@@ -301,16 +572,64 @@ impl IpcServer {
             .as_str()
             .ok_or_else(|| DispatchError::invalid_params("missing session_id"))?;
         let content = params["content"].as_str().unwrap_or("");
+        // Per-session run mutex (决策 #7): a concurrent run on the same session
+        // is rejected with -32805 SessionBusy instead of interleaving streams.
+        let acquired = self
+            .registry
+            .write()
+            .map(|mut r| r.try_acquire_run(&sid.to_string()))
+            .unwrap_or(false);
+        if !acquired {
+            return Err(DispatchError {
+                code: error_codes::SESSION_BUSY,
+                message: "SessionBusy".into(),
+            });
+        }
+        let _run_guard = RunGuard {
+            registry: Arc::clone(&self.registry),
+            sid: sid.to_string(),
+        };
         // Record the in-flight session so `$/cancelRequest` can reach the
         // permission module while the run executes; the guard clears it on
         // every exit path (including the AgentEvent::Error return).
         let _inflight = InflightSessionGuard::record(&self.session, sid).await;
+        // The run initiator owns the session for approval routing (决策 #5)
+        // and observes $/progress without an explicit subscribe. Re-recording
+        // here also covers clients that skip session/new (hard-coded ids).
+        if let Ok(mut reg) = self.registry.write() {
+            reg.set_session_owner(&sid.to_string(), conn_id);
+            reg.subscribe(&sid.to_string(), conn_id);
+        }
+        // §7.2: a `$/progress` `token` must be ProgressToken (integer|string).
+        // Echo `progress_token` when provided; otherwise fall back to the
+        // request id; a notification (no id) falls back to a valid number.
+        let progress_token = match params.get("progress_token") {
+            Some(t) if !t.is_null() => t.clone(),
+            _ => match &req.id {
+                Value::Null => Value::Number(0.into()),
+                id => id.clone(),
+            },
+        };
         let mut rx = self.agent_loop.run_turn_stream(&sid.to_string(), content);
         let mut text = String::new();
         let mut tc_list = vec![];
         while let Some(event) = rx.recv().await {
             match event {
-                AgentEvent::Delta(d) => text.push_str(&d),
+                AgentEvent::Delta(d) => {
+                    text.push_str(&d);
+                    let progress = serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "method": "$/progress",
+                        "params": {
+                            "token": progress_token.clone(),
+                            "value": { "kind": "text", "delta": d },
+                        },
+                    })
+                    .to_string();
+                    if let Ok(reg) = self.registry.read() {
+                        reg.broadcast_to_session(&sid.to_string(), &progress);
+                    }
+                }
                 AgentEvent::Done { tool_calls, .. } => {
                     tc_list = tool_calls;
                     break;
@@ -319,7 +638,7 @@ impl IpcServer {
                 _ => {}
             }
         }
-        Ok(serde_json::json!({ "response": text, "tool_calls": tc_list }))
+        Ok(serde_json::json!({ "content": text, "tool_calls": tc_list }))
     }
 
     fn dispatch_shutdown(&self) -> Result<Value, DispatchError> {
@@ -329,9 +648,41 @@ impl IpcServer {
         Ok(serde_json::json!({ "status": "ok" }))
     }
 
+    /// `kernel/status`: report the daemon version plus a module snapshot. The
+    /// IPC crate owns no kernel module registry, so `modules` stays empty —
+    /// the schema (KernelStatusResult) requires only `version` + `modules`.
+    fn dispatch_kernel_status(&self) -> Result<Value, DispatchError> {
+        Ok(serde_json::json!({
+            "version": env!("CARGO_PKG_VERSION"),
+            "modules": [],
+        }))
+    }
+
     /// `permission/respond`: deliver the client's decision to a pending approval.
     /// An unknown request_id is an error (-32600), never silent success.
-    fn dispatch_permission_respond(&self, req: &JsonRpcRequest) -> Result<Value, DispatchError> {
+    async fn dispatch_permission_respond(
+        &self,
+        req: &JsonRpcRequest,
+        conn_id: &str,
+    ) -> Result<Value, DispatchError> {
+        // Owner gate (决策 #5): while a session has an in-flight run, only the
+        // connection owning that session may resolve its approvals.
+        let inflight = self.session.lock().await.clone();
+        if let Some(sid) = inflight {
+            let is_owner = self
+                .registry
+                .read()
+                .ok()
+                .and_then(|r| r.session_owner(&sid).cloned())
+                .map(|owner| owner == conn_id)
+                .unwrap_or(false);
+            if !is_owner {
+                return Err(DispatchError {
+                    code: error_codes::NOT_AUTHORIZED,
+                    message: "NotAuthorized".into(),
+                });
+            }
+        }
         let params = req
             .params
             .as_ref()
@@ -376,6 +727,103 @@ impl IpcServer {
         Ok(serde_json::Value::Null)
     }
 
+    /// Transport-agnostic per-connection request loop (design 决策 #2): read
+    /// NDJSON lines, dispatch each through `handle_request_from` with the
+    /// connection's real id, write responses back on the same connection. The
+    /// connection is registered for owner routing / subscription broadcasts
+    /// and unregistered on every exit path (EOF, error, requested shutdown).
+    pub async fn serve_connection(
+        &self,
+        conn: Box<dyn Connection>,
+        _token: Option<&str>,
+    ) -> Result<(), IpcError> {
+        let conn_id = conn.id();
+        // Register a send-only handle so broadcasts / owner-directed routing
+        // can reach this connection while its serve loop awaits `recv` (the
+        // reader half needs `&mut`, so the full connection cannot stay in the
+        // registry — no std lock may be held across the await).
+        if let Ok(mut reg) = self.registry.write() {
+            reg.register_writer(conn.writer());
+        }
+        let serve_result = self.serve_connection_requests(conn, &conn_id).await;
+        if let Ok(mut reg) = self.registry.write() {
+            reg.unregister(&conn_id);
+        }
+        serve_result
+    }
+
+    /// Per-connection request loop body. The connection stays owned by this
+    /// loop for its whole lifetime (reader half for `recv`, writer half for
+    /// responses), while the registry holds a detached `ConnectionWriter`
+    /// handle — so an idle subscriber never drops out of broadcast reach, and
+    /// no std RwLock guard is held across an await.
+    async fn serve_connection_requests(
+        &self,
+        mut conn: Box<dyn Connection>,
+        conn_id: &str,
+    ) -> Result<(), IpcError> {
+        loop {
+            let Some(line) = conn.recv().await else {
+                break; // EOF — connection dropped here; unregistered by the caller
+            };
+            let trimmed = match line {
+                Ok(l) => l.trim().to_string(),
+                Err(e) => return Err(e),
+            };
+            if trimmed.is_empty() {
+                continue;
+            }
+            let response = self
+                .handle_request_from(&trimmed, conn_id)
+                .await
+                .unwrap_or_else(|e| {
+                    format!(
+                        r#"{{"jsonrpc":"2.0","id":null,"error":{{"code":-32603,"message":"{e}"}}}}"#
+                    )
+                });
+            if !response.is_empty() {
+                conn.send(&response)?;
+            }
+            if self.shutdown_requested() {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    /// Route $/permissionRequest notifications to the session owner through
+    /// the registry (决策 #5). stdio falls back to stdout because its sentinel
+    /// connection IS stdout. Attach once per transport entry point.
+    pub(crate) fn attach_permission_notifier(&self) {
+        if let Some(module) = &self.permission_module {
+            let registry = Arc::clone(&self.registry);
+            let notifier = Arc::new(move |p: &PermissionRequestParams, session_id: &str| {
+                let key = session_id.to_string();
+                let owner = registry
+                    .read()
+                    .ok()
+                    .and_then(|r| r.session_owner(&key).cloned());
+                let msg = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "method": "$/permissionRequest",
+                    "params": {
+                        "request_id": p.request_id,
+                        "tool": p.tool,
+                        "args": p.args,
+                        "reason": p.reason,
+                        "origin_client": owner.clone(),
+                    },
+                });
+                if let Some(owner_id) = owner
+                    && let Ok(r) = registry.read()
+                {
+                    let _ = r.send_to(&owner_id, &msg.to_string());
+                }
+            });
+            module.set_notifier(notifier);
+        }
+    }
+
     /// Run the server in stdio mode via the unified Connection serve loop (design 决策 #2).
     /// On EOF or after a shutdown request, signal the kernel and await its graceful shutdown.
     /// The read loop is interrupted when the kernel finishes (design #13: SIGINT/SIGTERM
@@ -386,26 +834,12 @@ impl IpcServer {
         // is transport-agnostic so v0.3's TcpConnection slots in with zero rework.
         let conn = StdioConnection::new();
         let conn_id = conn.id();
-        self.registry.register(Box::new(conn));
-        // Subscribe the permission notifier: an Ask request emits a $/permissionRequest
-        // notification line on stdout (same blocking write path as StdioConnection::send).
-        if let Some(module) = &self.permission_module {
-            let notifier = Arc::new(|p: &PermissionRequestParams| {
-                let msg = serde_json::json!({
-                    "jsonrpc": "2.0",
-                    "method": "$/permissionRequest",
-                    "params": {
-                        "request_id": p.request_id,
-                        "tool": p.tool,
-                        "args": p.args,
-                        "reason": p.reason,
-                    },
-                });
-                let mut stdout = std::io::stdout().lock();
-                let _ = writeln!(stdout, "{msg}");
-            });
-            module.set_notifier(notifier);
+        if let Ok(mut reg) = self.registry.write() {
+            reg.register(Box::new(conn));
         }
+        // Subscribe the permission notifier: $/permissionRequest is routed to
+        // the session owner through the registry (决策 #5).
+        self.attach_permission_notifier();
         // Poll the kernel handle by `&mut` (taken out so the future needs no `self` borrow
         // while the loop also reads the registry); it is restored below for await_shutdown.
         let mut kernel_handle = self.kernel_handle.take();
@@ -418,10 +852,14 @@ impl IpcServer {
         };
         tokio::pin!(kernel_done);
         loop {
-            let conn = self
+            // Detach the connection so recv's await never runs under the registry
+            // lock: std guards are !Send and must not be held across await points.
+            let mut conn = self
                 .registry
+                .write()
+                .map_err(|_| IpcError::InvalidRequest("connection registry poisoned".into()))?
                 .conns
-                .get_mut(&conn_id)
+                .remove(&conn_id)
                 .ok_or_else(|| IpcError::InvalidRequest("stdio connection missing".into()))?;
             let line = tokio::select! {
                 res = conn.recv() => {
@@ -433,6 +871,9 @@ impl IpcServer {
                 }
                 _ = &mut kernel_done => { kernel_finished = true; break; } // signal-triggered shutdown
             };
+            if let Ok(mut reg) = self.registry.write() {
+                reg.conns.insert(conn_id.clone(), conn);
+            }
             let trimmed = line.trim().to_string();
             if trimmed.is_empty() {
                 continue;
@@ -442,13 +883,17 @@ impl IpcServer {
                     r#"{{"jsonrpc":"2.0","id":null,"error":{{"code":-32603,"message":"{e}"}}}}"#
                 )
             });
-            let conn = self
-                .registry
-                .conns
-                .get(&conn_id)
-                .ok_or_else(|| IpcError::InvalidRequest("stdio connection missing".into()))?;
             if !response.is_empty() {
-                conn.send(&response)?;
+                let mut delivered = false;
+                if let Ok(reg) = self.registry.read()
+                    && let Some(conn) = reg.conns.get(&conn_id)
+                {
+                    conn.send(&response)?;
+                    delivered = true;
+                }
+                if !delivered {
+                    return Err(IpcError::InvalidRequest("stdio connection missing".into()));
+                }
             }
             if self.shutdown_requested() {
                 break;
@@ -480,7 +925,9 @@ pub struct StdioConnection {
 impl StdioConnection {
     pub fn new() -> Self {
         Self {
-            id: format!("stdio-{}", std::process::id()),
+            // Sentinel id matches handle_request_from's stdio conn_id so
+            // owner-directed routing (send_to) reaches the stdout writer.
+            id: "stdio".into(),
             reader: BufReader::new(tokio::io::stdin()),
         }
     }
@@ -520,22 +967,37 @@ impl Connection for StdioConnection {
     fn peer_desc(&self) -> String {
         "stdio".into()
     }
+    fn writer(&self) -> ConnectionWriter {
+        ConnectionWriter::new(
+            self.id.clone(),
+            self.kind(),
+            self.peer_desc(),
+            Arc::new(|msg: &str| {
+                // Sync trait method — std blocking stdout; tokio stdout's
+                // block_on panics inside an async context.
+                use std::io::Write;
+                let mut stdout = std::io::stdout().lock();
+                stdout.write_all(msg.as_bytes())?;
+                stdout.write_all(b"\n")?;
+                stdout.flush()?;
+                Ok(())
+            }),
+        )
+    }
 }
 
+/// Crate-internal fixtures shared by lib and tcp test modules.
 #[cfg(test)]
-mod tests {
-    use super::*;
+pub(crate) mod test_support {
     use agentj_context::ContextPipeline;
     use agentj_core::agent_loop::AgentLoop;
-    use agentj_core::kernel::Kernel;
     use agentj_core::module::*;
-    use agentj_core::permission::{PermissionChecker, PermissionContext, PermissionDecision};
     use agentj_core::types::*;
     use agentj_model::mock::MockModelProvider;
     use agentj_session::InMemoryStore;
     use std::sync::Arc;
 
-    struct MockConfig;
+    pub(crate) struct MockConfig;
     impl ConfigProvider for MockConfig {
         fn get_str(&self, _k: &str) -> Option<String> {
             None
@@ -548,7 +1010,7 @@ mod tests {
         }
     }
 
-    fn stub_agent_loop() -> AgentLoop {
+    pub(crate) fn stub_agent_loop() -> AgentLoop {
         let tools = Arc::new(ToolRegistry::new());
         let providers = Arc::new(ProviderRegistry::new());
         providers.register(
@@ -570,6 +1032,21 @@ mod tests {
             "You are helpful.".into(),
         )
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::{MockConfig, stub_agent_loop};
+    use agentj_context::ContextPipeline;
+    use agentj_core::agent_loop::AgentLoop;
+    use agentj_core::kernel::Kernel;
+    use agentj_core::module::*;
+    use agentj_core::permission::{PermissionChecker, PermissionContext, PermissionDecision};
+    use agentj_core::types::*;
+    use agentj_model::mock::MockModelProvider;
+    use agentj_session::InMemoryStore;
+    use std::sync::Arc;
 
     fn permission_server() -> (IpcServer, Arc<agentj_permission::PermissionModule>) {
         let mut policies = std::collections::HashMap::new();
@@ -846,7 +1323,9 @@ mod tests {
         );
         let resp = server.handle_request(raw).await.unwrap();
         let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
-        assert_eq!(v["result"]["response"], "hello");
+        // when: session/run responds, then: result carries `content` per SessionRunResult
+        assert_eq!(v["result"]["content"], "hello");
+        assert!(v["result"].get("response").is_none());
     }
 
     #[tokio::test]
@@ -860,6 +1339,39 @@ mod tests {
         assert!(v["error"].is_object());
         assert_eq!(v["error"]["code"], -32601); // Method not found
         assert_eq!(v["id"], 3, "error response must echo request id");
+    }
+
+    /// BUG-005: `kernel/status` must be dispatched by the IPC server — the
+    /// dashboard polls it on load, and -32601 made the panel show "kernel
+    /// unreachable". Wire shape per the KernelStatusResult schema: `version`
+    /// string + `modules` array.
+    #[tokio::test]
+    async fn kernel_status_returns_version_and_modules_array() {
+        let server = IpcServer::new(stub_agent_loop(), Kernel::new());
+        let resp = server
+            .handle_request(r#"{"jsonrpc":"2.0","id":5,"method":"kernel/status"}"#)
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(
+            v["error"],
+            serde_json::Value::Null,
+            "kernel/status must not error: {resp}"
+        );
+        assert!(
+            v["result"]["version"].is_string(),
+            "kernel/status must return a version string: {resp}"
+        );
+        assert_eq!(
+            v["result"]["version"],
+            env!("CARGO_PKG_VERSION"),
+            "version must reflect the daemon build"
+        );
+        assert!(
+            v["result"]["modules"].is_array(),
+            "kernel/status must return a modules array: {resp}"
+        );
+        assert_eq!(v["id"], 5, "response must echo request id");
     }
 
     #[tokio::test]
@@ -947,5 +1459,638 @@ mod tests {
             .await
             .expect("serve_stdio must exit after kernel shutdown")
             .unwrap();
+    }
+
+    type SharedLog = Arc<std::sync::Mutex<Vec<String>>>;
+
+    /// T5 fixture: `send` appends to a log the test keeps a handle to (the
+    /// boxed conn inside the registry cannot be downcast, so logs live outside).
+    struct FakeConn {
+        id: String,
+        log: SharedLog,
+    }
+
+    fn fake_conn(id: &str) -> (FakeConn, SharedLog) {
+        let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        (
+            FakeConn {
+                id: id.to_string(),
+                log: std::sync::Arc::clone(&log),
+            },
+            log,
+        )
+    }
+
+    #[async_trait]
+    impl Connection for FakeConn {
+        fn id(&self) -> String {
+            self.id.clone()
+        }
+        fn kind(&self) -> TransportKind {
+            TransportKind::Stdio
+        }
+        fn send(&self, msg: &str) -> Result<(), IpcError> {
+            if let Ok(mut log) = self.log.lock() {
+                log.push(msg.to_string());
+            }
+            Ok(())
+        }
+        async fn recv(&mut self) -> Option<Result<String, IpcError>> {
+            None
+        }
+        fn peer_desc(&self) -> String {
+            self.id.clone()
+        }
+        fn writer(&self) -> ConnectionWriter {
+            let log = std::sync::Arc::clone(&self.log);
+            ConnectionWriter::new(
+                self.id.clone(),
+                self.kind(),
+                self.peer_desc(),
+                Arc::new(move |msg: &str| {
+                    if let Ok(mut log) = log.lock() {
+                        log.push(msg.to_string());
+                    }
+                    Ok(())
+                }),
+            )
+        }
+    }
+
+    /// Test connection driven by an mpsc channel: feed lines via `tx`, read
+    /// sends from `log`, drop `tx` to EOF (recv then returns None).
+    struct ScriptedConn {
+        id: String,
+        rx: tokio::sync::mpsc::Receiver<String>,
+        log: SharedLog,
+    }
+
+    fn scripted_conn(id: &str) -> (ScriptedConn, SharedLog, tokio::sync::mpsc::Sender<String>) {
+        let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (tx, rx) = tokio::sync::mpsc::channel(16);
+        (
+            ScriptedConn {
+                id: id.to_string(),
+                rx,
+                log: std::sync::Arc::clone(&log),
+            },
+            log,
+            tx,
+        )
+    }
+
+    #[async_trait]
+    impl Connection for ScriptedConn {
+        fn id(&self) -> String {
+            self.id.clone()
+        }
+        fn kind(&self) -> TransportKind {
+            TransportKind::Tcp
+        }
+        fn send(&self, msg: &str) -> Result<(), IpcError> {
+            if let Ok(mut log) = self.log.lock() {
+                log.push(msg.to_string());
+            }
+            Ok(())
+        }
+        async fn recv(&mut self) -> Option<Result<String, IpcError>> {
+            self.rx.recv().await.map(Ok)
+        }
+        fn peer_desc(&self) -> String {
+            self.id.clone()
+        }
+        fn writer(&self) -> ConnectionWriter {
+            let log = std::sync::Arc::clone(&self.log);
+            ConnectionWriter::new(
+                self.id.clone(),
+                self.kind(),
+                self.peer_desc(),
+                Arc::new(move |msg: &str| {
+                    if let Ok(mut log) = log.lock() {
+                        log.push(msg.to_string());
+                    }
+                    Ok(())
+                }),
+            )
+        }
+    }
+
+    #[test]
+    fn registry_routes_broadcast_to_subscribers_only() {
+        let mut reg = ConnectionRegistry::new();
+        let (conn_a, log_a) = fake_conn("bcast-a");
+        let (conn_b, log_b) = fake_conn("bcast-b");
+        let a = reg.register(Box::new(conn_a));
+        let _b = reg.register(Box::new(conn_b));
+        reg.subscribe(&"s1".to_string(), &a);
+        reg.broadcast_to_session(&"s1".to_string(), "hello");
+        assert_eq!(
+            log_a.lock().unwrap().len(),
+            1,
+            "subscriber a must receive the broadcast"
+        );
+        assert_eq!(
+            log_b.lock().unwrap().len(),
+            0,
+            "non-subscriber b must NOT receive it"
+        );
+    }
+
+    #[test]
+    fn registry_unregister_releases_owner_and_subscriptions() {
+        let mut reg = ConnectionRegistry::new();
+        let (conn_a, log_a) = fake_conn("own-a");
+        let a = reg.register(Box::new(conn_a));
+        reg.set_session_owner(&"s1".to_string(), &a);
+        reg.subscribe(&"s1".to_string(), &a);
+        reg.unregister(&a);
+        assert!(
+            reg.session_owner(&"s1".to_string()).is_none(),
+            "owner released on disconnect"
+        );
+        // broadcast after unregister is a no-op (no panic, no delivery)
+        reg.broadcast_to_session(&"s1".to_string(), "hello");
+        assert_eq!(log_a.lock().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn registry_run_mutex_is_exclusive() {
+        let mut reg = ConnectionRegistry::new();
+        assert!(reg.try_acquire_run(&"s1".to_string()));
+        assert!(
+            !reg.try_acquire_run(&"s1".to_string()),
+            "second run must be rejected (busy)"
+        );
+        reg.release_run(&"s1".to_string());
+        assert!(reg.try_acquire_run(&"s1".to_string()));
+    }
+
+    /// Connection-id → sent-message log shared between register_fake_conn and
+    /// drain_sent (the registry owns the boxed conn; logs live outside it).
+    static FAKE_LOGS: std::sync::LazyLock<
+        std::sync::Mutex<std::collections::HashMap<String, SharedLog>>,
+    > = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+    fn register_fake_conn(server: &Arc<IpcServer>) -> String {
+        static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1);
+        let id = format!(
+            "fake-{}",
+            SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        );
+        let (conn, log) = fake_conn(&id);
+        if let Ok(mut reg) = server.registry.write() {
+            reg.register(Box::new(conn));
+        }
+        if let Ok(mut logs) = FAKE_LOGS.lock() {
+            logs.insert(id.clone(), log);
+        }
+        id
+    }
+
+    fn drain_sent(_server: &Arc<IpcServer>, id: &str) -> Vec<String> {
+        FAKE_LOGS
+            .lock()
+            .ok()
+            .and_then(|logs| logs.get(id).cloned())
+            .map(|log| log.lock().unwrap_or_else(|p| p.into_inner()).clone())
+            .unwrap_or_default()
+    }
+
+    fn extract_sid(resp: &str) -> String {
+        let v: serde_json::Value = serde_json::from_str(resp).unwrap();
+        v["result"]["session_id"].as_str().unwrap().to_string()
+    }
+
+    /// Wait until `predicate` matches a message the connection has sent.
+    async fn wait_for_line(log: &SharedLog, predicate: impl Fn(&str) -> bool) -> String {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if let Some(m) = log
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .iter()
+                    .find(|m| predicate(m))
+                {
+                    return m.clone();
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("timed out waiting for a connection log line")
+    }
+
+    #[tokio::test]
+    async fn initialize_returns_connection_id_and_multi_client() {
+        let server = Arc::new(IpcServer::new(stub_agent_loop(), Kernel::new()));
+        let conn_id = register_fake_conn(&server);
+        let resp = server
+            .handle_request_from(
+                r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocol_version":"0.4.0"}}"#,
+                &conn_id,
+            )
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(v["result"]["connection_id"], conn_id);
+        assert_eq!(v["result"]["capabilities"]["multi_client"], true);
+    }
+
+    #[tokio::test]
+    async fn initialize_with_wrong_token_is_rejected() {
+        let server = Arc::new(IpcServer::new(stub_agent_loop(), Kernel::new()));
+        server.set_token(Some("secret".into()));
+        let conn_id = register_fake_conn(&server);
+        let resp = server
+            .handle_request_from(
+                r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocol_version":"0.4.0","token":"wrong"}}"#,
+                &conn_id,
+            )
+            .await
+            .unwrap();
+        assert!(
+            resp.contains(r#""code":-32806"#),
+            "wrong token must be NotAuthorized: {resp}"
+        );
+    }
+
+    #[tokio::test]
+    async fn non_owner_permission_respond_is_rejected() {
+        let (server, _module) = blocking_run_server();
+        let server = Arc::new(server);
+        let a = register_fake_conn(&server);
+        let b = register_fake_conn(&server);
+        let new_resp = server
+            .handle_request_from(r#"{"jsonrpc":"2.0","id":1,"method":"session/new"}"#, &a)
+            .await
+            .unwrap();
+        let sid = extract_sid(&new_resp);
+        let run_raw = format!(
+            r#"{{"jsonrpc":"2.0","id":2,"method":"session/run","params":{{"session_id":"{sid}","content":"hi"}}}}"#
+        );
+        let run_task = tokio::spawn({
+            let s = Arc::clone(&server);
+            let conn = a.clone();
+            async move { s.handle_request_from(&run_raw, &conn).await.unwrap() }
+        });
+        wait_for_inflight_session(&server, &sid)
+            .await
+            .expect("run must record in-flight session");
+        let resp = server
+            .handle_request_from(
+                r#"{"jsonrpc":"2.0","id":9,"method":"permission/respond","params":{"request_id":"req-x","decision":"allow"}}"#,
+                &b,
+            )
+            .await
+            .unwrap();
+        assert!(
+            resp.contains(r#""code":-32806"#),
+            "non-owner respond must be NotAuthorized: {resp}"
+        );
+        let _ = server
+            .handle_request_from(
+                r#"{"jsonrpc":"2.0","id":10,"method":"$/cancelRequest","params":{"id":5}}"#,
+                &a,
+            )
+            .await
+            .unwrap();
+        let _ = run_task.await;
+    }
+
+    #[tokio::test]
+    async fn concurrent_run_on_same_session_is_rejected() {
+        // stub mock finishes instantly — the blocking fixture keeps run1 in
+        // flight deterministically while run2 arrives.
+        let (server, _module) = blocking_run_server();
+        let server = Arc::new(server);
+        let a = register_fake_conn(&server);
+        let new_resp = server
+            .handle_request_from(r#"{"jsonrpc":"2.0","id":1,"method":"session/new"}"#, &a)
+            .await
+            .unwrap();
+        let sid = extract_sid(&new_resp);
+        let run_raw = format!(
+            r#"{{"jsonrpc":"2.0","id":2,"method":"session/run","params":{{"session_id":"{sid}","content":"hi"}}}}"#
+        );
+        let run_task = tokio::spawn({
+            let s = Arc::clone(&server);
+            let conn = a.clone();
+            async move { s.handle_request_from(&run_raw, &conn).await.unwrap() }
+        });
+        wait_for_inflight_session(&server, &sid)
+            .await
+            .expect("run1 must be in flight");
+        let run2 = format!(
+            r#"{{"jsonrpc":"2.0","id":3,"method":"session/run","params":{{"session_id":"{sid}","content":"again"}}}}"#
+        );
+        let r2 = server.handle_request_from(&run2, &a).await.unwrap();
+        assert!(
+            r2.contains(r#""code":-32805"#),
+            "second run must be SessionBusy: {r2}"
+        );
+        let _ = server
+            .handle_request_from(
+                r#"{"jsonrpc":"2.0","id":10,"method":"$/cancelRequest","params":{"id":5}}"#,
+                &a,
+            )
+            .await
+            .unwrap();
+        let _ = run_task.await;
+    }
+
+    #[tokio::test]
+    async fn subscriber_receives_progress_broadcast() {
+        let server = Arc::new(IpcServer::new(stub_agent_loop(), Kernel::new()));
+        let a = register_fake_conn(&server);
+        let b = register_fake_conn(&server);
+        let new_resp = server
+            .handle_request_from(r#"{"jsonrpc":"2.0","id":1,"method":"session/new"}"#, &a)
+            .await
+            .unwrap();
+        let sid = extract_sid(&new_resp);
+        server
+            .handle_request_from(
+                &format!(
+                    r#"{{"jsonrpc":"2.0","id":2,"method":"session/subscribe","params":{{"session_id":"{sid}"}}}}"#
+                ),
+                &b,
+            )
+            .await
+            .unwrap();
+        server
+            .handle_request_from(
+                &format!(
+                    r#"{{"jsonrpc":"2.0","id":3,"method":"session/run","params":{{"session_id":"{sid}","content":"hi"}}}}"#
+                ),
+                &a,
+            )
+            .await
+            .unwrap();
+        let b_sent = drain_sent(&server, &b);
+        assert!(
+            b_sent
+                .iter()
+                .any(|m| m.contains("$/progress") && m.contains("hello")),
+            "subscriber B must receive $/progress deltas: {b_sent:?}"
+        );
+    }
+
+    /// BUG-004 regression: §7.2 — when the client omits `progress_token`, the
+    /// `$/progress` `params.token` must echo the request id, never null.
+    #[tokio::test]
+    async fn progress_broadcast_uses_request_id_token_when_token_omitted() {
+        let server = Arc::new(IpcServer::new(stub_agent_loop(), Kernel::new()));
+        let a = register_fake_conn(&server);
+        let b = register_fake_conn(&server);
+        let new_resp = server
+            .handle_request_from(r#"{"jsonrpc":"2.0","id":1,"method":"session/new"}"#, &a)
+            .await
+            .unwrap();
+        let sid = extract_sid(&new_resp);
+        server
+            .handle_request_from(
+                &format!(
+                    r#"{{"jsonrpc":"2.0","id":2,"method":"session/subscribe","params":{{"session_id":"{sid}"}}}}"#
+                ),
+                &b,
+            )
+            .await
+            .unwrap();
+        server
+            .handle_request_from(
+                &format!(
+                    r#"{{"jsonrpc":"2.0","id":2,"method":"session/run","params":{{"session_id":"{sid}","content":"hi"}}}}"#
+                ),
+                &a,
+            )
+            .await
+            .unwrap();
+        let b_sent = drain_sent(&server, &b);
+        let progress = b_sent
+            .iter()
+            .find(|m| m.contains("$/progress"))
+            .unwrap_or_else(|| panic!("subscriber must receive $/progress: {b_sent:?}"));
+        let v: serde_json::Value = serde_json::from_str(progress).unwrap();
+        assert!(
+            !v["params"]["token"].is_null(),
+            "token must never be null: {progress}"
+        );
+        assert_eq!(
+            v["params"]["token"], 2,
+            "§7.2: omitted progress_token must fall back to the request id: {progress}"
+        );
+    }
+
+    /// BUG-004 edge: a `session/run` notification (no request id) still
+    /// broadcasts `$/progress`; the token falls back to a deterministic
+    /// schema-valid number instead of null.
+    #[tokio::test]
+    async fn progress_broadcast_notification_without_id_keeps_token_valid() {
+        let server = Arc::new(IpcServer::new(stub_agent_loop(), Kernel::new()));
+        let a = register_fake_conn(&server);
+        let new_resp = server
+            .handle_request_from(r#"{"jsonrpc":"2.0","id":1,"method":"session/new"}"#, &a)
+            .await
+            .unwrap();
+        let sid = extract_sid(&new_resp);
+        server
+            .handle_request_from(
+                &format!(
+                    r#"{{"jsonrpc":"2.0","method":"session/run","params":{{"session_id":"{sid}","content":"hi"}}}}"#
+                ),
+                &a,
+            )
+            .await
+            .unwrap();
+        let a_sent = drain_sent(&server, &a);
+        let progress = a_sent
+            .iter()
+            .find(|m| m.contains("$/progress"))
+            .unwrap_or_else(|| panic!("initiator must receive $/progress: {a_sent:?}"));
+        let v: serde_json::Value = serde_json::from_str(progress).unwrap();
+        assert!(
+            v["params"]["token"].is_i64() || v["params"]["token"].is_string(),
+            "token must stay ProgressToken (integer|string), got: {progress}"
+        );
+    }
+
+    #[tokio::test]
+    async fn permission_request_is_routed_to_owner_only() {
+        let (server, _module) = blocking_run_server();
+        let server = Arc::new(server);
+        server.attach_permission_notifier();
+        let a = register_fake_conn(&server);
+        let b = register_fake_conn(&server);
+        let new_resp = server
+            .handle_request_from(r#"{"jsonrpc":"2.0","id":1,"method":"session/new"}"#, &a)
+            .await
+            .unwrap();
+        let sid = extract_sid(&new_resp);
+        let run_raw = format!(
+            r#"{{"jsonrpc":"2.0","id":2,"method":"session/run","params":{{"session_id":"{sid}","content":"hi"}}}}"#
+        );
+        let run_task = tokio::spawn({
+            let s = Arc::clone(&server);
+            let conn = a.clone();
+            async move { s.handle_request_from(&run_raw, &conn).await.unwrap() }
+        });
+        wait_for_inflight_session(&server, &sid)
+            .await
+            .expect("run must be in flight");
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let a_sent = drain_sent(&server, &a);
+        let b_sent = drain_sent(&server, &b);
+        assert!(
+            a_sent
+                .iter()
+                .any(|m| m.contains("$/permissionRequest") && m.contains("\"origin_client\":\"")),
+            "owner A must receive $/permissionRequest with origin_client: {a_sent:?}"
+        );
+        assert!(
+            !b_sent.iter().any(|m| m.contains("$/permissionRequest")),
+            "non-owner B must NOT receive $/permissionRequest: {b_sent:?}"
+        );
+        let _ = server
+            .handle_request_from(
+                r#"{"jsonrpc":"2.0","id":9,"method":"$/cancelRequest","params":{"id":5}}"#,
+                &a,
+            )
+            .await
+            .unwrap();
+        let _ = run_task.await;
+    }
+
+    #[tokio::test]
+    async fn serve_connection_two_clients_get_unique_connection_ids() {
+        let server = Arc::new(IpcServer::new(stub_agent_loop(), Kernel::new()));
+        let (conn_a, log_a, tx_a) = scripted_conn("tcp-A");
+        let (conn_b, log_b, tx_b) = scripted_conn("tcp-B");
+        let s = Arc::clone(&server);
+        let task_a = tokio::spawn(async move { s.serve_connection(Box::new(conn_a), None).await });
+        let s = Arc::clone(&server);
+        let task_b = tokio::spawn(async move { s.serve_connection(Box::new(conn_b), None).await });
+        let init = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocol_version":"0.4.0"}}"#;
+        tx_a.send(init.to_string()).await.unwrap();
+        tx_b.send(init.to_string()).await.unwrap();
+        drop(tx_a);
+        drop(tx_b);
+        task_a.await.unwrap().unwrap();
+        task_b.await.unwrap().unwrap();
+        let va: serde_json::Value = serde_json::from_str(&log_a.lock().unwrap()[0]).unwrap();
+        let vb: serde_json::Value = serde_json::from_str(&log_b.lock().unwrap()[0]).unwrap();
+        assert_eq!(va["result"]["connection_id"], "tcp-A");
+        assert_eq!(vb["result"]["connection_id"], "tcp-B");
+        assert_ne!(
+            va["result"]["connection_id"], vb["result"]["connection_id"],
+            "each TCP client must receive its own connection id"
+        );
+    }
+
+    #[tokio::test]
+    async fn serve_connection_broadcasts_progress_to_real_connection() {
+        let server = Arc::new(IpcServer::new(stub_agent_loop(), Kernel::new()));
+        let (conn_a, log_a, tx_a) = scripted_conn("tcp-A");
+        let s = Arc::clone(&server);
+        let task_a = tokio::spawn(async move { s.serve_connection(Box::new(conn_a), None).await });
+        tx_a.send(r#"{"jsonrpc":"2.0","id":1,"method":"session/new"}"#.to_string())
+            .await
+            .unwrap();
+        // Wait for the session/new response so the run dispatches against a real sid.
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if !log_a.lock().unwrap().is_empty() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("session/new response never arrived");
+        let sid = extract_sid(&log_a.lock().unwrap()[0]);
+        tx_a
+            .send(format!(
+                r#"{{"jsonrpc":"2.0","id":2,"method":"session/run","params":{{"session_id":"{sid}","content":"hi"}}}}"#
+            ))
+            .await
+            .unwrap();
+        drop(tx_a); // EOF after the run so the serve loop returns
+        task_a.await.unwrap().unwrap();
+        let a_sent = log_a.lock().unwrap().clone();
+        assert!(
+            a_sent
+                .iter()
+                .any(|m| m.contains("$/progress") && m.contains("hello")),
+            "run initiator must receive $/progress through the registry: {a_sent:?}"
+        );
+        assert!(
+            server.registry.read().unwrap().conns.is_empty(),
+            "disconnected connection must be unregistered"
+        );
+        assert!(
+            server.registry.read().unwrap().writers.is_empty(),
+            "disconnected connection's writer handle must be unregistered"
+        );
+    }
+
+    /// BUG-006 regression: an idle subscriber (session/subscribe then no
+    /// further requests, blocked in recv) must still receive $/progress while
+    /// another client runs the session. The BUG-001-era detach window removed
+    /// connections from the registry during recv, so broadcasts were dropped.
+    #[tokio::test]
+    async fn serve_connection_broadcasts_progress_to_idle_subscriber() {
+        let server = Arc::new(IpcServer::new(stub_agent_loop(), Kernel::new()));
+        let (conn_a, log_a, tx_a) = scripted_conn("tcp-A");
+        let (conn_b, _log_b, tx_b) = scripted_conn("tcp-B");
+        let s = Arc::clone(&server);
+        let task_a = tokio::spawn(async move { s.serve_connection(Box::new(conn_a), None).await });
+        let s = Arc::clone(&server);
+        let task_b = tokio::spawn(async move { s.serve_connection(Box::new(conn_b), None).await });
+
+        // Subscriber A: initialize → session/new → session/subscribe, then idle.
+        tx_a.send(
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocol_version":"0.4.0"}}"#
+                .to_string(),
+        )
+        .await
+        .unwrap();
+        tx_a.send(r#"{"jsonrpc":"2.0","id":2,"method":"session/new"}"#.to_string())
+            .await
+            .unwrap();
+        let sid = extract_sid(&wait_for_line(&log_a, |m| m.contains("\"session_id\"")).await);
+        tx_a.send(format!(
+            r#"{{"jsonrpc":"2.0","id":3,"method":"session/subscribe","params":{{"session_id":"{sid}"}}}}"#
+        ))
+        .await
+        .unwrap();
+        wait_for_line(&log_a, |m| m.contains("\"id\":3")).await;
+        // Let A's serve loop settle into recv (detached from the registry in
+        // the buggy build) before the initiator runs the session.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // Initiator B: initialize → session/run on the same session.
+        tx_b.send(
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocol_version":"0.4.0"}}"#
+                .to_string(),
+        )
+        .await
+        .unwrap();
+        tx_b.send(format!(
+            r#"{{"jsonrpc":"2.0","id":5,"method":"session/run","params":{{"session_id":"{sid}","content":"hi"}}}}"#
+        ))
+        .await
+        .unwrap();
+        drop(tx_b); // EOF so B's serve loop returns after the run completes
+        task_b.await.unwrap().unwrap();
+
+        let a_sent = log_a.lock().unwrap().clone();
+        assert!(
+            a_sent
+                .iter()
+                .any(|m| m.contains("$/progress") && m.contains("hello")),
+            "idle subscriber must receive $/progress while blocked in recv: {a_sent:?}"
+        );
+
+        drop(tx_a);
+        let _ = task_a.await;
     }
 }

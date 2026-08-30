@@ -1,5 +1,7 @@
 # 设计文档：守护内核（常驻 API 服务）能力
 
+> **实现状态（2026-08-23）**：本设计已在 v0.4 落地——多客户端常驻 TCP 内核（`serve --port` / `run --attach` / `dashboard`）、统一 Connection 抽象（stdio 哨兵 / TcpConnection）、协议加性扩展（`session/subscribe`/`unsubscribe`、`$/progress` 广播、`origin_client` 属主路由、`-32805`/`-32806`、`initialize` token/`connection_id`/`multi_client`）、agentj-stats 用量钩子经 AgentLoop on-turn-complete 接线。WebSocket 网关与运行状态机/控制权转移仍为后续阶段预留。
+
 ## 概述
 
 AgentJ 的内核架构定位是「前端无关」：CLI、TUI、Web Dashboard、IDE 插件均作为同一套 JSON-RPC 2.0 协议的消费者连接内核。但现有设计（v0.1 计划）的进程模型是**每进程一内核**——内核嵌入 CLI 进程，通过 stdio 服务单一客户端，EOF/信号即触发优雅关闭并退出。这带来三个无法靠磁盘持久化单独解决的诉求：

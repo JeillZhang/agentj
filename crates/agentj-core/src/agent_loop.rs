@@ -24,12 +24,15 @@ pub enum AgentEvent {
     Error(String),
 }
 
+type OnTurnComplete = Arc<dyn Fn(&SessionId) + Send + Sync>;
+
 #[derive(Clone)]
 pub struct AgentLoop {
     ctx: KernelContext,
     pipeline: Arc<dyn ContextPipeline>,
     system_prompt: String,
     max_tool_iterations: usize,
+    on_turn_complete: Option<OnTurnComplete>,
 }
 
 impl AgentLoop {
@@ -43,7 +46,14 @@ impl AgentLoop {
             pipeline,
             system_prompt,
             max_tool_iterations: 10,
+            on_turn_complete: None,
         }
+    }
+
+    /// Registers a callback invoked once per successfully completed turn
+    /// (usage accounting hook; see agentj-stats UsageCollector).
+    pub fn set_on_turn_complete(&mut self, f: Arc<dyn Fn(&SessionId) + Send + Sync>) {
+        self.on_turn_complete = Some(f);
     }
 
     pub fn create_session(&self) -> Result<SessionId, ModuleError> {
@@ -63,11 +73,13 @@ impl AgentLoop {
         let pipeline = Arc::clone(&self.pipeline);
         let system_prompt = self.system_prompt.clone();
         let max_iter = self.max_tool_iterations;
+        let on_done = self.on_turn_complete.clone();
         tokio::spawn(async move {
+            let mut completed = false;
             if let Err(e) = Self::run_inner(
                 ctx,
                 pipeline,
-                sid,
+                sid.clone(),
                 input,
                 system_prompt,
                 max_iter,
@@ -76,6 +88,11 @@ impl AgentLoop {
             .await
             {
                 let _ = tx.send(AgentEvent::Error(e.to_string())).await;
+            } else {
+                completed = true;
+            }
+            if completed && let Some(f) = &on_done {
+                f(&sid);
             }
         });
         rx
@@ -384,6 +401,49 @@ mod tests {
             });
             history.push(ChatMessage::tool_result(&tool_call.id, result));
         }
+    }
+
+    #[tokio::test]
+    async fn on_turn_complete_fires_once_per_completed_turn() {
+        let tools = Arc::new(ToolRegistry::new());
+        let providers = Arc::new(ProviderRegistry::new());
+        let session = Arc::new(MockSession {
+            history: Mutex::new(vec![]),
+        });
+        let config: Arc<dyn ConfigProvider> = Arc::new(MockConfig);
+        let mock = Arc::new(MockProvider {
+            chunks: vec!["Hello".into()],
+        });
+        providers.register("mock".into(), mock);
+        let ctx = KernelContext {
+            session,
+            tools,
+            providers,
+            config,
+        };
+        let mut agent_loop = AgentLoop::new(ctx, Arc::new(MockPipeline), "sys".into());
+        let sid = agent_loop.create_session().unwrap();
+
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let hits = Arc::new(AtomicUsize::new(0));
+        let h = Arc::clone(&hits);
+        agent_loop.set_on_turn_complete(Arc::new(move |_sid| {
+            h.fetch_add(1, Ordering::SeqCst);
+        }));
+
+        agent_loop.run_turn(&sid, "hello").await.unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        while hits.load(Ordering::SeqCst) < 1 && std::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+
+        agent_loop.run_turn(&sid, "again").await.unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        while hits.load(Ordering::SeqCst) < 2 && std::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        assert_eq!(hits.load(Ordering::SeqCst), 2);
     }
 
     #[tokio::test]

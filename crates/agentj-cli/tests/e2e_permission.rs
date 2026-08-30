@@ -109,7 +109,7 @@ fn permission_request_notified_and_timeout_denies() {
             writeln!(stdin).unwrap();
             stdin.flush().unwrap();
         }
-        if line.contains("\"result\"") && line.contains("\"response\"") {
+        if line.contains("\"result\"") && line.contains("\"content\"") {
             final_seen = true;
             break;
         }
