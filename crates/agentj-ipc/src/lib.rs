@@ -537,7 +537,16 @@ impl IpcServer {
             reg.set_session_owner(&sid.to_string(), conn_id);
             reg.subscribe(&sid.to_string(), conn_id);
         }
-        let progress_token = params.get("progress_token").cloned();
+        // §7.2: a `$/progress` `token` must be ProgressToken (integer|string).
+        // Echo `progress_token` when provided; otherwise fall back to the
+        // request id; a notification (no id) falls back to a valid number.
+        let progress_token = match params.get("progress_token") {
+            Some(t) if !t.is_null() => t.clone(),
+            _ => match &req.id {
+                Value::Null => Value::Number(0.into()),
+                id => id.clone(),
+            },
+        };
         let mut rx = self.agent_loop.run_turn_stream(&sid.to_string(), content);
         let mut text = String::new();
         let mut tc_list = vec![];
@@ -1666,6 +1675,85 @@ mod tests {
                 .iter()
                 .any(|m| m.contains("$/progress") && m.contains("hello")),
             "subscriber B must receive $/progress deltas: {b_sent:?}"
+        );
+    }
+
+    /// BUG-004 regression: §7.2 — when the client omits `progress_token`, the
+    /// `$/progress` `params.token` must echo the request id, never null.
+    #[tokio::test]
+    async fn progress_broadcast_uses_request_id_token_when_token_omitted() {
+        let server = Arc::new(IpcServer::new(stub_agent_loop(), Kernel::new()));
+        let a = register_fake_conn(&server);
+        let b = register_fake_conn(&server);
+        let new_resp = server
+            .handle_request_from(r#"{"jsonrpc":"2.0","id":1,"method":"session/new"}"#, &a)
+            .await
+            .unwrap();
+        let sid = extract_sid(&new_resp);
+        server
+            .handle_request_from(
+                &format!(
+                    r#"{{"jsonrpc":"2.0","id":2,"method":"session/subscribe","params":{{"session_id":"{sid}"}}}}"#
+                ),
+                &b,
+            )
+            .await
+            .unwrap();
+        server
+            .handle_request_from(
+                &format!(
+                    r#"{{"jsonrpc":"2.0","id":2,"method":"session/run","params":{{"session_id":"{sid}","content":"hi"}}}}"#
+                ),
+                &a,
+            )
+            .await
+            .unwrap();
+        let b_sent = drain_sent(&server, &b);
+        let progress = b_sent
+            .iter()
+            .find(|m| m.contains("$/progress"))
+            .unwrap_or_else(|| panic!("subscriber must receive $/progress: {b_sent:?}"));
+        let v: serde_json::Value = serde_json::from_str(progress).unwrap();
+        assert!(
+            !v["params"]["token"].is_null(),
+            "token must never be null: {progress}"
+        );
+        assert_eq!(
+            v["params"]["token"], 2,
+            "§7.2: omitted progress_token must fall back to the request id: {progress}"
+        );
+    }
+
+    /// BUG-004 edge: a `session/run` notification (no request id) still
+    /// broadcasts `$/progress`; the token falls back to a deterministic
+    /// schema-valid number instead of null.
+    #[tokio::test]
+    async fn progress_broadcast_notification_without_id_keeps_token_valid() {
+        let server = Arc::new(IpcServer::new(stub_agent_loop(), Kernel::new()));
+        let a = register_fake_conn(&server);
+        let new_resp = server
+            .handle_request_from(r#"{"jsonrpc":"2.0","id":1,"method":"session/new"}"#, &a)
+            .await
+            .unwrap();
+        let sid = extract_sid(&new_resp);
+        server
+            .handle_request_from(
+                &format!(
+                    r#"{{"jsonrpc":"2.0","method":"session/run","params":{{"session_id":"{sid}","content":"hi"}}}}"#
+                ),
+                &a,
+            )
+            .await
+            .unwrap();
+        let a_sent = drain_sent(&server, &a);
+        let progress = a_sent
+            .iter()
+            .find(|m| m.contains("$/progress"))
+            .unwrap_or_else(|| panic!("initiator must receive $/progress: {a_sent:?}"));
+        let v: serde_json::Value = serde_json::from_str(progress).unwrap();
+        assert!(
+            v["params"]["token"].is_i64() || v["params"]["token"].is_string(),
+            "token must stay ProgressToken (integer|string), got: {progress}"
         );
     }
 
