@@ -200,7 +200,7 @@ async fn run_attached(url: &str, prompt: &str) -> anyhow::Result<()> {
             Ok(v) => v,
             Err(_) => continue,
         };
-        if let Some(text) = v["result"]["response"].as_str() {
+        if let Some(text) = v["result"]["content"].as_str() {
             println!("{text}");
             break;
         }

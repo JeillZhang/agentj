@@ -566,7 +566,7 @@ impl IpcServer {
                 _ => {}
             }
         }
-        Ok(serde_json::json!({ "response": text, "tool_calls": tc_list }))
+        Ok(serde_json::json!({ "content": text, "tool_calls": tc_list }))
     }
 
     fn dispatch_shutdown(&self) -> Result<Value, DispatchError> {
@@ -1237,7 +1237,9 @@ mod tests {
         );
         let resp = server.handle_request(raw).await.unwrap();
         let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
-        assert_eq!(v["result"]["response"], "hello");
+        // when: session/run responds, then: result carries `content` per SessionRunResult
+        assert_eq!(v["result"]["content"], "hello");
+        assert!(v["result"].get("response").is_none());
     }
 
     #[tokio::test]
