@@ -1,9 +1,9 @@
 //! TCP transport — multi-client JSON-RPC serving over TcpListener (design 决策 #1/#3).
 
 use crate::{Connection, ConnectionWriter, IpcServer, TransportKind};
-use agentj_core::agent_loop::AgentLoop;
 use agentj_core::error::IpcError;
 use agentj_core::kernel::Kernel;
+use agentj_core::module::SessionStore;
 use async_trait::async_trait;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -111,8 +111,8 @@ pub struct TcpIpcServer {
 impl TcpIpcServer {
     pub async fn bind(
         addr: &str,
-        agent_loop: AgentLoop,
         kernel: Kernel,
+        session: Arc<dyn SessionStore>,
         permission_module: Option<Arc<agentj_permission::PermissionModule>>,
         token: Option<String>,
         max_connections: usize,
@@ -120,11 +120,9 @@ impl TcpIpcServer {
         let listener = TcpListener::bind(addr)
             .await
             .map_err(|e| IpcError::InvalidRequest(e.to_string()))?;
-        let mut server = IpcServer::new(agent_loop, kernel);
+        let mut server = IpcServer::new(kernel, session);
         server.permission_module = permission_module;
         server.attach_permission_notifier();
-        // Wire the auth token into the shared server — `dispatch_initialize`
-        // reads it there, so without this the token gate is dead code.
         server.set_token(token.clone());
         Ok(Self {
             listener,
@@ -189,24 +187,67 @@ impl TcpIpcServer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::stub_agent_loop;
+    use crate::test_support::stub_session;
+    use agentj_context::ContextPipeline;
+    use agentj_core::agent_loop_module::AgentLoopModule;
     use agentj_core::kernel::Kernel;
+    use agentj_core::module::*;
+    use agentj_core::tool_executor::ToolExecutorModule;
+    use agentj_core::turn_runner::TurnRunner;
+    use agentj_model::mock::MockModelProvider;
+    use agentj_session::InMemoryStore;
+    use std::sync::Arc;
     use std::time::Duration;
     use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
     use tokio::net::TcpStream;
 
+    fn bus_kernel_and_session() -> (Kernel, Arc<dyn SessionStore>) {
+        let store: Arc<InMemoryStore> = Arc::new(InMemoryStore::new());
+        let session_dyn: Arc<dyn SessionStore> = store.clone();
+        let tools = Arc::new(ToolRegistry::new());
+        let providers = Arc::new(ProviderRegistry::new());
+        providers.register(
+            "mock".into(),
+            Arc::new(MockModelProvider::new(vec![
+                Ok(agentj_core::types::ModelEvent::Delta("hello".into())),
+                Ok(agentj_core::types::ModelEvent::Done),
+            ])),
+        );
+        let ctx = KernelContext {
+            session: session_dyn.clone(),
+            tools: tools.clone(),
+            providers: providers.clone(),
+            config: Arc::new(crate::test_support::MockConfig),
+        };
+        let mut kernel = Kernel::new();
+        let mut register =
+            ModuleRegister::with_services(tools.clone(), providers.clone(), kernel.services());
+        kernel
+            .register_module(
+                Box::new(ToolExecutorModule::new(ctx.clone())),
+                &ctx,
+                &mut register,
+            )
+            .unwrap();
+        let runner = TurnRunner::new(
+            ctx.clone(),
+            Arc::new(ContextPipeline::new()),
+            "You are helpful.".into(),
+            kernel.sender(),
+            "tool_executor".into(),
+        );
+        kernel
+            .register_module(Box::new(AgentLoopModule::new(runner)), &ctx, &mut register)
+            .unwrap();
+        (kernel, session_dyn)
+    }
+
     #[tokio::test]
     async fn two_clients_serve_independently() {
-        let mut server = TcpIpcServer::bind(
-            "127.0.0.1:0",
-            stub_agent_loop(),
-            Kernel::new(),
-            None,
-            None,
-            16,
-        )
-        .await
-        .unwrap();
+        let mut server =
+            TcpIpcServer::bind("127.0.0.1:0", Kernel::new(), stub_session(), None, None, 16)
+                .await
+                .unwrap();
         let addr = server.local_addr().unwrap();
         let handle = tokio::spawn(async move { server.run().await.unwrap() });
 
@@ -235,16 +276,10 @@ mod tests {
 
     #[tokio::test]
     async fn max_connections_refuses_third_client() {
-        let mut server = TcpIpcServer::bind(
-            "127.0.0.1:0",
-            stub_agent_loop(),
-            Kernel::new(),
-            None,
-            None,
-            2,
-        )
-        .await
-        .unwrap();
+        let mut server =
+            TcpIpcServer::bind("127.0.0.1:0", Kernel::new(), stub_session(), None, None, 2)
+                .await
+                .unwrap();
         let addr = server.local_addr().unwrap();
         let handle = tokio::spawn(async move { server.run().await.unwrap() });
         let c1 = TcpStream::connect(addr).await.unwrap();
@@ -292,8 +327,8 @@ mod tests {
     async fn token_gate_rejects_unauthenticated_clients() {
         let mut server = TcpIpcServer::bind(
             "127.0.0.1:0",
-            stub_agent_loop(),
             Kernel::new(),
+            stub_session(),
             None,
             Some("s3cret".into()),
             16,
@@ -354,16 +389,10 @@ mod tests {
 
     #[tokio::test]
     async fn last_connection_disconnect_triggers_graceful_shutdown() {
-        let mut server = TcpIpcServer::bind(
-            "127.0.0.1:0",
-            stub_agent_loop(),
-            Kernel::new(),
-            None,
-            None,
-            16,
-        )
-        .await
-        .unwrap();
+        let mut server =
+            TcpIpcServer::bind("127.0.0.1:0", Kernel::new(), stub_session(), None, None, 16)
+                .await
+                .unwrap();
         let addr = server.local_addr().unwrap();
         let c = TcpStream::connect(addr).await.unwrap();
         drop(c);
@@ -384,16 +413,10 @@ mod tests {
     /// another client runs the session.
     #[tokio::test]
     async fn idle_subscriber_receives_progress_broadcast_over_tcp() {
-        let mut server = TcpIpcServer::bind(
-            "127.0.0.1:0",
-            stub_agent_loop(),
-            Kernel::new(),
-            None,
-            None,
-            16,
-        )
-        .await
-        .unwrap();
+        let (kernel, session) = bus_kernel_and_session();
+        let mut server = TcpIpcServer::bind("127.0.0.1:0", kernel, session, None, None, 16)
+            .await
+            .unwrap();
         let addr = server.local_addr().unwrap();
         let handle = tokio::spawn(async move { server.run().await.unwrap() });
 
