@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "agentj-cli"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "agentj-config",
  "agentj-context",
@@ -28,7 +28,7 @@ dependencies = [
 
 [[package]]
 name = "agentj-config"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "agentj-core",
  "agentj-permission",
@@ -39,7 +39,7 @@ dependencies = [
 
 [[package]]
 name = "agentj-context"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "agentj-core",
  "serde_json",
@@ -47,7 +47,7 @@ dependencies = [
 
 [[package]]
 name = "agentj-core"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "agentj-context",
  "agentj-model",
@@ -66,7 +66,7 @@ dependencies = [
 
 [[package]]
 name = "agentj-ipc"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "agentj-context",
  "agentj-core",
@@ -82,7 +82,7 @@ dependencies = [
 
 [[package]]
 name = "agentj-license"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "base64",
  "ed25519-dalek",
@@ -92,7 +92,7 @@ dependencies = [
 
 [[package]]
 name = "agentj-mcp"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "agentj-core",
  "serde_json",
@@ -102,7 +102,7 @@ dependencies = [
 
 [[package]]
 name = "agentj-model"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "agentj-core",
  "async-trait",
@@ -119,7 +119,7 @@ dependencies = [
 
 [[package]]
 name = "agentj-permission"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "agentj-core",
  "agentj-protocol",
@@ -135,7 +135,7 @@ dependencies = [
 
 [[package]]
 name = "agentj-plugin"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "agentj-core",
  "libloading",
@@ -147,7 +147,7 @@ dependencies = [
 
 [[package]]
 name = "agentj-plugin-fixture"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "agentj-core",
  "agentj-plugin",
@@ -155,7 +155,7 @@ dependencies = [
 
 [[package]]
 name = "agentj-protocol"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "schemars",
  "serde",
@@ -164,7 +164,7 @@ dependencies = [
 
 [[package]]
 name = "agentj-session"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "agentj-core",
  "serde_json",
@@ -176,7 +176,7 @@ dependencies = [
 
 [[package]]
 name = "agentj-skills"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "tempfile",
  "tracing",
@@ -184,14 +184,14 @@ dependencies = [
 
 [[package]]
 name = "agentj-stats"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "agentj-core",
 ]
 
 [[package]]
 name = "agentj-tools"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "agentj-core",
  "libc",
