@@ -21,6 +21,10 @@ pub struct InitializeParams {
     pub capabilities: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client_info: Option<ClientInfo>,
+    /// Access token required by a token-gated resident kernel (--token).
+    /// Absent when the kernel runs without auth — additive.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -29,6 +33,10 @@ pub struct InitializeResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub capabilities: Option<serde_json::Value>,
     pub server_info: ServerInfo,
+    /// This connection's unique id in a multi-client kernel (design 决策 #6).
+    /// Absent in single-client (stdio) mode. Capability flag: capabilities.multi_client.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub connection_id: Option<String>,
 }
 
 // `initialized`, `shutdown`, `exit` carry no params — represented as
@@ -47,6 +55,7 @@ mod tests {
                 name: "cli".into(),
                 version: "0.1.0".into(),
             }),
+            token: None,
         };
         let json = serde_json::to_value(&p).unwrap();
         assert_eq!(json["protocol_version"], "0.1.0");
@@ -63,11 +72,46 @@ mod tests {
                 name: "agentj".into(),
                 version: "0.1.0".into(),
             },
+            connection_id: None,
         };
         let back: InitializeResult =
             serde_json::from_str(&serde_json::to_string(&r).unwrap()).unwrap();
         assert_eq!(back.protocol_version, "0.1.0");
         assert_eq!(back.server_info.name, "agentj");
+    }
+
+    #[test]
+    fn initialize_result_with_connection_id() {
+        let r = InitializeResult {
+            protocol_version: "0.4.0".into(),
+            capabilities: Some(serde_json::json!({"multi_client": true})),
+            server_info: ServerInfo {
+                name: "agentj".into(),
+                version: "0.4.0".into(),
+            },
+            connection_id: Some("conn-1".into()),
+        };
+        let json = serde_json::to_value(&r).unwrap();
+        assert_eq!(json["connection_id"], "conn-1");
+        assert_eq!(json["capabilities"]["multi_client"], true);
+    }
+
+    #[test]
+    fn initialize_result_without_connection_id_omits_field() {
+        let r = InitializeResult {
+            protocol_version: "0.4.0".into(),
+            capabilities: None,
+            server_info: ServerInfo {
+                name: "agentj".into(),
+                version: "0.4.0".into(),
+            },
+            connection_id: None,
+        };
+        let json = serde_json::to_value(&r).unwrap();
+        assert!(
+            json.get("connection_id").is_none(),
+            "connection_id must be optional/additive"
+        );
     }
 
     #[test]

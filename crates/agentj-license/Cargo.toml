@@ -1,0 +1,11 @@
+[package]
+name = "agentj-license"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+base64 = "0.22"
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+serde_json = "1"
+thiserror = "2"

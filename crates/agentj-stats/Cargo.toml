@@ -1,0 +1,8 @@
+[package]
+name = "agentj-stats"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+agentj-core = { path = "../agentj-core" }

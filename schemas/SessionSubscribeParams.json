@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SessionSubscribeParams",
+  "description": "`session/subscribe` params — subscribe to a session's running progress\n(design 决策 #4: broadcast subscription). `$/progress` broadcasts to all subscribers.",
+  "type": "object",
+  "properties": {
+    "progress_token": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ProgressToken"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "session_id": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "session_id"
+  ],
+  "$defs": {
+    "ProgressToken": {
+      "description": "Streaming progress token — independent of the request id (design 决策 #3).",
+      "anyOf": [
+        {
+          "type": "integer",
+          "format": "int64"
+        },
+        {
+          "type": "string"
+        }
+      ]
+    }
+  }
+}

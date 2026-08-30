@@ -16,6 +16,10 @@ pub struct PermissionRequestParams {
     pub args: serde_json::Value,
     /// Human-readable reason (tool default mode / matched rule).
     pub reason: String,
+    /// Connection id of the client that initiated the run (design 决策 #5).
+    /// Absent in single-client (stdio) mode — additive.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin_client: Option<String>,
 }
 
 /// C→S request: the client's decision on a pending permission request.
@@ -53,6 +57,7 @@ mod tests {
             tool: "bash".into(),
             args: serde_json::json!({"cmd": "ls"}),
             reason: "tool default mode is ask".into(),
+            origin_client: None,
         };
         let json = serde_json::to_value(&p).unwrap();
         assert_eq!(json["request_id"], "r1");
@@ -104,5 +109,31 @@ mod tests {
         assert_eq!(serde_json::to_value(&rp).unwrap()["type"], "object");
         let rr = schemars::schema_for!(PermissionRespondParams);
         assert_eq!(serde_json::to_value(&rr).unwrap()["type"], "object");
+    }
+
+    #[test]
+    fn permission_request_params_with_origin_client() {
+        let p = PermissionRequestParams {
+            request_id: "req-1".into(),
+            tool: "bash".into(),
+            args: serde_json::json!({"command": "ls"}),
+            reason: "tool default mode is ask".into(),
+            origin_client: Some("conn-a".into()),
+        };
+        let json = serde_json::to_value(&p).unwrap();
+        assert_eq!(json["origin_client"], "conn-a");
+    }
+
+    #[test]
+    fn permission_request_params_without_origin_client_omits_field() {
+        let p = PermissionRequestParams {
+            request_id: "req-1".into(),
+            tool: "bash".into(),
+            args: serde_json::json!({"command": "ls"}),
+            reason: "tool default mode is ask".into(),
+            origin_client: None,
+        };
+        let json = serde_json::to_value(&p).unwrap();
+        assert!(json.get("origin_client").is_none());
     }
 }
