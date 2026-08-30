@@ -1,6 +1,6 @@
 //! TCP transport — multi-client JSON-RPC serving over TcpListener (design 决策 #1/#3).
 
-use crate::{Connection, IpcServer, TransportKind};
+use crate::{Connection, ConnectionWriter, IpcServer, TransportKind};
 use agentj_core::agent_loop::AgentLoop;
 use agentj_core::error::IpcError;
 use agentj_core::kernel::Kernel;
@@ -18,8 +18,22 @@ pub struct TcpConnection {
     /// Kept alive for the connection's lifetime: dropping the tokio write half
     /// shuts down the socket's write direction (FIN) and kills the response path.
     _writer_half: tokio::net::tcp::OwnedWriteHalf,
-    writer: Mutex<std::net::TcpStream>,
+    /// Shared blocking writer — `ConnectionWriter` clones this Arc so broadcasts
+    /// can reach the peer while the serve loop owns the reader half.
+    writer: Arc<Mutex<std::net::TcpStream>>,
     peer: String,
+}
+
+/// Blocking NDJSON write through the shared socket (message + newline + flush).
+fn write_tcp(writer: &Mutex<std::net::TcpStream>, msg: &str) -> Result<(), IpcError> {
+    use std::io::Write;
+    let mut w = writer
+        .lock()
+        .map_err(|_| IpcError::InvalidRequest("tcp writer lock poisoned".into()))?;
+    w.write_all(msg.as_bytes())?;
+    w.write_all(b"\n")?;
+    w.flush()?;
+    Ok(())
 }
 
 impl TcpConnection {
@@ -46,7 +60,7 @@ impl TcpConnection {
             id: format!("tcp-{peer}"),
             reader: BufReader::new(reader),
             _writer_half: writer_half,
-            writer: Mutex::new(writer),
+            writer: Arc::new(Mutex::new(writer)),
             peer,
         })
     }
@@ -61,15 +75,7 @@ impl Connection for TcpConnection {
         TransportKind::Tcp
     }
     fn send(&self, msg: &str) -> Result<(), IpcError> {
-        use std::io::Write;
-        let mut w = self
-            .writer
-            .lock()
-            .map_err(|_| IpcError::InvalidRequest("tcp writer lock poisoned".into()))?;
-        w.write_all(msg.as_bytes())?;
-        w.write_all(b"\n")?;
-        w.flush()?;
-        Ok(())
+        write_tcp(&self.writer, msg)
     }
     async fn recv(&mut self) -> Option<Result<String, IpcError>> {
         let mut line = String::new();
@@ -81,6 +87,15 @@ impl Connection for TcpConnection {
     }
     fn peer_desc(&self) -> String {
         self.peer.clone()
+    }
+    fn writer(&self) -> ConnectionWriter {
+        let writer = Arc::clone(&self.writer);
+        ConnectionWriter::new(
+            self.id.clone(),
+            self.kind(),
+            self.peer.clone(),
+            Arc::new(move |msg: &str| write_tcp(&writer, msg)),
+        )
     }
 }
 
@@ -357,5 +372,101 @@ mod tests {
             .await
             .expect("server must shut down gracefully after the last client disconnects")
             .unwrap();
+    }
+
+    async fn tcp_write_line(w: &mut tokio::net::tcp::OwnedWriteHalf, req: &str) {
+        w.write_all(req.as_bytes()).await.unwrap();
+        w.write_all(b"\n").await.unwrap();
+    }
+
+    /// BUG-006 regression over real TCP: an idle subscriber (session/subscribe
+    /// then no further requests) must receive the $/progress broadcast while
+    /// another client runs the session.
+    #[tokio::test]
+    async fn idle_subscriber_receives_progress_broadcast_over_tcp() {
+        let mut server = TcpIpcServer::bind(
+            "127.0.0.1:0",
+            stub_agent_loop(),
+            Kernel::new(),
+            None,
+            None,
+            16,
+        )
+        .await
+        .unwrap();
+        let addr = server.local_addr().unwrap();
+        let handle = tokio::spawn(async move { server.run().await.unwrap() });
+
+        // Subscriber A: initialize + session/new + session/subscribe, then idle.
+        let stream_a = TcpStream::connect(addr).await.unwrap();
+        let (r_a, mut w_a) = stream_a.into_split();
+        let mut reader_a = BufReader::new(r_a);
+        let init = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocol_version":"0.4.0"}}"#;
+        tcp_write_line(&mut w_a, init).await;
+        let mut line = String::new();
+        reader_a.read_line(&mut line).await.unwrap();
+        tcp_write_line(
+            &mut w_a,
+            r#"{"jsonrpc":"2.0","id":2,"method":"session/new"}"#,
+        )
+        .await;
+        line.clear();
+        reader_a.read_line(&mut line).await.unwrap();
+        let sid = serde_json::from_str::<serde_json::Value>(&line).unwrap()["result"]["session_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        tcp_write_line(
+            &mut w_a,
+            &format!(
+                r#"{{"jsonrpc":"2.0","id":3,"method":"session/subscribe","params":{{"session_id":"{sid}"}}}}"#
+            ),
+        )
+        .await;
+        line.clear();
+        reader_a.read_line(&mut line).await.unwrap();
+        assert!(line.contains("\"result\""), "subscribe ack: {line}");
+        // A is now idle — its reader blocks until the broadcast arrives.
+
+        // Initiator B: initialize + session/run on the same session.
+        let stream_b = TcpStream::connect(addr).await.unwrap();
+        let (r_b, mut w_b) = stream_b.into_split();
+        let mut reader_b = BufReader::new(r_b);
+        tcp_write_line(&mut w_b, init).await;
+        line.clear();
+        reader_b.read_line(&mut line).await.unwrap();
+        tcp_write_line(
+            &mut w_b,
+            &format!(
+                r#"{{"jsonrpc":"2.0","id":5,"method":"session/run","params":{{"session_id":"{sid}","content":"hi"}}}}"#
+            ),
+        )
+        .await;
+        // The initiator is auto-subscribed: its first line is the $/progress
+        // broadcast (written during the run), then the run response.
+        let mut progress = String::new();
+        reader_b.read_line(&mut progress).await.unwrap();
+        assert!(
+            progress.contains("$/progress") && progress.contains("hello"),
+            "initiator must receive $/progress first: {progress}"
+        );
+        line.clear();
+        reader_b.read_line(&mut line).await.unwrap();
+        assert!(line.contains("\"result\""), "run response: {line}");
+
+        // The broadcast was written to A before the run response, so the idle
+        // subscriber must already have it queued on its socket.
+        let mut progress_a = String::new();
+        tokio::time::timeout(Duration::from_secs(5), reader_a.read_line(&mut progress_a))
+            .await
+            .expect("idle subscriber must receive $/progress")
+            .unwrap();
+        assert!(
+            progress_a.contains("$/progress") && progress_a.contains("hello"),
+            "idle subscriber got: {progress_a}"
+        );
+
+        drop((w_a, w_b, reader_a, reader_b));
+        handle.abort();
     }
 }

@@ -29,6 +29,45 @@ pub enum TransportKind {
     UnixSocket,
 }
 
+/// Send closure shared between a connection and its registered writer handle.
+pub type ConnSend = Arc<dyn Fn(&str) -> Result<(), IpcError> + Send + Sync>;
+
+/// Send-only handle to a connection, registered in the `ConnectionRegistry`
+/// so broadcasts and owner-directed routing can reach a connection while its
+/// serve loop owns the reader half (and is therefore awaiting `recv`). The
+/// handle shares the connection's writer — messages sent through it reach the
+/// same peer. Kept registered for the connection's lifetime, so an idle
+/// subscriber never drops out of broadcast reach (BUG-006).
+pub struct ConnectionWriter {
+    id: String,
+    kind: TransportKind,
+    peer: String,
+    send: ConnSend,
+}
+
+impl ConnectionWriter {
+    pub fn new(id: String, kind: TransportKind, peer: String, send: ConnSend) -> Self {
+        Self {
+            id,
+            kind,
+            peer,
+            send,
+        }
+    }
+    pub fn id(&self) -> String {
+        self.id.clone()
+    }
+    pub fn kind(&self) -> TransportKind {
+        self.kind
+    }
+    pub fn peer_desc(&self) -> String {
+        self.peer.clone()
+    }
+    pub fn send(&self, msg: &str) -> Result<(), IpcError> {
+        (self.send)(msg)
+    }
+}
+
 /// Unified connection abstraction (design 决策 #1): stdio/TCP/Unix-socket are implementations.
 /// v0.1 only ships `StdioConnection`; `TcpConnection` lands in v0.3 (daemon-kernel plan).
 /// `#[async_trait]` boxes the recv future so the trait stays dyn-compatible (edition 2024
@@ -40,12 +79,21 @@ pub trait Connection: Send + Sync {
     fn send(&self, msg: &str) -> Result<(), IpcError>;
     async fn recv(&mut self) -> Option<Result<String, IpcError>>;
     fn peer_desc(&self) -> String;
+    /// Detach a send-only handle sharing this connection's writer, so the
+    /// registry can route broadcasts to it while the serve loop owns the
+    /// reader half (`recv` needs `&mut`, so the full connection cannot stay
+    /// registered across the await).
+    fn writer(&self) -> ConnectionWriter;
 }
 
 /// Multi-client connection registry (design 决策 #1/#5) — v0.1 uses the single
 /// stdio path; session_owner routing is consumed by v0.3 permission direction.
 pub struct ConnectionRegistry {
     conns: std::collections::HashMap<String, Box<dyn Connection>>,
+    /// Send-only handles for connections whose serve loop owns the reader half
+    /// (TCP). Registered for the connection's lifetime so broadcasts reach idle
+    /// subscribers; removed on disconnect.
+    writers: std::collections::HashMap<String, ConnectionWriter>,
     session_owner: std::collections::HashMap<SessionId, String>,
     pending_runs: std::collections::HashSet<SessionId>,
     subscribers: std::collections::HashMap<SessionId, std::collections::HashSet<String>>,
@@ -57,6 +105,7 @@ impl ConnectionRegistry {
     pub fn new() -> Self {
         Self {
             conns: std::collections::HashMap::new(),
+            writers: std::collections::HashMap::new(),
             session_owner: std::collections::HashMap::new(),
             pending_runs: std::collections::HashSet::new(),
             subscribers: std::collections::HashMap::new(),
@@ -69,6 +118,13 @@ impl ConnectionRegistry {
         self.conns.insert(id.clone(), conn);
         id
     }
+    /// Register a send-only handle so the connection stays reachable for
+    /// broadcasts while its serve loop owns the reader half.
+    pub fn register_writer(&mut self, writer: ConnectionWriter) -> String {
+        let id = writer.id();
+        self.writers.insert(id.clone(), writer);
+        id
+    }
     pub fn unregister(&mut self, id: &str) -> Option<Box<dyn Connection>> {
         self.authorized.remove(id);
         self.session_owner.retain(|_, owner| owner != id);
@@ -76,6 +132,7 @@ impl ConnectionRegistry {
             subs.remove(id);
         }
         self.subscribers.retain(|_, s| !s.is_empty());
+        self.writers.remove(id);
         self.conns.remove(id)
     }
     /// Record which connection owns a session (design 决策 #5: 审批定向路由依据).
@@ -94,9 +151,14 @@ impl ConnectionRegistry {
     }
     /// Route a message to one connection; a vanished peer is not an error
     /// (design 错误处理: drop the response instead of failing the caller).
+    /// Full connections (stdio) take precedence; TCP connections are reached
+    /// through their registered send-only handle.
     pub fn send_to(&self, conn_id: &str, msg: &str) -> Result<(), IpcError> {
-        match self.conns.get(conn_id) {
-            Some(conn) => conn.send(msg),
+        if let Some(conn) = self.conns.get(conn_id) {
+            return conn.send(msg);
+        }
+        match self.writers.get(conn_id) {
+            Some(writer) => writer.send(msg),
             None => Ok(()),
         }
     }
@@ -676,36 +738,34 @@ impl IpcServer {
         _token: Option<&str>,
     ) -> Result<(), IpcError> {
         let conn_id = conn.id();
+        // Register a send-only handle so broadcasts / owner-directed routing
+        // can reach this connection while its serve loop awaits `recv` (the
+        // reader half needs `&mut`, so the full connection cannot stay in the
+        // registry — no std lock may be held across the await).
         if let Ok(mut reg) = self.registry.write() {
-            reg.register(conn);
+            reg.register_writer(conn.writer());
         }
-        let serve_result = self.serve_connection_requests(&conn_id).await;
+        let serve_result = self.serve_connection_requests(conn, &conn_id).await;
         if let Ok(mut reg) = self.registry.write() {
             reg.unregister(&conn_id);
         }
         serve_result
     }
 
-    /// Per-connection request loop body. Like `serve_stdio`, the connection is
-    /// detached from the registry while `recv` awaits (the std RwLock guard
-    /// must not be held across an await) and re-inserted before each dispatch
-    /// so handlers and the permission notifier can reach it via the registry.
-    async fn serve_connection_requests(&self, conn_id: &str) -> Result<(), IpcError> {
+    /// Per-connection request loop body. The connection stays owned by this
+    /// loop for its whole lifetime (reader half for `recv`, writer half for
+    /// responses), while the registry holds a detached `ConnectionWriter`
+    /// handle — so an idle subscriber never drops out of broadcast reach, and
+    /// no std RwLock guard is held across an await.
+    async fn serve_connection_requests(
+        &self,
+        mut conn: Box<dyn Connection>,
+        conn_id: &str,
+    ) -> Result<(), IpcError> {
         loop {
-            let mut conn = self
-                .registry
-                .write()
-                .map_err(|_| IpcError::InvalidRequest("connection registry poisoned".into()))?
-                .conns
-                .remove(conn_id)
-                .ok_or_else(|| IpcError::InvalidRequest(format!("connection {conn_id} missing")))?;
             let Some(line) = conn.recv().await else {
                 break; // EOF — connection dropped here; unregistered by the caller
             };
-            // Re-insert before dispatch so handlers/notifier can reach it.
-            if let Ok(mut reg) = self.registry.write() {
-                reg.conns.insert(conn_id.to_string(), conn);
-            }
             let trimmed = match line {
                 Ok(l) => l.trim().to_string(),
                 Err(e) => return Err(e),
@@ -722,18 +782,7 @@ impl IpcServer {
                     )
                 });
             if !response.is_empty() {
-                let mut delivered = false;
-                if let Ok(reg) = self.registry.read()
-                    && let Some(conn) = reg.conns.get(conn_id)
-                {
-                    conn.send(&response)?;
-                    delivered = true;
-                }
-                if !delivered {
-                    return Err(IpcError::InvalidRequest(format!(
-                        "connection {conn_id} missing"
-                    )));
-                }
+                conn.send(&response)?;
             }
             if self.shutdown_requested() {
                 break;
@@ -917,6 +966,23 @@ impl Connection for StdioConnection {
     }
     fn peer_desc(&self) -> String {
         "stdio".into()
+    }
+    fn writer(&self) -> ConnectionWriter {
+        ConnectionWriter::new(
+            self.id.clone(),
+            self.kind(),
+            self.peer_desc(),
+            Arc::new(|msg: &str| {
+                // Sync trait method — std blocking stdout; tokio stdout's
+                // block_on panics inside an async context.
+                use std::io::Write;
+                let mut stdout = std::io::stdout().lock();
+                stdout.write_all(msg.as_bytes())?;
+                stdout.write_all(b"\n")?;
+                stdout.flush()?;
+                Ok(())
+            }),
+        )
     }
 }
 
@@ -1435,6 +1501,20 @@ mod tests {
         fn peer_desc(&self) -> String {
             self.id.clone()
         }
+        fn writer(&self) -> ConnectionWriter {
+            let log = std::sync::Arc::clone(&self.log);
+            ConnectionWriter::new(
+                self.id.clone(),
+                self.kind(),
+                self.peer_desc(),
+                Arc::new(move |msg: &str| {
+                    if let Ok(mut log) = log.lock() {
+                        log.push(msg.to_string());
+                    }
+                    Ok(())
+                }),
+            )
+        }
     }
 
     /// Test connection driven by an mpsc channel: feed lines via `tx`, read
@@ -1478,6 +1558,20 @@ mod tests {
         }
         fn peer_desc(&self) -> String {
             self.id.clone()
+        }
+        fn writer(&self) -> ConnectionWriter {
+            let log = std::sync::Arc::clone(&self.log);
+            ConnectionWriter::new(
+                self.id.clone(),
+                self.kind(),
+                self.peer_desc(),
+                Arc::new(move |msg: &str| {
+                    if let Ok(mut log) = log.lock() {
+                        log.push(msg.to_string());
+                    }
+                    Ok(())
+                }),
+            )
         }
     }
 
@@ -1565,6 +1659,25 @@ mod tests {
     fn extract_sid(resp: &str) -> String {
         let v: serde_json::Value = serde_json::from_str(resp).unwrap();
         v["result"]["session_id"].as_str().unwrap().to_string()
+    }
+
+    /// Wait until `predicate` matches a message the connection has sent.
+    async fn wait_for_line(log: &SharedLog, predicate: impl Fn(&str) -> bool) -> String {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if let Some(m) = log
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .iter()
+                    .find(|m| predicate(m))
+                {
+                    return m.clone();
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("timed out waiting for a connection log line")
     }
 
     #[tokio::test]
@@ -1913,5 +2026,71 @@ mod tests {
             server.registry.read().unwrap().conns.is_empty(),
             "disconnected connection must be unregistered"
         );
+        assert!(
+            server.registry.read().unwrap().writers.is_empty(),
+            "disconnected connection's writer handle must be unregistered"
+        );
+    }
+
+    /// BUG-006 regression: an idle subscriber (session/subscribe then no
+    /// further requests, blocked in recv) must still receive $/progress while
+    /// another client runs the session. The BUG-001-era detach window removed
+    /// connections from the registry during recv, so broadcasts were dropped.
+    #[tokio::test]
+    async fn serve_connection_broadcasts_progress_to_idle_subscriber() {
+        let server = Arc::new(IpcServer::new(stub_agent_loop(), Kernel::new()));
+        let (conn_a, log_a, tx_a) = scripted_conn("tcp-A");
+        let (conn_b, _log_b, tx_b) = scripted_conn("tcp-B");
+        let s = Arc::clone(&server);
+        let task_a = tokio::spawn(async move { s.serve_connection(Box::new(conn_a), None).await });
+        let s = Arc::clone(&server);
+        let task_b = tokio::spawn(async move { s.serve_connection(Box::new(conn_b), None).await });
+
+        // Subscriber A: initialize → session/new → session/subscribe, then idle.
+        tx_a.send(
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocol_version":"0.4.0"}}"#
+                .to_string(),
+        )
+        .await
+        .unwrap();
+        tx_a.send(r#"{"jsonrpc":"2.0","id":2,"method":"session/new"}"#.to_string())
+            .await
+            .unwrap();
+        let sid = extract_sid(&wait_for_line(&log_a, |m| m.contains("\"session_id\"")).await);
+        tx_a.send(format!(
+            r#"{{"jsonrpc":"2.0","id":3,"method":"session/subscribe","params":{{"session_id":"{sid}"}}}}"#
+        ))
+        .await
+        .unwrap();
+        wait_for_line(&log_a, |m| m.contains("\"id\":3")).await;
+        // Let A's serve loop settle into recv (detached from the registry in
+        // the buggy build) before the initiator runs the session.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // Initiator B: initialize → session/run on the same session.
+        tx_b.send(
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocol_version":"0.4.0"}}"#
+                .to_string(),
+        )
+        .await
+        .unwrap();
+        tx_b.send(format!(
+            r#"{{"jsonrpc":"2.0","id":5,"method":"session/run","params":{{"session_id":"{sid}","content":"hi"}}}}"#
+        ))
+        .await
+        .unwrap();
+        drop(tx_b); // EOF so B's serve loop returns after the run completes
+        task_b.await.unwrap().unwrap();
+
+        let a_sent = log_a.lock().unwrap().clone();
+        assert!(
+            a_sent
+                .iter()
+                .any(|m| m.contains("$/progress") && m.contains("hello")),
+            "idle subscriber must receive $/progress while blocked in recv: {a_sent:?}"
+        );
+
+        drop(tx_a);
+        let _ = task_a.await;
     }
 }
