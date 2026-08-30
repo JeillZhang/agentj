@@ -108,6 +108,9 @@ impl TcpIpcServer {
         let mut server = IpcServer::new(agent_loop, kernel);
         server.permission_module = permission_module;
         server.attach_permission_notifier();
+        // Wire the auth token into the shared server — `dispatch_initialize`
+        // reads it there, so without this the token gate is dead code.
+        server.set_token(token.clone());
         Ok(Self {
             listener,
             shared: Arc::new(server),
@@ -237,6 +240,100 @@ mod tests {
         let n = c3.read(&mut buf).await.unwrap_or(0);
         assert_eq!(n, 0, "third connection must be closed by the server");
         drop((c1, c2));
+        handle.abort();
+    }
+
+    /// TCP round-trip: connect to `addr`, send one NDJSON request, read exactly
+    /// one response line, and return the response plus the live stream (the
+    /// caller holds the stream open so the server stays resident).
+    async fn tcp_rpc(addr: std::net::SocketAddr, req: &str) -> (String, tokio::net::TcpStream) {
+        let stream = TcpStream::connect(addr).await.unwrap();
+        let (r, mut w) = stream.into_split();
+        let mut reader = BufReader::new(r);
+        w.write_all(req.as_bytes()).await.unwrap();
+        w.write_all(b"\n").await.unwrap();
+        let mut line = String::new();
+        reader.read_line(&mut line).await.unwrap();
+        let stream = w.reunite(reader.into_inner()).unwrap();
+        (line, stream)
+    }
+
+    async fn tcp_send(stream: tokio::net::TcpStream, req: &str) -> (String, tokio::net::TcpStream) {
+        let (r, mut w) = stream.into_split();
+        let mut reader = BufReader::new(r);
+        w.write_all(req.as_bytes()).await.unwrap();
+        w.write_all(b"\n").await.unwrap();
+        let mut line = String::new();
+        reader.read_line(&mut line).await.unwrap();
+        let stream = w.reunite(reader.into_inner()).unwrap();
+        (line, stream)
+    }
+
+    /// BUG-002 regression guard: `--token` must actually gate the resident TCP
+    /// server. A configured token rejects wrong-token/missing-token initialize
+    /// with -32806, unauthenticated connections cannot reach business methods,
+    /// and a correct-token initialize unlocks session/new.
+    #[tokio::test]
+    async fn token_gate_rejects_unauthenticated_clients() {
+        let mut server = TcpIpcServer::bind(
+            "127.0.0.1:0",
+            stub_agent_loop(),
+            Kernel::new(),
+            None,
+            Some("s3cret".into()),
+            16,
+        )
+        .await
+        .unwrap();
+        let addr = server.local_addr().unwrap();
+        let handle = tokio::spawn(async move { server.run().await.unwrap() });
+        let mut held = Vec::new();
+
+        // Wrong token → initialize must be NotAuthorized; a failed initialize
+        // never grants access, so session/new stays rejected on this connection.
+        let (resp, conn) = tcp_rpc(
+            addr,
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocol_version":"0.4.0","token":"WRONG"}}"#,
+        )
+        .await;
+        assert!(
+            resp.contains(r#""code":-32806"#),
+            "wrong-token initialize must be NotAuthorized: {resp}"
+        );
+        let (resp, conn) =
+            tcp_send(conn, r#"{"jsonrpc":"2.0","id":2,"method":"session/new"}"#).await;
+        assert!(
+            resp.contains(r#""code":-32806"#),
+            "session/new after failed initialize must be rejected: {resp}"
+        );
+        held.push(conn);
+
+        let (resp, conn) =
+            tcp_rpc(addr, r#"{"jsonrpc":"2.0","id":3,"method":"session/new"}"#).await;
+        assert!(
+            resp.contains(r#""code":-32806"#),
+            "session/new without initialize must be rejected: {resp}"
+        );
+        held.push(conn);
+
+        let (resp, conn) = tcp_rpc(
+            addr,
+            r#"{"jsonrpc":"2.0","id":4,"method":"initialize","params":{"protocol_version":"0.4.0","token":"s3cret"}}"#,
+        )
+        .await;
+        assert!(
+            resp.contains(r#""connection_id""#) && !resp.contains(r#""code":-32806"#),
+            "correct-token initialize must succeed: {resp}"
+        );
+        let (resp, conn) =
+            tcp_send(conn, r#"{"jsonrpc":"2.0","id":5,"method":"session/new"}"#).await;
+        assert!(
+            resp.contains(r#""session_id""#),
+            "session/new after successful initialize must succeed: {resp}"
+        );
+        held.push(conn);
+
+        drop(held);
         handle.abort();
     }
 

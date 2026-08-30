@@ -49,6 +49,8 @@ pub struct ConnectionRegistry {
     session_owner: std::collections::HashMap<SessionId, String>,
     pending_runs: std::collections::HashSet<SessionId>,
     subscribers: std::collections::HashMap<SessionId, std::collections::HashSet<String>>,
+    /// Connections that passed `initialize` auth on a token-gated server.
+    authorized: std::collections::HashSet<String>,
 }
 
 impl ConnectionRegistry {
@@ -58,6 +60,7 @@ impl ConnectionRegistry {
             session_owner: std::collections::HashMap::new(),
             pending_runs: std::collections::HashSet::new(),
             subscribers: std::collections::HashMap::new(),
+            authorized: std::collections::HashSet::new(),
         }
     }
     /// Register a connection; v0.1 registers exactly one stdio connection.
@@ -67,6 +70,7 @@ impl ConnectionRegistry {
         id
     }
     pub fn unregister(&mut self, id: &str) -> Option<Box<dyn Connection>> {
+        self.authorized.remove(id);
         self.session_owner.retain(|_, owner| owner != id);
         for subs in self.subscribers.values_mut() {
             subs.remove(id);
@@ -80,6 +84,13 @@ impl ConnectionRegistry {
     }
     pub fn session_owner(&self, session: &SessionId) -> Option<&String> {
         self.session_owner.get(session)
+    }
+    /// Record that a connection passed `initialize` auth (token-gated mode).
+    pub fn mark_authorized(&mut self, conn_id: &str) {
+        self.authorized.insert(conn_id.to_string());
+    }
+    pub fn is_authorized(&self, conn_id: &str) -> bool {
+        self.authorized.contains(conn_id)
     }
     /// Route a message to one connection; a vanished peer is not an error
     /// (design 错误处理: drop the response instead of failing the caller).
@@ -340,16 +351,20 @@ impl IpcServer {
             }
         };
 
-        let result = match req.method.as_str() {
-            "initialize" => self.dispatch_initialize(&req, conn_id),
-            "session/new" => self.dispatch_session_new(conn_id),
-            "session/run" => self.dispatch_session_run(&req, conn_id).await,
-            "session/subscribe" => self.dispatch_subscribe(&req, conn_id),
-            "session/unsubscribe" => self.dispatch_unsubscribe(&req, conn_id),
-            "shutdown" => self.dispatch_shutdown(),
-            "permission/respond" => self.dispatch_permission_respond(&req, conn_id).await,
-            "$/cancelRequest" => self.dispatch_cancel_request(&req).await,
-            other => Err(DispatchError::method_not_found(other)),
+        let result = if let Some(err) = self.auth_gate(&req, conn_id) {
+            Err(err)
+        } else {
+            match req.method.as_str() {
+                "initialize" => self.dispatch_initialize(&req, conn_id),
+                "session/new" => self.dispatch_session_new(conn_id),
+                "session/run" => self.dispatch_session_run(&req, conn_id).await,
+                "session/subscribe" => self.dispatch_subscribe(&req, conn_id),
+                "session/unsubscribe" => self.dispatch_unsubscribe(&req, conn_id),
+                "shutdown" => self.dispatch_shutdown(),
+                "permission/respond" => self.dispatch_permission_respond(&req, conn_id).await,
+                "$/cancelRequest" => self.dispatch_cancel_request(&req).await,
+                other => Err(DispatchError::method_not_found(other)),
+            }
         };
 
         let resp = match result {
@@ -377,6 +392,34 @@ impl IpcServer {
         Ok(serde_json::to_string(&resp)?)
     }
 
+    /// Token-mode auth gate: when a token is configured, only connections
+    /// that already passed `initialize` may issue business methods. The
+    /// `initialize` method itself always reaches `dispatch_initialize` (which
+    /// performs the token check and marks the connection authorized). stdio
+    /// serves with no token, so this gate is inert on that path.
+    fn auth_gate(&self, req: &JsonRpcRequest, conn_id: &str) -> Option<DispatchError> {
+        if req.method.as_str() == "initialize" {
+            return None;
+        }
+        let token_configured = self.token.lock().ok().map(|t| t.is_some()).unwrap_or(false);
+        if !token_configured {
+            return None;
+        }
+        let authorized = self
+            .registry
+            .read()
+            .ok()
+            .map(|r| r.is_authorized(conn_id))
+            .unwrap_or(false);
+        if !authorized {
+            return Some(DispatchError {
+                code: error_codes::NOT_AUTHORIZED,
+                message: "NotAuthorized".into(),
+            });
+        }
+        None
+    }
+
     fn dispatch_initialize(
         &self,
         req: &JsonRpcRequest,
@@ -393,6 +436,11 @@ impl IpcServer {
                 code: error_codes::NOT_AUTHORIZED,
                 message: "NotAuthorized".into(),
             });
+        }
+        // Successful auth: the connection may now issue business methods on a
+        // token-gated server (the non-initialize gate checks this registry).
+        if let Ok(mut reg) = self.registry.write() {
+            reg.mark_authorized(conn_id);
         }
         let version = env!("CARGO_PKG_VERSION");
         Ok(serde_json::json!({
