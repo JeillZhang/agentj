@@ -2,7 +2,7 @@
 
 AI 编码代理工具（Rust）——Linux 内核式「内核调度 + 可插拔模块」架构。内核通过统一的 JSON-RPC 2.0 协议（stdio / TCP，未来 WebSocket）对外暴露能力；CLI、TUI、Web Dashboard、IDE 插件均可作为协议消费者，**任意语言**可开发前端连接内核。
 
-> 当前版本：**v0.4.1**——守护内核落地（验收修复 6 Bug 后）（16 crate）：多客户端常驻 TCP 内核（`serve --port` / `run --attach` / `dashboard`）+ Web Dashboard（JSON-RPC 消费端）+ 用量统计（agentj-stats）+ License 校验（agentj-license）+ 方法面 14→16（`session/subscribe`/`session/unsubscribe`）；v0.3 全保留：事件总线 + 子代理调度 + skills 加载 + 插件加载（libloading）+ MCP 长驻连接 + 会话过期 + 磁盘持久化 + Ollama provider；v0.2 全保留：IPC 协议契约 + 权限审批系统 + JSON-RPC stdio IPC + CLI run/serve。
+> 当前版本：**v0.5.0**——内核调度全重构（16 crate）：`KernelMessage` 混合总线（UserRequest+ToolCallRequest 目标路由+ServiceCall 同步/异步）、`TurnRunner` 总线化 turn 编排、`ToolExecutorModule`/`AgentLoopModule` 内核模块化、子代理经 `subagent/dispatch` 异步服务、`IpcServer`/`CLI` 全面接总线；v0.4 全保留：守护内核多客户端常驻 TCP `serve --port`/`run --attach`/`dashboard` + Web Dashboard + 用量统计 + License 校验 + 方法面 16；v0.3 全保留：事件总线 + 子代理调度 + skills + 插件 + MCP 长驻连接 + 会话过期 + FileBackedStore + Ollama provider；v0.2 全保留：IPC 协议契约 + 权限审批系统。
 
 ## Features
 
@@ -12,8 +12,8 @@ AI 编码代理工具（Rust）——Linux 内核式「内核调度 + 可插拔�
 - [x] **方法注册表** `protocol/methods.json`（语言无关，method ↔ schema/方向/类型）
 - [x] **人类可读协议规范** `docs/specs/ipc-protocol.md`（11 节，v0.2.0）
 - [x] **跨语言验证**：TypeScript 绑定测试（`bindings/ts/`，json-schema-to-typescript + tsc）
-- [x] **内核与模块注册表**：Kernel 调度 + ModelProvider / SessionStore / ToolRegistry / ContextPipeline / ConfigProvider trait 注册表
-- [x] **Agent 循环（流式）**：AgentLoop `run_turn_stream` 事件流 + `run_turn` 聚合
+- [x] **内核与模块注册表**：Kernel 混合总线（`UserRequest` + `ToolCallRequest` 目标路由 + `ServiceCall` 同步/异步 + `Shutdown`）+ `Kernel::modules()` + `ToolCallReply` + `AsyncKernelService` + `ServiceRegistry` trait 注册表（ModelProvider / SessionStore / ToolRegistry / ContextPipeline / ConfigProvider）
+- [x] **Agent 循环（流式）**：`TurnRunner` 总线化编排（`spawn_turn`/`cancel`/`shutdown`，工具边界经 `ToolCallRequest` suspend 于 oneshot）+ `AgentLoopModule`（`UserRequest` 消费 + `agent/cancel`）+ `ToolExecutorModule`（`execute_async` 权限门禁）+ `SubAgentService` async `subagent/dispatch`
 - [x] **内置工具**：bash / glob / grep / read / write + ToolExecutor
 - [x] **MCP 桥**：子进程 MCP 客户端 + 工具发现注册
 - [x] **JSON-RPC IPC（stdio + TCP 多客户端）**：16 方法服务循环 + 优雅退出 + 连接感知分发（token 认证 / run 会话互斥 / 属主路由）
@@ -35,7 +35,7 @@ AI 编码代理工具（Rust）——Linux 内核式「内核调度 + 可插拔�
 ```
 crates/              # 16 个 workspace crate（统一目录）
   agentj-protocol/   # IPC 协议契约 crate（wire 类型 + schema 生成，零内核耦合）
-  agentj-core/       # 内核：Kernel 调度 + 模块 trait 注册表 + AgentLoop 流式 API + 事件总线 + 子代理调度
+  agentj-core/       # 内核：Kernel 混合总线调度 + 模块 trait 注册表 + TurnRunner + ToolExecutorModule + AgentLoopModule + 异步子代理 + AgentEvent/OnTurnComplete 迁至 types.rs
   agentj-config/     # TOML 配置（[model] provider/providers[]/kind/default_model）
   agentj-session/    # 会话生命周期（状态机 + 快照恢复 + 过期清理 + FileBackedStore 磁盘持久化）
   agentj-model/      # 模型提供方：三线格式 + OpenCodeGo 门面 + ProviderFactory + Mock + Ollama
@@ -47,8 +47,8 @@ crates/              # 16 个 workspace crate（统一目录）
   agentj-mcp/        # MCP 客户端（子进程连接 + 工具发现注册 + McpConnectionManager 长驻连接）
   agentj-skills/     # skills 加载器（.aj/.agents/.claude/skills 优先级合并）
   agentj-plugin/     # 插件系统（manifest + 生命周期状态机 + 依赖图 + libloading 动态加载）
-  agentj-ipc/        # JSON-RPC 2.0 IPC 服务（stdio + TCP 多客户端常驻）
-  agentj-cli/        # agentj 二进制（run [--attach] / serve [stdio|--port] / dashboard）
+  agentj-ipc/        # JSON-RPC 2.0 IPC 服务（stdio + TCP 多客户端常驻，全面接总线：session/run→UserRequest  + $/cancelRequest→agent/cancel + kernel/status→modules()）
+  agentj-cli/        # agentj 二进制（run [--attach] / serve [stdio|--port] / dashboard，TurnRunner+AgentLoopModule+ToolExecutorModule+SubAgentService 以模块注册进 Kernel）
   agentj-plugin-fixture/  # 插件 cdylib 测试夹具（dev-only）
 models/              # 模型目录 models/opencode-go.json（opencode-go 路由事实来源）
 schemas/             # 32 个 JSON Schema（schemars 生成，机器事实来源）
@@ -62,7 +62,7 @@ docs/superpowers/    # 设计文档 + 实现计划（中文）
 ## Usage
 
 ```bash
-agentj run "explain this codebase"              # 单轮运行（嵌入式 JSON-RPC 内核 + AgentLoop）
+agentj run "explain this codebase"              # 单轮运行（嵌入式 JSON-RPC 内核 + TurnRunner 总线化 turn）
 agentj run --attach tcp://127.0.0.1:4096 "hi"   # 附着到常驻内核运行（不新建内核）
 agentj serve                                    # 单客户端 stdio 服务（EOF/信号优雅退出）
 agentj serve --port 4096                        # 常驻 TCP 内核（多客户端共享，可接续任务）
@@ -102,7 +102,7 @@ effect = "deny"
 ## Development
 
 ```bash
-cargo test --workspace            # 全量测试（280 通过，含 e2e_cli/e2e_permission/e2e_serve 密封测试）
+cargo test --workspace            # 全量测试（~310 通过，含 bus 密封测试 + e2e_cli/e2e_permission/e2e_serve 密封测试）
 cargo clippy --workspace -- -D warnings
 cargo bench -p agentj-model       # 模型流式基准（criterion）
 cargo run -p agentj-protocol --bin gen_schemas   # 重新生成 schemas/*.json

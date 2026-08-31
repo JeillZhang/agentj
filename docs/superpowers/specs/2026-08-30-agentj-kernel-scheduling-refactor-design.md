@@ -436,5 +436,5 @@ pub fn run_turn_stream(&self, sid: &str, input: &str) -> mpsc::Receiver<AgentEve
 
 ## TODO（阶段完成状态）
 
-- [ ] 设计评审通过 → 实现计划：`docs/superpowers/plans/2026-08-30-agentj-kernel-scheduling-refactor-plan.md`（T1-T9）
-- [ ] 开发（feature 分支）→ 验证（workspace 测试 / clippy / drift / e2e）→ 文档同步 → 差距存档 G1 状态更新
+- [x] 设计评审通过 → 实现计划：`docs/superpowers/plans/2026-08-30-agentj-kernel-scheduling-refactor-plan.md`（T1-T13，已完成）
+- [x] 开发（feature 分支 `feature/kernel-scheduling-refactor`）→ 验证（workspace ~310 测试 / clippy 零警告 / fmt 干净 / e2e 全绿 / drift 零改动）→ 文档同步（AGENTS.md/README.md/summary）→ 差距存档 G1 状态更新（✅ 已实现，v0.5.0）

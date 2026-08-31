@@ -1,10 +1,10 @@
 # AGENTS.md
 
-> Updated 2026-08-30 — v0.4.1 released (16 crates，守护内核落地：多客户端常驻 TCP 内核 `serve --port` / `run --attach` / `dashboard`、方法面 14→16（`session/subscribe`/`session/unsubscribe`）、`$/progress` 广播 + 权限属主路由、agentj-stats 用量统计、agentj-license Ed25519 许可证校验、Web Dashboard JSON-RPC 消费端)；v0.3 全保留：event bus + 子代理调度 + skills 加载 + 插件加载 + MCP 长驻连接 + 会话过期 + 磁盘持久化 + Ollama provider。
+> Updated 2026-08-30 — v0.5.0 released (16 crates，内核调度全重构：KernelMessage 总线化（UserRequest+ToolCallRequest 目标路由+ServiceCall 同步/异步）、TurnRunner 总线化 turn 编排、ToolExecutorModule/AgentLoopModule 内核模块化、子代理经 AsyncKernelService `subagent/dispatch`、IpcServer/CLI 全面接总线；v0.4 全保留：守护内核多客户端常驻 TCP `serve --port`/`run --attach`/`dashboard`、方法面 16、$/progress 广播+权限属主路由、agentj-stats 用量统计、agentj-license 校验、Web Dashboard）
 
 ## Project Status
 
-AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + 可插拔模块」架构。v0.4 已落地：**守护内核**（统一 Connection 抽象：stdio 哨兵 + `TcpConnection`/`TcpIpcServer` 多客户端常驻，`--token`/`--max-connections`）、**多客户端协议分发**（initialize token 认证 + run 会话互斥 `-32805` + permission 属主门控 `-32806` + `session/subscribe`/`session/unsubscribe` 广播订阅）、**`$/progress` 进度广播**、**权限属主定向路由**（`origin_client`）、**agentj-stats 用量统计**（UsageCollector，经 AgentLoop on-turn-complete 钩子接线）、**agentj-license**（Ed25519 许可证校验，design-pending 门控接入）、**Web Dashboard**（JSON-RPC 协议消费端，`web-dashboard/`）；v0.3 已落地能力全保留：**事件总线**（`EventBus` + 订阅/发布，全生命周期事件）、**子代理调度器**、**skills 加载器**（`.aj/.agents/.claude/skills` 优先级合并）、**插件系统**（manifest 解析 + 生命周期状态机 + 依赖图 + libloading 动态加载）、**MCP 长驻连接管理**（`McpConnectionManager`：引用计数共享 + 空闲回收 + 指数退避重连）、**会话过期清理 + FileBackedStore 磁盘持久化**、**Ollama provider**；v0.2 已落地能力全保留：**IPC 协议契约**（现 16 方法）+ **权限审批系统**（`$/permissionRequest` + `permission/respond`）、内置工具、JSON-RPC stdio IPC、CLI run/serve、DeepSeek + opencode-go 统一订阅。
+AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + 可插拔模块」架构。v0.5 已落地：**内核调度全重构**（决策 #18 兑现）——`KernelMessage` 混合总线（`UserRequest{reply:mpsc::Sender<AgentEvent>}` + `ToolCallRequest{target,reply:ToolCallReply}` 目标路由 + `ServiceCall` 同步/异步双分支（`AsyncKernelService`）+ `Shutdown`）、`TurnRunner` 总线化 turn 编排（工具边界发 `ToolCallRequest` 并 suspend 于 oneshot，model deltas 走 per-turn `mpsc` 通道）、`ToolExecutorModule`（`execute_async` 权限门禁保留）、`AgentLoopModule`（`UserRequest` 消费 + `agent/cancel` ServiceCall）、`Dispatcher` 子代理经 `subagent/dispatch` 异步服务、`IpcServer`/`CLI` 全面接总线（`session/run`→`UserRequest`、`$/cancelRequest`→`agent/cancel`、`kernel/status` 经 `Kernel::modules()`）、`AgentEvent`/`OnTurnComplete` 迁至 `types.rs` 并由旧路径 re-export 至 T10 移除；v0.4 全保留：**守护内核**（统一 Connection 抽象：stdio 哨兵 + `TcpConnection`/`TcpIpcServer` 多客户端常驻，`--token`/`--max-connections`）、**多客户端协议分发**（initialize token 认证 + run 会话互斥 `-32805` + permission 属主门控 `-32806` + `session/subscribe`/`session/unsubscribe` 广播订阅）、**`$/progress` 进度广播**、**权限属主定向路由**（`origin_client`）、**agentj-stats 用量统计**（UsageCollector，经 TurnRunner on-turn-complete 接线）、**agentj-license**（Ed25519 许可证校验）、**Web Dashboard**；v0.3 全保留：**事件总线**（`EventBus` + 订阅/发布）、**子代理调度器**（现经 `subagent` 异步服务）、**skills 加载器**、**插件系统**（libloading）、**MCP 长驻连接管理**、**会话过期清理 + FileBackedStore**、**Ollama provider**；v0.2 全保留：**IPC 协议契约**（16 方法，wire 零改动）+ **权限审批系统**。
 
 ## Setup
 
@@ -14,7 +14,7 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
 
 ## Commands
 
-- `cargo test --workspace` — 全量测试（280 通过；v0.4 起新增 e2e_serve 常驻内核生命周期密封测试、stats/license 单测、tcp 多客户端与生命周期单测、protocol 订阅 wire-shape 测试）
+- `cargo test --workspace` — 全量测试（~310 通过；v0.5 新增 bus 密封测试：ToolCallRequest 目标路由、async ServiceCall、TurnRunner 取消/广播、agent_loop_module、subagent dispatch；v0.4 起 e2e_serve 常驻内核生命周期密封测试、stats/license 单测、tcp 多客户端与生命周期单测、protocol 订阅 wire-shape 测试）
 - `cargo clippy --workspace -- -D warnings` — lint 门禁（零警告）
 - `cargo bench -p agentj-model` — 模型流式基准（criterion：`mock_stream_10_events`）
 - `cargo run -p agentj-protocol --bin gen_schemas` — 重新生成 `schemas/*.json`
@@ -33,7 +33,7 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
 > 全部 16 个 crate 位于 `crates/` 目录（工作区成员 `crates/*`），另有前端项目 `web-dashboard/`（工作区外），下文 `agentj-*` 均为 `crates/agentj-*`。
 
 - `agentj-protocol`（leaf crate）：IPC 协议契约的权威 wire 类型（JSON-RPC 2.0 信封、错误码、16 个方法 params/result、流式类型、订阅/权限类型），serde + schemars，零内核耦合。v0.1 的 `agentj-core`/`agentj-ipc` 应消费其类型（导入而非重定义）。
-- `agentj-core`（内核）：Kernel 调度 + 模块 trait 注册表（`module.rs`：ModelProvider / SessionStore / ToolRegistry / ContextPipeline / ConfigProvider）、`ModuleResolver` 服务定位（`resolver.rs`，ServiceRegistry 按 id 解析具体类型能力）、AgentLoop 流式 API（`run_turn_stream` → `mpsc::Receiver<AgentEvent>`，`run_turn` 聚合；`set_on_turn_complete` 用量钩子每成功 turn 触发一次）、错误/类型（`error.rs`/`types.rs`）。
+- `agentj-core`（内核）：Kernel 调度（`kernel.rs`：`KernelMessage` 混合总线 `UserRequest`/`ToolCallRequest`/`ServiceCall`/`Shutdown` + `modules()` 查询 + `ToolCallRequest` 目标路由 + `ServiceCall` 同步/异步双分支）+ 模块 trait 注册表（`module.rs`：ModelProvider / SessionStore / ToolRegistry / ContextPipeline / ConfigProvider + `ToolCallReply`）+ `ServiceRegistry` 服务定位（`resolver.rs`：`KernelService` 同步 + `AsyncKernelService` 异步，`register_kernel_service`/`register_kernel_async_service`）+ 总线化 turn 编排（`turn_runner.rs`：`TurnRunner` 持有 `KernelSender` + `tool_executor_id`，`spawn_turn`/`cancel`/`shutdown`，`AgentEvent` 迁至 `types.rs`）+ 内核模块（`tool_executor.rs`：`ToolExecutorModule` 目标路由执行；`agent_loop_module.rs`：`AgentLoopModule` 消费 `UserRequest` + 注册 `agent/cancel`；`dispatcher.rs`：`SubAgentService` async `subagent/dispatch` + `Dispatcher` 客户端；`types.rs`：`AgentEvent`/`OnTurnComplete`）。
 - `agentj-config`：TOML 配置（`[model]`：`provider` + `providers[]`（name/base_url/api_key_env/**kind**）+ `default_model`；`[permission]`：per-tool `ToolPolicy`（mode/path_rules/command_rules）），ConfigProvider 读取。
 - `agentj-session`：会话生命周期（InMemoryStore：状态机 SessionStatus + 快照恢复；FileBackedStore 磁盘持久化 + 过期清理 `spawn_expiry_loop`）。
 - `agentj-permission`：权限系统——决策引擎（规则求值 Deny > Allow > Mode）+ 策略模型（`ToolPolicy`、`[permission]` 配置）+ `PermissionModule`（审批等待/超时 60s 自动 Deny、allow_always 会话级内存态、取消即拒绝）。
@@ -42,11 +42,11 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
 - `agentj-context`：上下文管线（纯消息构造器）。
 - `agentj-stats`：用量统计（UsageCollector：per-session/global totals 与 turns 计数；poison-tolerant；由 CLI 经 AgentLoop on-turn-complete 接线）。
 - `agentj-license`：Ed25519 许可证校验（`base64(payload).base64(sig)` 密钥格式，entitlements + 过期策略；design-pending 商用门控接入）。
-- `agentj-mcp`：MCP 客户端——短生命周期子进程连接 + 工具发现注册，以及 **McpConnectionManager**（v0.3 长驻连接：引用计数共享 + 空闲超时回收 + 指数退避重连 + 级联 ghost-tool 注销）。
+- `agentj-mcp`：MCP 客户端——短生命周期子进程连接 + 工具发现注册，以及 **McpConnectionManager**（v0.3 长驻连接：引用计数共享 + 空闲超时回收 + 指数退避重连 + 级联 ghost-tool 注销）。 已保留，v0.5 接线不变。
 - `agentj-skills`：skills 加载器（`.aj/.agents/.claude/skills` 优先级合并，同名校验 SKILL.md，注册语义随 manifest-compat 研究延后）。
 - `agentj-plugin`：插件系统（manifest 解析 + 生命周期状态机 + 依赖图 + libloading 动态加载，`plugin-manager` / `state_machine` / `libloading_loader`）。
 - `agentj-ipc`：JSON-RPC 2.0 IPC 服务（stdio + TCP 多客户端）。统一 Connection 抽象（StdioConnection/TcpConnection）+ ConnectionRegistry（订阅广播/属主表/run 互斥）+ 连接感知分发（initialize token 认证、run 会话互斥 `-32805`、permission 属主门控 `-32806`、subscribe/unsubscribe）+ `$/progress` 广播与权限属主路由（`origin_client`）；TcpIpcServer 常驻模式支持 --token/--max-connections。
-- `agentj-cli`：`agentj` 二进制（`run [--attach tcp://…] "prompt"` / `serve [stdio] | serve --port [--token/--max-connections]` 常驻 / `dashboard --port`，AgentLoop 以模块注册进 Kernel；v0.3 接线保留：MCP 空闲回收 task + 会话过期循环 + skills 加载；v0.4 接线：UsageCollector on-turn-complete + TCP 常驻分支 + e2e_serve）。
+- `agentj-cli`：`agentj` 二进制（`run [--attach tcp://…] "prompt"` / `serve [stdio] | serve --port [--token/--max-connections]` 常驻 / `dashboard --port`，AgentLoopModule/ToolExecutorModule/SubAgentService 以模块注册进 Kernel；v0.3 接线保留：MCP 空闲回收 task + 会话过期循环 + skills 加载；v0.4 接线：UsageCollector on-turn-complete + TCP 常驻分支 + e2e_serve；v0.5 接线：`TurnRunner` 经 bus 驱动 `session/run`→`UserRequest` + `$/cancelRequest`→`agent/cancel`）。
 - `agentj-plugin-fixture`（dev-only）：插件 cdylib 测试夹具（`libloading_loader` 集成测试用）。
 - `schemas/*.json`：schemars 从 Rust 类型生成的 32 个 JSON Schema（机器事实来源，提交件 + CI 漂移门禁）。
 - `protocol/methods.json`：方法注册表（method ↔ params/result schema、方向、类型）。

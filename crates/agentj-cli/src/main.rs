@@ -10,60 +10,19 @@ use std::time::Duration;
 use clap::{Parser, Subcommand};
 
 use agentj_context::ContextPipeline;
-use agentj_core::agent_loop::AgentLoop;
-use agentj_core::error::ModuleError;
+use agentj_core::dispatcher::SubAgentService;
 use agentj_core::kernel::Kernel;
 use agentj_core::module::{
-    KernelContext, KernelMessage, KernelModule, KernelResponse, Module, ModuleMetadata,
-    ModuleRegister, ProviderRegistry, SessionStore, ToolRegistry,
+    KernelContext, KernelMessage, ModuleRegister, ProviderRegistry, SessionStore, ToolRegistry,
 };
+use agentj_core::tool_executor::ToolExecutorModule;
+use agentj_core::turn_runner::TurnRunner;
 use agentj_ipc::IpcServer;
 use agentj_mcp::McpConnectionManager;
 use agentj_model::factory::ProviderFactory;
 use agentj_session::InMemoryStore;
 use agentj_skills::load_skills;
 use agentj_tools::builtins::register_builtins;
-
-/// Wraps the AgentLoop as a kernel Module so init/shutdown run in the production process.
-struct AgentLoopModule {
-    // Held so the kernel owns the loop's lifetime; orchestration stays direct.
-    #[allow(dead_code)]
-    agent_loop: AgentLoop,
-}
-
-impl Module for AgentLoopModule {
-    fn id(&self) -> agentj_core::types::ModuleId {
-        "agent_loop".into()
-    }
-    fn metadata(&self) -> ModuleMetadata {
-        ModuleMetadata {
-            id: "agent_loop".into(),
-            name: "AgentLoop".into(),
-            version: env!("CARGO_PKG_VERSION").into(),
-            description: "Agent orchestration loop".into(),
-            author: "AgentJ".into(),
-        }
-    }
-    fn init(
-        &mut self,
-        _ctx: &KernelContext,
-        _register: &mut ModuleRegister,
-    ) -> Result<(), ModuleError> {
-        tracing::info!("agent_loop module initialized");
-        Ok(())
-    }
-    fn shutdown(&mut self) -> Result<(), ModuleError> {
-        tracing::info!("agent_loop module shutting down");
-        Ok(())
-    }
-}
-
-impl KernelModule for AgentLoopModule {
-    fn handle(&mut self, _msg: &KernelMessage) -> Result<KernelResponse, ModuleError> {
-        // Orchestration stays direct (architecture note): the kernel owns lifecycle only.
-        Ok(KernelResponse::Handled)
-    }
-}
 
 #[derive(Parser)]
 #[command(name = "agentj", version, about = "AgentJ — AI coding agent")]
@@ -109,11 +68,11 @@ fn permission_policies_from_config(
 }
 
 fn build_ipc_server(
-    agent_loop: AgentLoop,
     kernel: Kernel,
+    session: Arc<dyn SessionStore>,
     permission_module: Arc<agentj_permission::PermissionModule>,
 ) -> IpcServer {
-    let mut ipc_server = IpcServer::new(agent_loop, kernel);
+    let mut ipc_server = IpcServer::new(kernel, session);
     ipc_server.permission_module = Some(permission_module);
     ipc_server
 }
@@ -139,8 +98,8 @@ fn spawn_signal_task(sender: agentj_core::kernel::KernelSender) -> tokio::task::
 }
 
 async fn serve_tcp(
-    agent_loop: AgentLoop,
     kernel: Kernel,
+    session: Arc<dyn SessionStore>,
     permission_module: Arc<agentj_permission::PermissionModule>,
     port: u16,
     token: Option<String>,
@@ -148,8 +107,8 @@ async fn serve_tcp(
 ) -> anyhow::Result<()> {
     let mut tcp = agentj_ipc::tcp::TcpIpcServer::bind(
         &format!("127.0.0.1:{port}"),
-        agent_loop,
         kernel,
+        session,
         Some(permission_module),
         token,
         max_connections,
@@ -245,34 +204,47 @@ async fn main() -> anyhow::Result<()> {
     let permission_policies = permission_policies_from_config(&config);
 
     let ctx = KernelContext {
-        session,
+        session: session.clone(),
         tools,
         providers,
         config: Arc::new(config),
     };
 
-    // Lifecycle wiring: AgentLoop registers into the Kernel, so init/shutdown run in
-    // the real process. session/run still calls AgentLoop directly (orchestration stays
-    // direct per architecture note); the Kernel owns module lifecycle + graceful shutdown.
     let mut kernel = Kernel::new();
-    let mut register = ModuleRegister::new(Arc::clone(&ctx.tools), Arc::clone(&ctx.providers));
-    let usage = Arc::new(agentj_stats::UsageCollector::new());
-    let mut agent_loop = AgentLoop::new(
-        ctx.clone(),
-        Arc::new(ContextPipeline::new()),
-        "You are AgentJ, an AI coding assistant.".into(),
+    let mut register = ModuleRegister::with_services(
+        Arc::clone(&ctx.tools),
+        Arc::clone(&ctx.providers),
+        kernel.services(),
     );
-    {
-        let usage = Arc::clone(&usage);
-        agent_loop.set_on_turn_complete(Arc::new(move |sid| usage.record_turn(sid.clone())));
-    }
+    let usage = Arc::new(agentj_stats::UsageCollector::new());
     kernel.register_module(
-        Box::new(AgentLoopModule {
-            agent_loop: agent_loop.clone(),
-        }),
+        Box::new(ToolExecutorModule::new(ctx.clone())),
         &ctx,
         &mut register,
     )?;
+    let mut runner = TurnRunner::new(
+        ctx.clone(),
+        Arc::new(ContextPipeline::new()),
+        "You are AgentJ, an AI coding assistant.".into(),
+        kernel.sender(),
+        "tool_executor".into(),
+    );
+    {
+        let usage = Arc::clone(&usage);
+        runner.set_on_turn_complete(Arc::new(move |sid| usage.record_turn(sid.clone())));
+    }
+    kernel.register_module(
+        Box::new(agentj_core::agent_loop_module::AgentLoopModule::new(
+            runner.clone(),
+        )),
+        &ctx,
+        &mut register,
+    )?;
+    kernel.services().register_kernel_async_service(
+        "subagent".into(),
+        Arc::new(SubAgentService::new(runner.clone())),
+    );
+    let session_for_ipc: Arc<dyn SessionStore> = session.clone();
 
     // Permission wiring (design #17): construct from [permission] config with
     // fail-fast rule validation, register with the kernel so graceful shutdown
@@ -322,22 +294,34 @@ async fn main() -> anyhow::Result<()> {
             if let Some(url) = attach {
                 run_attached(&url, &prompt).await?;
             } else {
-                let mut ipc_server = build_ipc_server(agent_loop, kernel, permission_module);
+                let ipc_server =
+                    build_ipc_server(kernel, session_for_ipc.clone(), permission_module);
                 let signal_task = spawn_signal_task(ipc_server.kernel_sender());
                 let sid = ipc_server.create_session()?;
-                let response = ipc_server.run_turn(&sid, &prompt).await?;
-                println!("{response}");
-                // graceful shutdown: signal the kernel and wait for modules' shutdown()
+                let mut rx = ipc_server.run_turn_stream(&sid, &prompt);
+                let mut out = String::new();
+                while let Some(ev) = rx.recv().await {
+                    match ev {
+                        agentj_core::types::AgentEvent::Delta(d) => out.push_str(&d),
+                        agentj_core::types::AgentEvent::Done { final_response, .. } => {
+                            out = final_response;
+                            break;
+                        }
+                        agentj_core::types::AgentEvent::Error(e) => {
+                            eprintln!("error: {e}");
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+                println!("{out}");
                 ipc_server.signal_shutdown()?;
-                ipc_server.await_shutdown().await?;
-                signal_task.abort();
+                drop(signal_task);
             }
         }
         Some(Commands::Serve { port: None, .. }) => {
-            let mut ipc_server = build_ipc_server(agent_loop, kernel, permission_module);
+            let mut ipc_server = build_ipc_server(kernel, session_for_ipc, permission_module);
             let signal_task = spawn_signal_task(ipc_server.kernel_sender());
-            // serve_stdio exits on EOF, shutdown request, or signal-triggered
-            // kernel completion; kernel graceful shutdown runs after
             ipc_server.serve_stdio().await?;
             signal_task.abort();
         }
@@ -347,8 +331,8 @@ async fn main() -> anyhow::Result<()> {
             max_connections,
         }) => {
             serve_tcp(
-                agent_loop,
                 kernel,
+                session_for_ipc,
                 permission_module,
                 port,
                 token,
@@ -357,13 +341,12 @@ async fn main() -> anyhow::Result<()> {
             .await?;
         }
         Some(Commands::Dashboard { port }) => {
-            serve_tcp(agent_loop, kernel, permission_module, port, None, 16).await?;
+            serve_tcp(kernel, session_for_ipc, permission_module, port, None, 16).await?;
         }
         None => {
             println!("Use `agentj run \"your prompt\"` or `agentj serve`");
-            let mut ipc_server = build_ipc_server(agent_loop, kernel, permission_module);
+            let ipc_server = build_ipc_server(kernel, session_for_ipc, permission_module);
             ipc_server.signal_shutdown()?;
-            ipc_server.await_shutdown().await?;
         }
     }
     // The serve loop reads stdin through tokio's blocking pool; dropping the

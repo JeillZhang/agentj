@@ -1,10 +1,15 @@
-//! Integration tests for AgentLoop wiring real domain crates
-//! (agentj-session, agentj-model, agentj-tools, agentj-context).
+//! Integration test via bus-driven Kernel modules.
 
 use agentj_context::ContextPipeline;
-use agentj_core::agent_loop::{AgentEvent, AgentLoop};
-use agentj_core::module::*;
-use agentj_core::types::*;
+use agentj_core::agent_loop_module::AgentLoopModule;
+use agentj_core::kernel::Kernel;
+use agentj_core::module::{
+    ConfigProvider, KernelContext, KernelMessage, ModuleRegister, ProviderRegistry, SessionStore,
+    ToolRegistry,
+};
+use agentj_core::tool_executor::ToolExecutorModule;
+use agentj_core::turn_runner::TurnRunner;
+use agentj_core::types::{AgentEvent, ModelEvent};
 use agentj_model::mock::MockModelProvider;
 use agentj_session::InMemoryStore;
 use agentj_tools::builtins::ReadTool;
@@ -24,7 +29,7 @@ impl ConfigProvider for MockConfig {
 }
 
 #[tokio::test]
-async fn e2e_streaming_with_real_modules() {
+async fn e2e_streaming_with_real_modules_via_bus() {
     let tools = Arc::new(ToolRegistry::new());
     tools.register(Arc::new(ReadTool));
     let providers = Arc::new(ProviderRegistry::new());
@@ -38,18 +43,52 @@ async fn e2e_streaming_with_real_modules() {
 
     let ctx = KernelContext {
         session: session.clone(),
-        tools,
-        providers,
+        tools: tools.clone(),
+        providers: providers.clone(),
         config,
     };
-    let agent_loop = AgentLoop::new(
-        ctx,
-        Arc::new(ContextPipeline::new()),
-        "You are helpful.".into(),
-    );
-    let sid = agent_loop.create_session().unwrap();
 
-    let mut rx = agent_loop.run_turn_stream(&sid, "hi");
+    let mut kernel = Kernel::new();
+    let mut register = ModuleRegister::with_services(
+        Arc::clone(&tools),
+        Arc::clone(&providers),
+        kernel.services(),
+    );
+
+    let pipeline = Arc::new(ContextPipeline::new());
+    let runner = TurnRunner::new(
+        ctx.clone(),
+        pipeline,
+        "You are helpful.".into(),
+        kernel.sender(),
+        "tool_executor".into(),
+    );
+
+    kernel
+        .register_module(
+            Box::new(ToolExecutorModule::new(ctx.clone())),
+            &ctx,
+            &mut register,
+        )
+        .unwrap();
+    kernel
+        .register_module(Box::new(AgentLoopModule::new(runner)), &ctx, &mut register)
+        .unwrap();
+
+    let handle = kernel.start();
+    let sid = session.create().unwrap();
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+    kernel
+        .sender()
+        .send(KernelMessage::UserRequest {
+            session_id: sid.clone(),
+            content: "hi".into(),
+            attachments: vec![],
+            reply: tx,
+        })
+        .unwrap();
+
     let mut text = String::new();
     while let Some(event) = rx.recv().await {
         match event {
@@ -59,6 +98,10 @@ async fn e2e_streaming_with_real_modules() {
             _ => {}
         }
     }
+
     assert_eq!(text, "Response");
-    assert_eq!(session.get(&sid).unwrap().len(), 2); // user + assistant
+    assert_eq!(session.get(&sid).unwrap().len(), 2);
+
+    kernel.sender().send(KernelMessage::Shutdown).unwrap();
+    handle.await.unwrap().unwrap();
 }

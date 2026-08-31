@@ -1,5 +1,6 @@
 // T1 (v0.3 ecosystem): ModuleResolver service location + KernelMessage::ServiceCall.
 use crate::types::ModuleId;
+use async_trait::async_trait;
 use serde_json::Value;
 use std::any::Any;
 use std::collections::HashMap;
@@ -16,6 +17,11 @@ pub trait KernelService: Send + Sync {
     fn call(&self, method: &str, params: Value) -> Result<Value, String>;
 }
 
+#[async_trait]
+pub trait AsyncKernelService: Send + Sync {
+    async fn call(&self, method: &str, params: Value) -> Result<Value, String>;
+}
+
 /// Reply channel for KernelMessage::ServiceCall: `Arc` keeps the enum Clone-able;
 /// `take()` releases the oneshot after the first (and only) reply.
 pub type ServiceCallReply =
@@ -30,6 +36,7 @@ pub struct ServiceRegistry {
     // through the Any map (E0277: dyn KernelService is unsized) — a dedicated map keeps
     // the enum routing type-safe without ?Sized gymnastics.
     kernel_services: RwLock<HashMap<ModuleId, Arc<dyn KernelService>>>,
+    kernel_async_services: RwLock<HashMap<ModuleId, Arc<dyn AsyncKernelService>>>,
 }
 
 impl ServiceRegistry {
@@ -48,6 +55,7 @@ impl ServiceRegistry {
     pub fn unregister(&self, id: &ModuleId) {
         self.services.write().unwrap().remove(id);
         self.kernel_services.write().unwrap().remove(id);
+        self.kernel_async_services.write().unwrap().remove(id);
     }
 
     pub fn get<T: 'static + Send + Sync>(&self, id: &ModuleId) -> Option<Arc<T>> {
@@ -57,6 +65,21 @@ impl ServiceRegistry {
 
     pub fn get_kernel_service(&self, id: &ModuleId) -> Option<Arc<dyn KernelService>> {
         self.kernel_services.read().unwrap().get(id).cloned()
+    }
+
+    pub fn register_kernel_async_service(
+        &self,
+        id: ModuleId,
+        service: Arc<dyn AsyncKernelService>,
+    ) {
+        self.kernel_async_services
+            .write()
+            .unwrap()
+            .insert(id, service);
+    }
+
+    pub fn get_kernel_async_service(&self, id: &ModuleId) -> Option<Arc<dyn AsyncKernelService>> {
+        self.kernel_async_services.read().unwrap().get(id).cloned()
     }
 }
 
@@ -158,6 +181,104 @@ mod tests {
         assert!(
             reply.is_err(),
             "unknown service must produce an error reply, not hang"
+        );
+        kernel.sender().send(KernelMessage::Shutdown).unwrap();
+        handle.await.unwrap().unwrap();
+    }
+
+    struct SlowService;
+    #[async_trait::async_trait]
+    impl AsyncKernelService for SlowService {
+        async fn call(&self, _method: &str, params: Value) -> Result<Value, String> {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            Ok(params)
+        }
+    }
+
+    #[tokio::test]
+    async fn async_service_call_replies_after_completion_without_blocking_loop() {
+        let mut kernel = Kernel::new();
+        let services = kernel.services();
+        services.register_kernel_async_service("slow".into(), Arc::new(SlowService));
+        services.register_kernel_service("echo".into(), Arc::new(EchoService));
+        let handle = kernel.start();
+
+        // Send async call and measure elapsed.
+        let (tx_slow, rx_slow) = tokio::sync::oneshot::channel();
+        let start = std::time::Instant::now();
+        kernel
+            .sender()
+            .send(KernelMessage::ServiceCall {
+                service: "slow".into(),
+                method: "do".into(),
+                params: serde_json::json!({"v": 42}),
+                reply: Arc::new(std::sync::Mutex::new(Some(tx_slow))),
+            })
+            .unwrap();
+
+        // While slow is pending, a sync call must still be serviced quickly
+        // (proves the loop was not blocked by the async handler).
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        let (tx_echo, rx_echo) = tokio::sync::oneshot::channel();
+        kernel
+            .sender()
+            .send(KernelMessage::ServiceCall {
+                service: "echo".into(),
+                method: "echo".into(),
+                params: serde_json::json!({"ping": 1}),
+                reply: Arc::new(std::sync::Mutex::new(Some(tx_echo))),
+            })
+            .unwrap();
+        let echo_reply: Result<Value, String> =
+            tokio::time::timeout(std::time::Duration::from_secs(2), rx_echo)
+                .await
+                .expect("echo reply must arrive while slow pending")
+                .expect("sender dropped");
+        assert_eq!(echo_reply.unwrap()["ping"], 1);
+        // echo should have been fast (<80ms) despite slow still running.
+        assert!(
+            start.elapsed() < std::time::Duration::from_millis(80),
+            "sync path must not be blocked by async service"
+        );
+
+        let slow_reply: Result<Value, String> =
+            tokio::time::timeout(std::time::Duration::from_secs(2), rx_slow)
+                .await
+                .expect("slow reply must arrive")
+                .expect("sender dropped without sending");
+        let elapsed = start.elapsed();
+        assert_eq!(slow_reply.unwrap()["v"], 42);
+        assert!(
+            elapsed >= std::time::Duration::from_millis(90),
+            "async service should delay ~100ms, got {elapsed:?}"
+        );
+
+        kernel.sender().send(KernelMessage::Shutdown).unwrap();
+        handle.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn async_service_call_to_unknown_service_returns_error() {
+        let mut kernel = Kernel::new();
+        let handle = kernel.start();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        kernel
+            .sender()
+            .send(KernelMessage::ServiceCall {
+                service: "ghost_async".into(),
+                method: "x".into(),
+                params: serde_json::json!({}),
+                reply: Arc::new(std::sync::Mutex::new(Some(tx))),
+            })
+            .unwrap();
+        let reply: Result<Value, String> =
+            tokio::time::timeout(std::time::Duration::from_secs(2), rx)
+                .await
+                .expect("reply must arrive for unknown async service")
+                .expect("sender dropped without sending");
+        assert!(
+            reply.is_err(),
+            "unknown async service must produce an error reply, not hang"
         );
         kernel.sender().send(KernelMessage::Shutdown).unwrap();
         handle.await.unwrap().unwrap();
