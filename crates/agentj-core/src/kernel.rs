@@ -104,6 +104,15 @@ impl Kernel {
         self.states.lock().unwrap().get(id).copied()
     }
 
+    pub fn modules(&self) -> Vec<(ModuleId, ModuleState)> {
+        self.states
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(id, st)| (id.clone(), *st))
+            .collect()
+    }
+
     /// Register a module: init() runs synchronously; on failure the module is marked
     /// Failed (NOT inserted into the registry) and the error is returned — the kernel
     /// keeps running (one module's failure must not crash the kernel).
@@ -173,12 +182,41 @@ impl Kernel {
                     reply,
                 } = &msg
                 {
-                    let out = match services.get_kernel_service(service) {
-                        Some(svc) => svc.call(method, params.clone()),
-                        None => Err(format!("service '{service}' not found")),
-                    };
+                    if let Some(svc) = services.get_kernel_service(service) {
+                        let out = svc.call(method, params.clone());
+                        if let Some(tx) = reply.lock().unwrap().take() {
+                            let _ = tx.send(out);
+                        }
+                        continue;
+                    }
+                    if let Some(svc) = services.get_kernel_async_service(service) {
+                        let svc = svc.clone();
+                        let method = method.clone();
+                        let params = params.clone();
+                        let reply = reply.clone();
+                        tokio::spawn(async move {
+                            let out = svc.call(&method, params).await;
+                            if let Some(tx) = reply.lock().unwrap().take() {
+                                let _ = tx.send(out);
+                            }
+                        });
+                        continue;
+                    }
+                    let out: Result<serde_json::Value, String> =
+                        Err(format!("service '{service}' not found"));
                     if let Some(tx) = reply.lock().unwrap().take() {
                         let _ = tx.send(out);
+                    }
+                    continue;
+                }
+                if let KernelMessage::ToolCallRequest { target, .. } = &msg {
+                    let mut guard = modules.lock().unwrap();
+                    if let Some(module) = guard.get_mut(target) {
+                        if let Err(e) = module.handle(&msg) {
+                            tracing::error!(?e, "module handler error");
+                        }
+                    } else {
+                        tracing::warn!(%target, "ToolCallRequest to unregistered module");
                     }
                     continue;
                 }
@@ -412,12 +450,14 @@ mod tests {
         assert_eq!(kernel.module_state("spy"), Some(ModuleState::Ready));
 
         let handle = kernel.start();
+        let (tx, _rx) = tokio::sync::mpsc::channel(4);
         kernel
             .sender()
             .send(KernelMessage::UserRequest {
                 session_id: "s1".into(),
                 content: "hello".into(),
                 attachments: vec![],
+                reply: tx,
             })
             .unwrap();
 
@@ -428,6 +468,133 @@ mod tests {
         handle.await.unwrap().unwrap();
         assert_eq!(*shutdowns.lock().unwrap(), vec!["spy".to_string()]);
         assert_eq!(kernel.module_state("spy"), Some(ModuleState::Stopped));
+    }
+
+    #[tokio::test]
+    async fn tool_call_request_routes_to_target_module_only() {
+        let handled_a = Arc::new(StdMutex::new(vec![]));
+        let handled_b = Arc::new(StdMutex::new(vec![]));
+        let mut register = ModuleRegister::new(
+            Arc::new(ToolRegistry::new()),
+            Arc::new(ProviderRegistry::new()),
+        );
+        let mut kernel = Kernel::new();
+        kernel
+            .register_module(
+                Box::new(spy(
+                    "a",
+                    handled_a.clone(),
+                    Arc::new(StdMutex::new(vec![])),
+                    None,
+                    false,
+                )),
+                &dummy_kernel_context(),
+                &mut register,
+            )
+            .unwrap();
+        kernel
+            .register_module(
+                Box::new(spy(
+                    "b",
+                    handled_b.clone(),
+                    Arc::new(StdMutex::new(vec![])),
+                    None,
+                    false,
+                )),
+                &dummy_kernel_context(),
+                &mut register,
+            )
+            .unwrap();
+        let handle = kernel.start();
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        kernel
+            .sender()
+            .send(KernelMessage::ToolCallRequest {
+                session_id: "s1".into(),
+                tool_call: ToolCall {
+                    id: "c1".into(),
+                    name: "dummy".into(),
+                    arguments: serde_json::json!({}),
+                },
+                target: "a".into(),
+                reply: Arc::new(std::sync::Mutex::new(Some(tx))),
+            })
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(handled_a.lock().unwrap().len(), 1);
+        assert_eq!(
+            handled_b.lock().unwrap().len(),
+            0,
+            "target routing must not broadcast"
+        );
+        kernel.sender().send(KernelMessage::Shutdown).unwrap();
+        handle.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn tool_call_request_to_unregistered_target_keeps_kernel_running() {
+        let mut register = ModuleRegister::new(
+            Arc::new(ToolRegistry::new()),
+            Arc::new(ProviderRegistry::new()),
+        );
+        let mut kernel = Kernel::new();
+        kernel
+            .register_module(
+                Box::new(spy(
+                    "a",
+                    Arc::new(StdMutex::new(vec![])),
+                    Arc::new(StdMutex::new(vec![])),
+                    None,
+                    false,
+                )),
+                &dummy_kernel_context(),
+                &mut register,
+            )
+            .unwrap();
+        let handle = kernel.start();
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        kernel
+            .sender()
+            .send(KernelMessage::ToolCallRequest {
+                session_id: "s1".into(),
+                tool_call: ToolCall {
+                    id: "c1".into(),
+                    name: "dummy".into(),
+                    arguments: serde_json::json!({}),
+                },
+                target: "ghost".into(),
+                reply: Arc::new(std::sync::Mutex::new(Some(tx))),
+            })
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        kernel.sender().send(KernelMessage::Shutdown).unwrap();
+        handle.await.unwrap().unwrap();
+    }
+
+    #[test]
+    fn modules_query_returns_registered_ids_and_states() {
+        let mut register = ModuleRegister::new(
+            Arc::new(ToolRegistry::new()),
+            Arc::new(ProviderRegistry::new()),
+        );
+        let mut kernel = Kernel::new();
+        kernel
+            .register_module(
+                Box::new(spy(
+                    "a",
+                    Arc::new(StdMutex::new(vec![])),
+                    Arc::new(StdMutex::new(vec![])),
+                    None,
+                    false,
+                )),
+                &dummy_kernel_context(),
+                &mut register,
+            )
+            .unwrap();
+        assert_eq!(
+            kernel.modules(),
+            vec![("a".to_string(), ModuleState::Ready)]
+        );
     }
 
     #[tokio::test]

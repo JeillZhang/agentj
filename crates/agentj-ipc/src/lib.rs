@@ -1,11 +1,10 @@
 //! Unified Connection abstraction (design 决策 #1/#2) — transport-agnostic serve.
 pub mod tcp;
 
-use agentj_core::agent_loop::{AgentEvent, AgentLoop};
 use agentj_core::error::{IpcError, KernelError, ModuleError};
 use agentj_core::kernel::Kernel;
-use agentj_core::module::KernelMessage;
-use agentj_core::types::SessionId;
+use agentj_core::module::{KernelMessage, SessionStore};
+use agentj_core::types::{AgentEvent, SessionId};
 use agentj_permission::{ApprovalDecision, PermissionModule};
 use agentj_protocol::base::error_codes;
 use agentj_protocol::lifecycle::InitializeParams;
@@ -17,8 +16,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::io::Write;
 use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 /// Transport kind — new transports (Tcp / UnixSocket) add a variant + impl, serve loop unchanged.
@@ -266,8 +267,8 @@ impl DispatchError {
 }
 
 pub struct IpcServer {
-    agent_loop: Arc<AgentLoop>,
     kernel: Kernel,
+    session_store: Arc<dyn SessionStore>,
     kernel_handle: Option<JoinHandle<Result<(), KernelError>>>,
     shutdown_requested: AtomicBool,
     /// Shared registry: multi-client routing mutates it from `&self` handlers
@@ -324,13 +325,11 @@ impl Drop for RunGuard {
 }
 
 impl IpcServer {
-    pub fn new(agent_loop: AgentLoop, mut kernel: Kernel) -> Self {
-        // kernel owns module lifecycle: start() spawns the event loop; its JoinHandle
-        // completes only after the graceful shutdown chain has run.
+    pub fn new(mut kernel: Kernel, session_store: Arc<dyn SessionStore>) -> Self {
         let kernel_handle = kernel.start();
         Self {
-            agent_loop: Arc::new(agent_loop),
             kernel,
+            session_store,
             kernel_handle: Some(kernel_handle),
             shutdown_requested: AtomicBool::new(false),
             registry: Arc::new(std::sync::RwLock::new(ConnectionRegistry::new())),
@@ -341,11 +340,29 @@ impl IpcServer {
     }
 
     pub fn create_session(&self) -> Result<SessionId, ModuleError> {
-        self.agent_loop.create_session()
+        self.session_store.create()
     }
 
-    pub async fn run_turn(&self, sid: &SessionId, input: &str) -> Result<String, KernelError> {
-        self.agent_loop.run_turn(sid, input).await
+    pub fn run_turn_stream(&self, sid: &str, input: &str) -> mpsc::Receiver<AgentEvent> {
+        let (tx, rx) = mpsc::channel(64);
+        let sid = sid.to_string();
+        let content = input.to_string();
+        if self
+            .kernel
+            .sender()
+            .send(KernelMessage::UserRequest {
+                session_id: sid,
+                content,
+                attachments: vec![],
+                reply: tx,
+            })
+            .is_err()
+        {
+            let (etx, erx) = mpsc::channel(1);
+            let _ = etx.try_send(AgentEvent::Error("bus send failed".into()));
+            return erx;
+        }
+        rx
     }
 
     pub fn shutdown_requested(&self) -> bool {
@@ -550,8 +567,8 @@ impl IpcServer {
 
     fn dispatch_session_new(&self, conn_id: &str) -> Result<Value, DispatchError> {
         let sid = self
-            .agent_loop
-            .create_session()
+            .session_store
+            .create()
             .map_err(|e| DispatchError::internal(e.to_string()))?;
         if let Ok(mut reg) = self.registry.write() {
             reg.set_session_owner(&sid, conn_id);
@@ -610,7 +627,7 @@ impl IpcServer {
                 id => id.clone(),
             },
         };
-        let mut rx = self.agent_loop.run_turn_stream(&sid.to_string(), content);
+        let mut rx = self.run_turn_stream(sid, content);
         let mut text = String::new();
         let mut tc_list = vec![];
         while let Some(event) = rx.recv().await {
@@ -634,7 +651,15 @@ impl IpcServer {
                     tc_list = tool_calls;
                     break;
                 }
-                AgentEvent::Error(e) => return Err(DispatchError::internal(e)),
+                AgentEvent::Error(e) => {
+                    if e == "cancelled" {
+                        return Err(DispatchError {
+                            code: -32800,
+                            message: "RequestCancelled".into(),
+                        });
+                    }
+                    return Err(DispatchError::internal(e));
+                }
                 _ => {}
             }
         }
@@ -648,13 +673,21 @@ impl IpcServer {
         Ok(serde_json::json!({ "status": "ok" }))
     }
 
-    /// `kernel/status`: report the daemon version plus a module snapshot. The
-    /// IPC crate owns no kernel module registry, so `modules` stays empty —
-    /// the schema (KernelStatusResult) requires only `version` + `modules`.
     fn dispatch_kernel_status(&self) -> Result<Value, DispatchError> {
+        let modules: Vec<Value> = self
+            .kernel
+            .modules()
+            .iter()
+            .map(|(id, state)| {
+                serde_json::json!({
+                    "id": id,
+                    "state": format!("{state:?}").to_lowercase()
+                })
+            })
+            .collect();
         Ok(serde_json::json!({
             "version": env!("CARGO_PKG_VERSION"),
-            "modules": [],
+            "modules": modules,
         }))
     }
 
@@ -713,16 +746,22 @@ impl IpcServer {
         Ok(serde_json::json!({}))
     }
 
-    /// `$/cancelRequest` notification: resolve the in-flight session's pending
-    /// approvals to Deny ("cancelled"). Notifications carry no response body.
     async fn dispatch_cancel_request(&self, req: &JsonRpcRequest) -> Result<Value, DispatchError> {
         let _params: CancelParams =
             serde_json::from_value(req.params.clone().unwrap_or(serde_json::json!({})))
                 .map_err(|e| DispatchError::invalid_request(e.to_string()))?;
         let session_id = self.session.lock().await.clone();
-        let module = self.permission_module.as_ref();
-        if let (Some(session_id), Some(module)) = (session_id, module) {
-            let _ = module.cancel_session(&session_id, "cancelled");
+        if let Some(ref session_id) = session_id {
+            if let Some(module) = self.permission_module.as_ref() {
+                let _ = module.cancel_session(session_id, "cancelled");
+            }
+            let (tx, _rx) = tokio::sync::oneshot::channel();
+            let _ = self.kernel.sender().send(KernelMessage::ServiceCall {
+                service: "agent".into(),
+                method: "cancel".into(),
+                params: serde_json::json!({"session_id": session_id}),
+                reply: Arc::new(StdMutex::new(Some(tx))),
+            });
         }
         Ok(serde_json::Value::Null)
     }
@@ -990,8 +1029,10 @@ impl Connection for StdioConnection {
 #[cfg(test)]
 pub(crate) mod test_support {
     use agentj_context::ContextPipeline;
-    use agentj_core::agent_loop::AgentLoop;
+    use agentj_core::agent_loop_module::AgentLoopModule;
     use agentj_core::module::*;
+    use agentj_core::tool_executor::ToolExecutorModule;
+    use agentj_core::turn_runner::TurnRunner;
     use agentj_core::types::*;
     use agentj_model::mock::MockModelProvider;
     use agentj_session::InMemoryStore;
@@ -1010,7 +1051,21 @@ pub(crate) mod test_support {
         }
     }
 
-    pub(crate) fn stub_agent_loop() -> AgentLoop {
+    pub(crate) fn stub_session() -> Arc<InMemoryStore> {
+        Arc::new(InMemoryStore::new())
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn stub_server() -> crate::IpcServer {
+        let session = stub_session();
+        crate::IpcServer::new(agentj_core::kernel::Kernel::new(), session)
+    }
+
+    /// Build an IpcServer whose kernel has AgentLoopModule + ToolExecutorModule
+    /// wired to a MockModelProvider emitting `hello`.
+    pub(crate) fn stub_bus_server() -> crate::IpcServer {
+        let session: Arc<InMemoryStore> = Arc::new(InMemoryStore::new());
+        let session_dyn: Arc<dyn SessionStore> = session.clone();
         let tools = Arc::new(ToolRegistry::new());
         let providers = Arc::new(ProviderRegistry::new());
         providers.register(
@@ -1021,15 +1076,60 @@ pub(crate) mod test_support {
             ])),
         );
         let ctx = KernelContext {
-            session: Arc::new(InMemoryStore::new()),
-            tools,
-            providers,
+            session: session_dyn.clone(),
+            tools: tools.clone(),
+            providers: providers.clone(),
             config: Arc::new(MockConfig),
         };
-        AgentLoop::new(
+        let mut kernel = agentj_core::kernel::Kernel::new();
+        let mut register =
+            ModuleRegister::with_services(tools.clone(), providers.clone(), kernel.services());
+        kernel
+            .register_module(
+                Box::new(ToolExecutorModule::new(ctx.clone())),
+                &ctx,
+                &mut register,
+            )
+            .unwrap();
+        let runner = TurnRunner::new(
+            ctx.clone(),
+            Arc::new(ContextPipeline::new()),
+            "You are helpful.".into(),
+            kernel.sender(),
+            "tool_executor".into(),
+        );
+        kernel
+            .register_module(Box::new(AgentLoopModule::new(runner)), &ctx, &mut register)
+            .unwrap();
+        crate::IpcServer::new(kernel, session_dyn)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn stub_agent_loop() -> TurnRunner {
+        let session: Arc<InMemoryStore> = Arc::new(InMemoryStore::new());
+        let session_dyn: Arc<dyn SessionStore> = session.clone();
+        let tools = Arc::new(ToolRegistry::new());
+        let providers = Arc::new(ProviderRegistry::new());
+        providers.register(
+            "mock".into(),
+            Arc::new(MockModelProvider::new(vec![
+                Ok(ModelEvent::Delta("hello".into())),
+                Ok(ModelEvent::Done),
+            ])),
+        );
+        let ctx = KernelContext {
+            session: session_dyn,
+            tools,
+            providers: providers.clone(),
+            config: Arc::new(MockConfig),
+        };
+        let kernel = agentj_core::kernel::Kernel::new();
+        TurnRunner::new(
             ctx,
             Arc::new(ContextPipeline::new()),
             "You are helpful.".into(),
+            kernel.sender(),
+            "tool_executor".into(),
         )
     }
 }
@@ -1037,12 +1137,14 @@ pub(crate) mod test_support {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{MockConfig, stub_agent_loop};
+    use crate::test_support::{MockConfig, stub_bus_server, stub_session};
     use agentj_context::ContextPipeline;
-    use agentj_core::agent_loop::AgentLoop;
+    use agentj_core::agent_loop_module::AgentLoopModule;
     use agentj_core::kernel::Kernel;
     use agentj_core::module::*;
     use agentj_core::permission::{PermissionChecker, PermissionContext, PermissionDecision};
+    use agentj_core::tool_executor::ToolExecutorModule;
+    use agentj_core::turn_runner::TurnRunner;
     use agentj_core::types::*;
     use agentj_model::mock::MockModelProvider;
     use agentj_session::InMemoryStore;
@@ -1062,7 +1164,7 @@ mod tests {
             policies,
             std::time::Duration::from_millis(50),
         ));
-        let mut server = IpcServer::new(stub_agent_loop(), Kernel::new());
+        let mut server = IpcServer::new(Kernel::new(), stub_session());
         server.permission_module = Some(module.clone());
         (server, module)
     }
@@ -1085,6 +1187,8 @@ mod tests {
             policies,
             std::time::Duration::from_secs(10),
         ));
+        let store: Arc<InMemoryStore> = Arc::new(InMemoryStore::new());
+        let session_dyn: Arc<dyn SessionStore> = store.clone();
         let tools = Arc::new(ToolRegistry::new());
         tools.set_permission_checker(module.clone());
         let providers = Arc::new(ProviderRegistry::new());
@@ -1099,19 +1203,32 @@ mod tests {
             ))])),
         );
         let ctx = KernelContext {
-            session: Arc::new(InMemoryStore::new()),
-            tools,
-            providers,
+            session: session_dyn.clone(),
+            tools: tools.clone(),
+            providers: providers.clone(),
             config: Arc::new(MockConfig),
         };
-        let mut server = IpcServer::new(
-            AgentLoop::new(
-                ctx,
-                Arc::new(ContextPipeline::new()),
-                "You are helpful.".into(),
-            ),
-            Kernel::new(),
+        let mut kernel = Kernel::new();
+        let mut register =
+            ModuleRegister::with_services(tools.clone(), providers.clone(), kernel.services());
+        kernel
+            .register_module(
+                Box::new(ToolExecutorModule::new(ctx.clone())),
+                &ctx,
+                &mut register,
+            )
+            .unwrap();
+        let runner = TurnRunner::new(
+            ctx.clone(),
+            Arc::new(ContextPipeline::new()),
+            "You are helpful.".into(),
+            kernel.sender(),
+            "tool_executor".into(),
         );
+        kernel
+            .register_module(Box::new(AgentLoopModule::new(runner)), &ctx, &mut register)
+            .unwrap();
+        let mut server = IpcServer::new(kernel, session_dyn);
         server.permission_module = Some(module.clone());
         (server, module)
     }
@@ -1202,7 +1319,7 @@ mod tests {
     /// request WITH an id still gets its response.
     #[tokio::test]
     async fn id_less_notification_gets_no_response() {
-        let server = IpcServer::new(stub_agent_loop(), Kernel::new());
+        let server = IpcServer::new(Kernel::new(), stub_session());
         let resp = server
             .handle_request(r#"{"jsonrpc":"2.0","method":"session/new"}"#)
             .await
@@ -1292,9 +1409,11 @@ mod tests {
                 reason: "cancelled".into()
             }
         );
-        // The cancel unblocked the run; it completes and clears the session.
         let run_resp = run_task.await.unwrap();
-        assert!(run_resp.contains("\"result\""));
+        assert!(
+            run_resp.contains("\"result\"") || run_resp.contains("-32800"),
+            "cancel should either complete or return RequestCancelled: {run_resp}"
+        );
         assert_eq!(
             *server.session.lock().await,
             None,
@@ -1304,7 +1423,7 @@ mod tests {
 
     #[tokio::test]
     async fn session_new_returns_valid_id() {
-        let server = IpcServer::new(stub_agent_loop(), Kernel::new());
+        let server = IpcServer::new(Kernel::new(), stub_session());
         let resp = server
             .handle_request(r#"{"jsonrpc":"2.0","id":1,"method":"session/new"}"#)
             .await
@@ -1316,7 +1435,7 @@ mod tests {
 
     #[tokio::test]
     async fn session_run_streams_delta() {
-        let server = IpcServer::new(stub_agent_loop(), Kernel::new());
+        let server = stub_bus_server();
         let raw = concat!(
             r#"{"jsonrpc":"2.0","id":2,"method":"session/run","#,
             r#""params":{"session_id":"s1","content":"hi"}}"#,
@@ -1330,7 +1449,7 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_method_returns_error() {
-        let server = IpcServer::new(stub_agent_loop(), Kernel::new());
+        let server = IpcServer::new(Kernel::new(), stub_session());
         let resp = server
             .handle_request(r#"{"jsonrpc":"2.0","id":3,"method":"bad/method"}"#)
             .await
@@ -1347,7 +1466,7 @@ mod tests {
     /// string + `modules` array.
     #[tokio::test]
     async fn kernel_status_returns_version_and_modules_array() {
-        let server = IpcServer::new(stub_agent_loop(), Kernel::new());
+        let server = IpcServer::new(Kernel::new(), stub_session());
         let resp = server
             .handle_request(r#"{"jsonrpc":"2.0","id":5,"method":"kernel/status"}"#)
             .await
@@ -1375,8 +1494,167 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn kernel_status_reports_registered_modules() {
+        let session: Arc<InMemoryStore> = Arc::new(InMemoryStore::new());
+        let session_dyn: Arc<dyn SessionStore> = session.clone();
+        let tools = Arc::new(ToolRegistry::new());
+        let providers = Arc::new(ProviderRegistry::new());
+        let ctx = KernelContext {
+            session: session_dyn.clone(),
+            tools: tools.clone(),
+            providers: providers.clone(),
+            config: Arc::new(MockConfig),
+        };
+        let mut kernel = Kernel::new();
+        let mut register =
+            ModuleRegister::with_services(tools.clone(), providers.clone(), kernel.services());
+        kernel
+            .register_module(
+                Box::new(ToolExecutorModule::new(ctx.clone())),
+                &ctx,
+                &mut register,
+            )
+            .unwrap();
+        let runner = TurnRunner::new(
+            ctx.clone(),
+            Arc::new(ContextPipeline::new()),
+            "sys".into(),
+            kernel.sender(),
+            "tool_executor".into(),
+        );
+        kernel
+            .register_module(Box::new(AgentLoopModule::new(runner)), &ctx, &mut register)
+            .unwrap();
+        let server = IpcServer::new(kernel, session_dyn);
+        let resp = server
+            .handle_request(r#"{"jsonrpc":"2.0","id":6,"method":"kernel/status"}"#)
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert!(v["result"]["modules"].is_array());
+        let modules = v["result"]["modules"].as_array().unwrap();
+        assert!(!modules.is_empty(), "modules must be non-empty");
+        for m in modules {
+            assert!(m["id"].is_string());
+            assert_eq!(m["state"], "ready");
+        }
+    }
+
+    #[tokio::test]
+    async fn cancel_returns_minus_32800_when_tool_never_replies() {
+        use agentj_core::module::{KernelModule, Module, ModuleMetadata};
+        struct BlockingTool;
+        impl Module for BlockingTool {
+            fn id(&self) -> String {
+                "tool_executor".into()
+            }
+            fn metadata(&self) -> ModuleMetadata {
+                ModuleMetadata {
+                    id: "tool_executor".into(),
+                    name: "blocking".into(),
+                    version: "0.1".into(),
+                    description: "".into(),
+                    author: "".into(),
+                }
+            }
+            fn init(
+                &mut self,
+                _: &KernelContext,
+                _: &mut ModuleRegister,
+            ) -> Result<(), ModuleError> {
+                Ok(())
+            }
+            fn shutdown(&mut self) -> Result<(), ModuleError> {
+                Ok(())
+            }
+        }
+        impl KernelModule for BlockingTool {
+            fn handle(
+                &mut self,
+                msg: &KernelMessage,
+            ) -> Result<agentj_core::module::KernelResponse, ModuleError> {
+                if let KernelMessage::ToolCallRequest { reply, .. } = msg
+                    && let Some(tx) = reply.lock().unwrap().take()
+                {
+                    std::mem::forget(tx);
+                }
+                Ok(agentj_core::module::KernelResponse::Handled)
+            }
+        }
+        let store: Arc<InMemoryStore> = Arc::new(InMemoryStore::new());
+        let session_dyn: Arc<dyn SessionStore> = store.clone();
+        let tools = Arc::new(ToolRegistry::new());
+        let providers = Arc::new(ProviderRegistry::new());
+        providers.register(
+            "mock".into(),
+            Arc::new(MockModelProvider::new(vec![Ok(ModelEvent::ToolCall(
+                ToolCall {
+                    id: "c1".into(),
+                    name: "dummy".into(),
+                    arguments: serde_json::json!({}),
+                },
+            ))])),
+        );
+        let ctx = KernelContext {
+            session: session_dyn.clone(),
+            tools: tools.clone(),
+            providers: providers.clone(),
+            config: Arc::new(MockConfig),
+        };
+        let mut kernel = Kernel::new();
+        let mut register =
+            ModuleRegister::with_services(tools.clone(), providers.clone(), kernel.services());
+        kernel
+            .register_module(Box::new(BlockingTool), &ctx, &mut register)
+            .unwrap();
+        let runner = TurnRunner::new(
+            ctx.clone(),
+            Arc::new(ContextPipeline::new()),
+            "sys".into(),
+            kernel.sender(),
+            "tool_executor".into(),
+        );
+        kernel
+            .register_module(Box::new(AgentLoopModule::new(runner)), &ctx, &mut register)
+            .unwrap();
+        let server = Arc::new(IpcServer::new(kernel, session_dyn));
+        let new_resp = server
+            .handle_request(r#"{"jsonrpc":"2.0","id":1,"method":"session/new"}"#)
+            .await
+            .unwrap();
+        let sid = extract_sid(&new_resp);
+        let run_raw = format!(
+            r#"{{"jsonrpc":"2.0","id":2,"method":"session/run","params":{{"session_id":"{sid}","content":"hi"}}}}"#
+        );
+        let run_task = tokio::spawn({
+            let s = Arc::clone(&server);
+            async move { s.handle_request(&run_raw).await.unwrap() }
+        });
+        wait_for_inflight_session(&server, &sid)
+            .await
+            .expect("run must be in-flight");
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let _ = server
+            .handle_request(r#"{"jsonrpc":"2.0","method":"$/cancelRequest","params":{"id":5}}"#)
+            .await
+            .unwrap();
+        let resp = run_task.await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(
+            v["error"]["code"], -32800,
+            "cancel must return -32800: {resp}"
+        );
+        assert!(
+            v["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("RequestCancelled")
+        );
+    }
+
+    #[tokio::test]
     async fn session_run_missing_params_echoes_id_and_invalid_params() {
-        let server = IpcServer::new(stub_agent_loop(), Kernel::new());
+        let server = IpcServer::new(Kernel::new(), stub_session());
         let resp = server
             .handle_request(r#"{"jsonrpc":"2.0","id":10,"method":"session/run"}"#)
             .await
@@ -1395,7 +1673,7 @@ mod tests {
 
     #[tokio::test]
     async fn session_run_missing_session_id_echoes_id_and_invalid_params() {
-        let server = IpcServer::new(stub_agent_loop(), Kernel::new());
+        let server = IpcServer::new(Kernel::new(), stub_session());
         let resp = server
             .handle_request(
                 r#"{"jsonrpc":"2.0","id":7,"method":"session/run","params":{"content":"hi"}}"#,
@@ -1415,7 +1693,7 @@ mod tests {
 
     #[tokio::test]
     async fn shutdown_runs_kernel_graceful_shutdown() {
-        let mut server = IpcServer::new(stub_agent_loop(), Kernel::new());
+        let mut server = IpcServer::new(Kernel::new(), stub_session());
         let resp = server
             .handle_request(r#"{"jsonrpc":"2.0","id":4,"method":"shutdown"}"#)
             .await
@@ -1429,7 +1707,7 @@ mod tests {
 
     #[tokio::test]
     async fn invalid_json_returns_parse_error() {
-        let server = IpcServer::new(stub_agent_loop(), Kernel::new());
+        let server = IpcServer::new(Kernel::new(), stub_session());
         let resp = server.handle_request("not json").await.unwrap();
         let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
         assert_eq!(v["error"]["code"], -32700); // Parse error
@@ -1441,7 +1719,7 @@ mod tests {
         // SIGINT/SIGTERM arrives — signal_shutdown + awaiting the kernel handle must
         // terminate the loop. Run serve_stdio with a stdin that stays open, signal
         // shutdown from another task, and assert serve_stdio returns.
-        let mut server = IpcServer::new(stub_agent_loop(), Kernel::new());
+        let mut server = IpcServer::new(Kernel::new(), stub_session());
         let tx = server.kernel_sender();
         let signal = tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -1682,7 +1960,7 @@ mod tests {
 
     #[tokio::test]
     async fn initialize_returns_connection_id_and_multi_client() {
-        let server = Arc::new(IpcServer::new(stub_agent_loop(), Kernel::new()));
+        let server = Arc::new(IpcServer::new(Kernel::new(), stub_session()));
         let conn_id = register_fake_conn(&server);
         let resp = server
             .handle_request_from(
@@ -1698,7 +1976,7 @@ mod tests {
 
     #[tokio::test]
     async fn initialize_with_wrong_token_is_rejected() {
-        let server = Arc::new(IpcServer::new(stub_agent_loop(), Kernel::new()));
+        let server = Arc::new(IpcServer::new(Kernel::new(), stub_session()));
         server.set_token(Some("secret".into()));
         let conn_id = register_fake_conn(&server);
         let resp = server
@@ -1800,7 +2078,7 @@ mod tests {
 
     #[tokio::test]
     async fn subscriber_receives_progress_broadcast() {
-        let server = Arc::new(IpcServer::new(stub_agent_loop(), Kernel::new()));
+        let server = Arc::new(stub_bus_server());
         let a = register_fake_conn(&server);
         let b = register_fake_conn(&server);
         let new_resp = server
@@ -1839,7 +2117,7 @@ mod tests {
     /// `$/progress` `params.token` must echo the request id, never null.
     #[tokio::test]
     async fn progress_broadcast_uses_request_id_token_when_token_omitted() {
-        let server = Arc::new(IpcServer::new(stub_agent_loop(), Kernel::new()));
+        let server = Arc::new(stub_bus_server());
         let a = register_fake_conn(&server);
         let b = register_fake_conn(&server);
         let new_resp = server
@@ -1886,7 +2164,7 @@ mod tests {
     /// schema-valid number instead of null.
     #[tokio::test]
     async fn progress_broadcast_notification_without_id_keeps_token_valid() {
-        let server = Arc::new(IpcServer::new(stub_agent_loop(), Kernel::new()));
+        let server = Arc::new(stub_bus_server());
         let a = register_fake_conn(&server);
         let new_resp = server
             .handle_request_from(r#"{"jsonrpc":"2.0","id":1,"method":"session/new"}"#, &a)
@@ -1962,7 +2240,7 @@ mod tests {
 
     #[tokio::test]
     async fn serve_connection_two_clients_get_unique_connection_ids() {
-        let server = Arc::new(IpcServer::new(stub_agent_loop(), Kernel::new()));
+        let server = Arc::new(IpcServer::new(Kernel::new(), stub_session()));
         let (conn_a, log_a, tx_a) = scripted_conn("tcp-A");
         let (conn_b, log_b, tx_b) = scripted_conn("tcp-B");
         let s = Arc::clone(&server);
@@ -1988,7 +2266,7 @@ mod tests {
 
     #[tokio::test]
     async fn serve_connection_broadcasts_progress_to_real_connection() {
-        let server = Arc::new(IpcServer::new(stub_agent_loop(), Kernel::new()));
+        let server = Arc::new(stub_bus_server());
         let (conn_a, log_a, tx_a) = scripted_conn("tcp-A");
         let s = Arc::clone(&server);
         let task_a = tokio::spawn(async move { s.serve_connection(Box::new(conn_a), None).await });
@@ -2038,7 +2316,7 @@ mod tests {
     /// connections from the registry during recv, so broadcasts were dropped.
     #[tokio::test]
     async fn serve_connection_broadcasts_progress_to_idle_subscriber() {
-        let server = Arc::new(IpcServer::new(stub_agent_loop(), Kernel::new()));
+        let server = Arc::new(stub_bus_server());
         let (conn_a, log_a, tx_a) = scripted_conn("tcp-A");
         let (conn_b, _log_b, tx_b) = scripted_conn("tcp-B");
         let s = Arc::clone(&server);

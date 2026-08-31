@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 
 use crate::module::SessionStatus;
@@ -86,6 +88,24 @@ pub struct ChatResponse {
     pub tool_calls: Vec<ToolCall>,
 }
 
+/// Incremental event emitted during agent loop execution.
+#[derive(Debug, Clone)]
+pub enum AgentEvent {
+    Delta(String),
+    ToolCall(ToolCall),
+    ToolResult {
+        call_id: String,
+        result: String,
+    },
+    Done {
+        final_response: String,
+        tool_calls: Vec<ToolCall>,
+    },
+    Error(String),
+}
+
+pub type OnTurnComplete = Arc<dyn Fn(&SessionId) + Send + Sync>;
+
 #[derive(Debug, Clone)]
 pub struct ModelOptions {
     pub model: String,
@@ -164,5 +184,12 @@ mod tests {
         let opts = ModelOptions::default();
         assert_eq!(opts.model, "deepseek-chat");
         assert!(opts.stream);
+    }
+
+    #[test]
+    fn relocated_agent_event_is_constructible_and_cloneable() {
+        let e = AgentEvent::Delta("x".into());
+        let e2 = e.clone();
+        assert!(matches!(e2, AgentEvent::Delta(t) if t == "x"));
     }
 }
