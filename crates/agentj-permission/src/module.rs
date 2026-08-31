@@ -996,12 +996,24 @@ mod tests {
     #[test]
     fn session_of_peeks_pending_request_session() {
         let module = PermissionModule::new(HashMap::new(), Duration::from_secs(1));
-        let ctx = PermissionContext { session_id: "s-1".into(), tool: "bash".into(), source: ToolSource::Builtin, args: serde_json::json!({"command": "ls"}), workspace_root: PathBuf::from("/ws") };
+        let ctx = PermissionContext {
+            session_id: "s-1".into(),
+            tool: "bash".into(),
+            source: ToolSource::Builtin,
+            args: serde_json::json!({"command": "ls"}),
+            workspace_root: PathBuf::from("/ws"),
+        };
         if let PermissionDecision::Ask { request_id } = module.check(&ctx) {
             assert_eq!(module.session_of(&request_id).as_deref(), Some("s-1"));
             assert!(module.respond(&request_id, ApprovalDecision::Allow));
-            assert_eq!(module.session_of(&request_id), None, "respond consumes the entry");
-        } else { panic!("expected Ask"); }
+            assert_eq!(
+                module.session_of(&request_id),
+                None,
+                "respond consumes the entry"
+            );
+        } else {
+            panic!("expected Ask");
+        }
     }
     #[test]
     fn session_of_unknown_request_is_none() {
@@ -1013,8 +1025,16 @@ mod tests {
         let module = PermissionModule::new(HashMap::new(), Duration::from_secs(1));
         let seen = Arc::new(Mutex::new(None::<String>));
         let seen2 = Arc::clone(&seen);
-        module.set_notifier(Arc::new(move |p: &PermissionRequestParams, _sid: &str| { *seen2.lock().unwrap() = p.session_id.clone(); }));
-        let ctx = PermissionContext { session_id: "s-9".into(), tool: "bash".into(), source: ToolSource::Builtin, args: serde_json::json!({"command": "ls"}), workspace_root: PathBuf::from("/ws") };
+        module.set_notifier(Arc::new(move |p: &PermissionRequestParams, _sid: &str| {
+            *seen2.lock().unwrap() = p.session_id.clone();
+        }));
+        let ctx = PermissionContext {
+            session_id: "s-9".into(),
+            tool: "bash".into(),
+            source: ToolSource::Builtin,
+            args: serde_json::json!({"command": "ls"}),
+            workspace_root: PathBuf::from("/ws"),
+        };
         module.check(&ctx);
         assert_eq!(seen.lock().unwrap().as_deref(), Some("s-9"));
     }

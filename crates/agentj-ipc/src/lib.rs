@@ -678,9 +678,9 @@ impl IpcServer {
             .clone()
             .ok_or_else(|| DispatchError::invalid_request("no permission module"))?;
         let rid = agentj_core::permission::PermissionRequestId(params.request_id);
-        let sid = module
-            .session_of(&rid)
-            .ok_or_else(|| DispatchError::invalid_request(format!("unknown permission request: {}", rid.0)))?;
+        let sid = module.session_of(&rid).ok_or_else(|| {
+            DispatchError::invalid_request(format!("unknown permission request: {}", rid.0))
+        })?;
         let is_owner = self
             .registry
             .read()
@@ -1226,8 +1226,16 @@ mod tests {
     #[tokio::test]
     async fn permission_respond_owner_gate_is_per_session() {
         let (server, module) = permission_server();
-        server.registry.write().unwrap().set_session_owner(&"s1".to_string(), "conn-a");
-        server.registry.write().unwrap().set_session_owner(&"s2".to_string(), "conn-b");
+        server
+            .registry
+            .write()
+            .unwrap()
+            .set_session_owner(&"s1".to_string(), "conn-a");
+        server
+            .registry
+            .write()
+            .unwrap()
+            .set_session_owner(&"s2".to_string(), "conn-b");
         let ctx1 = PermissionContext {
             session_id: "s1".into(),
             tool: "bash".into(),
@@ -1244,7 +1252,10 @@ mod tests {
             rid1.0
         );
         let resp = server.handle_request_from(&raw1, "conn-b").await.unwrap();
-        assert!(resp.contains("-32806"), "non-owner must get NotAuthorized: {resp}");
+        assert!(
+            resp.contains("-32806"),
+            "non-owner must get NotAuthorized: {resp}"
+        );
         let resp = server.handle_request_from(&raw1, "conn-a").await.unwrap();
         assert!(resp.contains("\"result\""), "owner must resolve: {resp}");
         let ctx2 = PermissionContext {
@@ -1269,7 +1280,11 @@ mod tests {
     #[tokio::test]
     async fn permission_respond_resolves_pending_approval() {
         let (server, module) = permission_server();
-        server.registry.write().unwrap().set_session_owner(&"s1".to_string(), "stdio");
+        server
+            .registry
+            .write()
+            .unwrap()
+            .set_session_owner(&"s1".to_string(), "stdio");
         let ctx = PermissionContext {
             session_id: "s1".into(),
             tool: "bash".into(),
@@ -1441,10 +1456,19 @@ mod tests {
 
     struct BlockerTool;
     impl agentj_core::module::Tool for BlockerTool {
-        fn name(&self) -> &str { "blocker" }
-        fn description(&self) -> &str { "blocks" }
-        fn input_schema(&self) -> serde_json::Value { serde_json::json!({}) }
-        fn execute(&self, _i: serde_json::Value) -> Result<serde_json::Value, agentj_core::error::ToolError> {
+        fn name(&self) -> &str {
+            "blocker"
+        }
+        fn description(&self) -> &str {
+            "blocks"
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({})
+        }
+        fn execute(
+            &self,
+            _i: serde_json::Value,
+        ) -> Result<serde_json::Value, agentj_core::error::ToolError> {
             std::thread::sleep(std::time::Duration::from_secs(1));
             Ok(serde_json::json!({"ok": 1}))
         }
@@ -1460,7 +1484,10 @@ mod tests {
             messages: Vec<ChatMessage>,
             _t: Vec<ToolDefinition>,
             _o: ModelOptions,
-        ) -> Result<futures::stream::BoxStream<'static, Result<ModelEvent, agentj_core::error::ModelError>>, agentj_core::error::ModelError> {
+        ) -> Result<
+            futures::stream::BoxStream<'static, Result<ModelEvent, agentj_core::error::ModelError>>,
+            agentj_core::error::ModelError,
+        > {
             let is_s2 = messages.iter().any(|m| m.content.contains("run2"));
             let n = if is_s2 {
                 self.c2.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
@@ -1473,15 +1500,26 @@ mod tests {
                 } else {
                     ("bash", serde_json::json!({"command": "echo hi"}))
                 };
-                let ev = vec![Ok(ModelEvent::ToolCall(ToolCall { id: "call_1".into(), name: tn.into(), arguments: args }))];
+                let ev = vec![Ok(ModelEvent::ToolCall(ToolCall {
+                    id: "call_1".into(),
+                    name: tn.into(),
+                    arguments: args,
+                }))];
                 Ok(Box::pin(futures::stream::iter(ev)))
             } else {
                 let ev = vec![Ok(ModelEvent::Delta("done".into())), Ok(ModelEvent::Done)];
                 Ok(Box::pin(futures::stream::iter(ev)))
             }
         }
-        async fn chat(&self, _m: Vec<ChatMessage>, _o: ModelOptions) -> Result<ChatResponse, agentj_core::error::ModelError> {
-            Ok(ChatResponse { content: "".into(), tool_calls: vec![] })
+        async fn chat(
+            &self,
+            _m: Vec<ChatMessage>,
+            _o: ModelOptions,
+        ) -> Result<ChatResponse, agentj_core::error::ModelError> {
+            Ok(ChatResponse {
+                content: "".into(),
+                tool_calls: vec![],
+            })
         }
     }
     fn repeating_run_server() -> (IpcServer, Arc<agentj_permission::PermissionModule>) {
@@ -1526,8 +1564,15 @@ mod tests {
             config: Arc::new(MockConfig),
         };
         let mut kernel = Kernel::new();
-        let mut reg = ModuleRegister::with_services(tools.clone(), providers.clone(), kernel.services());
-        kernel.register_module(Box::new(ToolExecutorModule::new(ctx.clone())), &ctx, &mut reg).unwrap();
+        let mut reg =
+            ModuleRegister::with_services(tools.clone(), providers.clone(), kernel.services());
+        kernel
+            .register_module(
+                Box::new(ToolExecutorModule::new(ctx.clone())),
+                &ctx,
+                &mut reg,
+            )
+            .unwrap();
         let runner = TurnRunner::new(
             ctx.clone(),
             Arc::new(ContextPipeline::new()),
@@ -1535,7 +1580,9 @@ mod tests {
             kernel.sender(),
             "tool_executor".into(),
         );
-        kernel.register_module(Box::new(AgentLoopModule::new(runner)), &ctx, &mut reg).unwrap();
+        kernel
+            .register_module(Box::new(AgentLoopModule::new(runner)), &ctx, &mut reg)
+            .unwrap();
         let mut server = IpcServer::new(kernel, session_dyn);
         server.permission_module = Some(module.clone());
         (server, module)
@@ -1559,8 +1606,12 @@ mod tests {
             let s = Arc::clone(&server);
             tokio::spawn(async move { s.handle_request_from(raw2, "conn-b").await.unwrap() })
         };
-        wait_for_pending_run(&server, "s1").await.expect("s1 must be in-flight");
-        wait_for_pending_run(&server, "s2").await.expect("s2 must be in-flight");
+        wait_for_pending_run(&server, "s1")
+            .await
+            .expect("s1 must be in-flight");
+        wait_for_pending_run(&server, "s2")
+            .await
+            .expect("s2 must be in-flight");
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         let (sid, rid) = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
             .await
@@ -1568,14 +1619,21 @@ mod tests {
             .expect("channel closed");
         assert_eq!(sid, "s1", "first Ask must be s1");
         let rid_s1 = Some(rid);
-        let cancel = r#"{"jsonrpc":"2.0","method":"$/cancelRequest","params":{"id":5,"session_id":"s2"}}"#;
+        let cancel =
+            r#"{"jsonrpc":"2.0","method":"$/cancelRequest","params":{"id":5,"session_id":"s2"}}"#;
         let _ = server.handle_request_from(cancel, "conn-a").await.unwrap();
         let resp2 = tokio::time::timeout(std::time::Duration::from_secs(5), run2)
             .await
             .expect("cancelled run must finish")
             .unwrap();
-        assert!(resp2.contains("-32800"), "cancelled must get -32800: {resp2}");
-        assert!(server.registry.read().unwrap().pending_runs.contains(&"s1".to_string()), "s1 stays");
+        assert!(
+            resp2.contains("-32800"),
+            "cancelled must get -32800: {resp2}"
+        );
+        assert!(
+            server.registry.read().unwrap().pending_runs.contains("s1"),
+            "s1 stays"
+        );
         let rid1 = rid_s1.clone().expect("s1 rid");
         let raw_ok = format!(
             r#"{{"jsonrpc":"2.0","id":12,"method":"permission/respond","params":{{"request_id":"{}","decision":"allow"}}}}"#,
@@ -1592,7 +1650,13 @@ mod tests {
     #[tokio::test]
     async fn cancel_request_without_session_id_single_inflight_falls_back() {
         let (server, module) = blocking_run_server();
-        assert!(server.registry.write().unwrap().try_acquire_run(&"s1".to_string()));
+        assert!(
+            server
+                .registry
+                .write()
+                .unwrap()
+                .try_acquire_run(&"s1".to_string())
+        );
         let ctx = PermissionContext {
             session_id: "s1".into(),
             tool: "bash".into(),
@@ -1609,7 +1673,9 @@ mod tests {
             let _ = server.handle_request(raw).await.unwrap();
             assert_eq!(
                 handle.await.unwrap(),
-                PermissionDecision::Deny { reason: "cancelled".into() }
+                PermissionDecision::Deny {
+                    reason: "cancelled".into()
+                }
             );
         } else {
             panic!("expected Ask");
@@ -1619,8 +1685,20 @@ mod tests {
     #[tokio::test]
     async fn cancel_request_without_session_id_multiple_inflight_is_noop() {
         let (server, module) = blocking_run_server();
-        assert!(server.registry.write().unwrap().try_acquire_run(&"s1".to_string()));
-        assert!(server.registry.write().unwrap().try_acquire_run(&"s2".to_string()));
+        assert!(
+            server
+                .registry
+                .write()
+                .unwrap()
+                .try_acquire_run(&"s1".to_string())
+        );
+        assert!(
+            server
+                .registry
+                .write()
+                .unwrap()
+                .try_acquire_run(&"s2".to_string())
+        );
         let ctx = PermissionContext {
             session_id: "s1".into(),
             tool: "bash".into(),
