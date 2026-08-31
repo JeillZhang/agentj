@@ -2,12 +2,12 @@
 
 AI 编码代理工具（Rust）——Linux 内核式「内核调度 + 可插拔模块」架构。内核通过统一的 JSON-RPC 2.0 协议（stdio / TCP，未来 WebSocket）对外暴露能力；CLI、TUI、Web Dashboard、IDE 插件均可作为协议消费者，**任意语言**可开发前端连接内核。
 
-> 当前版本：**v0.5.0**——内核调度全重构（16 crate）：`KernelMessage` 混合总线（UserRequest+ToolCallRequest 目标路由+ServiceCall 同步/异步）、`TurnRunner` 总线化 turn 编排、`ToolExecutorModule`/`AgentLoopModule` 内核模块化、子代理经 `subagent/dispatch` 异步服务、`IpcServer`/`CLI` 全面接总线；v0.4 全保留：守护内核多客户端常驻 TCP `serve --port`/`run --attach`/`dashboard` + Web Dashboard + 用量统计 + License 校验 + 方法面 16；v0.3 全保留：事件总线 + 子代理调度 + skills + 插件 + MCP 长驻连接 + 会话过期 + FileBackedStore + Ollama provider；v0.2 全保留：IPC 协议契约 + 权限审批系统。
+> 当前版本：**v0.6.0**——per-session in-flight 路由（16 crate，G2 修复：移除 `IpcServer.session` 单全局槽 → `pending_runs` 事实来源 + `PermissionModule::session_of` 查表门控 + `CancelParams.session_id` 精准路由 + `$/permissionRequest` `session_id`，`@since 0.6.0` 加性）；v0.5 全保留：内核调度全重构：`KernelMessage` 混合总线（UserRequest+ToolCallRequest 目标路由+ServiceCall 同步/异步）、`TurnRunner` 总线化 turn 编排、`ToolExecutorModule`/`AgentLoopModule` 内核模块化、子代理经 `subagent/dispatch` 异步服务、`IpcServer`/`CLI` 全面接总线；v0.4 全保留：守护内核多客户端常驻 TCP `serve --port`/`run --attach`/`dashboard` + Web Dashboard + 用量统计 + License 校验 + 方法面 16；v0.3 全保留：事件总线 + 子代理调度 + skills + 插件 + MCP 长驻连接 + 会话过期 + FileBackedStore + Ollama provider；v0.2 全保留：IPC 协议契约 + 权限审批系统。
 
 ## Features
 
 - [x] **IPC 协议契约**：JSON-RPC 2.0 信封 + 错误码 + 16 个方法（lifecycle 4 / session 7（含 `session/subscribe` `session/unsubscribe` 广播订阅）/ kernel/status 1 / `$/cancelRequest` `$/progress` 通知 2 + `permission/respond` `$/permissionRequest` 2）
-- [x] **权限审批系统**：`$/permissionRequest` 通知（S→C）+ `permission/respond` 请求（C→S）+ 审批流（request_id 解耦、60s 超时自动 Deny、allow_always 会话级内存态、取消即拒绝）
+- [x] **权限审批系统**：`$/permissionRequest` 通知（S→C，`session_id` @since 0.6.0 多会话归类）+ `permission/respond` 请求（C→S，per-session 属主门控经 `module.session_of` 查表）+ 审批流（request_id 解耦、60s 超时自动 Deny、allow_always 会话级内存态、取消即拒绝）
 - [x] **JSON Schema**：32 个机器可读 Schema（`schemars` 从 Rust 类型生成，提交件 + 漂移门禁）
 - [x] **方法注册表** `protocol/methods.json`（语言无关，method ↔ schema/方向/类型）
 - [x] **人类可读协议规范** `docs/specs/ipc-protocol.md`（11 节，v0.2.0）
@@ -16,7 +16,7 @@ AI 编码代理工具（Rust）——Linux 内核式「内核调度 + 可插拔�
 - [x] **Agent 循环（流式）**：`TurnRunner` 总线化编排（`spawn_turn`/`cancel`/`shutdown`，工具边界经 `ToolCallRequest` suspend 于 oneshot）+ `AgentLoopModule`（`UserRequest` 消费 + `agent/cancel`）+ `ToolExecutorModule`（`execute_async` 权限门禁）+ `SubAgentService` async `subagent/dispatch`
 - [x] **内置工具**：bash / glob / grep / read / write + ToolExecutor
 - [x] **MCP 桥**：子进程 MCP 客户端 + 工具发现注册
-- [x] **JSON-RPC IPC（stdio + TCP 多客户端）**：16 方法服务循环 + 优雅退出 + 连接感知分发（token 认证 / run 会话互斥 / 属主路由）
+- [x] **JSON-RPC IPC（stdio + TCP 多客户端）**：16 方法服务循环 + 优雅退出 + per-session 路由（`$/cancelRequest` `session_id` 精准路由 + 缺省单会话兜底/多会话 no-op + `tracing::warn!`）+ 权限属主门控经 `session_of` 查表
 - [x] **CLI run/serve/dashboard**：`agentj run [--attach tcp://…] "prompt"` / `agentj serve [stdio]` / `agentj serve --port`（常驻多客户端） / `agentj dashboard --port`
 - [x] **模型提供方**：DeepSeek + opencode-go 统一订阅（Chat Completions / Responses / Anthropic 三线格式，ProviderFactory 按 `kind` 实例化）+ **Ollama provider**
 - [x] **事件总线**：`EventBus` 订阅/发布，全生命周期事件（模块 / 会话 / MCP / 权限）
@@ -34,7 +34,7 @@ AI 编码代理工具（Rust）——Linux 内核式「内核调度 + 可插拔�
 
 ```
 crates/              # 16 个 workspace crate（统一目录）
-  agentj-protocol/   # IPC 协议契约 crate（wire 类型 + schema 生成，零内核耦合）
+  agentj-protocol/   # IPC 协议契约 crate（wire 类型 + schema 生成，零内核耦合；v0.6 加性 CancelParams/PermissionRequestParams session_id @since 0.6.0）
   agentj-core/       # 内核：Kernel 混合总线调度 + 模块 trait 注册表 + TurnRunner + ToolExecutorModule + AgentLoopModule + 异步子代理 + AgentEvent/OnTurnComplete 迁至 types.rs
   agentj-config/     # TOML 配置（[model] provider/providers[]/kind/default_model）
   agentj-session/    # 会话生命周期（状态机 + 快照恢复 + 过期清理 + FileBackedStore 磁盘持久化）
@@ -47,7 +47,7 @@ crates/              # 16 个 workspace crate（统一目录）
   agentj-mcp/        # MCP 客户端（子进程连接 + 工具发现注册 + McpConnectionManager 长驻连接）
   agentj-skills/     # skills 加载器（.aj/.agents/.claude/skills 优先级合并）
   agentj-plugin/     # 插件系统（manifest + 生命周期状态机 + 依赖图 + libloading 动态加载）
-  agentj-ipc/        # JSON-RPC 2.0 IPC 服务（stdio + TCP 多客户端常驻，全面接总线：session/run→UserRequest  + $/cancelRequest→agent/cancel + kernel/status→modules()）
+  agentj-ipc/        # JSON-RPC 2.0 IPC 服务（stdio + TCP 多客户端常驻，全面接总线：session/run→UserRequest + $/cancelRequest→agent/cancel per-session 精准路由 + permission/respond session_of 门控 + kernel/status→modules()）
   agentj-cli/        # agentj 二进制（run [--attach] / serve [stdio|--port] / dashboard，TurnRunner+AgentLoopModule+ToolExecutorModule+SubAgentService 以模块注册进 Kernel）
   agentj-plugin-fixture/  # 插件 cdylib 测试夹具（dev-only）
 models/              # 模型目录 models/opencode-go.json（opencode-go 路由事实来源）

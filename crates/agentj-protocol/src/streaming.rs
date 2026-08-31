@@ -4,7 +4,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::base::Id;
-use crate::types::{ModuleState, ToolCall};
+use crate::types::{ModuleState, SessionId, ToolCall};
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ProgressParams {
@@ -33,6 +33,10 @@ pub enum ProgressValue {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct CancelParams {
     pub id: Id,
+    /// Target session for the cancel (design G2). Additive: absent on legacy
+    /// clients — the server falls back to a single-inflight session.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<SessionId>, // @since 0.6.0
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -89,10 +93,28 @@ mod tests {
     }
 
     #[test]
-    fn cancel_params_roundtrip() {
-        let p = CancelParams { id: Id::Number(5) };
-        let back: CancelParams = serde_json::from_str(&serde_json::to_string(&p).unwrap()).unwrap();
+    fn cancel_params_with_session_id_roundtrip() {
+        let p = CancelParams {
+            id: Id::Number(5),
+            session_id: Some("s-1".into()),
+        };
+        let json = serde_json::to_value(&p).unwrap();
+        assert_eq!(json["session_id"], "s-1");
+        let back: CancelParams = serde_json::from_value(json).unwrap();
+        assert_eq!(back.session_id.as_deref(), Some("s-1"));
+    }
+
+    #[test]
+    fn cancel_params_without_session_id_omits_field_and_accepts_legacy_wire() {
+        let p = CancelParams {
+            id: Id::Number(5),
+            session_id: None,
+        };
+        let json = serde_json::to_value(&p).unwrap();
+        assert!(json.get("session_id").is_none(), "None must not serialize");
+        let back: CancelParams = serde_json::from_str(r#"{"id":5}"#).unwrap();
         assert_eq!(back.id, Id::Number(5));
+        assert!(back.session_id.is_none());
     }
 
     #[test]
