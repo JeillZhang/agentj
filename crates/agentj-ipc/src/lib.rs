@@ -280,32 +280,6 @@ pub struct IpcServer {
     token: std::sync::Mutex<Option<String>>,
     /// Optional PermissionModule: `permission/respond` and `$/cancelRequest` dispatch into it.
     pub permission_module: Option<Arc<PermissionModule>>,
-    /// In-flight session id — the mapping `$/cancelRequest` reads to reach the module.
-    /// Interior-mutable (`handle_request` runs under `&self`): `dispatch_session_run`
-    /// records the id while a run executes and clears it when the turn finishes.
-    pub session: Arc<tokio::sync::Mutex<Option<String>>>,
-}
-
-/// RAII guard recording the in-flight session id for `$/cancelRequest`.
-/// `dispatch_session_run` records the id at entry and the guard clears it on
-/// drop, covering every exit path (success, error, and the stub-loop early
-/// return). Drop uses `try_lock` because the dispatch releases the lock right
-/// after recording — the clear never contends with a cancel handler.
-struct InflightSessionGuard(Arc<tokio::sync::Mutex<Option<String>>>);
-
-impl InflightSessionGuard {
-    async fn record(session: &Arc<tokio::sync::Mutex<Option<String>>>, sid: &str) -> Self {
-        *session.lock().await = Some(sid.to_string());
-        Self(session.clone())
-    }
-}
-
-impl Drop for InflightSessionGuard {
-    fn drop(&mut self) {
-        if let Ok(mut guard) = self.0.try_lock() {
-            *guard = None;
-        }
-    }
 }
 
 /// RAII guard releasing the per-session run mutex (决策 #7): acquired at
@@ -335,7 +309,6 @@ impl IpcServer {
             registry: Arc::new(std::sync::RwLock::new(ConnectionRegistry::new())),
             token: std::sync::Mutex::new(None),
             permission_module: None,
-            session: Arc::new(tokio::sync::Mutex::new(None)),
         }
     }
 
@@ -606,10 +579,6 @@ impl IpcServer {
             registry: Arc::clone(&self.registry),
             sid: sid.to_string(),
         };
-        // Record the in-flight session so `$/cancelRequest` can reach the
-        // permission module while the run executes; the guard clears it on
-        // every exit path (including the AgentEvent::Error return).
-        let _inflight = InflightSessionGuard::record(&self.session, sid).await;
         // The run initiator owns the session for approval routing (决策 #5)
         // and observes $/progress without an explicit subscribe. Re-recording
         // here also covers clients that skip session/new (hard-coded ids).
@@ -698,24 +667,6 @@ impl IpcServer {
         req: &JsonRpcRequest,
         conn_id: &str,
     ) -> Result<Value, DispatchError> {
-        // Owner gate (决策 #5): while a session has an in-flight run, only the
-        // connection owning that session may resolve its approvals.
-        let inflight = self.session.lock().await.clone();
-        if let Some(sid) = inflight {
-            let is_owner = self
-                .registry
-                .read()
-                .ok()
-                .and_then(|r| r.session_owner(&sid).cloned())
-                .map(|owner| owner == conn_id)
-                .unwrap_or(false);
-            if !is_owner {
-                return Err(DispatchError {
-                    code: error_codes::NOT_AUTHORIZED,
-                    message: "NotAuthorized".into(),
-                });
-            }
-        }
         let params = req
             .params
             .as_ref()
@@ -726,6 +677,23 @@ impl IpcServer {
             .permission_module
             .clone()
             .ok_or_else(|| DispatchError::invalid_request("no permission module"))?;
+        let rid = agentj_core::permission::PermissionRequestId(params.request_id);
+        let sid = module
+            .session_of(&rid)
+            .ok_or_else(|| DispatchError::invalid_request(format!("unknown permission request: {}", rid.0)))?;
+        let is_owner = self
+            .registry
+            .read()
+            .ok()
+            .and_then(|r| r.session_owner(&sid).cloned())
+            .map(|owner| owner == conn_id)
+            .unwrap_or(false);
+        if !is_owner {
+            return Err(DispatchError {
+                code: error_codes::NOT_AUTHORIZED,
+                message: "NotAuthorized".into(),
+            });
+        }
         let decision = match params.decision {
             agentj_protocol::permission::PermissionDecision::Allow => ApprovalDecision::Allow,
             agentj_protocol::permission::PermissionDecision::Deny => ApprovalDecision::Deny,
@@ -736,7 +704,6 @@ impl IpcServer {
                 return Err(DispatchError::invalid_request("unknown decision"));
             }
         };
-        let rid = agentj_core::permission::PermissionRequestId(params.request_id);
         if !module.respond(&rid, decision) {
             return Err(DispatchError::invalid_request(format!(
                 "unknown permission request: {}",
@@ -747,23 +714,45 @@ impl IpcServer {
     }
 
     async fn dispatch_cancel_request(&self, req: &JsonRpcRequest) -> Result<Value, DispatchError> {
-        let _params: CancelParams =
+        let params: CancelParams =
             serde_json::from_value(req.params.clone().unwrap_or(serde_json::json!({})))
                 .map_err(|e| DispatchError::invalid_request(e.to_string()))?;
-        let session_id = self.session.lock().await.clone();
-        if let Some(ref session_id) = session_id {
+        let session_id = match params.session_id {
+            Some(sid) => Some(sid),
+            None => {
+                let inflight: Vec<String> = self
+                    .registry
+                    .read()
+                    .ok()
+                    .map(|r| r.pending_runs.iter().cloned().collect())
+                    .unwrap_or_default();
+                match inflight.len() {
+                    1 => Some(inflight[0].clone()),
+                    n => {
+                        if n > 1 {
+                            tracing::warn!(
+                                "$/cancelRequest without session_id is ambiguous ({} in-flight); ignoring",
+                                n
+                            );
+                        }
+                        None
+                    }
+                }
+            }
+        };
+        if let Some(ref sid) = session_id {
             if let Some(module) = self.permission_module.as_ref() {
-                let _ = module.cancel_session(session_id, "cancelled");
+                let _ = module.cancel_session(sid, "cancelled");
             }
             let (tx, _rx) = tokio::sync::oneshot::channel();
             let _ = self.kernel.sender().send(KernelMessage::ServiceCall {
                 service: "agent".into(),
                 method: "cancel".into(),
-                params: serde_json::json!({"session_id": session_id}),
+                params: serde_json::json!({"session_id": sid}),
                 reply: Arc::new(StdMutex::new(Some(tx))),
             });
         }
-        Ok(serde_json::Value::Null)
+        Ok(Value::Null)
     }
 
     /// Transport-agnostic per-connection request loop (design 决策 #2): read
@@ -851,6 +840,7 @@ impl IpcServer {
                         "args": p.args,
                         "reason": p.reason,
                         "origin_client": owner.clone(),
+                        "session_id": p.session_id,
                     },
                 });
                 if let Some(owner_id) = owner
@@ -1234,8 +1224,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn permission_respond_owner_gate_is_per_session() {
+        let (server, module) = permission_server();
+        server.registry.write().unwrap().set_session_owner(&"s1".to_string(), "conn-a");
+        server.registry.write().unwrap().set_session_owner(&"s2".to_string(), "conn-b");
+        let ctx1 = PermissionContext {
+            session_id: "s1".into(),
+            tool: "bash".into(),
+            source: ToolSource::Builtin,
+            args: serde_json::json!({"command": "curl x"}),
+            workspace_root: std::path::PathBuf::from("/ws"),
+        };
+        let d1 = module.check(&ctx1);
+        let PermissionDecision::Ask { request_id: rid1 } = d1 else {
+            panic!("expected Ask")
+        };
+        let raw1 = format!(
+            r#"{{"jsonrpc":"2.0","id":7,"method":"permission/respond","params":{{"request_id":"{}","decision":"allow"}}}}"#,
+            rid1.0
+        );
+        let resp = server.handle_request_from(&raw1, "conn-b").await.unwrap();
+        assert!(resp.contains("-32806"), "non-owner must get NotAuthorized: {resp}");
+        let resp = server.handle_request_from(&raw1, "conn-a").await.unwrap();
+        assert!(resp.contains("\"result\""), "owner must resolve: {resp}");
+        let ctx2 = PermissionContext {
+            session_id: "s2".into(),
+            tool: "bash".into(),
+            source: ToolSource::Builtin,
+            args: serde_json::json!({"command": "curl y"}),
+            workspace_root: std::path::PathBuf::from("/ws"),
+        };
+        let d2 = module.check(&ctx2);
+        let PermissionDecision::Ask { request_id: rid2 } = d2 else {
+            panic!("expected Ask")
+        };
+        let raw2 = format!(
+            r#"{{"jsonrpc":"2.0","id":8,"method":"permission/respond","params":{{"request_id":"{}","decision":"allow"}}}}"#,
+            rid2.0
+        );
+        let resp = server.handle_request_from(&raw2, "conn-b").await.unwrap();
+        assert!(resp.contains("\"result\""), "s2 owner must resolve: {resp}");
+    }
+
+    #[tokio::test]
     async fn permission_respond_resolves_pending_approval() {
         let (server, module) = permission_server();
+        server.registry.write().unwrap().set_session_owner(&"s1".to_string(), "stdio");
         let ctx = PermissionContext {
             session_id: "s1".into(),
             tool: "bash".into(),
@@ -1294,14 +1328,7 @@ mod tests {
             let rid = request_id.clone();
             let handle = tokio::spawn(async move { module2.await_approval(&rid).await });
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            // Seed the request→session mapping the $/cancelRequest handler reads
-            // (v0.1 has no real in-flight run here — see
-            // session_run_records_inflight_session_for_cancel for the production
-            // write-side path), then send the notification and assert the HANDLER
-            // resolves the approval (no manual cancel_session call — the mapping
-            // path is exercised).
-            *server.session.lock().await = Some("s1".into());
-            let raw = r#"{"jsonrpc":"2.0","method":"$/cancelRequest","params":{"id":5}}"#;
+            let raw = r#"{"jsonrpc":"2.0","method":"$/cancelRequest","params":{"id":5,"session_id":"s1"}}"#;
             let _ = server.handle_request(raw).await.unwrap();
             assert_eq!(
                 handle.await.unwrap(),
@@ -1333,14 +1360,13 @@ mod tests {
         assert!(resp.contains("\"result\""));
     }
 
-    /// Poll until the in-flight session is recorded (proves the write side).
-    async fn wait_for_inflight_session(
+    async fn wait_for_pending_run(
         server: &Arc<IpcServer>,
         sid: &str,
     ) -> Result<(), tokio::time::error::Elapsed> {
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
-                if *server.session.lock().await == Some(sid.to_string()) {
+                if server.registry.read().unwrap().pending_runs.contains(sid) {
                     return;
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(2)).await;
@@ -1372,10 +1398,6 @@ mod tests {
 
     #[tokio::test]
     async fn session_run_records_inflight_session_for_cancel() {
-        // T9 finding A regression: the write side of `server.session` (the mapping
-        // $/cancelRequest reads) must be populated by production code while a
-        // session/run executes — not only seeded by tests. Drive the whole path
-        // through handlers with a run that blocks on a permission Ask.
         let (server, module) = blocking_run_server();
         let server = Arc::new(server);
         let new_resp = server
@@ -1391,18 +1413,15 @@ mod tests {
             let server = Arc::clone(&server);
             async move { server.handle_request(&raw).await.unwrap() }
         });
-        wait_for_inflight_session(&server, &sid)
+        wait_for_pending_run(&server, &sid)
             .await
             .expect("session/run must record the in-flight session id");
-        // The run is blocked on a permission Ask; create a pending approval for
-        // the same session and cancel through the handler. The sleep lets
-        // await_approval subscribe before the cancel removes the entry.
         let pending = spawn_pending_approval(&module, &sid);
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        let _ = server
-            .handle_request(r#"{"jsonrpc":"2.0","method":"$/cancelRequest","params":{"id":5}}"#)
-            .await
-            .unwrap();
+        let cancel = format!(
+            r#"{{"jsonrpc":"2.0","method":"$/cancelRequest","params":{{"id":5,"session_id":"{sid}"}}}}"#
+        );
+        let _ = server.handle_request(&cancel).await.unwrap();
         assert_eq!(
             pending.await.unwrap(),
             PermissionDecision::Deny {
@@ -1414,11 +1433,212 @@ mod tests {
             run_resp.contains("\"result\"") || run_resp.contains("-32800"),
             "cancel should either complete or return RequestCancelled: {run_resp}"
         );
-        assert_eq!(
-            *server.session.lock().await,
-            None,
-            "in-flight session cleared when the run finished"
+        assert!(
+            !server.registry.read().unwrap().pending_runs.contains(&sid),
+            "pending run cleared when the run finished"
         );
+    }
+
+    struct BlockerTool;
+    impl agentj_core::module::Tool for BlockerTool {
+        fn name(&self) -> &str { "blocker" }
+        fn description(&self) -> &str { "blocks" }
+        fn input_schema(&self) -> serde_json::Value { serde_json::json!({}) }
+        fn execute(&self, _i: serde_json::Value) -> Result<serde_json::Value, agentj_core::error::ToolError> {
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            Ok(serde_json::json!({"ok": 1}))
+        }
+    }
+    struct RepeatingMock {
+        c1: std::sync::atomic::AtomicUsize,
+        c2: std::sync::atomic::AtomicUsize,
+    }
+    #[async_trait::async_trait]
+    impl agentj_core::module::ModelProvider for RepeatingMock {
+        async fn chat_stream(
+            &self,
+            messages: Vec<ChatMessage>,
+            _t: Vec<ToolDefinition>,
+            _o: ModelOptions,
+        ) -> Result<futures::stream::BoxStream<'static, Result<ModelEvent, agentj_core::error::ModelError>>, agentj_core::error::ModelError> {
+            let is_s2 = messages.iter().any(|m| m.content.contains("run2"));
+            let n = if is_s2 {
+                self.c2.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            } else {
+                self.c1.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            };
+            if n == 0 {
+                let (tn, args) = if is_s2 {
+                    ("blocker", serde_json::json!({}))
+                } else {
+                    ("bash", serde_json::json!({"command": "echo hi"}))
+                };
+                let ev = vec![Ok(ModelEvent::ToolCall(ToolCall { id: "call_1".into(), name: tn.into(), arguments: args }))];
+                Ok(Box::pin(futures::stream::iter(ev)))
+            } else {
+                let ev = vec![Ok(ModelEvent::Delta("done".into())), Ok(ModelEvent::Done)];
+                Ok(Box::pin(futures::stream::iter(ev)))
+            }
+        }
+        async fn chat(&self, _m: Vec<ChatMessage>, _o: ModelOptions) -> Result<ChatResponse, agentj_core::error::ModelError> {
+            Ok(ChatResponse { content: "".into(), tool_calls: vec![] })
+        }
+    }
+    fn repeating_run_server() -> (IpcServer, Arc<agentj_permission::PermissionModule>) {
+        let mut policies = std::collections::HashMap::new();
+        policies.insert(
+            "bash".to_string(),
+            agentj_permission::ToolPolicy {
+                mode: agentj_permission::PermissionMode::Ask,
+                path_rules: vec![],
+                command_rules: vec![],
+            },
+        );
+        policies.insert(
+            "blocker".to_string(),
+            agentj_permission::ToolPolicy {
+                mode: agentj_permission::PermissionMode::Allow,
+                path_rules: vec![],
+                command_rules: vec![],
+            },
+        );
+        let module = Arc::new(agentj_permission::PermissionModule::new(
+            policies,
+            std::time::Duration::from_secs(10),
+        ));
+        let store: Arc<InMemoryStore> = Arc::new(InMemoryStore::new());
+        let session_dyn: Arc<dyn SessionStore> = store.clone();
+        let tools = Arc::new(ToolRegistry::new());
+        tools.register(Arc::new(BlockerTool));
+        tools.set_permission_checker(module.clone());
+        let providers = Arc::new(ProviderRegistry::new());
+        providers.register(
+            "mock".into(),
+            Arc::new(RepeatingMock {
+                c1: std::sync::atomic::AtomicUsize::new(0),
+                c2: std::sync::atomic::AtomicUsize::new(0),
+            }),
+        );
+        let ctx = KernelContext {
+            session: session_dyn.clone(),
+            tools: tools.clone(),
+            providers: providers.clone(),
+            config: Arc::new(MockConfig),
+        };
+        let mut kernel = Kernel::new();
+        let mut reg = ModuleRegister::with_services(tools.clone(), providers.clone(), kernel.services());
+        kernel.register_module(Box::new(ToolExecutorModule::new(ctx.clone())), &ctx, &mut reg).unwrap();
+        let runner = TurnRunner::new(
+            ctx.clone(),
+            Arc::new(ContextPipeline::new()),
+            "You are helpful.".into(),
+            kernel.sender(),
+            "tool_executor".into(),
+        );
+        kernel.register_module(Box::new(AgentLoopModule::new(runner)), &ctx, &mut reg).unwrap();
+        let mut server = IpcServer::new(kernel, session_dyn);
+        server.permission_module = Some(module.clone());
+        (server, module)
+    }
+
+    #[tokio::test]
+    async fn cancel_request_with_session_id_routes_precisely() {
+        let (server, module) = repeating_run_server();
+        let server = Arc::new(server);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(String, String)>();
+        module.set_notifier(Arc::new(move |p: &PermissionRequestParams, sid: &str| {
+            let _ = tx.send((sid.to_string(), p.request_id.clone()));
+        }));
+        let raw1 = r#"{"jsonrpc":"2.0","id":10,"method":"session/run","params":{"session_id":"s1","content":"run1"}}"#;
+        let raw2 = r#"{"jsonrpc":"2.0","id":11,"method":"session/run","params":{"session_id":"s2","content":"run2"}}"#;
+        let run1 = {
+            let s = Arc::clone(&server);
+            tokio::spawn(async move { s.handle_request_from(raw1, "conn-a").await.unwrap() })
+        };
+        let run2 = {
+            let s = Arc::clone(&server);
+            tokio::spawn(async move { s.handle_request_from(raw2, "conn-b").await.unwrap() })
+        };
+        wait_for_pending_run(&server, "s1").await.expect("s1 must be in-flight");
+        wait_for_pending_run(&server, "s2").await.expect("s2 must be in-flight");
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let (sid, rid) = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .expect("s1 must block on Ask")
+            .expect("channel closed");
+        assert_eq!(sid, "s1", "first Ask must be s1");
+        let rid_s1 = Some(rid);
+        let cancel = r#"{"jsonrpc":"2.0","method":"$/cancelRequest","params":{"id":5,"session_id":"s2"}}"#;
+        let _ = server.handle_request_from(cancel, "conn-a").await.unwrap();
+        let resp2 = tokio::time::timeout(std::time::Duration::from_secs(5), run2)
+            .await
+            .expect("cancelled run must finish")
+            .unwrap();
+        assert!(resp2.contains("-32800"), "cancelled must get -32800: {resp2}");
+        assert!(server.registry.read().unwrap().pending_runs.contains(&"s1".to_string()), "s1 stays");
+        let rid1 = rid_s1.clone().expect("s1 rid");
+        let raw_ok = format!(
+            r#"{{"jsonrpc":"2.0","id":12,"method":"permission/respond","params":{{"request_id":"{}","decision":"allow"}}}}"#,
+            rid1
+        );
+        let _ = server.handle_request_from(&raw_ok, "conn-a").await.unwrap();
+        let resp1 = tokio::time::timeout(std::time::Duration::from_secs(5), run1)
+            .await
+            .expect("s1 must finish")
+            .unwrap();
+        assert!(resp1.contains("\"result\""), "s1 must complete: {resp1}");
+    }
+
+    #[tokio::test]
+    async fn cancel_request_without_session_id_single_inflight_falls_back() {
+        let (server, module) = blocking_run_server();
+        assert!(server.registry.write().unwrap().try_acquire_run(&"s1".to_string()));
+        let ctx = PermissionContext {
+            session_id: "s1".into(),
+            tool: "bash".into(),
+            source: ToolSource::Builtin,
+            args: serde_json::json!({"command": "curl x"}),
+            workspace_root: std::path::PathBuf::from("/ws"),
+        };
+        if let PermissionDecision::Ask { request_id } = module.check(&ctx) {
+            let module2 = module.clone();
+            let rid = request_id.clone();
+            let handle = tokio::spawn(async move { module2.await_approval(&rid).await });
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            let raw = r#"{"jsonrpc":"2.0","method":"$/cancelRequest","params":{"id":5}}"#;
+            let _ = server.handle_request(raw).await.unwrap();
+            assert_eq!(
+                handle.await.unwrap(),
+                PermissionDecision::Deny { reason: "cancelled".into() }
+            );
+        } else {
+            panic!("expected Ask");
+        }
+    }
+
+    #[tokio::test]
+    async fn cancel_request_without_session_id_multiple_inflight_is_noop() {
+        let (server, module) = blocking_run_server();
+        assert!(server.registry.write().unwrap().try_acquire_run(&"s1".to_string()));
+        assert!(server.registry.write().unwrap().try_acquire_run(&"s2".to_string()));
+        let ctx = PermissionContext {
+            session_id: "s1".into(),
+            tool: "bash".into(),
+            source: ToolSource::Builtin,
+            args: serde_json::json!({"command": "curl x"}),
+            workspace_root: std::path::PathBuf::from("/ws"),
+        };
+        let PermissionDecision::Ask { request_id } = module.check(&ctx) else {
+            panic!("expected Ask")
+        };
+        let module2 = module.clone();
+        let rid = request_id.clone();
+        let handle = tokio::spawn(async move { module2.await_approval(&rid).await });
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        let raw = r#"{"jsonrpc":"2.0","method":"$/cancelRequest","params":{"id":5}}"#;
+        let _ = server.handle_request(raw).await.unwrap();
+        let out = tokio::time::timeout(std::time::Duration::from_millis(200), handle).await;
+        assert!(out.is_err(), "ambiguous cancel must NOT resolve approvals");
     }
 
     #[tokio::test]
@@ -1630,7 +1850,7 @@ mod tests {
             let s = Arc::clone(&server);
             async move { s.handle_request(&run_raw).await.unwrap() }
         });
-        wait_for_inflight_session(&server, &sid)
+        wait_for_pending_run(&server, &sid)
             .await
             .expect("run must be in-flight");
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -1994,10 +2214,14 @@ mod tests {
 
     #[tokio::test]
     async fn non_owner_permission_respond_is_rejected() {
-        let (server, _module) = blocking_run_server();
+        let (server, module) = blocking_run_server();
         let server = Arc::new(server);
         let a = register_fake_conn(&server);
         let b = register_fake_conn(&server);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        module.set_notifier(Arc::new(move |p: &PermissionRequestParams, _sid: &str| {
+            let _ = tx.send(p.request_id.clone());
+        }));
         let new_resp = server
             .handle_request_from(r#"{"jsonrpc":"2.0","id":1,"method":"session/new"}"#, &a)
             .await
@@ -2011,16 +2235,23 @@ mod tests {
             let conn = a.clone();
             async move { s.handle_request_from(&run_raw, &conn).await.unwrap() }
         });
-        wait_for_inflight_session(&server, &sid)
+        wait_for_pending_run(&server, &sid)
             .await
             .expect("run must record in-flight session");
-        let resp = server
-            .handle_request_from(
-                r#"{"jsonrpc":"2.0","id":9,"method":"permission/respond","params":{"request_id":"req-x","decision":"allow"}}"#,
-                &b,
-            )
-            .await
-            .unwrap();
+        let rid = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if let Ok(r) = rx.try_recv() {
+                    return r;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("permission request must arrive");
+        let raw = format!(
+            r#"{{"jsonrpc":"2.0","id":9,"method":"permission/respond","params":{{"request_id":"{rid}","decision":"allow"}}}}"#
+        );
+        let resp = server.handle_request_from(&raw, &b).await.unwrap();
         assert!(
             resp.contains(r#""code":-32806"#),
             "non-owner respond must be NotAuthorized: {resp}"
@@ -2055,7 +2286,7 @@ mod tests {
             let conn = a.clone();
             async move { s.handle_request_from(&run_raw, &conn).await.unwrap() }
         });
-        wait_for_inflight_session(&server, &sid)
+        wait_for_pending_run(&server, &sid)
             .await
             .expect("run1 must be in flight");
         let run2 = format!(
@@ -2212,7 +2443,7 @@ mod tests {
             let conn = a.clone();
             async move { s.handle_request_from(&run_raw, &conn).await.unwrap() }
         });
-        wait_for_inflight_session(&server, &sid)
+        wait_for_pending_run(&server, &sid)
             .await
             .expect("run must be in flight");
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;

@@ -75,9 +75,11 @@ dependencies = [
  "agentj-protocol",
  "agentj-session",
  "async-trait",
+ "futures",
  "serde",
  "serde_json",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
