@@ -263,8 +263,8 @@ flowchart LR
 
 ## 实现 TODO（供 plan 阶段细化）
 
-- [ ] T1: `CancelParams` + `PermissionRequestParams` 加性字段（`@since 0.6.0`）+ 单测 + schemas 重生成 + spec §6/§8.15/§8.16 + TS 绑定 + drift 门禁
-- [ ] T2: `PermissionModule::session_of` 只读 peek + 单测
-- [ ] T3: 删除 `IpcServer.session` + `InflightSessionGuard`；重写 `dispatch_permission_respond` / `dispatch_cancel_request`；`attach_permission_notifier` 带 session_id
-- [ ] T4: 改造 L1282/L1374 既有测试 + 新增并发跨会话测试（属主隔离 / cancel 精准 / 兜底语义）
-- [ ] T5: 版本 0.5.1→0.6.0；AGENTS.md / README / summary / gap 档案 G2 行状态更新 + 文档提交
+- [x] T1: `CancelParams` + `PermissionRequestParams` 加性字段（`@since 0.6.0`）+ 单测 + schemas 重生成 + spec §6/§8.15/§8.16 + TS 绑定 + drift 门禁
+- [x] T2: `PermissionModule::session_of` 只读 peek + 单测
+- [x] T3: 删除 `IpcServer.session` + `InflightSessionGuard`；重写 `dispatch_permission_respond` / `dispatch_cancel_request`；`attach_permission_notifier` 带 session_id
+- [x] T4: 改造 L1282/L1374 既有测试 + 新增并发跨会话测试（属主隔离 / cancel 精准 / 兜底语义）
+- [x] T5: 版本 0.5.1→0.6.0；AGENTS.md / README / summary / gap 档案 G2 行状态更新 + 文档提交
