@@ -15,7 +15,7 @@
 | # | 差距 | 设计宣称 | v0.4.1 实测现状 | 证据 | 严重度 | 状态 |
 |---|------|---------|----------------|------|--------|------|
 | **G1** | 内核调度（决策 #18） | "内核调度 + 可插拔模块"——AgentLoop/Sub-Agent 全量迁入 `KernelMessage` 总线 | `KernelMessage` 仅 3 变体；`ModelResponse/ToolCallRequest/ToolCallResult` **代码中不存在**（0 命中，仅设计稿 L644）；IPC `session/run` 直调 `agent_loop.run_turn_stream`（`agentj-ipc/src/lib.rs:613`）；`Dispatcher` 直建 AgentLoop（`dispatcher.rs:53`）；CLI `AgentLoopModule::handle()` 空实现（`agentj-cli/src/main.rs:61-65`） | `module.rs:559-574` / `kernel.rs:149-191` / `agent_loop.rs:125-207` | 🔴 核心理念未兑现 | ✅ 已实现（`docs/superpowers/plans/2026-08-30-agentj-kernel-scheduling-refactor-plan.md` v0.5.0，T1-T13） |
-| **G2** | 单全局 in-flight 会话槽 | 并发 run 于不同会话互不干扰 | 互斥已 per-session（`pending_runs: HashSet<SessionId>` ✓）；但 `IpcServer.session: Arc<Mutex<Option<String>>>` 单全局槽——`permission/respond` 属主门控（`lib.rs:670-684`）与 `$/cancelRequest`（`lib.rs:722-725`）读最近一次覆盖值，并发跨会话 run 互相污染 | `agentj-ipc/src/lib.rs:282-285,595,670-684,722-725` | 🟠 并发正确性 | 待设计 |
+| **G2** | 单全局 in-flight 会话槽 | 并发 run 于不同会话互不干扰 | 互斥已 per-session（`pending_runs: HashSet<SessionId>` ✓）；但 `IpcServer.session: Arc<Mutex<Option<String>>>` 单全局槽——`permission/respond` 属主门控（`lib.rs:670-684`）与 `$/cancelRequest`（`lib.rs:722-725`）读最近一次覆盖值，并发跨会话 run 互相污染 | `agentj-ipc/src/lib.rs:282-285,595,670-684,722-725` | 🟠 并发正确性 | ✅ 已设计（`2026-08-31-g2-per-session-inflight-routing-design.md`） |
 | **G3** | token 级用量 | UsageCollector 统计 tokens | `record_token_usage` 为死代码（仅单测）；`OnTurnComplete` 只传 `&SessionId`（`agent_loop.rs:27`）；**6 个 provider 全部丢弃 SSE 末帧 usage**——`ModelEvent` 无 Usage 变体、`ChatResponse` 无 usage 字段（`types.rs:76-87`）；CLI 仅 `record_turn`（`main.rs:259-268`） | `agentj-stats/src/lib.rs:8-78` / `agent_loop.rs:27,55` / `openai_compat.rs:110-193` 等 | 🟠 统计不完整 | 待设计 |
 | **G4** | 磁盘持久化生产未接线 | v0.3"FileBackedStore 磁盘持久化已落地" | CLI `main.rs:223` 用 `InMemoryStore::new()`——**FileBackedStore 生产零引用**（全仓 grep 仅 lib.rs pub use + 定义 + 测试）；守护内核 G3「历史级接续」依赖落空；另有 tmp 固定命名 `<sid>.json.tmp`（`file_store.rs:130`）跨进程写同 session 互相覆盖，无唯一命名/`flock` | `agentj-cli/src/main.rs:223` / `agentj-session/src/file_store.rs:14-140` | 🔴 宣称≠实际 | 待设计 |
 | **G5** | License 商用门控 | agentj-license 能力 | API 完备（`LicenseValidator::validate` / `check_entitlement`）但**全仓零生产依赖**（`agentj-cli/Cargo.toml` 无 agentj-license）；design-pending 悬置 | `agentj-license/src/lib.rs:8-75` | 🟠 商业件悬空 | 待设计 |
@@ -33,7 +33,7 @@
 
 每项均含具体改造方向（来自取证结论）：
 
-- **G2**：`session: Mutex<Option<String>>` → `Mutex<HashSet<SessionId>>`（或 `request_id→session` 映射）；`dispatch_permission_respond` 按 `request_id`/`params.session_id` 查表；`$/cancelRequest` 携带 `session_id`。
+- **G2**（✅ 已设计，见 `2026-08-31-g2-per-session-inflight-routing-design.md`）：删除全局槽 → cancel 走 wire `session_id`（加性，`pending_runs` 单会话兜底）、respond 走 `PermissionModule::session_of(rid)` 查表 + `session_owner` 门控；`$/permissionRequest` 加性携带 `session_id`。
 - **G3**：`types.rs` 扩展 `ModelEvent::Usage{prompt,completion}`（或 `Done` 携带）；6 provider 解析 SSE 末帧 `usage`；`OnTurnComplete` 改 `Fn(&SessionId, Option<SessionUsage>)`；CLI 改调 `record_token_usage`。
 - **G4**：CLI 切换 `InMemoryStore` → `FileBackedStore::new(&xdg_data_dir)` + `load_all` 恢复；`persist` 改唯一 tmp 命名（`sid.<uuid>.tmp`）+ 目录 fsync 或 `fs2` flock。
 - **G5**：CLI 注入 `LicenseValidator`，`session/run`/`kernel/status`/dashboard 前 `check_entitlement`；`--license-key` 配置。
