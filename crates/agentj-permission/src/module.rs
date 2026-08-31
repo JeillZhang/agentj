@@ -90,6 +90,18 @@ impl PermissionModule {
         *self.notifier.lock().unwrap() = Some(f);
     }
 
+    /// Read-only peek of the session owning a pending approval. Does NOT
+    /// consume the entry (consumption stays in `respond`). Used by the IPC
+    /// layer to gate `permission/respond` by the resolved session's owner
+    /// (G2 design D4).
+    pub fn session_of(&self, request_id: &PermissionRequestId) -> Option<String> {
+        self.pending
+            .lock()
+            .unwrap()
+            .get(request_id)
+            .map(|req| req.session_id.clone())
+    }
+
     /// Deliver the client's decision to a pending request. `AllowAlways`
     /// derives the fingerprint from the stored args and grants it for the
     /// request's session (session-scoped, in-memory).
@@ -233,6 +245,7 @@ impl PermissionModule {
             args: ctx.args.clone(),
             reason: format!("tool '{}' default mode is ask", ctx.tool),
             origin_client: None,
+            session_id: Some(ctx.session_id.clone()),
         };
         if let Ok(guard) = self.notifier.lock()
             && let Some(f) = guard.clone()
@@ -388,8 +401,11 @@ mod tests {
     use crate::policy::*;
     use crate::session_allow::RuleFingerprint;
     use agentj_core::module::{Module, ToolSource};
-    use agentj_core::permission::{PermissionContext, PermissionDecision};
+    use agentj_core::permission::{PermissionContext, PermissionDecision, PermissionRequestId};
+    use agentj_protocol::permission::PermissionRequestParams;
+    use std::collections::HashMap;
     use std::path::PathBuf;
+    use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
     fn module() -> PermissionModule {
@@ -975,5 +991,31 @@ mod tests {
             workspace_root: PathBuf::from("/ws"),
         };
         assert_eq!(m.check(&c), PermissionDecision::Allow);
+    }
+
+    #[test]
+    fn session_of_peeks_pending_request_session() {
+        let module = PermissionModule::new(HashMap::new(), Duration::from_secs(1));
+        let ctx = PermissionContext { session_id: "s-1".into(), tool: "bash".into(), source: ToolSource::Builtin, args: serde_json::json!({"command": "ls"}), workspace_root: PathBuf::from("/ws") };
+        if let PermissionDecision::Ask { request_id } = module.check(&ctx) {
+            assert_eq!(module.session_of(&request_id).as_deref(), Some("s-1"));
+            assert!(module.respond(&request_id, ApprovalDecision::Allow));
+            assert_eq!(module.session_of(&request_id), None, "respond consumes the entry");
+        } else { panic!("expected Ask"); }
+    }
+    #[test]
+    fn session_of_unknown_request_is_none() {
+        let module = PermissionModule::new(HashMap::new(), Duration::from_secs(1));
+        assert_eq!(module.session_of(&PermissionRequestId("nope".into())), None);
+    }
+    #[test]
+    fn register_ask_notifier_receives_session_id() {
+        let module = PermissionModule::new(HashMap::new(), Duration::from_secs(1));
+        let seen = Arc::new(Mutex::new(None::<String>));
+        let seen2 = Arc::clone(&seen);
+        module.set_notifier(Arc::new(move |p: &PermissionRequestParams, _sid: &str| { *seen2.lock().unwrap() = p.session_id.clone(); }));
+        let ctx = PermissionContext { session_id: "s-9".into(), tool: "bash".into(), source: ToolSource::Builtin, args: serde_json::json!({"command": "ls"}), workspace_root: PathBuf::from("/ws") };
+        module.check(&ctx);
+        assert_eq!(seen.lock().unwrap().as_deref(), Some("s-9"));
     }
 }
