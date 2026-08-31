@@ -178,6 +178,7 @@ fn permission_request_notification_wire_shape_with_origin_client() {
                 args: serde_json::json!({"command": "ls"}),
                 reason: "tool default ask".into(),
                 origin_client: Some("conn-a".into()),
+                session_id: Some("s-1".into()),
             })
             .unwrap(),
         ),
@@ -185,4 +186,5 @@ fn permission_request_notification_wire_shape_with_origin_client() {
     let json = serde_json::to_value(n).unwrap();
     assert_eq!(json["method"], "$/permissionRequest");
     assert_eq!(json["params"]["origin_client"], "conn-a");
+    assert_eq!(json["params"]["session_id"], "s-1");
 }
