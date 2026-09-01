@@ -5,6 +5,8 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::types::SessionId;
+
 /// S→C notification: a tool call is awaiting user approval (`Ask` decision).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct PermissionRequestParams {
@@ -20,6 +22,9 @@ pub struct PermissionRequestParams {
     /// Absent in single-client (stdio) mode — additive.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub origin_client: Option<String>,
+    /// Session owning the approval (client-side UI attribution; additive).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<SessionId>, // @since 0.6.0
 }
 
 /// C→S request: the client's decision on a pending permission request.
@@ -58,6 +63,7 @@ mod tests {
             args: serde_json::json!({"cmd": "ls"}),
             reason: "tool default mode is ask".into(),
             origin_client: None,
+            session_id: None,
         };
         let json = serde_json::to_value(&p).unwrap();
         assert_eq!(json["request_id"], "r1");
@@ -119,6 +125,7 @@ mod tests {
             args: serde_json::json!({"command": "ls"}),
             reason: "tool default mode is ask".into(),
             origin_client: Some("conn-a".into()),
+            session_id: None,
         };
         let json = serde_json::to_value(&p).unwrap();
         assert_eq!(json["origin_client"], "conn-a");
@@ -132,8 +139,37 @@ mod tests {
             args: serde_json::json!({"command": "ls"}),
             reason: "tool default mode is ask".into(),
             origin_client: None,
+            session_id: None,
         };
         let json = serde_json::to_value(&p).unwrap();
         assert!(json.get("origin_client").is_none());
+    }
+
+    #[test]
+    fn permission_request_params_with_session_id() {
+        let p = PermissionRequestParams {
+            request_id: "req-1".into(),
+            tool: "bash".into(),
+            args: serde_json::json!({"command": "ls"}),
+            reason: "tool default mode is ask".into(),
+            origin_client: Some("conn-a".into()),
+            session_id: Some("s-1".into()),
+        };
+        let json = serde_json::to_value(&p).unwrap();
+        assert_eq!(json["session_id"], "s-1");
+    }
+
+    #[test]
+    fn permission_request_params_without_session_id_omits_field() {
+        let p = PermissionRequestParams {
+            request_id: "req-1".into(),
+            tool: "bash".into(),
+            args: serde_json::json!({"command": "ls"}),
+            reason: "tool default mode is ask".into(),
+            origin_client: None,
+            session_id: None,
+        };
+        let json = serde_json::to_value(&p).unwrap();
+        assert!(json.get("session_id").is_none());
     }
 }

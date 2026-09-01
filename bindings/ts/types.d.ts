@@ -13,6 +13,11 @@ export type Id = number | string | null;
 
 export interface CancelParams {
   id: Id;
+  /**
+   * Target session for the cancel (design G2). Additive: absent on legacy
+   * clients — the server falls back to a single-inflight session.
+   */
+  session_id?: string | null;
   [k: string]: unknown;
 }
 
@@ -134,6 +139,10 @@ export interface PermissionRequestParams {
    * Opaque id decoupled from the JSON-RPC request id (like $/progress token).
    */
   request_id: string;
+  /**
+   * Session owning the approval (client-side UI attribution; additive).
+   */
+  session_id?: string | null;
   /**
    * Tool name, e.g. "bash".
    */

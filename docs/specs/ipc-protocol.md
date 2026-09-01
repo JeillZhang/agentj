@@ -273,6 +273,7 @@ initialize（请求）→ initialized（通知）→ 会话阶段 → shutdown�
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | `id` | Id | 是 | 要取消的请求 id |
+| `session_id` | string | 否 | 目标会话 id（`@since 0.6.0` 加性字段）。缺省时：若恰好一个会话处于 in-flight 则取消该会话；若零个或多个会话同时 in-flight 则忽略本次取消（no-op，歧义安全） |
 
 - `$/cancelRequest` 是通知，**双向可用**（注册表方向：both），接收方 MUST NOT 对其响应。
 - **被取消的请求仍必须返回响应**（JSON-RPC「一请求一响应」不变量）：服务端取消成功时以 `-32800 RequestCancelled` 响应，`data` MAY 携带已产生的部分信息。
@@ -591,6 +592,7 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 | `tool` | string | 是 | 需要审批的工具名 |
 | `args` | object | 是 | 工具原始参数 |
 | `reason` | string | 否 | 审批原因（如命中的规则 / 默认模式） |
+| `session_id` | string | 否 | 归属会话 id（`@since 0.6.0` 加性字段，客户端可按此字段做多会话 UI 归类） |
 
 - **定向路由**：服务端按 `session_owner` **定向**发送给发起该 run 的客户端连接（设计决策 #5），其余客户端不收到该通知。`origin_client` 字段显式标识发起连接（`@since 0.3.0`）；stdio 单客户端模式下该字段缺省。
 - **响应**：无（通知不响应）；发起方通过 `permission/respond`（见 8.13）响应。
@@ -600,7 +602,7 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 ### 8.16 $/cancelRequest（通知，见 §6）
 
 - **能力声明**：无。
-- **请求（通知）**：`CancelParams`（`id` 必填，为要取消的请求 id）。
+- **请求（通知）**：`CancelParams`（`id` 必填，`session_id` 可选 `@since 0.6.0`；缺省时若恰好一个会话 in-flight 则取消该会话，零个或多个 in-flight 则忽略 no-op，见 §6）。
 - **响应**：无（通知不响应）；被取消请求本身仍会以 `-32800` 响应。
 - **部分结果**：无。
 - **error.data**：不适用。

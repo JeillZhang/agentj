@@ -5,6 +5,13 @@
   "properties": {
     "id": {
       "$ref": "#/$defs/Id"
+    },
+    "session_id": {
+      "description": "Target session for the cancel (design G2). Additive: absent on legacy\nclients — the server falls back to a single-inflight session.",
+      "type": [
+        "string",
+        "null"
+      ]
     }
   },
   "required": [
