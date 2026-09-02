@@ -5,7 +5,7 @@ use agentj_protocol::base::{
 use agentj_protocol::lifecycle::{ClientInfo, InitializeParams, InitializeResult, ServerInfo};
 use agentj_protocol::permission::PermissionRequestParams;
 use agentj_protocol::session::{
-    SessionNewResult, SessionRunParams, SessionRunResult, SessionSubscribeParams,
+    SessionNewResult, SessionRunParams, SessionRunResult, SessionSubscribeParams, UsageInfo,
 };
 use agentj_protocol::streaming::{ProgressParams, ProgressValue};
 use agentj_protocol::types::ToolCall;
@@ -141,6 +141,7 @@ fn session_run_result_roundtrip() {
     let r = SessionRunResult {
         content: "done".into(),
         tool_calls: None,
+        usage: None,
     };
     let back: SessionRunResult = serde_json::from_str(&serde_json::to_string(&r).unwrap()).unwrap();
     assert_eq!(back.content, "done");
@@ -164,6 +165,32 @@ fn session_subscribe_request_wire_shape() {
     let json = serde_json::to_value(req).unwrap();
     assert_eq!(json["method"], "session/subscribe");
     assert_eq!(json["params"]["progress_token"], "tok-sub");
+}
+
+#[test]
+fn session_run_result_usage_serializes_when_present() {
+    let r = SessionRunResult {
+        content: "done".into(),
+        tool_calls: None,
+        usage: Some(UsageInfo {
+            prompt_tokens: 100,
+            completion_tokens: 20,
+        }),
+    };
+    let json = serde_json::to_value(&r).unwrap();
+    assert_eq!(json["usage"]["prompt_tokens"], 100);
+    assert_eq!(json["usage"]["completion_tokens"], 20);
+}
+
+#[test]
+fn session_run_result_usage_absent_when_none() {
+    let r = SessionRunResult {
+        content: "done".into(),
+        tool_calls: None,
+        usage: None,
+    };
+    let json = serde_json::to_value(&r).unwrap();
+    assert!(json.get("usage").is_none());
 }
 
 #[test]

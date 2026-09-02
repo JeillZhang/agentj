@@ -45,6 +45,7 @@ impl OpenAICompatibleProvider {
                 "function": { "name": t.name, "description": t.description, "parameters": t.input_schema }
             })).collect::<Vec<_>>(),
             "stream": true,
+            "stream_options": { "include_usage": true },
             "temperature": options.temperature.unwrap_or(0.7),
         })
     }
@@ -94,6 +95,7 @@ impl OpenAICompatibleProvider {
 struct OpenAiChunkParser {
     pending: HashMap<usize, ToolCall>,
     saw_tool_finish: bool,
+    done_emitted: bool,
 }
 
 impl OpenAiChunkParser {
@@ -101,6 +103,7 @@ impl OpenAiChunkParser {
         Self {
             pending: HashMap::new(),
             saw_tool_finish: false,
+            done_emitted: false,
         }
     }
 
@@ -114,7 +117,10 @@ impl OpenAiChunkParser {
         }
         let data = line[5..].trim();
         if data == "[DONE]" {
-            out.push(Ok(ModelEvent::Done));
+            if !self.done_emitted {
+                out.push(Ok(ModelEvent::Done));
+                self.done_emitted = true;
+            }
             return;
         }
         if data.is_empty() {
@@ -127,6 +133,17 @@ impl OpenAiChunkParser {
                 return;
             }
         };
+        if let Some(u) = json.get("usage").and_then(|u| u.as_object())
+            && let (Some(p), Some(c)) = (
+                u.get("prompt_tokens").and_then(|v| v.as_u64()),
+                u.get("completion_tokens").and_then(|v| v.as_u64()),
+            )
+        {
+            out.push(Ok(ModelEvent::Usage(TokenUsage {
+                prompt_tokens: p,
+                completion_tokens: c,
+            })));
+        }
         let Some(choices) = json.get("choices").and_then(|c| c.as_array()) else {
             return;
         };
@@ -167,12 +184,10 @@ impl OpenAiChunkParser {
                     }
                 }
             }
-            if let Some(finish) = choice.get("finish_reason").and_then(|v| v.as_str()) {
-                if finish == "tool_calls" {
-                    self.saw_tool_finish = true;
-                } else if finish == "stop" || finish == "length" {
-                    out.push(Ok(ModelEvent::Done));
-                }
+            if let Some(finish) = choice.get("finish_reason").and_then(|v| v.as_str())
+                && finish == "tool_calls"
+            {
+                self.saw_tool_finish = true;
             }
         }
         // Emit assembled tool calls once the finish_reason=tool_calls marker is seen
@@ -428,5 +443,69 @@ mod tests {
         assert_eq!(resp.tool_calls[0].id, "call_9");
         assert_eq!(resp.tool_calls[0].name, "bash");
         assert_eq!(resp.tool_calls[0].arguments["cmd"], "pwd");
+    }
+
+    #[tokio::test]
+    async fn openai_compat_parses_streaming_usage_frame() {
+        let server = MockServer::start().await;
+        let sse_body = concat!(
+            "data: {\"id\":\"1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"delta\":{\"content\":\"Hello\"},\"index\":0}]}\n\n",
+            "data: {\"id\":\"2\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+            "data: {\"id\":\"3\",\"object\":\"chat.completion.chunk\",\"choices\":[],\"usage\":{\"prompt_tokens\":9,\"completion_tokens\":7,\"total_tokens\":16}}\n\n",
+            "data: [DONE]\n\n"
+        );
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(sse_body)
+                    .insert_header("content-type", "text/event-stream"),
+            )
+            .mount(&server)
+            .await;
+        let provider =
+            OpenAICompatibleProvider::new(server.uri(), "sk-test".into(), "test-model".into());
+        let mut stream = provider
+            .chat_stream(
+                vec![ChatMessage::user("hi")],
+                vec![],
+                ModelOptions {
+                    model: "test-model".into(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let mut events: Vec<ModelEvent> = vec![];
+        while let Some(result) = stream.next().await {
+            events.push(result.unwrap());
+        }
+        assert!(events.iter().any(|e| matches!(
+            e,
+            ModelEvent::Usage(u) if u.prompt_tokens == 9 && u.completion_tokens == 7
+        )));
+        let done_idx = events
+            .iter()
+            .position(|e| matches!(e, ModelEvent::Done))
+            .unwrap();
+        let usage_idx = events
+            .iter()
+            .position(|e| matches!(e, ModelEvent::Usage(_)))
+            .unwrap();
+        assert!(usage_idx < done_idx, "usage must be emitted before Done");
+    }
+
+    #[tokio::test]
+    async fn openai_request_includes_stream_options_include_usage() {
+        let provider = OpenAICompatibleProvider::new("http://x".into(), "k".into(), "m".into());
+        let body = provider.request_body(
+            &[ChatMessage::user("hi")],
+            &[],
+            &ModelOptions {
+                model: "m".into(),
+                ..Default::default()
+            },
+        );
+        assert_eq!(body["stream_options"]["include_usage"], true);
     }
 }

@@ -8,7 +8,7 @@ use crate::error::ModuleError;
 use crate::kernel::KernelSender;
 use crate::module::{ContextPipeline, KernelContext, KernelMessage};
 use crate::types::{
-    AgentEvent, ChatMessage, ModelEvent, ModelOptions, ModuleId, SessionId, ToolCall,
+    AgentEvent, ChatMessage, ModelEvent, ModelOptions, ModuleId, SessionId, TokenUsage, ToolCall,
 };
 
 pub struct TurnHandle {
@@ -22,7 +22,7 @@ pub struct TurnRunner {
     pipeline: Arc<dyn ContextPipeline>,
     default_system_prompt: String,
     max_tool_iterations: usize,
-    on_turn_complete: Option<Arc<dyn Fn(&SessionId) + Send + Sync>>,
+    on_turn_complete: Option<Arc<dyn Fn(&SessionId, Option<TokenUsage>) + Send + Sync>>,
     sender: KernelSender,
     tool_executor_id: ModuleId,
     turns: Arc<Mutex<HashMap<SessionId, TurnHandle>>>,
@@ -48,7 +48,11 @@ impl TurnRunner {
         }
     }
 
-    pub fn set_on_turn_complete(&mut self, f: Arc<dyn Fn(&SessionId) + Send + Sync>) {
+    #[allow(clippy::type_complexity)]
+    pub fn set_on_turn_complete(
+        &mut self,
+        f: Arc<dyn Fn(&SessionId, Option<TokenUsage>) + Send + Sync>,
+    ) {
         self.on_turn_complete = Some(f);
     }
 
@@ -144,7 +148,7 @@ impl TurnRunner {
         sender: KernelSender,
         tool_executor_id: ModuleId,
         mut cancel_rx: tokio::sync::oneshot::Receiver<()>,
-        on_done: Option<Arc<dyn Fn(&SessionId) + Send + Sync>>,
+        on_done: Option<Arc<dyn Fn(&SessionId, Option<TokenUsage>) + Send + Sync>>,
     ) -> Result<(), String> {
         let route = |reason: String| format!("agent error: {reason}");
         ctx.session
@@ -170,6 +174,7 @@ impl TurnRunner {
             ..Default::default()
         };
         let mut cancelled = false;
+        let mut usage: Option<TokenUsage> = None;
         'outer: for _iter in 0..max_iter {
             let stream = provider
                 .chat_stream(messages.clone(), tool_defs.clone(), default_options.clone())
@@ -192,6 +197,10 @@ impl TurnRunner {
                             }
                         }
                         ModelEvent::ToolCall(tc) => tc_list.push(tc),
+                        ModelEvent::Usage(tu) => match &mut usage {
+                            Some(acc) => acc.accumulate(tu),
+                            None => usage = Some(tu),
+                        },
                         ModelEvent::Done => break,
                     },
                     None => {
@@ -213,6 +222,7 @@ impl TurnRunner {
                     .send(AgentEvent::Done {
                         final_response: content,
                         tool_calls: all_tool_calls,
+                        usage,
                     })
                     .await
                     .is_err()
@@ -220,7 +230,7 @@ impl TurnRunner {
                     return Ok(());
                 }
                 if let Some(f) = &on_done {
-                    f(&session_id);
+                    f(&session_id, usage);
                 }
                 return Ok(());
             }
@@ -534,7 +544,7 @@ mod tests {
             "tool_spy".into(),
         );
         let h = Arc::clone(&hits);
-        runner.set_on_turn_complete(Arc::new(move |_sid| {
+        runner.set_on_turn_complete(Arc::new(move |_sid, _usage| {
             h.fetch_add(1, Ordering::SeqCst);
         }));
         let providers = ctx.providers.clone();
@@ -723,6 +733,110 @@ mod tests {
         // give turn time to attempt sends and abort
         tokio::time::sleep(Duration::from_millis(100)).await;
         // if we get here without panic or busy-loop, test passes
+        kernel.sender().send(KernelMessage::Shutdown).unwrap();
+    }
+
+    struct UsageScriptedProvider {
+        calls: Arc<AtomicUsize>,
+    }
+    #[async_trait]
+    impl crate::module::ModelProvider for UsageScriptedProvider {
+        async fn chat_stream(
+            &self,
+            _m: Vec<ChatMessage>,
+            _t: Vec<ToolDefinition>,
+            _o: ModelOptions,
+        ) -> Result<BoxStream<'static, Result<ModelEvent, ModelError>>, ModelError> {
+            let n = self.calls.fetch_add(1, Ordering::SeqCst);
+            let events: Vec<Result<ModelEvent, ModelError>> = if n == 0 {
+                vec![
+                    Ok(ModelEvent::ToolCall(tc())),
+                    Ok(ModelEvent::Usage(crate::types::TokenUsage {
+                        prompt_tokens: 10,
+                        completion_tokens: 5,
+                    })),
+                    Ok(ModelEvent::Done),
+                ]
+            } else {
+                vec![
+                    Ok(ModelEvent::Delta("ok".into())),
+                    Ok(ModelEvent::Usage(crate::types::TokenUsage {
+                        prompt_tokens: 90,
+                        completion_tokens: 15,
+                    })),
+                    Ok(ModelEvent::Done),
+                ]
+            };
+            Ok(Box::pin(stream::iter(events)))
+        }
+        async fn chat(
+            &self,
+            _m: Vec<ChatMessage>,
+            _o: ModelOptions,
+        ) -> Result<crate::types::ChatResponse, ModelError> {
+            Ok(crate::types::ChatResponse {
+                content: String::new(),
+                tool_calls: vec![],
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn turn_aggregates_usage_across_iterations_and_forwards_to_done_and_callback() {
+        let (kernel, sender) = spy_kernel_with(ToolSpy);
+        let ctx = loop_test_ctx();
+        let providers = ctx.providers.clone();
+        providers.register(
+            "mock".into(),
+            Arc::new(UsageScriptedProvider {
+                calls: Arc::new(AtomicUsize::new(0)),
+            }),
+        );
+        let mut runner = TurnRunner::new(
+            ctx.clone(),
+            Arc::new(MockPipeline),
+            "sys".into(),
+            sender,
+            "tool_spy".into(),
+        );
+        let captured = Arc::new(StdMutex::new(None));
+        let cap = captured.clone();
+        runner.set_on_turn_complete(Arc::new(move |_sid, usage| {
+            *cap.lock().unwrap() = usage;
+        }));
+        let sid = runner.create_session().unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+        runner
+            .spawn_turn(sid.clone(), "hi".into(), None, tx)
+            .unwrap();
+        let mut done_usage = None;
+        while let Some(ev) = rx.recv().await {
+            if let AgentEvent::Done { usage, .. } = ev {
+                done_usage = usage;
+                break;
+            }
+            if let AgentEvent::Error(e) = ev {
+                panic!("unexpected error: {e}");
+            }
+        }
+        assert_eq!(
+            done_usage,
+            Some(crate::types::TokenUsage {
+                prompt_tokens: 100,
+                completion_tokens: 20
+            })
+        );
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        while captured.lock().unwrap().is_none() && std::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(
+            *captured.lock().unwrap(),
+            Some(crate::types::TokenUsage {
+                prompt_tokens: 100,
+                completion_tokens: 20
+            })
+        );
         kernel.sender().send(KernelMessage::Shutdown).unwrap();
     }
 }
