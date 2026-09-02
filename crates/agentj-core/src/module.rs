@@ -517,6 +517,38 @@ pub trait SessionStore: Send + Sync {
     fn load_all(&self) -> Result<Vec<SessionSnapshot>, ModuleError> {
         Ok(vec![])
     }
+
+    /// Archive every Active session idle longer than `ttl`, publishing
+    /// EventType::SessionExpired per archived session; returns archived count.
+    /// Default: no-op for stores without expiry support.
+    fn scan_expired(
+        &self,
+        _ttl: std::time::Duration,
+        _now_epoch: u64,
+        _bus: &crate::hooks::EventBus,
+    ) -> Result<usize, ModuleError> {
+        Ok(0)
+    }
+
+    /// Production expiry loop: every `interval`, scan with the current unix time.
+    /// Default implementation drives `scan_expired` on a tokio interval.
+    fn spawn_expiry_loop(
+        self: std::sync::Arc<Self>,
+        bus: std::sync::Arc<crate::hooks::EventBus>,
+        ttl: std::time::Duration,
+        interval: std::time::Duration,
+    ) -> tokio::task::JoinHandle<()>
+    where
+        Self: 'static,
+    {
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(interval);
+            loop {
+                ticker.tick().await;
+                let _ = self.scan_expired(ttl, crate::types::now_epoch_secs(), &bus);
+            }
+        })
+    }
 }
 
 pub trait ConfigProvider: Send + Sync {
@@ -973,5 +1005,34 @@ mod tests {
             .execute_async("dummy", serde_json::json!({}), &ctx)
             .await;
         assert!(result.is_ok());
+    }
+
+    struct NoExpiryStore;
+    impl SessionStore for NoExpiryStore {
+        fn create(&self) -> Result<SessionId, ModuleError> {
+            Ok("s".into())
+        }
+        fn append(&self, _s: &SessionId, _m: ChatMessage) -> Result<(), ModuleError> {
+            Ok(())
+        }
+        fn get(&self, _s: &SessionId) -> Result<Vec<ChatMessage>, ModuleError> {
+            Ok(vec![])
+        }
+        fn estimate_tokens(&self, _s: &SessionId) -> Result<usize, ModuleError> {
+            Ok(0)
+        }
+    }
+
+    #[test]
+    fn scan_expired_default_is_noop() {
+        let store = NoExpiryStore;
+        let n = store
+            .scan_expired(
+                std::time::Duration::from_secs(60),
+                0,
+                &crate::hooks::EventBus::new(),
+            )
+            .unwrap();
+        assert_eq!(n, 0);
     }
 }

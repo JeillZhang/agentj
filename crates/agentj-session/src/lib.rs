@@ -172,14 +172,8 @@ impl SessionStore for InMemoryStore {
         Ok(())
     }
     // load_all: keep the trait default (empty) — InMemory carries no persistence
-}
 
-impl InMemoryStore {
-    // ---- v0.3 T9 expiry scan (design 遗留问题「Session 过期回收」) ----
-
-    /// Archive every Active session idle longer than `ttl`, publishing
-    /// EventType::SessionExpired per archived session; returns the archived count.
-    pub fn scan_expired(
+    fn scan_expired(
         &self,
         ttl: Duration,
         now_epoch: u64,
@@ -206,19 +200,7 @@ impl InMemoryStore {
         Ok(expired.len())
     }
 
-    fn is_active(&self, session: &SessionId) -> bool {
-        matches!(
-            self.statuses
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .get(session),
-            Some(SessionStatus::Active)
-        )
-    }
-
-    /// Production expiry loop: every `interval`, scan with the current unix time.
-    /// T11 CLI wiring spawns this; the JoinHandle lets the owner abort the loop.
-    pub fn spawn_expiry_loop(
+    fn spawn_expiry_loop(
         self: Arc<Self>,
         bus: Arc<EventBus>,
         ttl: Duration,
@@ -231,6 +213,18 @@ impl InMemoryStore {
                 let _ = self.scan_expired(ttl, now_epoch_secs(), &bus);
             }
         })
+    }
+}
+
+impl InMemoryStore {
+    fn is_active(&self, session: &SessionId) -> bool {
+        matches!(
+            self.statuses
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .get(session),
+            Some(SessionStatus::Active)
+        )
     }
 }
 
@@ -502,6 +496,17 @@ mod tests {
         let count = store.scan_expired(std::time::Duration::from_secs(60), 0, &EventBus::new())?;
         assert_eq!(count, 0);
         assert_eq!(store.status(&sid)?, SessionStatus::Active);
+        Ok(())
+    }
+
+    #[test]
+    fn expiry_reachable_through_trait_object() -> Result<(), ModuleError> {
+        let store: Arc<dyn SessionStore> = Arc::new(InMemoryStore::with_clock(|| 90));
+        let sid = store.create()?;
+        store.append(&sid, ChatMessage::user("hello"))?;
+        let n = store.scan_expired(Duration::from_secs(5), 100, &EventBus::new())?;
+        assert_eq!(n, 1);
+        assert_eq!(store.status(&sid)?, SessionStatus::Archived);
         Ok(())
     }
 }

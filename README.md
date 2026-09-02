@@ -2,7 +2,7 @@
 
 AI 编码代理工具（Rust）——Linux 内核式「内核调度 + 可插拔模块」架构。内核通过统一的 JSON-RPC 2.0 协议（stdio / TCP，未来 WebSocket）对外暴露能力；CLI、TUI、Web Dashboard、IDE 插件均可作为协议消费者，**任意语言**可开发前端连接内核。
 
-> 当前版本：**v0.6.0**——per-session in-flight 路由（16 crate，G2 修复：移除 `IpcServer.session` 单全局槽 → `pending_runs` 事实来源 + `PermissionModule::session_of` 查表门控 + `CancelParams.session_id` 精准路由 + `$/permissionRequest` `session_id`，`@since 0.6.0` 加性）；v0.5 全保留：内核调度全重构：`KernelMessage` 混合总线（UserRequest+ToolCallRequest 目标路由+ServiceCall 同步/异步）、`TurnRunner` 总线化 turn 编排、`ToolExecutorModule`/`AgentLoopModule` 内核模块化、子代理经 `subagent/dispatch` 异步服务、`IpcServer`/`CLI` 全面接总线；v0.4 全保留：守护内核多客户端常驻 TCP `serve --port`/`run --attach`/`dashboard` + Web Dashboard + 用量统计 + License 校验 + 方法面 16；v0.3 全保留：事件总线 + 子代理调度 + skills + 插件 + MCP 长驻连接 + 会话过期 + FileBackedStore + Ollama provider；v0.2 全保留：IPC 协议契约 + 权限审批系统。
+> 当前版本：**v0.7.0**——G4 会话持久化生产接线（16 crate，FileBackedStore 生产接入：`resolve_session_dir` XDG 默认 + `[session] dir` 覆盖 + 单点实例化共享于 run/serve/serve --port/dashboard + `SessionStore` trait 化 `scan_expired`/`spawn_expiry_loop` + `FileBackedStore::persist` 唯一 tmp `.<uuid>.json.tmp` + 目录 fsync；v0.6 全保留：per-session in-flight 路由（pending_runs 事实来源 + session_of 查表门控 + CancelParams.session_id 精准路由）；v0.5 全保留：内核调度全重构：KernelMessage 总线化、TurnRunner 总线化、ToolExecutorModule/AgentLoopModule、subagent/dispatch、IpcServer/CLI 全面接总线；v0.4 全保留：守护内核多客户端常驻、方法面 16、$/progress 广播+权限属主路由、stats/license/Web Dashboard；v0.3 全保留：事件总线 + 子代理调度 + skills + 插件 + MCP 长驻连接 + 会话过期 + FileBackedStore + Ollama；v0.2 全保留：IPC 协议契约 + 权限审批）。
 
 ## Features
 
@@ -35,9 +35,9 @@ AI 编码代理工具（Rust）——Linux 内核式「内核调度 + 可插拔�
 ```
 crates/              # 16 个 workspace crate（统一目录）
   agentj-protocol/   # IPC 协议契约 crate（wire 类型 + schema 生成，零内核耦合；v0.6 加性 CancelParams/PermissionRequestParams session_id @since 0.6.0）
-  agentj-core/       # 内核：Kernel 混合总线调度 + 模块 trait 注册表 + TurnRunner + ToolExecutorModule + AgentLoopModule + 异步子代理 + AgentEvent/OnTurnComplete 迁至 types.rs
-  agentj-config/     # TOML 配置（[model] provider/providers[]/kind/default_model）
-  agentj-session/    # 会话生命周期（状态机 + 快照恢复 + 过期清理 + FileBackedStore 磁盘持久化）
+  agentj-core/       # 内核：Kernel 混合总线调度 + 模块 trait 注册表（SessionStore trait 化 scan_expired/spawn_expiry_loop） + TurnRunner + ToolExecutorModule + AgentLoopModule + 异步子代理
+  agentj-config/     # TOML 配置（[model] provider/providers[]/kind/default_model；[permission] per-tool ToolPolicy；[session] dir）
+  agentj-session/    # 会话生命周期（InMemoryStore/FileBackedStore + 统一过期清理 + FileBackedStore 唯一 tmp + 目录 fsync）
   agentj-model/      # 模型提供方：三线格式 + OpenCodeGo 门面 + ProviderFactory + Mock + Ollama
   agentj-tools/      # 内置工具（bash/glob/grep/read/write）+ ToolExecutor
   agentj-permission/ # 权限系统：决策引擎 + 策略模型（[permission] 配置）+ PermissionModule
@@ -48,7 +48,7 @@ crates/              # 16 个 workspace crate（统一目录）
   agentj-skills/     # skills 加载器（.aj/.agents/.claude/skills 优先级合并）
   agentj-plugin/     # 插件系统（manifest + 生命周期状态机 + 依赖图 + libloading 动态加载）
   agentj-ipc/        # JSON-RPC 2.0 IPC 服务（stdio + TCP 多客户端常驻，全面接总线：session/run→UserRequest + $/cancelRequest→agent/cancel per-session 精准路由 + permission/respond session_of 门控 + kernel/status→modules()）
-  agentj-cli/        # agentj 二进制（run [--attach] / serve [stdio|--port] / dashboard，TurnRunner+AgentLoopModule+ToolExecutorModule+SubAgentService 以模块注册进 Kernel）
+  agentj-cli/        # agentj 二进制（run/serve/dashboard，resolve_session_dir XDG + [session] dir → FileBackedStore 单点实例化，spawn_expiry_loop 磁盘版）
   agentj-plugin-fixture/  # 插件 cdylib 测试夹具（dev-only）
 models/              # 模型目录 models/opencode-go.json（opencode-go 路由事实来源）
 schemas/             # 32 个 JSON Schema（schemars 生成，机器事实来源）
@@ -90,6 +90,9 @@ mode = "ask"                       # allow | ask | deny
 [[permission.tools.bash.command_rules]]
 prefix = "rm -rf"   # 字面前缀匹配（非正则）
 effect = "deny"
+
+[session]                          # 会话持久化（可选；缺省 XDG_DATA_HOME/agentj/sessions）
+dir = "/data/agentj/sessions"      # 覆盖默认会话目录
 ```
 
 ## Protocol
@@ -102,7 +105,7 @@ effect = "deny"
 ## Development
 
 ```bash
-cargo test --workspace            # 全量测试（~310 通过，含 bus 密封测试 + e2e_cli/e2e_permission/e2e_serve 密封测试）
+cargo test --workspace            # 全量测试（~320 通过，含 bus 密封测试 + FileBackedStore/Config/CLI 新单测 + e2e_cli/e2e_permission/e2e_serve 密封测试）
 cargo clippy --workspace -- -D warnings
 cargo bench -p agentj-model       # 模型流式基准（criterion）
 cargo run -p agentj-protocol --bin gen_schemas   # 重新生成 schemas/*.json

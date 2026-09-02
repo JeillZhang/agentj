@@ -20,7 +20,7 @@ use agentj_core::turn_runner::TurnRunner;
 use agentj_ipc::IpcServer;
 use agentj_mcp::McpConnectionManager;
 use agentj_model::factory::ProviderFactory;
-use agentj_session::InMemoryStore;
+use agentj_session::FileBackedStore;
 use agentj_skills::load_skills;
 use agentj_tools::builtins::register_builtins;
 
@@ -65,6 +65,25 @@ fn permission_policies_from_config(
     cfg: &agentj_config::Config,
 ) -> std::collections::HashMap<String, agentj_permission::ToolPolicy> {
     cfg.inner().permission.clone().unwrap_or_default().tools
+}
+
+fn resolve_session_dir(cfg: &agentj_config::Config) -> std::path::PathBuf {
+    if let Some(dir) = cfg.inner().session.as_ref().and_then(|s| s.dir.clone()) {
+        return dir;
+    }
+    if let Ok(xdg) = std::env::var("XDG_DATA_HOME")
+        && !xdg.is_empty()
+    {
+        return std::path::Path::new(&xdg).join("agentj").join("sessions");
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        return std::path::Path::new(&home)
+            .join(".local")
+            .join("share")
+            .join("agentj")
+            .join("sessions");
+    }
+    std::path::PathBuf::from(".agentj").join("sessions")
 }
 
 fn build_ipc_server(
@@ -177,10 +196,11 @@ async fn main() -> anyhow::Result<()> {
     let tools = Arc::new(ToolRegistry::new());
     register_builtins(&tools);
     let providers = Arc::new(ProviderRegistry::new());
-    // Keep a concrete Arc before the ctx move: spawn_expiry_loop is inherent on
-    // InMemoryStore and is NOT callable through ctx.session: Arc<dyn SessionStore>.
-    let session_store = Arc::new(InMemoryStore::new());
-    let session: Arc<dyn SessionStore> = session_store.clone();
+    // Keep a concrete Arc before the ctx move: spawn_expiry_loop is NOT
+    // object-safe (self: Arc<Self>) so it must be called on the concrete type.
+    let session_dir = resolve_session_dir(&config);
+    let session_store = Arc::new(FileBackedStore::new(&session_dir)?);
+    let session: Arc<dyn SessionStore> = session_store.clone() as Arc<dyn SessionStore>;
 
     // design 4.3: instantiate each configured provider through the factory — kind
     // decides the wire format (openai-compat / responses / anthropic / opencode-go).
@@ -282,7 +302,11 @@ async fn main() -> anyhow::Result<()> {
             }
         }
     });
-    session_store.spawn_expiry_loop(events, Duration::from_secs(3600), Duration::from_secs(60));
+    session_store.spawn_expiry_loop(
+        events.clone(),
+        Duration::from_secs(3600),
+        Duration::from_secs(60),
+    );
 
     let skills = load_skills(Path::new(".")).unwrap_or_default();
     for skill in &skills {
@@ -417,5 +441,58 @@ mod tests {
                 .validate()
                 .is_err()
         );
+    }
+
+    use std::sync::OnceLock;
+    static ENV_LOCK: OnceLock<std::sync::Mutex<()>> = OnceLock::new();
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        ENV_LOCK
+            .get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+    }
+
+    #[test]
+    fn resolve_session_dir_prefers_config() {
+        let _g = env_lock();
+        let cfg = load_test_config("[session]\ndir = \"/cfg/sess\"\n");
+        assert_eq!(resolve_session_dir(&cfg).to_string_lossy(), "/cfg/sess");
+    }
+
+    #[test]
+    fn resolve_session_dir_falls_back_to_xdg() {
+        let _g = env_lock();
+        unsafe {
+            std::env::set_var("XDG_DATA_HOME", "/xdg");
+        }
+        unsafe {
+            std::env::set_var("HOME", "/home/u");
+        }
+        let cfg = load_test_config("");
+        let p = resolve_session_dir(&cfg);
+        unsafe {
+            std::env::remove_var("XDG_DATA_HOME");
+        }
+        unsafe {
+            std::env::remove_var("HOME");
+        }
+        assert_eq!(p.to_string_lossy(), "/xdg/agentj/sessions");
+    }
+
+    #[test]
+    fn resolve_session_dir_falls_back_to_home() {
+        let _g = env_lock();
+        unsafe {
+            std::env::remove_var("XDG_DATA_HOME");
+        }
+        unsafe {
+            std::env::set_var("HOME", "/home/u");
+        }
+        let cfg = load_test_config("");
+        let p = resolve_session_dir(&cfg);
+        unsafe {
+            std::env::remove_var("HOME");
+        }
+        assert_eq!(p.to_string_lossy(), "/home/u/.local/share/agentj/sessions");
     }
 }

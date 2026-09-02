@@ -127,13 +127,19 @@ impl FileBackedStore {
             updated_at: now,
         };
         let raw = serde_json::to_vec(&snap).map_err(|e| persistence_err(e.to_string()))?;
-        let tmp = self.path_for(sid).with_extension("json.tmp");
+        let tmp = self
+            .dir
+            .join(format!("{sid}.{}.json.tmp", uuid::Uuid::new_v4()));
         let mut f = fs::File::create(&tmp).map_err(|e| persistence_err(e.to_string()))?;
         f.write_all(&raw)
             .and_then(|_| f.sync_all())
             .map_err(|e| persistence_err(e.to_string()))?;
         drop(f);
         fs::rename(&tmp, self.path_for(sid)).map_err(|e| persistence_err(e.to_string()))?;
+        let dir_f = fs::File::open(&self.dir).map_err(|e| persistence_err(e.to_string()))?;
+        dir_f
+            .sync_all()
+            .map_err(|e| persistence_err(e.to_string()))?;
         lock_guard(&self.updated).insert(sid.clone(), now);
         Ok(())
     }
@@ -243,6 +249,33 @@ impl SessionStore for FileBackedStore {
         sids.into_iter()
             .map(|sid| self.snapshot(&sid))
             .collect::<Result<Vec<_>, _>>()
+    }
+
+    fn scan_expired(
+        &self,
+        ttl: std::time::Duration,
+        now_epoch: u64,
+        bus: &agentj_core::hooks::EventBus,
+    ) -> Result<usize, ModuleError> {
+        let ledger: Vec<(SessionId, u64)> = lock_guard(&self.updated)
+            .iter()
+            .map(|(sid, t)| (sid.clone(), *t))
+            .collect();
+        let mut expired = Vec::new();
+        for (sid, last) in ledger {
+            let active = matches!(
+                lock_guard(&self.statuses).get(&sid),
+                Some(SessionStatus::Active)
+            );
+            if now_epoch.saturating_sub(last) > ttl.as_secs() && active {
+                expired.push(sid);
+            }
+        }
+        for sid in &expired {
+            self.archive(sid)?;
+            bus.publish(&agentj_core::module::EventType::SessionExpired(sid.clone()));
+        }
+        Ok(expired.len())
     }
 }
 
@@ -363,5 +396,91 @@ mod tests {
             !sessions.join("stale.json.tmp").exists(),
             "crash leftovers must be cleaned up"
         );
+    }
+
+    #[test]
+    fn file_store_scan_expired_archives_stale() -> Result<(), ModuleError> {
+        use agentj_core::hooks::EventBus;
+        use std::sync::Arc;
+        use std::time::Duration;
+        let d = dir();
+        let store = Arc::new(FileBackedStore::new(d.path())?);
+        let sid = store.create()?;
+        {
+            let mut u = lock_guard(&store.updated);
+            u.insert(sid.clone(), 90);
+        }
+        let bus = EventBus::new();
+        let n = store.scan_expired(Duration::from_secs(5), 100, &bus)?;
+        assert_eq!(n, 1);
+        assert_eq!(store.status(&sid)?, SessionStatus::Archived);
+        Ok(())
+    }
+
+    #[test]
+    fn file_store_scan_expired_keeps_fresh() -> Result<(), ModuleError> {
+        use agentj_core::hooks::EventBus;
+        use std::time::Duration;
+        let d = dir();
+        let store = FileBackedStore::new(d.path())?;
+        let sid = store.create()?;
+        let n = store.scan_expired(Duration::from_secs(60), 0, &EventBus::new())?;
+        assert_eq!(n, 0);
+        assert_eq!(store.status(&sid)?, SessionStatus::Active);
+        Ok(())
+    }
+
+    #[test]
+    fn file_store_scan_expired_skips_archived() -> Result<(), ModuleError> {
+        use agentj_core::hooks::EventBus;
+        use std::sync::Arc;
+        use std::time::Duration;
+        let d = dir();
+        let store = Arc::new(FileBackedStore::new(d.path())?);
+        let sid = store.create()?;
+        store.archive(&sid)?;
+        {
+            let mut u = lock_guard(&store.updated);
+            u.insert(sid.clone(), 0);
+        }
+        let bus = EventBus::new();
+        let n = store.scan_expired(Duration::from_secs(5), 100, &bus)?;
+        assert_eq!(n, 0);
+        assert_eq!(store.status(&sid)?, SessionStatus::Archived);
+        Ok(())
+    }
+
+    #[test]
+    fn persist_uses_unique_tmp_and_leaves_no_fixed_tmp() -> Result<(), ModuleError> {
+        let d = dir();
+        let path = d.path().to_path_buf();
+        let store = FileBackedStore::new(&path)?;
+        let sid = store.create()?;
+        store.append(&sid, ChatMessage::user("hi"))?;
+        assert!(
+            !path.join(format!("{sid}.json.tmp")).exists(),
+            "fixed-name tmp must not remain after persist"
+        );
+        assert!(
+            path.join(format!("{sid}.json")).exists(),
+            "final sid.json must exist after persist"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn concurrent_stores_do_not_clobber_tmp() -> Result<(), ModuleError> {
+        let d = dir();
+        let path = d.path().to_path_buf();
+        let a = FileBackedStore::new(&path)?;
+        let b = FileBackedStore::new(&path)?;
+        let sid = a.create()?;
+        a.append(&sid, ChatMessage::user("from-a"))?;
+        b.append(&sid, ChatMessage::user("from-b"))?;
+        let snap = a.load_all()?;
+        assert_eq!(snap.len(), 1);
+        let reloaded = FileBackedStore::new(&path)?;
+        assert_eq!(reloaded.load_all()?.len(), 1);
+        Ok(())
     }
 }
