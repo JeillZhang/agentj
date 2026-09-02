@@ -137,7 +137,9 @@ impl FileBackedStore {
         drop(f);
         fs::rename(&tmp, self.path_for(sid)).map_err(|e| persistence_err(e.to_string()))?;
         let dir_f = fs::File::open(&self.dir).map_err(|e| persistence_err(e.to_string()))?;
-        dir_f.sync_all().map_err(|e| persistence_err(e.to_string()))?;
+        dir_f
+            .sync_all()
+            .map_err(|e| persistence_err(e.to_string()))?;
         lock_guard(&self.updated).insert(sid.clone(), now);
         Ok(())
     }
@@ -271,9 +273,7 @@ impl SessionStore for FileBackedStore {
         }
         for sid in &expired {
             self.archive(sid)?;
-            bus.publish(&agentj_core::module::EventType::SessionExpired(
-                sid.clone(),
-            ));
+            bus.publish(&agentj_core::module::EventType::SessionExpired(sid.clone()));
         }
         Ok(expired.len())
     }

@@ -302,7 +302,11 @@ async fn main() -> anyhow::Result<()> {
             }
         }
     });
-    session_store.spawn_expiry_loop(events.clone(), Duration::from_secs(3600), Duration::from_secs(60));
+    session_store.spawn_expiry_loop(
+        events.clone(),
+        Duration::from_secs(3600),
+        Duration::from_secs(60),
+    );
 
     let skills = load_skills(Path::new(".")).unwrap_or_default();
     for skill in &skills {
@@ -442,7 +446,10 @@ mod tests {
     use std::sync::OnceLock;
     static ENV_LOCK: OnceLock<std::sync::Mutex<()>> = OnceLock::new();
     fn env_lock() -> std::sync::MutexGuard<'static, ()> {
-        ENV_LOCK.get_or_init(|| std::sync::Mutex::new(())).lock().unwrap_or_else(|p| p.into_inner())
+        ENV_LOCK
+            .get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
     }
 
     #[test]
@@ -455,23 +462,37 @@ mod tests {
     #[test]
     fn resolve_session_dir_falls_back_to_xdg() {
         let _g = env_lock();
-        unsafe { std::env::set_var("XDG_DATA_HOME", "/xdg"); }
-        unsafe { std::env::set_var("HOME", "/home/u"); }
+        unsafe {
+            std::env::set_var("XDG_DATA_HOME", "/xdg");
+        }
+        unsafe {
+            std::env::set_var("HOME", "/home/u");
+        }
         let cfg = load_test_config("");
         let p = resolve_session_dir(&cfg);
-        unsafe { std::env::remove_var("XDG_DATA_HOME"); }
-        unsafe { std::env::remove_var("HOME"); }
+        unsafe {
+            std::env::remove_var("XDG_DATA_HOME");
+        }
+        unsafe {
+            std::env::remove_var("HOME");
+        }
         assert_eq!(p.to_string_lossy(), "/xdg/agentj/sessions");
     }
 
     #[test]
     fn resolve_session_dir_falls_back_to_home() {
         let _g = env_lock();
-        unsafe { std::env::remove_var("XDG_DATA_HOME"); }
-        unsafe { std::env::set_var("HOME", "/home/u"); }
+        unsafe {
+            std::env::remove_var("XDG_DATA_HOME");
+        }
+        unsafe {
+            std::env::set_var("HOME", "/home/u");
+        }
         let cfg = load_test_config("");
         let p = resolve_session_dir(&cfg);
-        unsafe { std::env::remove_var("HOME"); }
+        unsafe {
+            std::env::remove_var("HOME");
+        }
         assert_eq!(p.to_string_lossy(), "/home/u/.local/share/agentj/sessions");
     }
 }
