@@ -43,12 +43,20 @@ impl Default for ModelSection {
     }
 }
 
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct SessionConfig {
+    #[serde(default)]
+    pub dir: Option<PathBuf>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct AgentJConfig {
     #[serde(default)]
     pub model: ModelSection,
     #[serde(default)]
     pub permission: Option<agentj_permission::PermissionConfig>,
+    #[serde(default)]
+    pub session: Option<SessionConfig>,
 }
 
 impl Default for AgentJConfig {
@@ -65,6 +73,7 @@ impl Default for AgentJConfig {
                 default_model: default_model(),
             },
             permission: None,
+            session: None,
         }
     }
 }
@@ -97,6 +106,12 @@ impl ConfigProvider for Config {
         match key {
             "model.provider" => Some(self.inner.model.provider.clone()),
             "model.default_model" => Some(self.inner.model.default_model.clone()),
+            "session.dir" => self
+                .inner
+                .session
+                .as_ref()
+                .and_then(|s| s.dir.clone())
+                .map(|p| p.to_string_lossy().to_string()),
             _ => None,
         }
     }
@@ -277,6 +292,37 @@ mod tests {
                 .unwrap()
                 .tools
                 .contains_key("bash")
+        );
+    }
+
+    #[test]
+    fn session_dir_section_parses() {
+        let cfg: AgentJConfig = toml::from_str("[session]\ndir = \"/tmp/sess\"\n").unwrap();
+        assert_eq!(
+            cfg.session.as_ref().unwrap().dir.as_deref(),
+            Some(std::path::Path::new("/tmp/sess"))
+        );
+    }
+
+    #[test]
+    fn session_section_absent_is_none() {
+        let cfg: AgentJConfig = toml::from_str("").unwrap();
+        assert!(cfg.session.is_none());
+    }
+
+    #[test]
+    fn session_dir_merges_from_file() {
+        let base = AgentJConfig::default();
+        let file = AgentJConfig {
+            session: Some(SessionConfig {
+                dir: Some("/tmp/x".into()),
+            }),
+            ..AgentJConfig::default()
+        };
+        let merged = crate::merge::merge_config(base, file);
+        assert_eq!(
+            merged.session.as_ref().unwrap().dir.as_deref(),
+            Some(std::path::Path::new("/tmp/x"))
         );
     }
 }

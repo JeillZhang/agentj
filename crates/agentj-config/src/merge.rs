@@ -15,6 +15,9 @@ pub fn merge_config(base: AgentJConfig, file: AgentJConfig) -> AgentJConfig {
     if file.permission.is_some() {
         config.permission = file.permission;
     }
+    if file.session.is_some() {
+        config.session = file.session;
+    }
     config
 }
 
@@ -46,6 +49,7 @@ mod tests {
                 default_model: "opencode-go/kimi-k3".into(),
             },
             permission: None,
+            session: None,
         };
         let merged = merge_config(base, file);
         assert_eq!(merged.model.providers.len(), 1);
@@ -64,6 +68,7 @@ mod tests {
                 default_model: String::new(), // empty → keep base
             },
             permission: None,
+            session: None,
         };
         let merged = merge_config(base, file);
         assert_eq!(merged.model.default_model, "deepseek-chat");
