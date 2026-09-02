@@ -21,11 +21,19 @@ pub struct SessionRunParams {
     pub progress_token: Option<ProgressToken>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema)]
+pub struct UsageInfo {
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SessionRunResult {
     pub content: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<ToolCall>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usage: Option<UsageInfo>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

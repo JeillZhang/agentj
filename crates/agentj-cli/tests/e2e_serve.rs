@@ -8,6 +8,72 @@ use std::net::TcpStream;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+#[test]
+fn e2e_serve_run_result_includes_usage() {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let dir =
+        std::env::temp_dir().join(format!("agentj-e2e-usage-{}-{}", std::process::id(), nanos));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let sess_dir = dir.join("sessions");
+    std::fs::create_dir_all(&sess_dir).unwrap();
+    let cfg = dir.join("mock_config.toml");
+    std::fs::write(
+        &cfg,
+        format!(
+            "[model]\nprovider = \"mock\"\n\n\
+             [[model.providers]]\nname = \"mock\"\nkind = \"mock\"\
+             \nbase_url = \"mock://local\"\napi_key_env = \"\"\n\n\
+             [permission.tools.bash]\nmode = \"allow\"\n\n\
+             [session]\ndir = \"{}\"\n",
+            sess_dir.display()
+        ),
+    )
+    .unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_agentj"))
+        .args(["--config", cfg.to_str().unwrap(), "serve"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    {
+        let mut stdin = child.stdin.take().unwrap();
+        writeln!(
+            stdin,
+            r#"{{"jsonrpc":"2.0","id":1,"method":"session/new"}}"#
+        )
+        .unwrap();
+        writeln!(
+            stdin,
+            r#"{{"jsonrpc":"2.0","id":2,"method":"session/run","params":{{"session_id":"s1","content":"hi"}}}}"#
+        )
+        .unwrap();
+    }
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains(r#""usage""#),
+        "expected usage in run result, got: {stdout}"
+    );
+    assert!(
+        stdout.contains(r#""prompt_tokens":100"#),
+        "expected prompt_tokens 100, got: {stdout}"
+    );
+    assert!(
+        stdout.contains(r#""completion_tokens":20"#),
+        "expected completion_tokens 20, got: {stdout}"
+    );
+}
+
 /// Reaps the spawned server on every exit path (including test panics).
 struct AutoReap(std::process::Child);
 

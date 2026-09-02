@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "UsageInfo",
+  "type": "object",
+  "properties": {
+    "completion_tokens": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "prompt_tokens": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    }
+  },
+  "required": [
+    "prompt_tokens",
+    "completion_tokens"
+  ]
+}

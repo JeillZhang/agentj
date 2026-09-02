@@ -177,6 +177,19 @@ impl AnthropicChunkParser {
                     })));
                 }
             }
+            "message_delta" => {
+                if let Some(u) = json.get("usage").and_then(|u| u.as_object())
+                    && let (Some(i), Some(o)) = (
+                        u.get("input_tokens").and_then(|v| v.as_u64()),
+                        u.get("output_tokens").and_then(|v| v.as_u64()),
+                    )
+                {
+                    out.push(Ok(ModelEvent::Usage(TokenUsage {
+                        prompt_tokens: i,
+                        completion_tokens: o,
+                    })));
+                }
+            }
             // clippy collapsible_match: arm-body if → match guard (done_emitted true
             // falls through to `_` below, same semantics as the spec's nested if)
             "message_stop" if !self.done_emitted => {
@@ -394,5 +407,55 @@ mod tests {
         assert_eq!(tool_calls[0].id, "toolu_1");
         assert_eq!(tool_calls[0].name, "bash");
         assert_eq!(tool_calls[0].arguments["cmd"], "ls");
+    }
+
+    #[tokio::test]
+    async fn anthropic_parses_usage_from_message_delta() {
+        let server = MockServer::start().await;
+        let sse_body = concat!(
+            "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hello\"}}\n\n",
+            "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"input_tokens\":30,\"output_tokens\":4}}\n\n",
+            "data: {\"type\":\"message_stop\"}\n\n",
+            "data: [DONE]\n\n"
+        );
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(sse_body)
+                    .insert_header("content-type", "text/event-stream"),
+            )
+            .mount(&server)
+            .await;
+        let provider = AnthropicProvider::new(server.uri(), "sk-test".into());
+        let mut stream = provider
+            .chat_stream(
+                vec![ChatMessage::user("hi")],
+                vec![],
+                ModelOptions {
+                    model: "m".into(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let mut events: Vec<ModelEvent> = vec![];
+        while let Some(result) = stream.next().await {
+            events.push(result.unwrap());
+        }
+        let usage = events
+            .iter()
+            .find_map(|e| match e {
+                ModelEvent::Usage(u) => Some(*u),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(
+            usage,
+            TokenUsage {
+                prompt_tokens: 30,
+                completion_tokens: 4
+            }
+        );
     }
 }

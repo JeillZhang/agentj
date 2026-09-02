@@ -1,7 +1,7 @@
 # 设计文档：G3 — token 级用量统计
 
 > 来源：`docs/superpowers/specs/2026-08-30-gap-analysis-vs-original-design.md` G3 行（差距档案）。
-> 状态：设计（待实现计划）。
+> 状态：已实现（v0.8.0，2026-09-02）。
 > 取证基线：v0.7.0（三路并行 explore 重新取证，gap 档案 v0.4.1 证据行号已校准）。
 
 ## 概述
@@ -245,8 +245,23 @@ pub struct SessionRunResult {
 2. mock LLM e2e：带 Usage 帧的 run 返回 `SessionRunResult.usage`；不带帧返回缺省。
 3. 全量门禁通过；schema/TS 无漂移。
 
+## 实施 TODO
+
+- [x] T0 — TokenUsage + TurnRunner 聚合 + CLI 闭包 arity
+- [x] T1 — UsageInfo + SessionRunResult.usage + gen_schemas
+- [x] T2 — IPC usage 映射
+- [x] T3 — openai_compat usage 解析 + Done@[DONE]
+- [x] T4 — responses usage 解析
+- [x] T5 — anthropic usage 解析
+- [x] T6 — ollama usage 解析
+- [x] T7 — TS 绑定重生成
+- [x] T8 — CLI record_completed_turn 三分支
+- [x] T9 — 工厂 mock + e2e
+- [x] T10 — 版本 bump 0.8.0
+- [x] T11 — 文档同步（本文件状态更新）
+
 ## 依赖
 
 - 前置：G1（v0.5 总线化，`TurnRunner`/`AgentEvent` 已就位）、G2（v0.6 per-session）、G4（v0.7 FileBackedStore）——均已实现。
 - 无外部 crate 依赖变更（不引入 `reqwest` 之外新依赖）。
-- 版本：minor bump（`0.7.0` → `0.8.0`，特性变更）。
+- 版本：minor bump（`0.7.0` → `0.8.0`，特性变更）——已发布 v0.8.0。

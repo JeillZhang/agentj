@@ -17,6 +17,7 @@ use agentj_core::module::{
 };
 use agentj_core::tool_executor::ToolExecutorModule;
 use agentj_core::turn_runner::TurnRunner;
+use agentj_core::types::TokenUsage;
 use agentj_ipc::IpcServer;
 use agentj_mcp::McpConnectionManager;
 use agentj_model::factory::ProviderFactory;
@@ -84,6 +85,19 @@ fn resolve_session_dir(cfg: &agentj_config::Config) -> std::path::PathBuf {
             .join("sessions");
     }
     std::path::PathBuf::from(".agentj").join("sessions")
+}
+
+fn record_completed_turn(
+    collector: &agentj_stats::UsageCollector,
+    sid: String,
+    usage: Option<TokenUsage>,
+) {
+    match usage {
+        Some(u) if u.prompt_tokens != 0 || u.completion_tokens != 0 => {
+            collector.record_token_usage(sid, u.prompt_tokens, u.completion_tokens)
+        }
+        _ => collector.record_turn(sid),
+    }
 }
 
 fn build_ipc_server(
@@ -250,8 +264,10 @@ async fn main() -> anyhow::Result<()> {
         "tool_executor".into(),
     );
     {
-        let usage = Arc::clone(&usage);
-        runner.set_on_turn_complete(Arc::new(move |sid| usage.record_turn(sid.clone())));
+        let collector_clone = Arc::clone(&usage);
+        runner.set_on_turn_complete(Arc::new(move |sid, usage| {
+            record_completed_turn(&collector_clone, sid.clone(), usage)
+        }));
     }
     kernel.register_module(
         Box::new(agentj_core::agent_loop_module::AgentLoopModule::new(
@@ -494,5 +510,39 @@ mod tests {
             std::env::remove_var("HOME");
         }
         assert_eq!(p.to_string_lossy(), "/home/u/.local/share/agentj/sessions");
+    }
+
+    #[test]
+    fn record_completed_turn_with_usage_records_tokens() {
+        let c = agentj_stats::UsageCollector::new();
+        record_completed_turn(
+            &c,
+            "s1".into(),
+            Some(TokenUsage {
+                prompt_tokens: 100,
+                completion_tokens: 20,
+            }),
+        );
+        let t = c.get_session_totals("s1").unwrap();
+        assert_eq!(
+            (t.prompt_tokens, t.completion_tokens, t.turns),
+            (100, 20, 1)
+        );
+    }
+
+    #[test]
+    fn record_completed_turn_with_zero_usage_falls_back_to_turn() {
+        let c = agentj_stats::UsageCollector::new();
+        record_completed_turn(&c, "s1".into(), Some(TokenUsage::default()));
+        let t = c.get_session_totals("s1").unwrap();
+        assert_eq!((t.prompt_tokens, t.completion_tokens, t.turns), (0, 0, 1));
+    }
+
+    #[test]
+    fn record_completed_turn_with_none_falls_back_to_turn() {
+        let c = agentj_stats::UsageCollector::new();
+        record_completed_turn(&c, "s1".into(), None);
+        let t = c.get_session_totals("s1").unwrap();
+        assert_eq!((t.prompt_tokens, t.completion_tokens, t.turns), (0, 0, 1));
     }
 }

@@ -183,6 +183,21 @@ impl ResponsesChunkParser {
             // clippy collapsible_match: arm-body if → match guard (done_emitted true
             // falls through to `_` below, same semantics as the spec's nested if)
             "response.completed" if !self.done_emitted => {
+                if let Some(u) = json
+                    .get("response")
+                    .and_then(|r| r.get("usage"))
+                    .or_else(|| json.get("usage"))
+                    .and_then(|u| u.as_object())
+                    && let (Some(i), Some(o)) = (
+                        u.get("input_tokens").and_then(|v| v.as_u64()),
+                        u.get("output_tokens").and_then(|v| v.as_u64()),
+                    )
+                {
+                    out.push(Ok(ModelEvent::Usage(TokenUsage {
+                        prompt_tokens: i,
+                        completion_tokens: o,
+                    })));
+                }
                 out.push(Ok(ModelEvent::Done));
                 self.done_emitted = true;
             }
@@ -400,5 +415,63 @@ mod tests {
         assert_eq!(tool_calls[0].id, "call_1");
         assert_eq!(tool_calls[0].name, "bash");
         assert_eq!(tool_calls[0].arguments["cmd"], "ls");
+    }
+
+    #[tokio::test]
+    async fn responses_parses_usage_from_completed_event() {
+        let server = MockServer::start().await;
+        let sse_body = concat!(
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":{\"text\":\"Hello\"}}\n\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"usage\":{\"input_tokens\":12,\"output_tokens\":8}}}\n\n",
+            "data: [DONE]\n\n"
+        );
+        Mock::given(method("POST"))
+            .and(path("/v1/responses"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(sse_body)
+                    .insert_header("content-type", "text/event-stream"),
+            )
+            .mount(&server)
+            .await;
+        let provider = ResponsesProvider::new(server.uri(), "sk-test".into());
+        let mut stream = provider
+            .chat_stream(
+                vec![ChatMessage::user("hi")],
+                vec![],
+                ModelOptions {
+                    model: "m".into(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let mut events: Vec<ModelEvent> = vec![];
+        while let Some(result) = stream.next().await {
+            events.push(result.unwrap());
+        }
+        let usage = events
+            .iter()
+            .find_map(|e| match e {
+                ModelEvent::Usage(u) => Some(*u),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(
+            usage,
+            TokenUsage {
+                prompt_tokens: 12,
+                completion_tokens: 8
+            }
+        );
+        let usage_idx = events
+            .iter()
+            .position(|e| matches!(e, ModelEvent::Usage(_)))
+            .unwrap();
+        let done_idx = events
+            .iter()
+            .position(|e| matches!(e, ModelEvent::Done))
+            .unwrap();
+        assert!(usage_idx < done_idx);
     }
 }

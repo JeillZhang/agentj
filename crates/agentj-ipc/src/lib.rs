@@ -599,6 +599,7 @@ impl IpcServer {
         let mut rx = self.run_turn_stream(sid, content);
         let mut text = String::new();
         let mut tc_list = vec![];
+        let mut usage_opt: Option<serde_json::Value> = None;
         while let Some(event) = rx.recv().await {
             match event {
                 AgentEvent::Delta(d) => {
@@ -616,8 +617,16 @@ impl IpcServer {
                         reg.broadcast_to_session(&sid.to_string(), &progress);
                     }
                 }
-                AgentEvent::Done { tool_calls, .. } => {
+                AgentEvent::Done {
+                    tool_calls, usage, ..
+                } => {
                     tc_list = tool_calls;
+                    usage_opt = usage.map(|u| {
+                        serde_json::json!({
+                            "prompt_tokens": u.prompt_tokens,
+                            "completion_tokens": u.completion_tokens
+                        })
+                    });
                     break;
                 }
                 AgentEvent::Error(e) => {
@@ -632,7 +641,11 @@ impl IpcServer {
                 _ => {}
             }
         }
-        Ok(serde_json::json!({ "content": text, "tool_calls": tc_list }))
+        let mut result = serde_json::json!({ "content": text, "tool_calls": tc_list });
+        if let Some(u) = usage_opt {
+            result["usage"] = u;
+        }
+        Ok(result)
     }
 
     fn dispatch_shutdown(&self) -> Result<Value, DispatchError> {
@@ -1095,6 +1108,52 @@ pub(crate) mod test_support {
     }
 
     #[allow(dead_code)]
+    pub(crate) fn stub_bus_server_with_usage() -> crate::IpcServer {
+        let session: Arc<InMemoryStore> = Arc::new(InMemoryStore::new());
+        let session_dyn: Arc<dyn SessionStore> = session.clone();
+        let tools = Arc::new(ToolRegistry::new());
+        let providers = Arc::new(ProviderRegistry::new());
+        providers.register(
+            "mock".into(),
+            Arc::new(MockModelProvider::new(vec![
+                Ok(ModelEvent::Delta("hello".into())),
+                Ok(ModelEvent::Usage(TokenUsage {
+                    prompt_tokens: 100,
+                    completion_tokens: 20,
+                })),
+                Ok(ModelEvent::Done),
+            ])),
+        );
+        let ctx = KernelContext {
+            session: session_dyn.clone(),
+            tools: tools.clone(),
+            providers: providers.clone(),
+            config: Arc::new(MockConfig),
+        };
+        let mut kernel = agentj_core::kernel::Kernel::new();
+        let mut register =
+            ModuleRegister::with_services(tools.clone(), providers.clone(), kernel.services());
+        kernel
+            .register_module(
+                Box::new(ToolExecutorModule::new(ctx.clone())),
+                &ctx,
+                &mut register,
+            )
+            .unwrap();
+        let runner = TurnRunner::new(
+            ctx.clone(),
+            Arc::new(ContextPipeline::new()),
+            "You are helpful.".into(),
+            kernel.sender(),
+            "tool_executor".into(),
+        );
+        kernel
+            .register_module(Box::new(AgentLoopModule::new(runner)), &ctx, &mut register)
+            .unwrap();
+        crate::IpcServer::new(kernel, session_dyn)
+    }
+
+    #[allow(dead_code)]
     pub(crate) fn stub_agent_loop() -> TurnRunner {
         let session: Arc<InMemoryStore> = Arc::new(InMemoryStore::new());
         let session_dyn: Arc<dyn SessionStore> = session.clone();
@@ -1127,7 +1186,9 @@ pub(crate) mod test_support {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{MockConfig, stub_bus_server, stub_session};
+    use crate::test_support::{
+        MockConfig, stub_bus_server, stub_bus_server_with_usage, stub_session,
+    };
     use agentj_context::ContextPipeline;
     use agentj_core::agent_loop_module::AgentLoopModule;
     use agentj_core::kernel::Kernel;
@@ -1743,6 +1804,17 @@ mod tests {
         // when: session/run responds, then: result carries `content` per SessionRunResult
         assert_eq!(v["result"]["content"], "hello");
         assert!(v["result"].get("response").is_none());
+    }
+
+    #[tokio::test]
+    async fn session_run_result_includes_usage_when_reported() {
+        let server = stub_bus_server_with_usage();
+        let raw = r#"{"jsonrpc":"2.0","id":2,"method":"session/run","params":{"session_id":"s1","content":"hi"}}"#;
+        let resp = server.handle_request(raw).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(v["result"]["content"], "hello");
+        assert_eq!(v["result"]["usage"]["prompt_tokens"], 100);
+        assert_eq!(v["result"]["usage"]["completion_tokens"], 20);
     }
 
     #[tokio::test]
