@@ -277,6 +277,12 @@ export interface SessionRunParams {
 export interface SessionRunResult {
   content: string;
   tool_calls?: ToolCall[] | null;
+  usage?: UsageInfo | null;
+  [k: string]: unknown;
+}
+export interface UsageInfo {
+  completion_tokens: number;
+  prompt_tokens: number;
   [k: string]: unknown;
 }
 
@@ -309,3 +315,4 @@ export interface ToolDefinition {
   name: string;
   [k: string]: unknown;
 }
+

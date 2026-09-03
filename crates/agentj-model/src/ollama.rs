@@ -58,18 +58,25 @@ impl OllamaProvider {
             .bytes_stream()
             .map(|r| r.map_err(std::io::Error::other));
         let reader = BufReader::new(StreamReader::new(byte_stream));
-        // State: (reader, done_seen, pending_done, terminated).
+        // State: (reader, done_seen, pending_usage, pending_done, terminated).
         // - done_seen: a done:true line was emitted (or a truncation error was).
-        // - pending_done: a done:true line carried content; emit Done next.
+        // - pending_usage: a done:true line carried eval counts; emit Usage next.
+        // - pending_done: a done:true line carried content/usage; emit Done next.
         // - terminated: a truncation error was emitted; end the stream.
         let stream = stream::unfold(
-            (reader, false, false, false),
-            |(mut reader, mut done_seen, pending_done, mut terminated)| async move {
+            (reader, false, None, false, false),
+            |(mut reader, mut done_seen, mut pending_usage, pending_done, mut terminated)| async move {
                 if terminated {
                     return None;
                 }
+                if let Some(usage) = pending_usage.take() {
+                    return Some((
+                        Ok(ModelEvent::Usage(usage)),
+                        (reader, done_seen, None, true, false),
+                    ));
+                }
                 if pending_done {
-                    return Some((Ok(ModelEvent::Done), (reader, true, false, false)));
+                    return Some((Ok(ModelEvent::Done), (reader, true, None, false, false)));
                 }
                 let mut line = String::new();
                 loop {
@@ -80,7 +87,7 @@ impl OllamaProvider {
                                 terminated = true;
                                 return Some((
                                     Err(ModelError::Stream("stream ended before done:true".into())),
-                                    (reader, done_seen, false, terminated),
+                                    (reader, done_seen, None, false, terminated),
                                 ));
                             }
                             return None; // normal end after done
@@ -94,7 +101,7 @@ impl OllamaProvider {
                                     Err(ModelError::Stream(format!(
                                         "stream error before done:true: {e}"
                                     ))),
-                                    (reader, done_seen, false, terminated),
+                                    (reader, done_seen, None, false, terminated),
                                 ));
                             }
                             return None;
@@ -113,19 +120,45 @@ impl OllamaProvider {
                     let done = json.get("done").and_then(|d| d.as_bool()).unwrap_or(false);
                     if done {
                         done_seen = true;
+                        let prompt = json.get("prompt_eval_count").and_then(|v| v.as_u64());
+                        let eval = json.get("eval_count").and_then(|v| v.as_u64());
+                        let usage_opt = match (prompt, eval) {
+                            (None, None) => None,
+                            _ => Some(TokenUsage {
+                                prompt_tokens: prompt.unwrap_or(0),
+                                completion_tokens: eval.unwrap_or(0),
+                            }),
+                        };
                         if !content.is_empty() {
                             // BUG-010: emit delta before done for done-line content.
+                            // If usage present: Delta -> Usage -> Done;
+                            // else: Delta -> Done.
+                            if let Some(u) = usage_opt {
+                                return Some((
+                                    Ok(ModelEvent::Delta(content)),
+                                    (reader, done_seen, Some(u), false, false),
+                                ));
+                            }
                             return Some((
                                 Ok(ModelEvent::Delta(content)),
-                                (reader, done_seen, true, false),
+                                (reader, done_seen, None, true, false),
                             ));
                         }
-                        return Some((Ok(ModelEvent::Done), (reader, done_seen, false, false)));
+                        if let Some(u) = usage_opt {
+                            return Some((
+                                Ok(ModelEvent::Usage(u)),
+                                (reader, done_seen, None, true, false),
+                            ));
+                        }
+                        return Some((
+                            Ok(ModelEvent::Done),
+                            (reader, done_seen, None, false, false),
+                        ));
                     }
                     if !content.is_empty() {
                         return Some((
                             Ok(ModelEvent::Delta(content)),
-                            (reader, done_seen, false, false),
+                            (reader, done_seen, None, false, false),
                         ));
                     }
                 }
@@ -344,5 +377,62 @@ mod tests {
             .chat_stream(vec![], vec![], ModelOptions::default())
             .await;
         assert!(matches!(result, Err(ModelError::Api { status: 404, .. })));
+    }
+
+    #[tokio::test]
+    async fn ollama_parses_usage_from_done_line() {
+        let server = MockServer::start().await;
+        let body = concat!(
+            "{\"model\":\"llama3\",\"message\":{\"role\":\"assistant\",\"content\":\"Hello\"},\"done\":false}\n",
+            "{\"model\":\"llama3\",\"message\":{\"role\":\"assistant\",\"content\":\" world\"},\"done\":true,\"prompt_eval_count\":50,\"eval_count\":11}\n"
+        );
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(body)
+                    .insert_header("content-type", "application/x-ndjson"),
+            )
+            .mount(&server)
+            .await;
+        let provider = OllamaProvider::new(server.uri(), "llama3".into());
+        let mut stream = provider
+            .chat_stream(
+                vec![ChatMessage::user("hi")],
+                vec![],
+                ModelOptions {
+                    model: "llama3".into(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let mut events: Vec<ModelEvent> = vec![];
+        while let Some(result) = stream.next().await {
+            events.push(result.unwrap());
+        }
+        let usage = events
+            .iter()
+            .find_map(|e| match e {
+                ModelEvent::Usage(u) => Some(*u),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(
+            usage,
+            TokenUsage {
+                prompt_tokens: 50,
+                completion_tokens: 11
+            }
+        );
+        let usage_idx = events
+            .iter()
+            .position(|e| matches!(e, ModelEvent::Usage(_)))
+            .unwrap();
+        let done_idx = events
+            .iter()
+            .position(|e| matches!(e, ModelEvent::Done))
+            .unwrap();
+        assert!(usage_idx < done_idx);
     }
 }

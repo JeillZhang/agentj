@@ -75,10 +75,26 @@ pub struct ToolDefinition {
     pub input_schema: serde_json::Value,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TokenUsage {
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+}
+
+impl TokenUsage {
+    pub fn accumulate(&mut self, other: TokenUsage) {
+        self.prompt_tokens = self.prompt_tokens.saturating_add(other.prompt_tokens);
+        self.completion_tokens = self
+            .completion_tokens
+            .saturating_add(other.completion_tokens);
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum ModelEvent {
     Delta(String),
     ToolCall(ToolCall),
+    Usage(TokenUsage),
     Done,
 }
 
@@ -100,11 +116,13 @@ pub enum AgentEvent {
     Done {
         final_response: String,
         tool_calls: Vec<ToolCall>,
+        usage: Option<TokenUsage>,
     },
     Error(String),
 }
 
-pub type OnTurnComplete = Arc<dyn Fn(&SessionId) + Send + Sync>;
+#[allow(clippy::type_complexity)]
+pub type OnTurnComplete = Arc<dyn Fn(&SessionId, Option<TokenUsage>) + Send + Sync>;
 
 #[derive(Debug, Clone)]
 pub struct ModelOptions {
@@ -191,5 +209,30 @@ mod tests {
         let e = AgentEvent::Delta("x".into());
         let e2 = e.clone();
         assert!(matches!(e2, AgentEvent::Delta(t) if t == "x"));
+    }
+
+    #[test]
+    fn token_usage_accumulate_sums_and_saturates() {
+        let mut u = TokenUsage {
+            prompt_tokens: 10,
+            completion_tokens: 5,
+        };
+        u.accumulate(TokenUsage {
+            prompt_tokens: 90,
+            completion_tokens: 15,
+        });
+        assert_eq!(
+            u,
+            TokenUsage {
+                prompt_tokens: 100,
+                completion_tokens: 20
+            }
+        );
+        u.prompt_tokens = u64::MAX;
+        u.accumulate(TokenUsage {
+            prompt_tokens: 1,
+            completion_tokens: 0,
+        });
+        assert_eq!(u.prompt_tokens, u64::MAX);
     }
 }

@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use agentj_core::error::ModelError;
 use agentj_core::module::ModelProvider;
-use agentj_core::types::{ModelEvent, ToolCall};
+use agentj_core::types::{ModelEvent, TokenUsage, ToolCall};
 
 use crate::anthropic::AnthropicProvider;
 use crate::mock::MockModelProvider;
@@ -41,6 +41,10 @@ impl ProviderFactory {
                     arguments: serde_json::json!({"command": "curl http://example.com"}),
                 })),
                 Ok(ModelEvent::Delta("done".into())),
+                Ok(ModelEvent::Usage(TokenUsage {
+                    prompt_tokens: 100,
+                    completion_tokens: 20,
+                })),
                 Ok(ModelEvent::Done),
             ])),
             other => {
