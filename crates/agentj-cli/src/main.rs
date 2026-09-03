@@ -142,6 +142,7 @@ async fn serve_tcp(
     port: u16,
     token: Option<String>,
     max_connections: usize,
+    mcp_manager: Arc<McpConnectionManager>,
 ) -> anyhow::Result<()> {
     let mut tcp = agentj_ipc::tcp::TcpIpcServer::bind(
         &format!("127.0.0.1:{port}"),
@@ -158,6 +159,7 @@ async fn serve_tcp(
     // request arrives (决策 #3 按需常驻).
     tcp.run().await?;
     signal_task.abort();
+    mcp_manager.close_all().await;
     Ok(())
 }
 
@@ -258,6 +260,7 @@ async fn main() -> anyhow::Result<()> {
         .validate()
         .expect("invalid [permission] config");
     let permission_policies = permission_policies_from_config(&config);
+    let mcp_servers = config.inner().mcp.clone();
 
     let ctx = KernelContext {
         session: session.clone(),
@@ -340,6 +343,19 @@ async fn main() -> anyhow::Result<()> {
             }
         }
     });
+    if let Some(mcp_cfg) = mcp_servers.as_ref() {
+        for srv in &mcp_cfg.servers {
+            let spec = agentj_mcp::McpServerSpec {
+                command: srv.command.clone(),
+                args: srv.args.clone(),
+                env: srv.env.clone(),
+            };
+            let m = Arc::clone(&mcp_manager);
+            if let Err(e) = m.connect(srv.name.clone(), spec).await {
+                tracing::warn!("mcp server {} connect failed: {e}", srv.name);
+            }
+        }
+    }
     session_store.spawn_expiry_loop(
         events.clone(),
         Duration::from_secs(3600),
@@ -379,6 +395,7 @@ async fn main() -> anyhow::Result<()> {
                 println!("{out}");
                 ipc_server.signal_shutdown()?;
                 drop(signal_task);
+                mcp_manager.close_all().await;
             }
         }
         Some(Commands::Serve { port: None, .. }) => {
@@ -386,6 +403,7 @@ async fn main() -> anyhow::Result<()> {
             let signal_task = spawn_signal_task(ipc_server.kernel_sender());
             ipc_server.serve_stdio().await?;
             signal_task.abort();
+            mcp_manager.close_all().await;
         }
         Some(Commands::Serve {
             port: Some(port),
@@ -399,11 +417,21 @@ async fn main() -> anyhow::Result<()> {
                 port,
                 token,
                 max_connections,
+                mcp_manager.clone(),
             )
             .await?;
         }
         Some(Commands::Dashboard { port }) => {
-            serve_tcp(kernel, session_for_ipc, permission_module, port, None, 16).await?;
+            serve_tcp(
+                kernel,
+                session_for_ipc,
+                permission_module,
+                port,
+                None,
+                16,
+                mcp_manager.clone(),
+            )
+            .await?;
         }
         None => {
             println!("Use `agentj run \"your prompt\"` or `agentj serve`");
