@@ -35,6 +35,9 @@ struct Cli {
 
     #[arg(short, long, default_value = "config.toml")]
     config: String,
+
+    #[arg(long)]
+    license_key: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -209,6 +212,23 @@ async fn main() -> anyhow::Result<()> {
 
     let config =
         agentj_config::Config::load(Some(cli.config.into())).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let gate: Option<(&str, &str)> = match &cli.command {
+        Some(Commands::Run { attach: None, .. }) => Some(("run", "run")),
+        Some(Commands::Run {
+            attach: Some(_), ..
+        }) => None,
+        Some(Commands::Serve { .. }) => Some(("serve", "serve")),
+        Some(Commands::Dashboard { .. }) => Some(("dashboard", "dashboard")),
+        None => None,
+    };
+    if let Some((entitlement, command_name)) = gate {
+        license::check_license_gate(
+            &config,
+            cli.license_key.as_deref(),
+            entitlement,
+            command_name,
+        )?;
+    }
     let tools = Arc::new(ToolRegistry::new());
     register_builtins(&tools);
     let providers = Arc::new(ProviderRegistry::new());

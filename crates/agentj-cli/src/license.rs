@@ -8,10 +8,8 @@ use ed25519_dalek::VerifyingKey;
 /// Production verifying key, embedded at build time. The placeholder value is
 /// replaced when the commercial key ships; AGENTJ_LICENSE_PUBKEY overrides it
 /// for tests and operator-driven rotation (D5).
-#[allow(dead_code)]
 const AGENTJ_LICENSE_PUBKEY: [u8; 32] = [0u8; 32];
 
-#[allow(dead_code)]
 pub fn resolve_validator() -> Result<LicenseValidator, anyhow::Error> {
     let key_bytes: [u8; 32] = match std::env::var("AGENTJ_LICENSE_PUBKEY") {
         Ok(b64) if !b64.is_empty() => {
@@ -29,7 +27,6 @@ pub fn resolve_validator() -> Result<LicenseValidator, anyhow::Error> {
     Ok(LicenseValidator::new(vk))
 }
 
-#[allow(dead_code)]
 pub fn check_license_gate(
     cfg: &agentj_config::Config,
     cli_key: Option<&str>,
