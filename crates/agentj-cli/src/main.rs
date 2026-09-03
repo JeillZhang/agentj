@@ -371,6 +371,7 @@ async fn main() -> anyhow::Result<()> {
         Some(Commands::Run { prompt, attach }) => {
             if let Some(url) = attach {
                 run_attached(&url, &prompt).await?;
+                mcp_manager.close_all().await;
             } else {
                 let ipc_server =
                     build_ipc_server(kernel, session_for_ipc.clone(), permission_module);
@@ -437,6 +438,7 @@ async fn main() -> anyhow::Result<()> {
             println!("Use `agentj run \"your prompt\"` or `agentj serve`");
             let ipc_server = build_ipc_server(kernel, session_for_ipc, permission_module);
             ipc_server.signal_shutdown()?;
+            mcp_manager.close_all().await;
         }
     }
     // The serve loop reads stdin through tokio's blocking pool; dropping the
