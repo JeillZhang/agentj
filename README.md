@@ -2,7 +2,7 @@
 
 AI 编码代理工具（Rust）——Linux 内核式「内核调度 + 可插拔模块」架构。内核通过统一的 JSON-RPC 2.0 协议（stdio / TCP，未来 WebSocket）对外暴露能力；CLI、TUI、Web Dashboard、IDE 插件均可作为协议消费者，**任意语言**可开发前端连接内核。
 
-> 当前版本：**v0.9.0**——G5 License gating + G6 MCP config wiring（16 crate，G5 License gating：`[license] key` + `--license-key` + `AGENTJ_LICENSE_KEY` + `AGENTJ_LICENSE_PUBKEY` override + per-command `run`/`serve`/`dashboard` + free mode；G6 MCP wiring：`[[mcp.servers]] name/command/args/env` + `McpServerSpec` + `close_all` + startup warn-and-continue；G3 token 级用量统计：`TokenUsage` + `ModelEvent::Usage` + `AgentEvent::Done.usage` + `OnTurnComplete` + 4 提供方流式 usage 解析 + `SessionRunResult.usage` + CLI `record_token_usage` + 33 schemas；G4 会话持久化生产接线：FileBackedStore 生产接入 + `SessionStore` trait 化 + 唯一 tmp + 目录 fsync；v0.6 全保留：per-session 路由；v0.5 全保留：内核调度全重构；v0.4 全保留：守护内核；v0.3 全保留：事件总线 + 子代理 + skills + 插件 + MCP 长驻 + 会话过期 + Ollama；v0.2 全保留：IPC 协议契约 + 权限审批）。
+> 当前版本：**v0.9.1**——G5 License gating + G6 MCP config wiring（16 crate，G5 License gating：`[license] key` + `--license-key` + `AGENTJ_LICENSE_KEY` + `AGENTJ_LICENSE_PUBKEY` override + per-command `run`/`serve`/`dashboard` + free mode；G6 MCP wiring：`[[mcp.servers]] name/command/args/env` + `McpServerSpec` + `close_all` + startup warn-and-continue；G3 token 级用量统计：`TokenUsage` + `ModelEvent::Usage` + `AgentEvent::Done.usage` + `OnTurnComplete` + 4 提供方流式 usage 解析 + `SessionRunResult.usage` + CLI `record_token_usage` + 33 schemas；G4 会话持久化生产接线：FileBackedStore 生产接入 + `SessionStore` trait 化 + 唯一 tmp + 目录 fsync；v0.6 全保留：per-session 路由；v0.5 全保留：内核调度全重构；v0.4 全保留：守护内核；v0.3 全保留：事件总线 + 子代理 + skills + 插件 + MCP 长驻 + 会话过期 + Ollama；v0.2 全保留：IPC 协议契约 + 权限审批；v0.9.1 patch：BUG-001/002 fixes）。
 
 ## Features
 

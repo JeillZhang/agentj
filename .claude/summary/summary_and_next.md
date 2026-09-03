@@ -1,7 +1,7 @@
 # Summary & Next
 
 > 本文件仅保留**当前正在开发**功能设计文档的内容：进度、剩余步骤、遗留问题与下一步。同步更新时**替换**（不要追加）前一功能内容。
-> 当前功能：**G5 License gating + G6 MCP wiring (v0.9.0)**——设计文档 `docs/superpowers/specs/2026-09-03-g5-g6-license-mcp-wiring-design.md` + 实现计划 `docs/superpowers/plans/2026-09-03-g5-g6-license-mcp-wiring-plan.md`（v0.9.0 已发布）。
+> 当前功能：**G5 License gating + G6 MCP wiring (v0.9.1)**——设计文档 `docs/superpowers/specs/2026-09-03-g5-g6-license-mcp-wiring-design.md` + 实现计划 `docs/superpowers/plans/2026-09-03-g5-g6-license-mcp-wiring-plan.md`（v0.9.0 已发布，v0.9.1 验收补丁含 BUG-001/002 修复）。
 
 ## 待实施
 
@@ -16,9 +16,9 @@
 | ✅ 完成 | G2 修复：单全局 in-flight 会话槽 → per-session 路由（T1-T6，v0.6.0） | v0.5 | P0 | ✅ 已实现 v0.6.0 |
 | ✅ 完成 | G4 会话持久化生产接线（FileBackedStore 生产接入 + 唯一 tmp + 目录 fsync）（T0-T6，v0.7.0） | v0.6.0 | P0 | ✅ 已实现 v0.7.0 |
 | ✅ 完成 | G3 token 级用量统计（TokenUsage + 4 提供方 + SessionRunResult.usage + CLI 激活）（T0-T11，v0.8.0） | v0.7.0 | P0 | ✅ 已实现 v0.8.0 |
-| ✅ 完成 | **G5 License gating + G6 MCP wiring（[license] + McpServerSpec + close_all + per-command entitlement）**（T0-T8，v0.9.0） | v0.8.0 | P0 | ✅ 已实现 v0.9.0 |
+| ✅ 完成 | **G5 License gating + G6 MCP wiring（[license] + McpServerSpec + close_all + per-command entitlement）**（T0-T8，v0.9.0 + v0.9.1 验收补丁） | v0.8.0 | P0 | ✅ 已实现 v0.9.1 |
 
-## Phase: G5 License gating + G6 MCP wiring (v0.9.0) ✅ (本次完成)
+## Phase: G5 License gating + G6 MCP wiring (v0.9.1) ✅ (本次完成)
 
 ### 进度与摘要
 
@@ -36,6 +36,7 @@
   - T6 — workspace version `0.8.0` → `0.9.0`（`Cargo.toml` + `Cargo.lock` via `cargo build`）。
   - T7 — 文档同步 `AGENTS.md`/`README.md`/summary（本次）。
   - T8 — gap-analysis `G5/G6` 状态行更新为 ✅ 已实现 v0.9.0（并行）。
+  - 验收补丁 v0.9.1 — BUG-001 `close mcp on attach/None` + BUG-002 `ignore empty license key`（各一提交，回归 verified）。
 
 - ✅ **决策 D1-D7**：
   - D1 Key-optional 免费模式：无 key 不门控，向后兼容，社区可用。
