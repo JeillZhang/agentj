@@ -32,7 +32,9 @@ pub fn apply_env(mut config: AgentJConfig) -> AgentJConfig {
     if let Ok(val) = std::env::var("AGENTJ_MODEL_PROVIDER") {
         config.model.provider = val;
     }
-    if let Ok(val) = std::env::var("AGENTJ_LICENSE_KEY") {
+    if let Ok(val) = std::env::var("AGENTJ_LICENSE_KEY")
+        && !val.is_empty()
+    {
         config
             .license
             .get_or_insert_with(crate::LicenseConfig::default)

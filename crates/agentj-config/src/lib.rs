@@ -162,6 +162,14 @@ impl ConfigProvider for Config {
 mod tests {
     use super::*;
 
+    static ENV_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        ENV_LOCK
+            .get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+    }
+
     #[test]
     fn loads_default_config() {
         let dir = tempfile::TempDir::new().unwrap();
@@ -373,11 +381,7 @@ mod tests {
 
     #[test]
     fn license_key_env_overrides() {
-        static ENV_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
-        let _g = ENV_LOCK
-            .get_or_init(|| std::sync::Mutex::new(()))
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
+        let _g = env_lock();
         let dir = tempfile::TempDir::new().unwrap();
         let p = dir.path().join("c.toml");
         std::fs::write(&p, "[license]\nkey = \"abc.def\"\n").unwrap();
@@ -387,6 +391,21 @@ mod tests {
         assert_eq!(
             config.inner().license.as_ref().unwrap().key.as_deref(),
             Some("xyz")
+        );
+    }
+
+    #[test]
+    fn empty_license_key_env_keeps_config_key() {
+        let _g = env_lock();
+        let dir = tempfile::TempDir::new().unwrap();
+        let p = dir.path().join("c.toml");
+        std::fs::write(&p, "[license]\nkey = \"abc.def\"\n").unwrap();
+        unsafe { std::env::set_var("AGENTJ_LICENSE_KEY", "") };
+        let config = Config::load(Some(p)).unwrap();
+        unsafe { std::env::remove_var("AGENTJ_LICENSE_KEY") };
+        assert_eq!(
+            config.inner().license.as_ref().unwrap().key.as_deref(),
+            Some("abc.def")
         );
     }
 

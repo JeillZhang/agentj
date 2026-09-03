@@ -52,6 +52,51 @@ fn free_mode_run_succeeds_without_key() {
 }
 
 #[test]
+fn empty_license_key_flag_treated_as_free_mode() {
+    let out = run_agentj(&[
+        "--config",
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/license_run.toml"
+        ),
+        "--license-key",
+        "",
+        "run",
+        "hi",
+    ]);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn empty_license_key_env_treated_as_free_mode() {
+    let out = Command::new(env!("CARGO_BIN_EXE_agentj"))
+        .env("AGENTJ_LICENSE_KEY", "")
+        .args([
+            "--config",
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/license_run.toml"
+            ),
+            "run",
+            "hi",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
 fn invalid_key_exits_nonzero_with_license_error() {
     let out = run_agentj(&[
         "--config",

@@ -34,7 +34,14 @@ pub fn check_license_gate(
     command_name: &str,
 ) -> Result<(), anyhow::Error> {
     // D6: flag > env (already folded into config by apply_env) > [license] key.
-    let key = cli_key.or_else(|| cfg.inner().license.as_ref().and_then(|l| l.key.as_deref()));
+    // Empty strings are treated as absent (free mode), matching resolve_validator.
+    let key = cli_key.filter(|s| !s.is_empty()).or_else(|| {
+        cfg.inner()
+            .license
+            .as_ref()
+            .and_then(|l| l.key.as_deref())
+            .filter(|s| !s.is_empty())
+    });
     let Some(key) = key else {
         return Ok(());
     }; // D1: no key = free mode
@@ -104,6 +111,33 @@ mod tests {
     fn free_mode_without_key_is_ok() {
         let cfg = cfg_with("");
         assert!(check_license_gate(&cfg, None, "run", "run").is_ok());
+    }
+
+    #[test]
+    fn empty_cli_key_treated_as_free_mode() {
+        let _g = env_lock();
+        let cfg = cfg_with("");
+        let res = check_license_gate(&cfg, Some(""), "run", "run");
+        assert!(res.is_ok());
+    }
+
+    #[test]
+    fn empty_config_key_treated_as_free_mode() {
+        let _g = env_lock();
+        let cfg = cfg_with("[license]\nkey = \"\"\n");
+        let res = check_license_gate(&cfg, None, "run", "run");
+        assert!(res.is_ok());
+    }
+
+    #[test]
+    fn empty_cli_key_falls_back_to_config_key() {
+        let _g = env_lock();
+        set_test_pubkey();
+        let key = signed_key(&["run"]);
+        let cfg = cfg_with(&format!("[license]\nkey = \"{key}\"\n"));
+        let res = check_license_gate(&cfg, Some(""), "run", "run");
+        unsafe { std::env::remove_var("AGENTJ_LICENSE_PUBKEY") };
+        assert!(res.is_ok());
     }
 
     #[test]
