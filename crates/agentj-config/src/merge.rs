@@ -18,6 +18,12 @@ pub fn merge_config(base: AgentJConfig, file: AgentJConfig) -> AgentJConfig {
     if file.session.is_some() {
         config.session = file.session;
     }
+    if file.license.is_some() {
+        config.license = file.license;
+    }
+    if file.mcp.is_some() {
+        config.mcp = file.mcp;
+    }
     config
 }
 
@@ -25,6 +31,14 @@ pub fn merge_config(base: AgentJConfig, file: AgentJConfig) -> AgentJConfig {
 pub fn apply_env(mut config: AgentJConfig) -> AgentJConfig {
     if let Ok(val) = std::env::var("AGENTJ_MODEL_PROVIDER") {
         config.model.provider = val;
+    }
+    if let Ok(val) = std::env::var("AGENTJ_LICENSE_KEY")
+        && !val.is_empty()
+    {
+        config
+            .license
+            .get_or_insert_with(crate::LicenseConfig::default)
+            .key = Some(val);
     }
     config
 }
@@ -50,6 +64,8 @@ mod tests {
             },
             permission: None,
             session: None,
+            license: None,
+            mcp: None,
         };
         let merged = merge_config(base, file);
         assert_eq!(merged.model.providers.len(), 1);
@@ -69,6 +85,8 @@ mod tests {
             },
             permission: None,
             session: None,
+            license: None,
+            mcp: None,
         };
         let merged = merge_config(base, file);
         assert_eq!(merged.model.default_model, "deepseek-chat");

@@ -2,7 +2,7 @@
 
 AI 编码代理工具（Rust）——Linux 内核式「内核调度 + 可插拔模块」架构。内核通过统一的 JSON-RPC 2.0 协议（stdio / TCP，未来 WebSocket）对外暴露能力；CLI、TUI、Web Dashboard、IDE 插件均可作为协议消费者，**任意语言**可开发前端连接内核。
 
-> 当前版本：**v0.8.0**——G3 token 级用量统计（16 crate，`TokenUsage` + `ModelEvent::Usage` + `AgentEvent::Done.usage` + `OnTurnComplete(Option<TokenUsage>)` + 4 提供方流式 usage 解析（openai_compat `stream_options.include_usage` + Done@[DONE] + responses `response.completed` + anthropic `message_delta` + ollama `prompt_eval_count/eval_count`）+ `SessionRunResult.usage` 加性 + CLI `record_token_usage` 激活 + 33 schemas + TS 绑定；G4 会话持久化生产接线：FileBackedStore 生产接入（`resolve_session_dir` XDG 默认 + `[session] dir` 覆盖 + 单点实例化共享于 run/serve/serve --port/dashboard）+ `SessionStore` trait 化 `scan_expired`/`spawn_expiry_loop` + `FileBackedStore::persist` 唯一 tmp `.<uuid>.json.tmp` + 目录 fsync；v0.6 全保留：per-session in-flight 路由；v0.5 全保留：内核调度全重构；v0.4 全保留：守护内核；v0.3 全保留：事件总线 + 子代理调度 + skills + 插件 + MCP 长驻连接 + 会话过期 + FileBackedStore + Ollama；v0.2 全保留：IPC 协议契约 + 权限审批）。
+> 当前版本：**v0.9.1**——G5 License gating + G6 MCP config wiring（16 crate，G5 License gating：`[license] key` + `--license-key` + `AGENTJ_LICENSE_KEY` + `AGENTJ_LICENSE_PUBKEY` override + per-command `run`/`serve`/`dashboard` + free mode；G6 MCP wiring：`[[mcp.servers]] name/command/args/env` + `McpServerSpec` + `close_all` + startup warn-and-continue；G3 token 级用量统计：`TokenUsage` + `ModelEvent::Usage` + `AgentEvent::Done.usage` + `OnTurnComplete` + 4 提供方流式 usage 解析 + `SessionRunResult.usage` + CLI `record_token_usage` + 33 schemas；G4 会话持久化生产接线：FileBackedStore 生产接入 + `SessionStore` trait 化 + 唯一 tmp + 目录 fsync；v0.6 全保留：per-session 路由；v0.5 全保留：内核调度全重构；v0.4 全保留：守护内核；v0.3 全保留：事件总线 + 子代理 + skills + 插件 + MCP 长驻 + 会话过期 + Ollama；v0.2 全保留：IPC 协议契约 + 权限审批；v0.9.1 patch：BUG-001/002 fixes）。
 
 ## Features
 
@@ -28,7 +28,8 @@ AI 编码代理工具（Rust）——Linux 内核式「内核调度 + 可插拔�
 - [x] **守护内核**：统一 Connection 传输抽象（stdio 哨兵 / TCP；Unix socket 预留）+ 常驻 API 服务（`agentj serve --port` 多客户端共享、可接续任务，--token/--max-connections）
 - [x] **Web Dashboard**：JSON-RPC 协议消费端（Vite + React + TS；kernel/status 面板 + node:net TCP 传输）
 - [x] **用量统计**：agentj-stats UsageCollector（per-session/global totals + turns；经 AgentLoop on-turn-complete 接线 `record_token_usage` 激活；`SessionRunResult.usage` 加性返回）
-- [x] **License 校验**：agentj-license Ed25519 签名密钥校验（entitlements + 过期策略；design-pending 商用门控）
+- [x] **License gating**：Ed25519 per-command entitlement `run`/`serve`/`dashboard`，free mode（无 key 零门控），flag > env > config，`AGENTJ_LICENSE_PUBKEY` override，CLI 命令边界 fail-fast
+- [x] **MCP config wiring**：`McpServerSpec` via `Command` args/env（消除 `sh -c` 注入面），startup connect（warn-and-continue）+ `close_all` 优雅关闭，`[[mcp.servers]]` 配置
 
 ## Project Structure
 
@@ -36,19 +37,19 @@ AI 编码代理工具（Rust）——Linux 内核式「内核调度 + 可插拔�
 crates/              # 16 个 workspace crate（统一目录）
   agentj-protocol/   # IPC 协议契约 crate（wire 类型 + schema 生成，零内核耦合；v0.6 加性 CancelParams/PermissionRequestParams session_id @since 0.6.0；v0.8 加性 UsageInfo/SessionRunResult.usage）
   agentj-core/       # 内核：Kernel 混合总线调度 + 模块 trait 注册表 + TurnRunner（TokenUsage 聚合 + ModelEvent::Usage + AgentEvent::Done.usage + OnTurnComplete） + ToolExecutorModule + AgentLoopModule + 异步子代理
-  agentj-config/     # TOML 配置（[model] provider/providers[]/kind/default_model；[permission] per-tool ToolPolicy；[session] dir）
+  agentj-config/     # TOML 配置（[model] provider/providers[]/kind/default_model；[permission] per-tool ToolPolicy；[session] dir；[license] key；[[mcp.servers]] name/command/args/env）
   agentj-session/    # 会话生命周期（InMemoryStore/FileBackedStore + 统一过期清理 + FileBackedStore 唯一 tmp + 目录 fsync）
   agentj-model/      # 模型提供方：三线格式 + OpenCodeGo 门面 + ProviderFactory + Mock + Ollama（含 4 提供方流式 usage 解析）
   agentj-tools/      # 内置工具（bash/glob/grep/read/write）+ ToolExecutor
   agentj-permission/ # 权限系统：决策引擎 + 策略模型（[permission] 配置）+ PermissionModule
   agentj-context/    # 上下文管线（纯消息构造器）
   agentj-stats/      # 用量统计 UsageCollector（per-session/global totals + turns）
-  agentj-license/    # Ed25519 许可证校验（entitlements + 过期策略）
-  agentj-mcp/        # MCP 客户端（子进程连接 + 工具发现注册 + McpConnectionManager 长驻连接）
+  agentj-license/    # Ed25519 许可证校验（entitlements + 过期策略，现已 CLI 生产接入：check_license_gate + free mode）
+  agentj-mcp/        # MCP 客户端（子进程连接 + 工具发现注册 + McpConnectionManager 长驻连接，v0.9 McpServerSpec + close_all）
   agentj-skills/     # skills 加载器（.aj/.agents/.claude/skills 优先级合并）
   agentj-plugin/     # 插件系统（manifest + 生命周期状态机 + 依赖图 + libloading 动态加载）
   agentj-ipc/        # JSON-RPC 2.0 IPC 服务（stdio + TCP 多客户端常驻，全面接总线：session/run→UserRequest + $/cancelRequest→agent/cancel per-session 精准路由 + permission/respond session_of 门控 + kernel/status→modules() + usage 映射）
-  agentj-cli/        # agentj 二进制（run/serve/dashboard，resolve_session_dir XDG + [session] dir → FileBackedStore 单点实例化，spawn_expiry_loop 磁盘版 + record_token_usage 三分支）
+  agentj-cli/        # agentj 二进制（run/serve/dashboard，resolve_session_dir XDG + [session] dir → FileBackedStore 单点实例化，spawn_expiry_loop 磁盘版 + record_token_usage 三分支 + check_license_gate + mcp connect/close_all）
   agentj-plugin-fixture/  # 插件 cdylib 测试夹具（dev-only）
 models/              # 模型目录 models/opencode-go.json（opencode-go 路由事实来源）
 schemas/             # 33 个 JSON Schema（schemars 生成，机器事实来源）
@@ -93,6 +94,15 @@ effect = "deny"
 
 [session]                          # 会话持久化（可选；缺省 XDG_DATA_HOME/agentj/sessions）
 dir = "/data/agentj/sessions"      # 覆盖默认会话目录
+
+[license]                          # 许可证（可选；无 key 为免费模式）
+key = "base64(payload).base64(sig)"
+
+[[mcp.servers]]                    # MCP 服务（可选；可多条）
+name = "filesystem"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+env = { FOO = "bar" }
 ```
 
 ## Protocol

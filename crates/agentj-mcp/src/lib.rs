@@ -1,7 +1,7 @@
 pub mod connection_manager;
 pub mod transport;
 
-pub use connection_manager::{ConnectionState, McpConnectionManager};
+pub use connection_manager::{ConnectionState, McpConnectionManager, McpServerSpec};
 
 use crate::transport::McpTransport;
 use agentj_core::error::ToolError;
