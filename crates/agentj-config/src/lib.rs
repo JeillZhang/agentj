@@ -49,6 +49,12 @@ pub struct SessionConfig {
     pub dir: Option<PathBuf>,
 }
 
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct LicenseConfig {
+    #[serde(default)]
+    pub key: Option<String>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct AgentJConfig {
     #[serde(default)]
@@ -57,6 +63,8 @@ pub struct AgentJConfig {
     pub permission: Option<agentj_permission::PermissionConfig>,
     #[serde(default)]
     pub session: Option<SessionConfig>,
+    #[serde(default)]
+    pub license: Option<LicenseConfig>,
 }
 
 impl Default for AgentJConfig {
@@ -74,6 +82,7 @@ impl Default for AgentJConfig {
             },
             permission: None,
             session: None,
+            license: None,
         }
     }
 }
@@ -112,6 +121,7 @@ impl ConfigProvider for Config {
                 .as_ref()
                 .and_then(|s| s.dir.clone())
                 .map(|p| p.to_string_lossy().to_string()),
+            "license.key" => self.inner.license.as_ref().and_then(|l| l.key.clone()),
             _ => None,
         }
     }
@@ -323,6 +333,40 @@ mod tests {
         assert_eq!(
             merged.session.as_ref().unwrap().dir.as_deref(),
             Some(std::path::Path::new("/tmp/x"))
+        );
+    }
+
+    #[test]
+    fn license_section_parses() {
+        let cfg: AgentJConfig = toml::from_str("[license]\nkey = \"abc.def\"\n").unwrap();
+        assert_eq!(
+            cfg.license.as_ref().unwrap().key.as_deref(),
+            Some("abc.def")
+        );
+    }
+
+    #[test]
+    fn license_section_absent_is_none() {
+        let cfg: AgentJConfig = toml::from_str("").unwrap();
+        assert!(cfg.license.is_none());
+    }
+
+    #[test]
+    fn license_key_env_overrides() {
+        static ENV_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+        let _g = ENV_LOCK
+            .get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let dir = tempfile::TempDir::new().unwrap();
+        let p = dir.path().join("c.toml");
+        std::fs::write(&p, "[license]\nkey = \"abc.def\"\n").unwrap();
+        unsafe { std::env::set_var("AGENTJ_LICENSE_KEY", "xyz") };
+        let config = Config::load(Some(p)).unwrap();
+        unsafe { std::env::remove_var("AGENTJ_LICENSE_KEY") };
+        assert_eq!(
+            config.inner().license.as_ref().unwrap().key.as_deref(),
+            Some("xyz")
         );
     }
 }
