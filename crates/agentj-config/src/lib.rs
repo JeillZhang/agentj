@@ -1,6 +1,7 @@
 pub mod merge;
 use agentj_core::module::ConfigProvider;
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -56,6 +57,22 @@ pub struct LicenseConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+pub struct McpServerConfig {
+    pub name: String,
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub env: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct McpConfig {
+    #[serde(default)]
+    pub servers: Vec<McpServerConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub struct AgentJConfig {
     #[serde(default)]
     pub model: ModelSection,
@@ -65,6 +82,8 @@ pub struct AgentJConfig {
     pub session: Option<SessionConfig>,
     #[serde(default)]
     pub license: Option<LicenseConfig>,
+    #[serde(default)]
+    pub mcp: Option<McpConfig>,
 }
 
 impl Default for AgentJConfig {
@@ -83,6 +102,7 @@ impl Default for AgentJConfig {
             permission: None,
             session: None,
             license: None,
+            mcp: None,
         }
     }
 }
@@ -368,5 +388,50 @@ mod tests {
             config.inner().license.as_ref().unwrap().key.as_deref(),
             Some("xyz")
         );
+    }
+
+    #[test]
+    fn mcp_section_parses() {
+        let cfg: AgentJConfig = toml::from_str(
+            r#"
+        [[mcp.servers]]
+        name = "fs"
+        command = "npx"
+        args = ["-y", "@modelcontextprotocol/server-filesystem"]
+        env = { FOO = "bar" }
+        "#,
+        )
+        .unwrap();
+        let mcp = cfg.mcp.unwrap();
+        assert_eq!(mcp.servers.len(), 1);
+        let s = &mcp.servers[0];
+        assert_eq!(s.name, "fs");
+        assert_eq!(s.command, "npx");
+        assert_eq!(
+            s.args,
+            vec!["-y", "@modelcontextprotocol/server-filesystem"]
+        );
+        assert_eq!(s.env.get("FOO").map(String::as_str), Some("bar"));
+    }
+
+    #[test]
+    fn mcp_server_defaults_args_and_env() {
+        let cfg: AgentJConfig = toml::from_str(
+            r#"
+        [[mcp.servers]]
+        name = "fs"
+        command = "npx"
+        "#,
+        )
+        .unwrap();
+        let s = &cfg.mcp.unwrap().servers[0];
+        assert!(s.args.is_empty());
+        assert!(s.env.is_empty());
+    }
+
+    #[test]
+    fn mcp_section_absent_is_none() {
+        let cfg: AgentJConfig = toml::from_str("").unwrap();
+        assert!(cfg.mcp.is_none());
     }
 }
