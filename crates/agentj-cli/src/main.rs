@@ -25,6 +25,8 @@ use agentj_session::FileBackedStore;
 use agentj_skills::load_skills;
 use agentj_tools::builtins::register_builtins;
 
+mod license;
+
 #[derive(Parser)]
 #[command(name = "agentj", version, about = "AgentJ — AI coding agent")]
 struct Cli {
