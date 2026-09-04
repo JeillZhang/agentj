@@ -1,5 +1,6 @@
 //! Unified Connection abstraction (design 决策 #1/#2) — transport-agnostic serve.
 pub mod tcp;
+pub mod ws;
 
 use agentj_core::error::{IpcError, KernelError, ModuleError};
 use agentj_core::kernel::Kernel;
