@@ -1,7 +1,7 @@
 # Summary & Next
 
 > 本文件仅保留**当前正在开发**功能设计文档的内容：进度、剩余步骤、遗留问题与下一步。同步更新时**替换**（不要追加）前一功能内容。
-> 当前功能：**G5 License gating + G6 MCP wiring (v0.9.1)**——设计文档 `docs/superpowers/specs/2026-09-03-g5-g6-license-mcp-wiring-design.md` + 实现计划 `docs/superpowers/plans/2026-09-03-g5-g6-license-mcp-wiring-plan.md`（v0.9.0 已发布，v0.9.1 验收补丁含 BUG-001/002 修复）。
+> 当前功能：**G7 EventBus 重入防护 + G8 WebSocket 网关 (v0.10.0)**——设计文档 `docs/superpowers/specs/2026-09-04-g7-eventbus-reentrancy-g8-websocket-gateway-design.md` + 实现计划 `docs/superpowers/plans/2026-09-04-g7-g8-plan.md`（G1-G8 全部闭环，v0.10.0 发布）。
 
 ## 待实施
 
@@ -16,57 +16,55 @@
 | ✅ 完成 | G2 修复：单全局 in-flight 会话槽 → per-session 路由（T1-T6，v0.6.0） | v0.5 | P0 | ✅ 已实现 v0.6.0 |
 | ✅ 完成 | G4 会话持久化生产接线（FileBackedStore 生产接入 + 唯一 tmp + 目录 fsync）（T0-T6，v0.7.0） | v0.6.0 | P0 | ✅ 已实现 v0.7.0 |
 | ✅ 完成 | G3 token 级用量统计（TokenUsage + 4 提供方 + SessionRunResult.usage + CLI 激活）（T0-T11，v0.8.0） | v0.7.0 | P0 | ✅ 已实现 v0.8.0 |
-| ✅ 完成 | **G5 License gating + G6 MCP wiring（[license] + McpServerSpec + close_all + per-command entitlement）**（T0-T8，v0.9.0 + v0.9.1 验收补丁） | v0.8.0 | P0 | ✅ 已实现 v0.9.1 |
+| ✅ 完成 | G5 License gating + G6 MCP wiring（[license] + McpServerSpec + close_all + per-command entitlement）（T0-T8，v0.9.0 + v0.9.1 验收补丁） | v0.8.0 | P0 | ✅ 已实现 v0.9.1 |
+| ✅ 完成 | **G7 EventBus 重入防护 + G8 WebSocket 网关（v0.10.0）**（T0-T9，G1-G8 全闭环） | v0.9.1 | P0 | ✅ 已实现 v0.10.0 |
 
-## Phase: G5 License gating + G6 MCP wiring (v0.9.1) ✅ (本次完成)
+## Phase: G7 EventBus 重入防护 + G8 WebSocket 网关 (v0.10.0) ✅ (本次完成)
 
 ### 进度与摘要
 
-- ✅ **根因**：`agentj-license` 的 Ed25519 校验能力完备但全仓零生产依赖（CLI 无引用），商业门控悬空，无 `[license]` / `--license-key` / entitlement 链路；MCP 侧 `McpConnectionManager` 已有 `reap_idle` 但 `[[mcp.servers]]` 发现→`connect` 链路缺失，且 `connect` 仅接受 `sh -c` 单字符串，存在 shell 注入面。
+- ✅ **根因**：G7 — `EventBus::publish` 同步串行执行 handler，handler 自触发同类型事件形成无限递归栈溢出，BUG-001 快照与 BUG-002 `catch_unwind` 已修复但无递归深度防护（`hooks.rs:50-67` 同步发布 14 处生产收口点均暴露）——设计债；G8 — Dashboard `RpcClient` 硬编码 `node:net` TCP，浏览器 `TypeError`，`Connection` 传输抽象已为 WS 留位，差距档案 G8 形态限制。
 
-- ✅ **方案**（设计 D1-D7）：G5 在 CLI 边界 fail-fast 门控（`[license] key` + `AGENTJ_LICENSE_KEY` env + `--license-key` flag，优先级 flag > env > config；`AGENTJ_LICENSE_PUBKEY` env 覆盖嵌入公钥；无 key 零门控 free mode，有 key 校验签名+过期+`run`/`serve`/`dashboard` entitlement）；G6 将 `connect` 升级为 `McpServerSpec{command,args,env}`（`Command::new` + args/env，消除 `sh -c`），新增 `close_all`，CLI 启动遍历 `[[mcp.servers]]` 逐个 connect，失败 `tracing::warn!` 并继续。
+- ✅ **方案**（设计 D1-D8）：G7 在 `EventBus::publish` 入口单点加 `EventGuard`（thread_local `EVENT_DEPTH: Cell<u8>` + `EVENT_STACK: Vec<EventType>`，`MAX_EVENT_DEPTH=16`，同栈 `stack.contains(event)` 即时拦截 + 跨类型环深度兜底，超限/循环 `tracing::warn!` 丢弃，RAII Drop 回卷 + `catch_unwind` 叠加，调用点零改动）；G8 将 `TcpIpcServer` accept 循环升级为连接分类器（`MSG_PEEK` + `looks_like_http`，HTTP→`serve_http`/非 HTTP→`TcpConnection`），单一 `TcpListener` 同端口共存 raw TCP 与 HTTP/WS，新增 `WsConnection` 实现 `Connection`（`TransportKind::WebSocket`，原生 Text 帧，无 `\n` 拼接，mpsc writer 桥复用半连接写句柄，复用 `register_writer` + `serve_connection_requests` 零改动），服务端 `WsServerState`/`ws_router`/`ws_upgrade`/`serve_http`（axum 0.8 ws + hyper-util `serve_connection_with_upgrades`，鉴权双通道 `?token=` 403 + `initialize.token` -32806，`max_connections` 独立计数，WS 不参与 last-disconnect 全局关闭），前端 `WebSocketTransport`（原生 `WebSocket`，`VITE_AGENTJ_WS_URL` 可配，`onStatusChange` + `close`）+ `ResponseRouter` 通知分叉（BUG-005 修复，`id==null` 不再丢弃），删除 `node:net`，CLI `serve --port` 打印 `websocket on ws://…/ws`。
 
-- ✅ **任务分解（T0-T8）已完成**：
-  - T0 — `agentj-config` 新增 `[license] key`（`LicenseConfig` + `AgentJConfig.license` + merge `license` 分支 + `AGENTJ_LICENSE_KEY` env 覆盖 + `get_str("license.key")`）。
-  - T1 — `agentj-cli` 新增 `license.rs`（`AGENTJ_LICENSE_PUBKEY` 常量 + `resolve_validator` env 覆盖 + `check_license_gate` flag>env>config + free mode + entitlement 校验，含 4 单测）。
-  - T2 — `agentj-cli` 接线 `Cli.license_key` + `main` 分发前 `check_license_gate`（`run`→`run`/`serve`→`serve`/`dashboard`→`dashboard`，`run --attach` 不门控）+ `e2e_license.rs` 4 场景 + fixture `license_run.toml`。
-  - T3 — `agentj-config` 新增 `[[mcp.servers]]`（`McpServerConfig{name,command,args,env}` + `McpConfig{servers}` + `AgentJConfig.mcp` + merge 分支，含 3 单测）。
-  - T4 — `agentj-mcp` 引入 `McpServerSpec`（breaking）+ `connect(server_id, spec)` + `spawn_and_init(spec)`（`Command::new` + args/env）+ `close_all` + `TransportOp::Connect` spec 化 + `reconnect`/`close` 适配，含 args/env 回显单测 + `close_all` 单测 + 6 既有测试迁移。
-  - T5 — `agentj-cli` 接线 `[[mcp.servers]]` 启动遍历（`mcp_servers` clone 于 `KernelContext` 前 + `connect` 循环 + `close_all` 于 run/serve_stdio/serve_tcp 收尾）+ `e2e_mcp.rs` 2 场景 + fixture `mcp_cli_echo.sh`。
-  - T6 — workspace version `0.8.0` → `0.9.0`（`Cargo.toml` + `Cargo.lock` via `cargo build`）。
-  - T7 — 文档同步 `AGENTS.md`/`README.md`/summary（本次）。
-  - T8 — gap-analysis `G5/G6` 状态行更新为 ✅ 已实现 v0.9.0（并行）。
-  - 验收补丁 v0.9.1 — BUG-001 `close mcp on attach/None` + BUG-002 `ignore empty license key`（各一提交，回归 verified）。
+- ✅ **任务分解（T0-T9）已完成**：
+  - T0 — `hooks.rs` 新增 `MAX_EVENT_DEPTH=16` + `EventGuard` RAII（thread_local depth/stack + `enter` 循环/深度检查 + Drop 回卷）+ `publish` 入口 guard，含 3 单测（同类型自触发 1 次 / 跨类型 chain 深度 ≤16 / panic 后 guard 回卷）。
+  - T1 — `TransportKind::WebSocket` + `agentj-ipc/Cargo.toml` 新增 axum 0.8(ws)/hyper/hyper-util/futures/tower + dev-dep tokio-tungstenite。
+  - T2 — 前端 `RpcTransport` 扩展 `close?` + `ResponseRouter.setNotificationHandler` + `feed` 通知分叉（BUG-005）+ `RpcClient(transport, router?)` 可选 router。
+  - T3 — `ws.rs` 新增 `WsConnection`（split + mpsc writer 桥，原生 Text 帧，close→None，ping/pong 跳过）+ `pub mod ws`，含 2 单测（roundtrip via writer / close EOF）。
+  - T4 — `tcp.rs` 同端口连接分类器（`looks_like_http` + `MSG_PEEK` peek + `WsServerState`/`ws_router`/`ws_upgrade`/`serve_http`）+ `ws_classifier.rs` 4 集成（同端口 WS+TCP 共存 / `?token=` 403 / `initialize.token` -32806 / `max_connections` WS 限流）。
+  - T5 — `web-dashboard/src/transport/websocket.ts` 新增 `WebSocketTransport`（native WebSocket，`onStatusChange`，`onmessage→feed`，`onerror/onclose→rejectAll`）+ `App.tsx` `VITE_AGENTJ_WS_URL` 接线 + 删除 `node:net`，含 3 单测（send/response / notification feed / error+status）。
+  - T6 — `agentj-cli` `serve --port` 打印 `websocket on ws://…/ws` + `e2e_ws.rs` 双传输 e2e（WS+TCP 同端口 + `?token` 鉴权 + WS 不参与全局关闭）。
+  - T7 — workspace version `0.9.1` → `0.10.0`（`Cargo.toml` + `Cargo.lock`）。
+  - T8 — 文档 `docs/specs/ipc-protocol.md` §2.3 扩展为 v0.10.0 WS 传输节 + gap 档案 G7/G8 状态行 → ✅ 已实现。
+  - T9 — 本次：doc sync `AGENTS.md`/`README.md`/summary（G7+G8 阶段内容整体替换）。
 
-- ✅ **决策 D1-D7**：
-  - D1 Key-optional 免费模式：无 key 不门控，向后兼容，社区可用。
-  - D2 按命令细分 `run`/`serve`/`dashboard`：`entitlements: Vec<String>` 天然匹配，可组合售卖。
-  - D3 `connect(spec)` 破坏性替换 + `close_all`：零生产调用者，spec 结构化消除注入面。
-  - D4 单 server 失败 warn-and-continue：个别故障不拖垮整体，`Failed` 墓碑 + 重连兜底。
-  - D5 验证公钥编译期常量 + `AGENTJ_LICENSE_PUBKEY` env 覆盖：e2e 注入 + 生产轮换。
-  - D6 解析优先级 `--license-key` > `AGENTJ_LICENSE_KEY` > `[license] key`：与既有 env 覆盖先例一致。
-  - D7 门控收敛 CLI 命令边界：IPC 零改动，serve 启动即校验，YAGNI per-request 复验。
+- ✅ **决策 D1-D8**：
+  - D1 guard 放置 `EventBus::publish` 入口：14 生产发布点全收口，单点防护全覆盖、调用点零改动。
+  - D2 超限行为丢弃 + `tracing::warn!`：不 panic，与 BUG-002 panic 隔离一致，插件 bug 不拖垮进程。
+  - D3 防护粒度深度 16 + 同栈循环检测双保险：同类型即时拦截，跨类型环深度兜底。
+  - D4 同端口 + axum：单一 `127.0.0.1:port` 分类器共存，`run --attach tcp://` 零破坏。
+  - D5 hyper-util `serve_connection_with_upgrades` + axum Router service_fn 包装：分类器逐连接手动接管，官方 `serve-with-hyper` 模式。
+  - D6 鉴权双通道：upgrade `?token=` 403 + 连接后 `initialize.token` -32806，`auth_gate` 传输无关零改动。
+  - D7 WS 不参与 last-disconnect 全局关闭：浏览器会话短暂，不应决定常驻内核存亡。
+  - D8 前端 `WebSocketTransport` + `RpcTransport` 扩展 + BUG-005 修复：`RpcClient`/`ResponseRouter` 既有解耦点直接复用，最小替换会让 Dashboard 看不到进度。
 
 - ✅ **验证结果**：
-  - `cargo test -p agentj-protocol -- drift` — 2 通过（33 schemas 无漂移，协议零变化）
-  - `cargo test --workspace -- --skip permission_request_notified` — 全量通过（含新增 license/mcp 单测 + e2e_license 4 + e2e_mcp 2 + 既有 e2e_cli/e2e_permission/e2e_serve 回归）
-  - `cargo test -p agentj-config` — 通过（license + mcp 新测 + regression）
-  - `cargo test -p agentj-mcp` — 通过（spec/close_all 新测 + 6 迁移 + lib）
-  - `cargo test -p agentj-cli --test e2e_license --test e2e_mcp` — 通过（6 场景）
+  - `cargo test --workspace` — 全量通过（含 G7 hooks 3 + G8 ws 2 + ws_classifier 4 + websocket 3 + e2e_ws 双传输 + 既有 e2e_cli/e2e_permission/e2e_serve 回归）
+  - `cargo test -p agentj-protocol -- drift` — 2 通过（33 schemas 无漂移，WS 为传输层，协议零变化）
   - `cargo clippy --workspace --all-targets -- -D warnings` — 零警告
   - `cargo fmt --all --check` — 通过
-  - `cargo test -p agentj-protocol -- drift` 二次确认 — 通过
+  - `cd web-dashboard && npm test && npm run build` — 通过，`dist/assets/*.js` 无 `node:net`
 
 ### 遗留问题 / 已知限制
 
-- serve 运行期 license 到期不中途吊销（设计非目标，D7 明确记录；需重启校验）。
-- `close_all` 为尽力关闭（逐 server `close` + `kill_on_drop` 兜底，无强一致保证）。
-- per-request 复验未做（`run --attach` 瘦客户端不门控，依赖远端 serve 的启动门控覆盖）。
-- `AGENTJ_LICENSE_PUBKEY` env 覆盖为操作者可控轮换通道（能设 env 者本就拥有进程环境，非新增攻击面）。
-- `McpServerSpec` connect 的 `args`/`env` 为原样透传，未做额外转义或鉴权（与既有 `bash` 工具权限模型分离）。
-- `mcp_cli_echo.sh` / `mcp_echo_args.sh` 固件仅覆盖 `initialize`→`tools/list`→`tools/call` 最小链路。
+- G7 guard 为调用线程局部（`thread_local`）：跨线程并发发布不受深度约束（语义本为单线程调用栈保护，跨线程各栈独立）。
+- G8 同端口分类器以首字节形似 HTTP 判定，极端 NDJSON 首行以 `GET ` 等开头理论误判（实际 JSON-RPC 首字节必为 `{`，无碰撞）。
+- G8 浏览器 WSS/TLS、HTTP REST 面、CORS、每连接速率限流均明确非目标，随产品需求独立设计。
+- WS 客户端重连为前端尽力而为（指数退避 + `onStatusChange`），服务端不做会话粘滞/断线续传（沿用 `session/subscribe` 重连观测语义）。
+- gap 档案 G1-G8 全部 → ✅ 已实现，全闭环。
 
 ### 下一步
 
-- 按 gap 档案推进 G7（EventBus 重入 guard）与 G8（WebSocket 网关），或根据产品规划启动新 feature 设计 → `/jskill-feature-design`。
-- 可选增强：serve 周期性 license 复验（到期主动下线）、`close_all` 超时控制、`[[mcp.servers]]` 热重载。
+- G1-G8 全闭环，按产品规划启动新 feature 设计 → `/jskill-feature-design`，或进入发布流程（PR 合并 → `feature/g7-g8-eventbus-websocket-gateway` → `main`）。
+- 可选增强：serve 周期性 license 复验、`close_all` 超时控制、`[[mcp.servers]]` 热重载、WS WSS/TLS、事件追溯日志（当前仅 warn 计数）。

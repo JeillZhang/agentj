@@ -1,5 +1,3 @@
-import net from 'node:net';
-
 export interface RpcRequest {
   jsonrpc: '2.0';
   id: number;
@@ -21,8 +19,12 @@ export interface InitializeResult {
   connection_id?: string;
 }
 
+export type NotificationHandler = (method: string, params: unknown) => void;
+
 export interface RpcTransport {
   send: (line: string) => Promise<string>;
+  /** Optional release hook (e.g. WebSocket.close). */
+  close?: () => void;
 }
 
 interface PendingEntry {
@@ -32,11 +34,15 @@ interface PendingEntry {
 
 /// Buffers incoming NDJSON lines and resolves each request promise with the
 /// line whose `id` matches the request id. JSON-RPC notifications (no id,
-/// e.g. `$/progress`) match nothing and are ignored, so they cannot displace
-/// a real response (BUG-005).
+/// e.g. `$/progress`) are forked to the notification handler (BUG-005 fix).
 export class ResponseRouter {
   private buffer = '';
   private readonly pending = new Map<number, PendingEntry>();
+  private notificationHandler?: NotificationHandler;
+
+  setNotificationHandler(handler: NotificationHandler): void {
+    this.notificationHandler = handler;
+  }
 
   requestId(line: string): number {
     return (JSON.parse(line) as RpcRequest).id;
@@ -53,13 +59,19 @@ export class ResponseRouter {
       const raw = this.buffer.slice(0, nl).trim();
       this.buffer = this.buffer.slice(nl + 1);
       if (!raw) continue;
-      let msg: RpcResponse;
+      let msg: { id?: number | null; method?: string; params?: unknown; result?: unknown; error?: unknown };
       try {
-        msg = JSON.parse(raw) as RpcResponse;
+        msg = JSON.parse(raw) as { id?: number | null; method?: string; params?: unknown; result?: unknown; error?: unknown };
       } catch {
         continue;
       }
-      if (msg.id == null) continue;
+      if (msg.id === undefined || msg.id === null) {
+        // Notification (BUG-005 fix): dispatch, never drop.
+        if (msg.method && this.notificationHandler) {
+          this.notificationHandler(msg.method, msg.params);
+        }
+        continue;
+      }
       const entry = this.pending.get(msg.id);
       if (!entry) continue;
       this.pending.delete(msg.id);
@@ -78,9 +90,15 @@ export class ResponseRouter {
 export class RpcClient {
   private static nextId = 1;
   private readonly transport: RpcTransport;
+  private readonly router: ResponseRouter;
 
-  constructor(transport: RpcTransport) {
+  constructor(transport: RpcTransport, router?: ResponseRouter) {
     this.transport = transport;
+    this.router = router ?? new ResponseRouter();
+  }
+
+  setNotificationHandler(handler: NotificationHandler): void {
+    this.router.setNotificationHandler(handler);
   }
 
   async request(
@@ -105,17 +123,4 @@ export class RpcClient {
     })) as InitializeResult;
   }
 
-  static connect(port: number, host = '127.0.0.1'): RpcClient {
-    const socket = net.createConnection({ port, host });
-    const router = new ResponseRouter();
-    socket.on('data', (chunk: Buffer) => router.feed(chunk.toString()));
-    socket.on('error', (err: Error) => router.rejectAll(err));
-    return new RpcClient({
-      send: (line: string) =>
-        new Promise<string>((resolve, reject) => {
-          router.register(router.requestId(line), { resolve, reject });
-          socket.write(line + '\n');
-        }),
-    });
-  }
 }
