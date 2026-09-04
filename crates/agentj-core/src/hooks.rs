@@ -465,7 +465,7 @@ mod tests {
                 EventType::ModuleLoaded(format!("m{i}").into()),
                 Arc::new(ChainHandler {
                     bus: bus.clone(),
-                    next: EventType::ModuleLoaded(format!("m{}", i + 1).into()),
+                    next: EventType::ModuleLoaded(format!("m{}", i + 1)),
                     calls: calls.clone(),
                 }),
             );
