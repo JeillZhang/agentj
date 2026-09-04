@@ -15,6 +15,49 @@ use std::sync::{Arc, Mutex, RwLock};
 /// Locks are handled poison-safe: a panicked handler thread must not crash the kernel.
 type HandlerEntry = (EventType, Arc<dyn EventHandler>);
 
+/// G7: maximum publish recursion depth per thread. A longer chain is a bug
+/// (cross-type cycle); the deepest frame is dropped with a warning.
+const MAX_EVENT_DEPTH: u8 = 16;
+
+thread_local! {
+    /// Current publish recursion depth on this thread (G7 guard).
+    static EVENT_DEPTH: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
+    /// Events currently on the publish stack on this thread (G7 cycle guard).
+    static EVENT_STACK: std::cell::RefCell<Vec<EventType>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// RAII reentrancy guard: increments depth and pushes the event on entry;
+/// rolls both back on drop — including during unwind from a panicked handler.
+struct EventGuard;
+
+impl EventGuard {
+    fn enter(event: &EventType) -> Option<Self> {
+        let admitted = EVENT_DEPTH.with(|depth| {
+            if depth.get() >= MAX_EVENT_DEPTH {
+                return false;
+            }
+            let cycle = EVENT_STACK.with(|stack| stack.borrow().contains(event));
+            if cycle {
+                return false;
+            }
+            depth.set(depth.get() + 1);
+            EVENT_STACK.with(|stack| stack.borrow_mut().push(event.clone()));
+            true
+        });
+        if admitted { Some(Self) } else { None }
+    }
+}
+
+impl Drop for EventGuard {
+    fn drop(&mut self) {
+        EVENT_DEPTH.with(|depth| depth.set(depth.get() - 1));
+        EVENT_STACK.with(|stack| {
+            let _ = stack.borrow_mut().pop();
+        });
+    }
+}
+
 pub struct EventBus {
     handlers: Arc<Mutex<Vec<HandlerEntry>>>,
     ctx: Arc<RwLock<Option<Arc<KernelContext>>>>,
@@ -48,6 +91,13 @@ impl EventBus {
     }
 
     pub fn publish(&self, event: &EventType) {
+        let Some(_guard) = EventGuard::enter(event) else {
+            tracing::warn!(
+                ?event,
+                "dropping reentrant event publish (depth cap or cycle)"
+            );
+            return;
+        };
         let ctx = match self.ctx.read() {
             Ok(guard) => guard.clone(),
             Err(_) => return,
@@ -88,6 +138,7 @@ mod tests {
     use crate::kernel::Kernel;
     use crate::module::*;
     use crate::types::*;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex, mpsc};
     use std::time::Duration;
 
@@ -361,6 +412,116 @@ mod tests {
                 .unwrap()
                 .contains(&EventType::ModuleFailed("fm".into()))
         );
+    }
+
+    /// Handler that re-publishes the SAME event it received (self-trigger).
+    /// G7: without the cycle guard this recurses infinitely (stack overflow).
+    struct SelfTriggerHandler {
+        bus: Arc<EventBus>,
+        calls: Arc<AtomicUsize>,
+    }
+    impl EventHandler for SelfTriggerHandler {
+        fn on_event(&self, event: &EventType, _ctx: &KernelContext) {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.bus.publish(event); // same event → cycle
+        }
+    }
+
+    #[test]
+    fn publish_drops_same_event_self_trigger_cycle() {
+        let bus = Arc::new(EventBus::with_ctx(Arc::new(dummy_context())));
+        let calls = Arc::new(AtomicUsize::new(0));
+        bus.register(
+            EventType::ModuleLoaded("m".into()),
+            Arc::new(SelfTriggerHandler {
+                bus: bus.clone(),
+                calls: calls.clone(),
+            }),
+        );
+        bus.publish(&EventType::ModuleLoaded("m".into()));
+        // Cycle detected at depth 1: the handler runs exactly once, no recursion.
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    /// Chain m0 → m1 → m2 → …: distinct events, bounded by MAX_EVENT_DEPTH.
+    struct ChainHandler {
+        bus: Arc<EventBus>,
+        next: EventType,
+        calls: Arc<AtomicUsize>,
+    }
+    impl EventHandler for ChainHandler {
+        fn on_event(&self, _event: &EventType, _ctx: &KernelContext) {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.bus.publish(&self.next);
+        }
+    }
+
+    #[test]
+    fn publish_bounds_cross_type_cycle_by_depth() {
+        let bus = Arc::new(EventBus::with_ctx(Arc::new(dummy_context())));
+        let calls = Arc::new(AtomicUsize::new(0));
+        for i in 0..(MAX_EVENT_DEPTH as usize + 2) {
+            bus.register(
+                EventType::ModuleLoaded(format!("m{i}").into()),
+                Arc::new(ChainHandler {
+                    bus: bus.clone(),
+                    next: EventType::ModuleLoaded(format!("m{}", i + 1).into()),
+                    calls: calls.clone(),
+                }),
+            );
+        }
+        bus.publish(&EventType::ModuleLoaded("m0".into()));
+        assert!(
+            calls.load(Ordering::SeqCst) <= MAX_EVENT_DEPTH as usize,
+            "cross-type cycle must be depth-bounded, got {}",
+            calls.load(Ordering::SeqCst)
+        );
+    }
+
+    /// A panic inside a nested publish must still roll back the thread-local
+    /// guard, so the same event can be published again afterwards.
+    struct DepthPanicHandler {
+        panicked: Arc<AtomicBool>,
+    }
+    impl EventHandler for DepthPanicHandler {
+        fn on_event(&self, _event: &EventType, _ctx: &KernelContext) {
+            self.panicked.store(true, Ordering::SeqCst);
+            panic!("handler boom inside nested publish");
+        }
+    }
+    struct NestedPublisher {
+        bus: Arc<EventBus>,
+    }
+    impl EventHandler for NestedPublisher {
+        fn on_event(&self, _event: &EventType, _ctx: &KernelContext) {
+            self.bus.publish(&EventType::ModuleFailed("m".into()));
+        }
+    }
+
+    #[test]
+    fn publish_recovers_guard_after_nested_panic() {
+        let bus = Arc::new(EventBus::with_ctx(Arc::new(dummy_context())));
+        let panicked = Arc::new(AtomicBool::new(false));
+        bus.register(
+            EventType::ModuleFailed("m".into()),
+            Arc::new(DepthPanicHandler {
+                panicked: panicked.clone(),
+            }),
+        );
+        bus.register(
+            EventType::ModuleLoaded("m".into()),
+            Arc::new(NestedPublisher { bus: bus.clone() }),
+        );
+        bus.publish(&EventType::ModuleLoaded("m".into()));
+        assert!(panicked.load(Ordering::SeqCst));
+        // Guard must have rolled back during unwind: ModuleLoaded("m") is no
+        // longer on the stack, so a fresh publish delivers (not cycle-dropped).
+        let spy = Arc::new(SpyHandler {
+            events: Arc::new(Mutex::new(vec![])),
+        });
+        bus.register(EventType::ModuleLoaded("m".into()), spy.clone());
+        bus.publish(&EventType::ModuleLoaded("m".into()));
+        assert_eq!(spy.events.lock().unwrap().len(), 1);
     }
 
     #[test]
