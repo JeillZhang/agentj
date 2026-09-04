@@ -19,7 +19,10 @@ fn free_port() -> u16 {
 
 async fn wait_for_listen(port: u16) {
     for _ in 0..100 {
-        if tokio::net::TcpStream::connect(("127.0.0.1", port)).await.is_ok() {
+        if tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .is_ok()
+        {
             return;
         }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -42,13 +45,17 @@ async fn serve_port_accepts_ws_clients_and_keeps_tcp_attach() {
     let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{port}/ws"))
         .await
         .unwrap();
-    ws.send(Message::Text(initialize_line(1).into())).await.unwrap();
+    ws.send(Message::Text(initialize_line(1).into()))
+        .await
+        .unwrap();
     let reply = ws.next().await.unwrap().unwrap();
     assert!(reply.to_text().unwrap().contains("connection_id"));
     ws.close(None).await.unwrap();
 
     // TCP attach still works (regression): raw NDJSON initialize.
-    let mut tcp = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    let mut tcp = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .unwrap();
     tcp.write_all(initialize_line(2).as_bytes()).await.unwrap();
     tcp.write_all(b"\n").await.unwrap();
     let mut line = String::new();
@@ -59,7 +66,9 @@ async fn serve_port_accepts_ws_clients_and_keeps_tcp_attach() {
     assert!(line.contains("connection_id"), "tcp attach: {line}");
 
     // D7: daemon stays alive after WS-only traffic (no last-disconnect shutdown).
-    let mut tcp2 = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    let mut tcp2 = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .unwrap();
     tcp2.write_all(initialize_line(3).as_bytes()).await.unwrap();
     tcp2.write_all(b"\n").await.unwrap();
     let mut line2 = String::new();
@@ -67,7 +76,11 @@ async fn serve_port_accepts_ws_clients_and_keeps_tcp_attach() {
         .read_line(&mut line2)
         .await
         .unwrap();
-    assert!(line2.contains("connection_id"), "daemon alive after ws-only: {line2}");
+    assert!(
+        line2.contains("connection_id"),
+        "daemon alive after ws-only: {line2}"
+    );
 
     child.kill().expect("kill agentj");
+    let _ = child.wait();
 }

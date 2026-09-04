@@ -462,7 +462,7 @@ mod tests {
         let calls = Arc::new(AtomicUsize::new(0));
         for i in 0..(MAX_EVENT_DEPTH as usize + 2) {
             bus.register(
-                EventType::ModuleLoaded(format!("m{i}").into()),
+                EventType::ModuleLoaded(format!("m{i}")),
                 Arc::new(ChainHandler {
                     bus: bus.clone(),
                     next: EventType::ModuleLoaded(format!("m{}", i + 1)),
