@@ -5,11 +5,23 @@
 //! an idle subscriber stays reachable for broadcasts (BUG-006).
 
 use crate::{Connection, ConnectionWriter, IpcError, TransportKind};
-use axum::extract::ws::{Message, WebSocket};
+use axum::Router;
+use axum::extract::Query;
+use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
+use axum::routing::get;
 use futures::stream::SplitStream;
 use futures::{SinkExt, StreamExt};
+use hyper::body::Incoming;
+use hyper::service::service_fn;
+use hyper_util::rt::{TokioExecutor, TokioIo};
+use std::convert::Infallible;
+use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::mpsc;
+use tower::ServiceExt;
 
 pub struct WsConnection {
     id: String,
@@ -79,6 +91,74 @@ impl Connection for WsConnection {
             }),
         )
     }
+}
+
+/// Shared state for the WS server (G8). Holds the same Arc<IpcServer> the TCP
+/// path uses so WS connections flow through the identical serve loop.
+pub struct WsServerState {
+    pub shared: Arc<crate::IpcServer>,
+    pub token: Option<String>,
+    pub max_connections: usize,
+    pub active_ws: AtomicUsize,
+}
+
+#[derive(serde::Deserialize)]
+pub struct WsQuery {
+    pub token: Option<String>,
+}
+
+/// Build a per-connection axum Router for the WS upgrade endpoint. `peer` is
+/// captured so the WsConnection gets a stable id/peer_desc.
+pub fn ws_router(state: Arc<WsServerState>, peer: SocketAddr) -> Router {
+    Router::new().route(
+        "/ws",
+        get(move |Query(query): Query<WsQuery>, ws: WebSocketUpgrade| {
+            let state = state.clone();
+            async move { ws_upgrade(state, query, peer, ws).await }
+        }),
+    )
+}
+
+async fn ws_upgrade(
+    state: Arc<WsServerState>,
+    query: WsQuery,
+    peer: SocketAddr,
+    ws: WebSocketUpgrade,
+) -> Response {
+    // 设计 D6 双通道 ①：upgrade 阶段 ?token= 校验。
+    if state.token.is_some() && state.token.as_deref() != query.token.as_deref() {
+        return (StatusCode::FORBIDDEN, "missing or invalid token").into_response();
+    }
+    if state.active_ws.load(Ordering::SeqCst) >= state.max_connections {
+        return (StatusCode::SERVICE_UNAVAILABLE, "too many connections").into_response();
+    }
+    state.active_ws.fetch_add(1, Ordering::SeqCst);
+    let state = state.clone(); // clone the Arc for the upgraded task
+    ws.on_upgrade(move |socket| async move {
+        let conn = WsConnection::new(socket, peer.to_string());
+        // 设计 D7: WS 连接走既有 serve_connection（注册表/订阅/鉴权零改动）。
+        let _ = state
+            .shared
+            .serve_connection(Box::new(conn), state.token.as_deref())
+            .await;
+        state.active_ws.fetch_sub(1, Ordering::SeqCst);
+    })
+}
+
+/// Serve one accepted HTTP/WS connection through hyper + the axum Router
+/// (设计 D5, axum 官方 serve-with-hyper 模式; upgrades required for WS).
+pub async fn serve_http(stream: tokio::net::TcpStream, router: Router) {
+    let io = TokioIo::new(stream);
+    let svc = service_fn(move |req: hyper::Request<Incoming>| {
+        let router = router.clone();
+        async move {
+            let req = req.map(axum::body::Body::new);
+            Ok::<_, Infallible>(router.oneshot(req).await.unwrap_or_else(|e| match e {}))
+        }
+    });
+    let _ = hyper_util::server::conn::auto::Builder::new(TokioExecutor::new())
+        .serve_connection_with_upgrades(io, svc)
+        .await;
 }
 
 #[cfg(test)]
