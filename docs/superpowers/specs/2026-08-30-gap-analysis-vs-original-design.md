@@ -20,8 +20,8 @@
 | **G4** | 磁盘持久化生产未接线 | v0.3"FileBackedStore 磁盘持久化已落地" | CLI `main.rs:223` 用 `InMemoryStore::new()`——**FileBackedStore 生产零引用**（全仓 grep 仅 lib.rs pub use + 定义 + 测试）；守护内核 G3「历史级接续」依赖落空；另有 tmp 固定命名 `<sid>.json.tmp`（`file_store.rs:130`）跨进程写同 session 互相覆盖，无唯一命名/`flock` | `agentj-cli/src/main.rs:223` / `agentj-session/src/file_store.rs:14-140` | 🔴 宣称≠实际 | 待设计 |
 | **G5** | License 商用门控 | agentj-license 能力 | API 完备（`LicenseValidator::validate` / `check_entitlement`）但**全仓零生产依赖**（`agentj-cli/Cargo.toml` 无 agentj-license）；design-pending 悬置 | `agentj-license/src/lib.rs:8-75` | 🟠 商业件悬空 | ✅ 已实现（v0.9.0，见 [2026-09-03-g5-g6-license-mcp-wiring-design.md](2026-09-03-g5-g6-license-mcp-wiring-design.md)） |
 | **G6** | MCP 生产接线 | MCP 长驻连接 + 空闲回收 | 回收循环**已布线**（`main.rs:297-312` tokio::spawn 10s 轮询 + 60s 超时，修复了旧"不可达"）；但 `[[mcp.servers]]` 配置发现→`connect` 链路缺失，`connections` 恒空、回收空转 | `agentj-cli/src/main.rs:297-312` / `connection_manager.rs:248-350` | 🟠 特性空转 | ✅ 已实现（v0.9.0，见 [2026-09-03-g5-g6-license-mcp-wiring-design.md](2026-09-03-g5-g6-license-mcp-wiring-design.md)） |
-| **G7** | EventBus 重入 | 事件总线 | 死锁已修复（快照发布，`hooks.rs:56-65`，BUG-001 已验）；但**无递归深度防护**——handler 自触发同类型事件形成无限递归栈溢出（`hooks.rs:50-67` 同步发布） | `agentj-core/src/hooks.rs:18-76` | 🟡 设计债 | 待设计 |
-| **G8** | WebSocket 网关 | 设计明确列为非目标（预留） | Dashboard `RpcClient` 硬编码 `node:net` TCP（`jsonrpc.ts:1,108-121`）；vite 无 external/polyfill，bundle 仍含 `createConnection`——浏览器打开即 `TypeError`；全仓无 `ws`/`WebSocket` 命中 | `web-dashboard/src/jsonrpc.ts` / `vite.config.ts` / `dist/assets/*.js:10` | 🟡 形态限制（设计已声明延期） | 待设计 |
+| **G7** | EventBus 重入 | 事件总线 | 死锁已修复（快照发布，`hooks.rs:56-65`，BUG-001 已验）；但**无递归深度防护**——handler 自触发同类型事件形成无限递归栈溢出（`hooks.rs:50-67` 同步发布） | `agentj-core/src/hooks.rs:18-76` | 🟡 设计债 | ✅ 已设计（[2026-09-04-g7-eventbus-reentrancy-g8-websocket-gateway-design.md](2026-09-04-g7-eventbus-reentrancy-g8-websocket-gateway-design.md)，depth 16 + 同栈循环检测） |
+| **G8** | WebSocket 网关 | 设计明确列为非目标（预留） | Dashboard `RpcClient` 硬编码 `node:net` TCP（`jsonrpc.ts:1,108-121`）；vite 无 external/polyfill，bundle 仍含 `createConnection`——浏览器打开即 `TypeError`；全仓无 `ws`/`WebSocket` 命中 | `web-dashboard/src/jsonrpc.ts` / `vite.config.ts` / `dist/assets/*.js:10` | 🟡 形态限制（设计已声明延期） | ✅ 已设计（[2026-09-04-g7-eventbus-reentrancy-g8-websocket-gateway-design.md](2026-09-04-g7-eventbus-reentrancy-g8-websocket-gateway-design.md)，同端口 + axum） |
 
 ## G1 摘要（已立项，详见独立设计文档）
 
@@ -38,8 +38,8 @@
 - **G4**：CLI 切换 `InMemoryStore` → `FileBackedStore::new(&xdg_data_dir)` + `load_all` 恢复；`persist` 改唯一 tmp 命名（`sid.<uuid>.tmp`）+ 目录 fsync 或 `fs2` flock。
 - **G5**：✅ 已实现（v0.9.0）：CLI 注入 LicenseValidator, per-command entitlements run/serve/dashboard, --license-key flag/env/config priority, AGENTJ_LICENSE_PUBKEY override, free mode — 见 [2026-09-03-g5-g6-license-mcp-wiring-design.md](2026-09-03-g5-g6-license-mcp-wiring-design.md)）
 - **G6**：✅ 已实现（v0.9.0）：[[mcp.servers]] config → McpServerSpec via Command::new().args().envs() + startup connect loop (warn-and-continue) + close_all — 见同上设计）
-- **G7**：递归深度 guard（thread_local depth<16）+ 循环检测。
-- **G8**：方案 A 新增 `agentj-ipc` WebSocket `Connection` 实现 + 前端 `WebSocketTransport`（推荐）；方案 B Electron 壳 + `ssr.external` 明示 Node 运行时。
+- **G7**（✅ 已设计，见 [2026-09-04-g7-eventbus-reentrancy-g8-websocket-gateway-design.md](2026-09-04-g7-eventbus-reentrancy-g8-websocket-gateway-design.md)）：`publish` 入口 thread_local `depth<16` + 同栈循环检测，超限 drop+warn；14 生产发布点零改动。
+- **G8**（✅ 已设计，见 [2026-09-04-g7-eventbus-reentrancy-g8-websocket-gateway-design.md](2026-09-04-g7-eventbus-reentrancy-g8-websocket-gateway-design.md)）：同端口连接分类器（TCP 零破坏）+ axum WebSocketUpgrade `WsConnection`；前端 `WebSocketTransport` + `RpcTransport` 扩展（close/onNotification，修 BUG-005）；`?token=` upgrade 校验 + `initialize.token` 复验双通道。备选 B（Electron 壳）未选用。
 
 ## 后续开发流程
 
