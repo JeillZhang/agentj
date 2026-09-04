@@ -3,14 +3,26 @@ import { RpcClient, ResponseRouter } from './jsonrpc';
 import { WebSocketTransport } from './transport/websocket';
 
 class MockWebSocket {
+  static readonly CONNECTING = 0;
+  static readonly OPEN = 1;
+  static readonly CLOSING = 2;
+  static readonly CLOSED = 3;
   static last: MockWebSocket | null = null;
   sent: string[] = [];
+  readyState = MockWebSocket.CONNECTING;
   onmessage: ((ev: { data: string }) => void) | null = null;
   onerror: (() => void) | null = null;
   onclose: (() => void) | null = null;
   onopen: (() => void) | null = null;
-  close = () => {};
+  close = () => {
+    this.readyState = MockWebSocket.CLOSED;
+  };
   send = (data: string) => {
+    // Real browser WebSocket throws InvalidStateError when not OPEN (BUG-002);
+    // without this guard the transport bug stays invisible in tests.
+    if (this.readyState !== MockWebSocket.OPEN) {
+      throw new DOMException('WebSocket is not open', 'InvalidStateError');
+    }
     this.sent.push(data);
   };
   url: string;
@@ -28,6 +40,7 @@ class MockWebSocket {
     this.onclose?.();
   }
   emitOpen() {
+    this.readyState = MockWebSocket.OPEN;
     this.onopen?.();
   }
 }
@@ -89,6 +102,7 @@ describe('WebSocketTransport', () => {
       router,
       (url) => new MockWebSocket(url) as unknown as WebSocket,
     );
+    MockWebSocket.last!.emitOpen();
     const promise = transport.send('{"jsonrpc":"2.0","id":1,"method":"kernel/status"}');
     expect(MockWebSocket.last!.sent).toEqual([
       '{"jsonrpc":"2.0","id":1,"method":"kernel/status"}',
@@ -96,6 +110,40 @@ describe('WebSocketTransport', () => {
     MockWebSocket.last!.emit('{"jsonrpc":"2.0","id":1,"result":{"modules":[]}}');
     await expect(promise).resolves.toEqual('{"jsonrpc":"2.0","id":1,"result":{"modules":[]}}');
     transport.close();
+  });
+
+  it('queues sends while CONNECTING and flushes them on open (BUG-002)', async () => {
+    const router = new ResponseRouter();
+    const transport = new WebSocketTransport(
+      'ws://127.0.0.1:4096/ws',
+      router,
+      (url) => new MockWebSocket(url) as unknown as WebSocket,
+    );
+    // App.tsx requests kernel/status in the same tick as transport
+    // construction, so the socket is still CONNECTING here.
+    const promise = transport.send('{"jsonrpc":"2.0","id":1,"method":"kernel/status"}');
+    expect(MockWebSocket.last!.sent).toEqual([]);
+    MockWebSocket.last!.emitOpen();
+    expect(MockWebSocket.last!.sent).toEqual([
+      '{"jsonrpc":"2.0","id":1,"method":"kernel/status"}',
+    ]);
+    MockWebSocket.last!.emit('{"jsonrpc":"2.0","id":1,"result":{"modules":[]}}');
+    await expect(promise).resolves.toEqual('{"jsonrpc":"2.0","id":1,"result":{"modules":[]}}');
+    transport.close();
+  });
+
+  it('rejects sends while the socket is not opening (BUG-002)', async () => {
+    const router = new ResponseRouter();
+    const transport = new WebSocketTransport(
+      'ws://127.0.0.1:4096/ws',
+      router,
+      (url) => new MockWebSocket(url) as unknown as WebSocket,
+    );
+    MockWebSocket.last!.emitOpen();
+    transport.close();
+    await expect(
+      transport.send('{"jsonrpc":"2.0","id":2,"method":"kernel/status"}'),
+    ).rejects.toThrow('websocket not open');
   });
 
   it('feeds notifications into the router handler', () => {
