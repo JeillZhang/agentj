@@ -11,6 +11,14 @@ describe('RpcClient', () => {
     expect(result).toEqual({ session_id: 's1' });
   });
 
+  it('feeds notifications to the registered handler instead of dropping them', () => {
+    const router = new ResponseRouter();
+    const seen: Array<[string, unknown]> = [];
+    router.setNotificationHandler((method, params) => seen.push([method, params]));
+    router.feed(JSON.stringify({ jsonrpc: '2.0', method: '$/progress', params: { p: 1 } }) + '\n');
+    expect(seen).toEqual([['$/progress', { p: 1 }]]);
+  });
+
   it('correlates responses by id when a notification precedes the response', async () => {
     const router = new ResponseRouter();
     const client = new RpcClient({
