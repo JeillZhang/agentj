@@ -2,7 +2,7 @@
 
 > 本文档是 AgentJ 内核对外暴露的统一 UI 接口协议（IPC）的**人类可读权威规范**。
 > 机器可读工件（`schemas/*.json` 与 `protocol/methods.json`）是本规范的机器事实来源，见 [机器可读模型](#10-机器可读模型)。
-> 协议当前版本：`0.3.0`。
+> 协议当前版本：`0.10.0`。
 
 ## 1. 范围与一致性
 
@@ -654,8 +654,8 @@ v0.2 定义四个字符串值枚举：
 
 本规范是叙述性人类规范；机器事实来源为以下两个工件，两者由 CI 门禁保证与实现一致：
 
-- **`schemas/*.json`**：32 个 JSON Schema（JSON Schema Draft 2020-12），由 Rust `agentj-protocol` 的 serde 类型经 `schemars` 生成并提交。它们是所有消息 payload 结构的唯一事实来源，任意语言可从中生成绑定或做运行时校验。
-- **`protocol/methods.json`**：方法注册表，捕获 JSON Schema 表达不了的方法语义（method 字符串 ↔ params/result schema 引用、方向、类型）。当前 `protocol_version` 为 `0.3.0`。
+- **`schemas/*.json`**：33 个 JSON Schema（JSON Schema Draft 2020-12），由 Rust `agentj-protocol` 的 serde 类型经 `schemars` 生成并提交。它们是所有消息 payload 结构的唯一事实来源，任意语言可从中生成绑定或做运行时校验。
+- **`protocol/methods.json`**：方法注册表，捕获 JSON Schema 表达不了的方法语义（method 字符串 ↔ params/result schema 引用、方向、类型）。当前 `protocol_version` 为 `0.10.0`。
 
 对应关系：
 
@@ -686,7 +686,7 @@ v0.2 定义四个字符串值枚举：
 
 ### 11.1 版本策略
 
-协议版本遵循语义化版本（semver），规则见 §4.3：major 破坏 / minor 加方法 / patch 修 bug。当前版本 `0.3.0`（`protocol/methods.json` 中 `protocol_version` 字段为准）。
+协议版本遵循语义化版本（semver），规则见 §4.3：major 破坏 / minor 加方法 / patch 修 bug。当前版本 `0.10.0`（`protocol/methods.json` 中 `protocol_version` 字段为准）。
 
 ### 11.2 命名归一化决策（v0.1.0 记录）
 
@@ -732,8 +732,14 @@ v0.2 定义四个字符串值枚举：
 - `shutdown` 多客户端语义：触发**全局**优雅关闭链（见 §4.5 / §2.5）。
 - 全部为加性变更（只加不改），此前客户端零破坏。
 
+#### 0.10.0（G7 EventBus 重入防护 + G8 WebSocket 网关）
+
+- **传输层**：新增 `2.3 WebSocket`（`ws://127.0.0.1:<port>/ws`，与 raw TCP 同端口共存，`MSG_PEEK` + `looks_like_http` 分类器），每条 WS Text 帧 = 一条 JSON-RPC 消息；鉴权双通道 `?token=` 403 + `initialize.token` -32806；`max_connections` 对 WS 独立计数，WS 不参与最后连接断开全局关闭。
+- **事件总线重入防护（G7）**：`EventGuard` thread_local `EVENT_DEPTH`/`EVENT_STACK` + `MAX_EVENT_DEPTH=16` + 同栈循环检测 + `tracing::warn!` 丢弃 + RAII Drop 回卷。
+- 协议 wire 零破坏（加性传输扩展）。
+
 #### 后续版本
 
-- **0.3.x（patch）**：修复歧义、澄清文档；不改变任何 wire 结构或错误码语义。
-- **0.4.0（minor）**：预期加入 hooks / sub-agent / skills / stats 等方法的完整 Schema（预留路线图占位），以及 `session/expire` 或 TTL 配置等会话过期语义；枚举与能力对象加性扩展并标注 `@since 0.4.0`。
+- **0.10.x（patch）**：修复歧义、澄清文档；不改变任何 wire 结构或错误码语义。
+- **0.11.0（minor）**：预期加入 hooks / sub-agent / skills / stats 等方法的完整 Schema（预留路线图占位），以及 `session/expire` 或 TTL 配置等会话过期语义；枚举与能力对象加性扩展并标注 `@since 0.11.0`。
 - **major**：任何破坏性变更，必须在此记录迁移路径。

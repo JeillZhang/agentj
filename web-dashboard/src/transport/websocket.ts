@@ -4,7 +4,7 @@ import type { ResponseRouter, RpcTransport } from '../jsonrpc';
 export type TransportStatus = 'connecting' | 'open' | 'closed';
 
 /** Browser-native WebSocket transport (G8). One WS Text message = one JSON-RPC
- *  message; feed() is invoked per message (no \n splitting needed). */
+ *  message; ResponseRouter is NDJSON-delimited, append \n so single Text frame flushes. */
 export class WebSocketTransport implements RpcTransport {
   private readonly ws: WebSocket;
   private readonly router: ResponseRouter;
@@ -17,12 +17,17 @@ export class WebSocketTransport implements RpcTransport {
   ) {
     this.router = router;
     this.ws = wsFactory(url);
+    this.onStatusChange?.('connecting');
     this.ws.onopen = () => this.onStatusChange?.('open');
     this.ws.onmessage = (event) => {
       const data = typeof event.data === 'string' ? event.data : '';
+      // ResponseRouter is NDJSON-delimited, append \n so single Text frame flushes
       if (data) this.router.feed(data.endsWith('\n') ? data : data + '\n');
     };
-    this.ws.onerror = () => this.router.rejectAll(new Error('websocket error'));
+    this.ws.onerror = () => {
+      this.router.rejectAll(new Error('websocket error'));
+      this.onStatusChange?.('closed');
+    };
     this.ws.onclose = () => {
       this.router.rejectAll(new Error('websocket closed'));
       this.onStatusChange?.('closed');

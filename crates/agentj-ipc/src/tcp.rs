@@ -165,15 +165,12 @@ impl TcpIpcServer {
                 res = self.listener.accept() => {
                     let (stream, peer) =
                         res.map_err(|e| IpcError::InvalidRequest(e.to_string()))?;
-                    if self.active.load(Ordering::SeqCst) >= self.max_connections {
-                        drop(stream); // refuse (design 错误处理)
-                        continue;
-                    }
                     self.active.fetch_add(1, Ordering::SeqCst);
                     let shared = Arc::clone(&self.shared);
                     let token = self.token.clone();
                     let active = Arc::clone(&self.active);
                     let ws_state = Arc::clone(&self.ws_state);
+                    let max_connections = self.max_connections;
                     tokio::spawn(async move {
                         let mut buf = [0u8; 16];
                         let peeked = stream.peek(&mut buf).await.unwrap_or(0);
@@ -182,6 +179,14 @@ impl TcpIpcServer {
                             let router = crate::ws::ws_router(ws_state, peer);
                             crate::ws::serve_http(stream, router).await;
                         } else {
+                            if active.load(Ordering::SeqCst) > max_connections {
+                                active.fetch_sub(1, Ordering::SeqCst);
+                                if active.load(Ordering::SeqCst) == 0 {
+                                    let _ = shared.signal_shutdown();
+                                }
+                                drop(stream);
+                                return;
+                            }
                             if let Ok(conn) = TcpConnection::new(stream) {
                                 let _ =
                                     shared.serve_connection(Box::new(conn), token.as_deref()).await;
