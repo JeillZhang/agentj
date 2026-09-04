@@ -43,9 +43,14 @@ stdio 是 v0.1 唯一正式启用的传输。内核进程通过标准输入读�
 
 TCP 传输沿用 NDJSON 帧格式，每条消息一行。多客户端共享内核的能力由守护内核设计定稿（`docs/superpowers/specs/2026-08-15-agentj-daemon-kernel-design.md`）：`agentj serve --port` 常驻内核，通过统一的 `Connection` 抽象（stdio / TCP 均为实现）服务多个并发客户端；TCP 绑定默认 `127.0.0.1`（本机信任模型），可选 `--token`（`initialize` 的 `token` 字段校验，不匹配 → `-32806 NotAuthorized`）、`--max-connections`（默认 16，超限新连接直接拒绝）。连接生命周期、订阅广播、审批定向语义见 §4.5、§7 与 §8 对应方法节。
 
-### 2.3 WebSocket（未来预留）
+### 2.3 WebSocket（v0.10.0）
 
-WebSocket 使用**原生帧**：每条 WebSocket 文本消息即一条 JSON 消息，不做行分隔。WebSocket 网关的鉴权、代理等细节为未来预留。
+WebSocket 与 raw TCP 同端口共存，通过连接分类器按首字节区分 HTTP Upgrade 与 NDJSON 帧。浏览器可直接连接，无需额外网关进程。
+
+- **入口**：`ws://127.0.0.1:<port>/ws`（与 raw TCP 同端口共存，连接分类器按首字节区分 HTTP 与 NDJSON）。
+- **帧语义**：每条 WebSocket Text 消息 = 一条 JSON-RPC 消息（原生帧，无 `\n` 分隔）。
+- **鉴权双通道**：upgrade 阶段 `?token=` 校验（不匹配 → HTTP 403）；连接后 `initialize.token` 经 `auth_gate` 复验（`-32806 NotAuthorized`）。
+- **生命周期**：WS 连接不参与「最后连接断开 → 全局关闭」（浏览器会话短，不决定内核存亡）；`max_connections` 对 WS 独立计数。
 
 ### 2.4 消息大小上限
 
