@@ -22,6 +22,30 @@ fn pubkey_b64() -> String {
     )
 }
 
+fn temp_config() -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "agentj-e2e-license-{}-{:?}-{}",
+        std::process::id(),
+        std::thread::current().id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let session_dir = dir.join("sessions");
+    std::fs::create_dir_all(&session_dir).unwrap();
+    let cfg_path = dir.join("config.toml");
+    let base = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/license_run.toml"
+    ))
+    .unwrap();
+    let content = format!("{base}\n[session]\ndir = \"{}\"\n", session_dir.display());
+    std::fs::write(&cfg_path, content).unwrap();
+    cfg_path
+}
+
 fn run_agentj(args: &[&str]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_agentj"))
         .args(args)
@@ -34,15 +58,8 @@ fn run_agentj(args: &[&str]) -> std::process::Output {
 
 #[test]
 fn free_mode_run_succeeds_without_key() {
-    let out = run_agentj(&[
-        "--config",
-        concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures/license_run.toml"
-        ),
-        "run",
-        "hi",
-    ]);
+    let cfg = temp_config();
+    let out = run_agentj(&["--config", cfg.to_str().unwrap(), "run", "hi"]);
     assert!(
         out.status.success(),
         "stderr: {}",
@@ -53,12 +70,10 @@ fn free_mode_run_succeeds_without_key() {
 
 #[test]
 fn empty_license_key_flag_treated_as_free_mode() {
+    let cfg = temp_config();
     let out = run_agentj(&[
         "--config",
-        concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures/license_run.toml"
-        ),
+        cfg.to_str().unwrap(),
         "--license-key",
         "",
         "run",
@@ -73,17 +88,10 @@ fn empty_license_key_flag_treated_as_free_mode() {
 
 #[test]
 fn empty_license_key_env_treated_as_free_mode() {
+    let cfg = temp_config();
     let out = Command::new(env!("CARGO_BIN_EXE_agentj"))
         .env("AGENTJ_LICENSE_KEY", "")
-        .args([
-            "--config",
-            concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/tests/fixtures/license_run.toml"
-            ),
-            "run",
-            "hi",
-        ])
+        .args(["--config", cfg.to_str().unwrap(), "run", "hi"])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -98,12 +106,10 @@ fn empty_license_key_env_treated_as_free_mode() {
 
 #[test]
 fn invalid_key_exits_nonzero_with_license_error() {
+    let cfg = temp_config();
     let out = run_agentj(&[
         "--config",
-        concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures/license_run.toml"
-        ),
+        cfg.to_str().unwrap(),
         "--license-key",
         "not-a-key",
         "run",
@@ -115,14 +121,12 @@ fn invalid_key_exits_nonzero_with_license_error() {
 
 #[test]
 fn key_without_entitlement_exits_nonzero() {
+    let cfg = temp_config();
     let out = Command::new(env!("CARGO_BIN_EXE_agentj"))
         .env("AGENTJ_LICENSE_PUBKEY", pubkey_b64())
         .args([
             "--config",
-            concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/tests/fixtures/license_run.toml"
-            ),
+            cfg.to_str().unwrap(),
             "--license-key",
             &signed_key(&["dashboard"]),
             "run",
@@ -139,14 +143,12 @@ fn key_without_entitlement_exits_nonzero() {
 
 #[test]
 fn key_with_entitlement_run_succeeds() {
+    let cfg = temp_config();
     let out = Command::new(env!("CARGO_BIN_EXE_agentj"))
         .env("AGENTJ_LICENSE_PUBKEY", pubkey_b64())
         .args([
             "--config",
-            concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/tests/fixtures/license_run.toml"
-            ),
+            cfg.to_str().unwrap(),
             "--license-key",
             &signed_key(&["run"]),
             "run",
