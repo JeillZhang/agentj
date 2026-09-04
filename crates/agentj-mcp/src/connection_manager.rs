@@ -37,8 +37,15 @@ pub enum ConnectionState {
     Failed,
 }
 
+#[derive(Debug, Clone)]
+pub struct McpServerSpec {
+    pub command: String,
+    pub args: Vec<String>,
+    pub env: HashMap<String, String>,
+}
+
 pub struct McpConnection {
-    command: String,
+    spec: McpServerSpec,
     state: Mutex<ConnectionState>,
     refs: AtomicUsize,
     idle_since: Mutex<Option<Instant>>,
@@ -50,7 +57,7 @@ type Reply<T> = Sender<Result<T, String>>;
 
 enum TransportOp {
     Connect {
-        command: String,
+        spec: McpServerSpec,
         reply: Reply<()>,
     },
     Request {
@@ -83,11 +90,11 @@ impl TransportHandle {
         })
     }
 
-    fn connect(&self, command: String) -> Result<(), String> {
+    fn connect(&self, spec: McpServerSpec) -> Result<(), String> {
         let (reply_tx, reply_rx) = channel();
         self.tx
             .send(TransportOp::Connect {
-                command,
+                spec,
                 reply: reply_tx,
             })
             .map_err(|e| e.to_string())?;
@@ -140,10 +147,10 @@ fn reply_error(op: TransportOp, msg: &str) {
 fn handle_connect(
     rt: &tokio::runtime::Runtime,
     transport: &mut Option<McpTransport>,
-    command: String,
+    spec: McpServerSpec,
     reply: Reply<()>,
 ) {
-    let result = rt.block_on(spawn_and_init(&command));
+    let result = rt.block_on(spawn_and_init(&spec));
     match result {
         Ok(t) => {
             *transport = Some(t);
@@ -188,8 +195,8 @@ fn transport_loop(rx: Receiver<TransportOp>) {
     let mut transport: Option<McpTransport> = None;
     while let Ok(op) = rx.recv() {
         match op {
-            TransportOp::Connect { command, reply } => {
-                handle_connect(&rt, &mut transport, command, reply);
+            TransportOp::Connect { spec, reply } => {
+                handle_connect(&rt, &mut transport, spec, reply);
             }
             TransportOp::Request {
                 method,
@@ -211,10 +218,10 @@ fn transport_loop(rx: Receiver<TransportOp>) {
 
 /// Spawn the server subprocess and run the initialize handshake. Must run on the
 /// transport thread's runtime so the process pipes bind to that runtime.
-async fn spawn_and_init(command: &str) -> Result<McpTransport, String> {
-    let mut child = Command::new("sh")
-        .arg("-c")
-        .arg(command)
+async fn spawn_and_init(spec: &McpServerSpec) -> Result<McpTransport, String> {
+    let mut child = Command::new(&spec.command)
+        .args(&spec.args)
+        .envs(&spec.env)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::inherit())
@@ -349,15 +356,27 @@ impl McpConnectionManager {
         }
     }
 
+    pub async fn close_all(&self) {
+        let ids: Vec<String> = self
+            .connections
+            .read()
+            .ok()
+            .map(|g| g.keys().cloned().collect())
+            .unwrap_or_default();
+        for id in ids {
+            self.close(&id).await;
+        }
+    }
+
     // `self: &Arc<Self>` so registered tools can hold an Arc clone of the manager
     // for delegated execution (see McpSharedTool) — callers already hold Arc.
     pub async fn connect(
         self: &Arc<Self>,
         server_id: String,
-        command: String,
+        spec: McpServerSpec,
     ) -> Result<(), ToolError> {
         self.publish(&EventType::McpConnecting(server_id.clone()));
-        let conn = match self.handshake(&server_id, &command).await {
+        let conn = match self.handshake(&server_id, &spec).await {
             Ok(conn) => conn,
             Err(e) => {
                 self.fail(&server_id, &e.to_string()).await; // Failed tombstone
@@ -367,7 +386,7 @@ impl McpConnectionManager {
         if let Ok(mut map) = self.connections.write() {
             map.insert(server_id.clone(), Arc::new(conn));
         }
-        if let Err(e) = self.register_tools(&server_id, &command).await {
+        if let Err(e) = self.register_tools(&server_id, &spec).await {
             self.fail(&server_id, &e.to_string()).await;
             return Err(e);
         }
@@ -384,7 +403,11 @@ impl McpConnectionManager {
         Ok(())
     }
 
-    async fn handshake(&self, server_id: &str, command: &str) -> Result<McpConnection, ToolError> {
+    async fn handshake(
+        &self,
+        server_id: &str,
+        spec: &McpServerSpec,
+    ) -> Result<McpConnection, ToolError> {
         let handle =
             Arc::new(
                 TransportHandle::spawn().map_err(|e| ToolError::ServerUnavailable {
@@ -392,7 +415,7 @@ impl McpConnectionManager {
                     reason: e,
                 })?,
             );
-        let cmd = command.to_string();
+        let cmd = spec.clone();
         let connect_handle = Arc::clone(&handle);
         tokio::task::spawn_blocking(move || connect_handle.connect(cmd))
             .await
@@ -405,7 +428,7 @@ impl McpConnectionManager {
                 reason: e,
             })?;
         Ok(McpConnection {
-            command: command.into(),
+            spec: spec.clone(),
             state: Mutex::new(ConnectionState::Connected),
             refs: AtomicUsize::new(1),
             idle_since: Mutex::new(None),
@@ -436,7 +459,7 @@ impl McpConnectionManager {
     async fn register_tools(
         self: &Arc<Self>,
         server_id: &str,
-        _command: &str,
+        _spec: &McpServerSpec,
     ) -> Result<(), ToolError> {
         let handle = self
             .connections
@@ -480,7 +503,7 @@ impl McpConnectionManager {
     async fn handle_execute_error(
         self: &Arc<Self>,
         server_id: &str,
-        command: &str,
+        spec: &McpServerSpec,
         e: ToolError,
     ) -> ToolError {
         // mid-call crash → unregister ghosts, transition to Reconnecting
@@ -491,7 +514,7 @@ impl McpConnectionManager {
         if let Ok(mut map) = self.connections.write() {
             map.remove(server_id);
         }
-        self.reconnect(server_id, command).await;
+        self.reconnect(server_id, spec).await;
         e
     }
 
@@ -549,16 +572,16 @@ impl McpConnectionManager {
                         reason: "MCP tool returned no text content".into(),
                     })
             }
-            Err(e) => Err(self.handle_execute_error(server_id, &conn.command, e).await),
+            Err(e) => Err(self.handle_execute_error(server_id, &conn.spec, e).await),
         }
     }
 
-    async fn reconnect(self: &Arc<Self>, server_id: &str, command: &str) {
+    async fn reconnect(self: &Arc<Self>, server_id: &str, spec: &McpServerSpec) {
         self.publish(&EventType::McpReconnecting(server_id.into()));
         let mut delay = self.reconnect_base;
         for _ in 0..self.max_reconnect {
             tokio::time::sleep(delay).await;
-            if let Ok(conn) = self.handshake(server_id, command).await {
+            if let Ok(conn) = self.handshake(server_id, spec).await {
                 if let Ok(mut map) = self.connections.write() {
                     map.insert(server_id.into(), Arc::new(conn));
                 }
@@ -567,7 +590,7 @@ impl McpConnectionManager {
                 self.registry.unregister_by_source(&ToolSource::Mcp {
                     server_id: server_id.into(),
                 });
-                if self.register_tools(server_id, command).await.is_ok() {
+                if self.register_tools(server_id, spec).await.is_ok() {
                     if let Some(c) = self
                         .connections
                         .read()
@@ -647,7 +670,11 @@ impl McpConnectionManager {
     /// Leave a Failed tombstone so state() is observable after a failed connect/reconnect.
     async fn insert_failed(&self, server_id: &str) {
         let conn = McpConnection {
-            command: String::new(),
+            spec: McpServerSpec {
+                command: String::new(),
+                args: vec![],
+                env: HashMap::new(),
+            },
             state: Mutex::new(ConnectionState::Failed),
             refs: AtomicUsize::new(0),
             idle_since: Mutex::new(None),
@@ -732,11 +759,19 @@ mod tests {
         format!("{}/tests/fixtures/mcp_echo.sh", env!("CARGO_MANIFEST_DIR"))
     }
 
+    fn echo_spec() -> McpServerSpec {
+        McpServerSpec {
+            command: "sh".into(),
+            args: vec![echo_script()],
+            env: HashMap::new(),
+        }
+    }
+
     #[tokio::test]
     async fn connect_registers_tool_with_source() {
         let registry = Arc::new(ToolRegistry::new());
         let mgr = manager(registry.clone(), Duration::from_secs(60));
-        mgr.connect("srv1".into(), echo_script()).await.unwrap();
+        mgr.connect("srv1".into(), echo_spec()).await.unwrap();
         assert_eq!(mgr.state("srv1"), Some(ConnectionState::Ready));
         let tools = registry.tools();
         assert_eq!(tools.len(), 1);
@@ -752,7 +787,7 @@ mod tests {
     async fn execute_round_trips_tool_call() {
         let registry = Arc::new(ToolRegistry::new());
         let mgr = manager(registry.clone(), Duration::from_secs(60));
-        mgr.connect("srv1".into(), echo_script()).await.unwrap();
+        mgr.connect("srv1".into(), echo_spec()).await.unwrap();
         let out = mgr
             .execute("srv1", "echo", serde_json::json!({"text": "hello"}))
             .await
@@ -767,7 +802,12 @@ mod tests {
         let registry = Arc::new(ToolRegistry::new());
         let mgr = manager(registry.clone(), Duration::from_secs(60));
         let err_script = format!("{}/tests/fixtures/mcp_error.sh", env!("CARGO_MANIFEST_DIR"));
-        mgr.connect("srv1".into(), err_script).await.unwrap();
+        let spec = McpServerSpec {
+            command: "sh".into(),
+            args: vec![err_script],
+            env: HashMap::new(),
+        };
+        mgr.connect("srv1".into(), spec).await.unwrap();
         let result = mgr
             .execute("srv1", "echo", serde_json::json!({"text": "hello"}))
             .await;
@@ -784,7 +824,12 @@ mod tests {
         let registry = Arc::new(ToolRegistry::new());
         let mgr = manager(registry.clone(), Duration::from_secs(60));
         let empty_script = format!("{}/tests/fixtures/mcp_empty.sh", env!("CARGO_MANIFEST_DIR"));
-        mgr.connect("srv1".into(), empty_script).await.unwrap();
+        let spec = McpServerSpec {
+            command: "sh".into(),
+            args: vec![empty_script],
+            env: HashMap::new(),
+        };
+        mgr.connect("srv1".into(), spec).await.unwrap();
         let result = mgr
             .execute("srv1", "echo", serde_json::json!({"text": "hello"}))
             .await;
@@ -796,12 +841,9 @@ mod tests {
 
     #[tokio::test]
     async fn registered_tool_executes_through_manager() {
-        // Blocking-item fix: McpSharedTool::execute must delegate to the manager so the
-        // AgentLoop path (ctx.tools.get(name) + spawn_blocking(tool.execute)) works for
-        // long-lived MCP tools — registered tools must NOT be dead ends.
         let registry = Arc::new(ToolRegistry::new());
         let mgr = manager(registry.clone(), Duration::from_secs(60));
-        mgr.connect("srv1".into(), echo_script()).await.unwrap();
+        mgr.connect("srv1".into(), echo_spec()).await.unwrap();
         let echo = registry.get("echo").expect("echo tool registered");
         let out = echo.execute(serde_json::json!({"text": "hello"})).unwrap();
         assert_eq!(out.as_str().unwrap(), "echo: hello");
@@ -815,7 +857,12 @@ mod tests {
             "{}/tests/fixtures/mcp_crash_after_2.sh",
             env!("CARGO_MANIFEST_DIR")
         );
-        mgr.connect("srv1".into(), crash).await.unwrap();
+        let spec = McpServerSpec {
+            command: "sh".into(),
+            args: vec![crash],
+            env: HashMap::new(),
+        };
+        mgr.connect("srv1".into(), spec).await.unwrap();
         // the fixture serves exactly 2 tool calls, then exits; calls 1-2 succeed, call 3
         // hits a dead server → ServerUnavailable → reconnect (fresh process) → tool works again
         assert!(
@@ -844,7 +891,7 @@ mod tests {
     async fn release_to_zero_with_idle_timeout_closes_and_unregisters() {
         let registry = Arc::new(ToolRegistry::new());
         let mgr = manager(registry.clone(), Duration::from_millis(50));
-        mgr.connect("srv1".into(), echo_script()).await.unwrap();
+        mgr.connect("srv1".into(), echo_spec()).await.unwrap();
         assert_eq!(registry.tools().len(), 1);
         mgr.acquire("srv1").unwrap(); // refcount 2
         mgr.release("srv1"); // 1
@@ -862,10 +909,53 @@ mod tests {
     async fn reconnect_exhaustion_lands_in_failed() {
         let registry = Arc::new(ToolRegistry::new());
         let mgr = manager(registry.clone(), Duration::from_secs(60));
-        // /nonexistent script → every reconnect attempt fails; after max_reconnect → Failed
-        mgr.connect("srv1".into(), "/nonexistent/mcp_server.sh".into())
-            .await
-            .unwrap_err();
+        let spec = McpServerSpec {
+            command: "/nonexistent/mcp_server.sh".into(),
+            args: vec![],
+            env: HashMap::new(),
+        };
+        mgr.connect("srv1".into(), spec).await.unwrap_err();
         assert_eq!(mgr.state("srv1"), Some(ConnectionState::Failed));
+    }
+
+    #[tokio::test]
+    async fn connect_passes_args_and_env_to_subprocess() {
+        let registry = Arc::new(ToolRegistry::new());
+        let mgr = manager(registry.clone(), Duration::from_secs(60));
+        let spec = McpServerSpec {
+            command: "sh".into(),
+            args: vec![
+                format!(
+                    "{}/tests/fixtures/mcp_echo_args.sh",
+                    env!("CARGO_MANIFEST_DIR")
+                ),
+                "ARG123".into(),
+            ],
+            env: HashMap::from([("MCP_TEST_ENV".into(), "ENV456".into())]),
+        };
+        mgr.connect("srv1".into(), spec).await.unwrap();
+        assert_eq!(mgr.state("srv1"), Some(ConnectionState::Ready));
+        let tools = registry.tools();
+        assert_eq!(tools.len(), 1);
+        let desc = tools[0].tool.description().to_string();
+        assert!(desc.contains("ARG123"), "args not passed: {desc}");
+        assert!(desc.contains("ENV456"), "env not passed: {desc}");
+    }
+
+    #[tokio::test]
+    async fn close_all_closes_every_connection() {
+        let registry = Arc::new(ToolRegistry::new());
+        let mgr = manager(registry.clone(), Duration::from_secs(60));
+        mgr.connect("srv1".into(), echo_spec()).await.unwrap();
+        mgr.connect("srv2".into(), echo_spec()).await.unwrap();
+        // same tool name replaces, so only 1 registered; close_all should still close both connections
+        assert_eq!(registry.tools().len(), 1);
+        mgr.close_all().await;
+        assert_eq!(mgr.state("srv1"), Some(ConnectionState::Closed));
+        assert_eq!(mgr.state("srv2"), Some(ConnectionState::Closed));
+        assert!(
+            registry.tools().is_empty(),
+            "ghost tools must be unregistered"
+        );
     }
 }

@@ -1,14 +1,70 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use agentj_core::error::ModelError;
 use agentj_core::module::ModelProvider;
-use agentj_core::types::{ModelEvent, TokenUsage, ToolCall};
+use agentj_core::types::{
+    ChatMessage, ModelEvent, ModelOptions, TokenUsage, ToolCall, ToolDefinition,
+};
+use async_trait::async_trait;
+use futures::stream::{self, BoxStream};
 
 use crate::anthropic::AnthropicProvider;
-use crate::mock::MockModelProvider;
 use crate::openai_compat::OpenAICompatibleProvider;
 use crate::opencode_go::OpenCodeGoProvider;
 use crate::responses::ResponsesProvider;
+
+struct MockStateful {
+    calls: AtomicUsize,
+}
+
+impl MockStateful {
+    fn new() -> Self {
+        Self {
+            calls: AtomicUsize::new(0),
+        }
+    }
+}
+
+#[async_trait]
+impl ModelProvider for MockStateful {
+    async fn chat_stream(
+        &self,
+        _m: Vec<ChatMessage>,
+        _t: Vec<ToolDefinition>,
+        _o: ModelOptions,
+    ) -> Result<BoxStream<'static, Result<ModelEvent, ModelError>>, ModelError> {
+        let n = self.calls.fetch_add(1, Ordering::SeqCst);
+        let events: Vec<Result<ModelEvent, ModelError>> = if n == 0 {
+            vec![Ok(ModelEvent::ToolCall(ToolCall {
+                id: "call_1".into(),
+                name: "bash".into(),
+                arguments: serde_json::json!({"command": "curl http://example.com"}),
+            }))]
+        } else {
+            vec![
+                Ok(ModelEvent::Delta("done".into())),
+                Ok(ModelEvent::Usage(TokenUsage {
+                    prompt_tokens: 100,
+                    completion_tokens: 20,
+                })),
+                Ok(ModelEvent::Done),
+            ]
+        };
+        Ok(Box::pin(stream::iter(events)))
+    }
+
+    async fn chat(
+        &self,
+        _m: Vec<ChatMessage>,
+        _o: ModelOptions,
+    ) -> Result<agentj_core::types::ChatResponse, ModelError> {
+        Ok(agentj_core::types::ChatResponse {
+            content: "mock response".into(),
+            tool_calls: vec![],
+        })
+    }
+}
 
 /// Single instantiation entry for model providers (design 4.3). The config `kind`
 /// field ("openai-compat" | "responses" | "anthropic" | "opencode-go") selects the
@@ -34,19 +90,7 @@ impl ProviderFactory {
             // "mock" scripts a scripted tool call + reply — used by the E2E
             // permission test (T11). The command falls through to mode=ask: it
             // must not match the fixture's deny rule (deny short-circuits).
-            "mock" => Arc::new(MockModelProvider::new(vec![
-                Ok(ModelEvent::ToolCall(ToolCall {
-                    id: "call_1".into(),
-                    name: "bash".into(),
-                    arguments: serde_json::json!({"command": "curl http://example.com"}),
-                })),
-                Ok(ModelEvent::Delta("done".into())),
-                Ok(ModelEvent::Usage(TokenUsage {
-                    prompt_tokens: 100,
-                    completion_tokens: 20,
-                })),
-                Ok(ModelEvent::Done),
-            ])),
+            "mock" => Arc::new(MockStateful::new()),
             other => {
                 return Err(ModelError::Stream(format!(
                     "unknown provider kind: {other}"
