@@ -1,5 +1,3 @@
-import net from 'node:net';
-
 export interface RpcRequest {
   jsonrpc: '2.0';
   id: number;
@@ -125,17 +123,4 @@ export class RpcClient {
     })) as InitializeResult;
   }
 
-  static connect(port: number, host = '127.0.0.1'): RpcClient {
-    const socket = net.createConnection({ port, host });
-    const router = new ResponseRouter();
-    socket.on('data', (chunk: Buffer) => router.feed(chunk.toString()));
-    socket.on('error', (err: Error) => router.rejectAll(err));
-    return new RpcClient({
-      send: (line: string) =>
-        new Promise<string>((resolve, reject) => {
-          router.register(router.requestId(line), { resolve, reject });
-          socket.write(line + '\n');
-        }),
-    });
-  }
 }
