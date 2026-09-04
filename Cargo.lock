@@ -22,9 +22,11 @@ dependencies = [
  "base64",
  "clap",
  "ed25519-dalek",
+ "futures",
  "libc",
  "serde_json",
  "tokio",
+ "tokio-tungstenite 0.26.2",
  "tracing",
  "tracing-subscriber",
 ]
