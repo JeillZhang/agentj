@@ -119,3 +119,9 @@ docker-compose.override.yml
 .remember/
 
 .superpowers
+
+# ── Pi coding agent ──────────────────────────────────────────
+# NOTE: `.pi/settings.json` IS a tracked deliverable (shared skills mapping)
+# — do not ignore `.pi/` wholesale. Only local state is ignored.
+.pi/*.log
+.pi/cache/
