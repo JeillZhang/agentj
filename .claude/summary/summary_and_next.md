@@ -1,70 +1,138 @@
 # Summary & Next
 
 > 本文件仅保留**当前正在开发**功能设计文档的内容：进度、剩余步骤、遗留问题与下一步。同步更新时**替换**（不要追加）前一功能内容。
-> 当前功能：**G7 EventBus 重入防护 + G8 WebSocket 网关 (v0.10.0)**——设计文档 `docs/superpowers/specs/2026-09-04-g7-eventbus-reentrancy-g8-websocket-gateway-design.md` + 实现计划 `docs/superpowers/plans/2026-09-04-g7-g8-plan.md`（G1-G8 全部闭环，v0.10.0 发布）。
+> 当前功能：**agentj-ui 三端统一前端（Web / TUI / Desktop + SDK，v0.11.0）**
+> ——设计文档 `docs/superpowers/specs/2026-09-05-agentj-ui-design.md`
+> + 实现计划 `docs/superpowers/plans/2026-09-05-agentj-ui-plan.md`
+> （web-dashboard → agentj-ui 重命名 + SDK 抽取 + Web 对齐 + TUI 全量 + Tauri 打包，v0.11.0 发布）。
 
 ## 待实施
 
 | 阶段 | 标题 | 依赖 | 优先级 | 状态 |
 |------|------|------|--------|------|
-| ✅ 完成 | IPC 协议契约（agentj-protocol + schemas + registry + spec + TS binding） | 无 | P0 | 已完成 |
+| ✅ 完成 | IPC 协议契约（agentj-protocol + schemas + registry + spec + TS 绑定） | 无 | P0 | 已完成 |
 | ✅ 完成 | v0.1 核心内核（25 任务，v0.1.x 发布） | 无 | P0 | 已完成 |
 | ✅ 完成 | v0.2 权限审批系统（13 任务，v0.2.x 发布） | v0.1 | P0 | 已完成 |
 | ✅ 完成 | v0.3 生态扩展（T0-T11，v0.3.0 发布） | v0.1+v0.2 | P1 | 已完成 |
 | ✅ 完成 | v0.4 商业扩展（守护内核常驻 serve / Web Dashboard / 用量统计 / License；v0.4.1） | v0.1-v0.3 | P2 | 已完成 |
 | ✅ 完成 | v0.5 内核调度全重构（决策 #18 兑现，v0.5.0/0.5.1） | v0.4 | P0 | 已完成 |
 | ✅ 完成 | G2 修复：单全局 in-flight 会话槽 → per-session 路由（T1-T6，v0.6.0） | v0.5 | P0 | ✅ 已实现 v0.6.0 |
-| ✅ 完成 | G4 会话持久化生产接线（FileBackedStore 生产接入 + 唯一 tmp + 目录 fsync）（T0-T6，v0.7.0） | v0.6.0 | P0 | ✅ 已实现 v0.7.0 |
-| ✅ 完成 | G3 token 级用量统计（TokenUsage + 4 提供方 + SessionRunResult.usage + CLI 激活）（T0-T11，v0.8.0） | v0.7.0 | P0 | ✅ 已实现 v0.8.0 |
-| ✅ 完成 | G5 License gating + G6 MCP wiring（[license] + McpServerSpec + close_all + per-command entitlement）（T0-T8，v0.9.0 + v0.9.1 验收补丁） | v0.8.0 | P0 | ✅ 已实现 v0.9.1 |
-| ✅ 完成 | **G7 EventBus 重入防护 + G8 WebSocket 网关（v0.10.0）**（T0-T9，G1-G8 全闭环） | v0.9.1 | P0 | ✅ 已实现 v0.10.0 |
+| ✅ 完成 | G4 会话持久化生产接线（FileBackedStore + 唯一 tmp + 目录 fsync，v0.7.0） | v0.6.0 | P0 | ✅ 已实现 v0.7.0 |
+| ✅ 完成 | G3 token 级用量统计（TokenUsage + 4 提供方 + SessionRunResult.usage，v0.8.0） | v0.7.0 | P0 | ✅ 已实现 v0.8.0 |
+| ✅ 完成 | G5 License gating + G6 MCP wiring（[license] + McpServerSpec + close_all，v0.9.1） | v0.8.0 | P0 | ✅ 已实现 v0.9.1 |
+| ✅ 完成 | G7 EventBus 重入防护 + G8 WebSocket 网关（v0.10.0，G1-G8 全闭环） | v0.9.1 | P0 | ✅ 已实现 v0.10.0 |
+| ✅ 完成 | **agentj-ui 三端统一前端（Web / TUI / Desktop + SDK，v0.11.0）**（T0-T18） | v0.10.0 | P0 | ✅ 已实现 v0.11.0 |
 
-## Phase: G7 EventBus 重入防护 + G8 WebSocket 网关 (v0.10.0) ✅ (本次完成)
+## Phase: agentj-ui 三端统一前端 (v0.11.0) ✅ (本次完成)
 
 ### 进度与摘要
 
-- ✅ **根因**：G7 — `EventBus::publish` 同步串行执行 handler，handler 自触发同类型事件形成无限递归栈溢出，BUG-001 快照与 BUG-002 `catch_unwind` 已修复但无递归深度防护（`hooks.rs:50-67` 同步发布 14 处生产收口点均暴露）——设计债；G8 — Dashboard `RpcClient` 硬编码 `node:net` TCP，浏览器 `TypeError`，`Connection` 传输抽象已为 WS 留位，差距档案 G8 形态限制。
+- ✅ **根因/动机**：`web-dashboard` 单端、逻辑与协议 SDK 耦合于 Web、TUI/Desktop 缺失；
+  需在零后端改造前提下沉淀三端共享 SDK + 类型管线，并交付对齐的 Web + 全功能 TUI + Tauri 壳。
 
-- ✅ **方案**（设计 D1-D8）：G7 在 `EventBus::publish` 入口单点加 `EventGuard`（thread_local `EVENT_DEPTH: Cell<u8>` + `EVENT_STACK: Vec<EventType>`，`MAX_EVENT_DEPTH=16`，同栈 `stack.contains(event)` 即时拦截 + 跨类型环深度兜底，超限/循环 `tracing::warn!` 丢弃，RAII Drop 回卷 + `catch_unwind` 叠加，调用点零改动）；G8 将 `TcpIpcServer` accept 循环升级为连接分类器（`MSG_PEEK` + `looks_like_http`，HTTP→`serve_http`/非 HTTP→`TcpConnection`），单一 `TcpListener` 同端口共存 raw TCP 与 HTTP/WS，新增 `WsConnection` 实现 `Connection`（`TransportKind::WebSocket`，原生 Text 帧，无 `\n` 拼接，mpsc writer 桥复用半连接写句柄，复用 `register_writer` + `serve_connection_requests` 零改动），服务端 `WsServerState`/`ws_router`/`ws_upgrade`/`serve_http`（axum 0.8 ws + hyper-util `serve_connection_with_upgrades`，鉴权双通道 `?token=` 403 + `initialize.token` -32806，`max_connections` 独立计数，WS 不参与 last-disconnect 全局关闭），前端 `WebSocketTransport`（原生 `WebSocket`，`VITE_AGENTJ_WS_URL` 可配，`onStatusChange` + `close`）+ `ResponseRouter` 通知分叉（BUG-005 修复，`id==null` 不再丢弃），删除 `node:net`，CLI `serve --port` 打印 `websocket on ws://…/ws`。
+- ✅ **方案**（设计 D1-D8）：
+  单一 npm workspaces monorepo `agentj-ui/`（`apps/*` + `packages/*`，frontend stays in-repo）；
+  `packages/protocol` 迁 `bindings` 生成管线（schemas → types.d.ts，drift 门禁前置）；
+  `packages/sdk` 抽取 `client`/`router`/`transports`/`config`/`methods`（生成而非手写）；
+  Web 就地对齐（常量化/`?token=`/`protocol_version` 同源/收藏/composer/流式/审批/usage）；
+  TUI 基于 `@opentui/react` + Bun 全功能（连接/会话/composer/@补全//palette/流式/审批/模型只读/主题/usage/优雅退出）；
+  Desktop Tauri 壳套 `apps/web` 产物，四件套打包 + check-artifacts 校验。
 
-- ✅ **任务分解（T0-T9）已完成**：
-  - T0 — `hooks.rs` 新增 `MAX_EVENT_DEPTH=16` + `EventGuard` RAII（thread_local depth/stack + `enter` 循环/深度检查 + Drop 回卷）+ `publish` 入口 guard，含 3 单测（同类型自触发 1 次 / 跨类型 chain 深度 ≤16 / panic 后 guard 回卷）。
-  - T1 — `TransportKind::WebSocket` + `agentj-ipc/Cargo.toml` 新增 axum 0.8(ws)/hyper/hyper-util/futures/tower + dev-dep tokio-tungstenite。
-  - T2 — 前端 `RpcTransport` 扩展 `close?` + `ResponseRouter.setNotificationHandler` + `feed` 通知分叉（BUG-005）+ `RpcClient(transport, router?)` 可选 router。
-  - T3 — `ws.rs` 新增 `WsConnection`（split + mpsc writer 桥，原生 Text 帧，close→None，ping/pong 跳过）+ `pub mod ws`，含 2 单测（roundtrip via writer / close EOF）。
-  - T4 — `tcp.rs` 同端口连接分类器（`looks_like_http` + `MSG_PEEK` peek + `WsServerState`/`ws_router`/`ws_upgrade`/`serve_http`）+ `ws_classifier.rs` 4 集成（同端口 WS+TCP 共存 / `?token=` 403 / `initialize.token` -32806 / `max_connections` WS 限流）。
-  - T5 — `web-dashboard/src/transport/websocket.ts` 新增 `WebSocketTransport`（native WebSocket，`onStatusChange`，`onmessage→feed`，`onerror/onclose→rejectAll`）+ `App.tsx` `VITE_AGENTJ_WS_URL` 接线 + 删除 `node:net`，含 3 单测（send/response / notification feed / error+status）。
-  - T6 — `agentj-cli` `serve --port` 打印 `websocket on ws://…/ws` + `e2e_ws.rs` 双传输 e2e（WS+TCP 同端口 + `?token` 鉴权 + WS 不参与全局关闭）。
-  - T7 — workspace version `0.9.1` → `0.10.0`（`Cargo.toml` + `Cargo.lock`）。
-  - T8 — 文档 `docs/specs/ipc-protocol.md` §2.3 扩展为 v0.10.0 WS 传输节 + gap 档案 G7/G8 状态行 → ✅ 已实现。
-  - T9 — 本次：doc sync `AGENTS.md`/`README.md`/summary（G7+G8 阶段内容整体替换）。
+- ✅ **任务分解（T0-T18）已完成**：
+  - P0 基建：
+    - T0 — `web-dashboard` → `agentj-ui/apps/web` 重命名 + workspaces 根
+      （`apps/*`/`packages/*`，`@agentj/web` 重命名，`AgentJ UI` 标题）。
+    - T1 — `bindings` → `agentj-ui/packages/protocol`
+      （`generate.mjs` 重定向至 `../../../schemas`，`@agentj/protocol`，`types.d.ts` + tsc）。
+    - T2 — `packages/sdk` 抽取 `client.ts`/`router.ts`（零逻辑改动，
+      `@agentj/sdk` exports 直指 TS 源码，`src/index.ts` 统一再导出）。
+    - T3 — `config.ts`（`PROTOCOL_VERSION="0.11.0"` 单一来源 + `resolveWsUrl`）
+      + `methods.ts`（`protocol/methods.json` 生成 16 方法常量）。
+    - T4 — `transports/tcp.ts`（Node `node:net` NDJSON + pending map + close）
+      + `transports/websocket.ts` 从 `apps/web` 迁入。
+    - T5 — Web 重接入 `@agentj/sdk`（`App.tsx` 改 `@agentj/sdk`，删除本地
+      `jsonrpc.ts`/`transport/websocket.ts`，`@agentj/sdk:*` 依赖）。
+  - P1 Web 对齐：
+    - T6 — `ConnectionBar` + `resolveWsUrl`/`METHODS`/`PROTOCOL_VERSION` 接线
+      + token 透传 + 版本横幅（expected vs got）+ 未连接引导。
+    - T7a — `SessionPanel`（新建/凭 ID 继续 + localStorage 收藏 + 失效标记）。
+    - T7b — `RunPanel`（composer 多行 + Send + ProgressFeed `$progress` + usage 结算）。
+    - T7c — `ApprovalDialog`（`$permissionRequest` 模态 + Allow/Deny/AllowAll
+      → `permission/respond`，失败内联报错不阻塞 run 视图）。
+  - P2 TUI 全量：
+    - T8 — `@agentj/tui` 脚手架 + 连接状态机（指数退避 30s 上限 + 403 停重试 + Ctrl-C 退出 0）。
+    - T9 — 会话管理（本地历史 `session-history.json`，无 `session/list`，
+      `session/new`/`status`/`subscribe` 切换，`@agentj/sdk` 消费）。
+    - T10 — composer（多行 Textarea + 历史）+ runview（追加滚动）。
+    - T11 — 审批对话框（Allow/Deny/AllowAll → `permission/respond`）。
+    - T12 — 命令面板 `/` + 模型只读选择器（`default_model` 预选，无 `session/run.model`
+      注入，附 `config.toml [model] default_model` 提示，anti-dead-affordance）。
+    - T13a — `@` 文件补全（`completePath` 前缀匹配）。
+    - T13b — 主题切换（dark/light + 持久化）。
+    - T13c — usage 结算行（`formatUsage`，`undefined` → `usage: n/a`）。
+    - T15 — 重连 `session/subscribe` 续订 + `restoreTerminal` + SIGINT 优雅退出
+      + mock WS kernel e2e（`run → progress → permission → respond → done`）。
+  - P3 打包与发布：
+    - T16 — `apps/desktop` Tauri 壳（`tauri.conf.json` `frontendDist` → `../../web/dist`，
+      `version: 0.11.0`，targets all，`check-artifacts.sh` 平台校验）。
+    - T17 — workspace version `0.10.0` → `0.11.0`
+      （`Cargo.toml` + `Cargo.lock` + `sdk/config.ts` + `desktop/tauri.conf.json` + desktop package.json）。
+    - T18 — 本次：doc sync `AGENTS.md`/`README.md`/summary（agentj-ui 阶段整体替换）
+      + spec TODO 标记完成。
 
-- ✅ **决策 D1-D8**：
-  - D1 guard 放置 `EventBus::publish` 入口：14 生产发布点全收口，单点防护全覆盖、调用点零改动。
-  - D2 超限行为丢弃 + `tracing::warn!`：不 panic，与 BUG-002 panic 隔离一致，插件 bug 不拖垮进程。
-  - D3 防护粒度深度 16 + 同栈循环检测双保险：同类型即时拦截，跨类型环深度兜底。
-  - D4 同端口 + axum：单一 `127.0.0.1:port` 分类器共存，`run --attach tcp://` 零破坏。
-  - D5 hyper-util `serve_connection_with_upgrades` + axum Router service_fn 包装：分类器逐连接手动接管，官方 `serve-with-hyper` 模式。
-  - D6 鉴权双通道：upgrade `?token=` 403 + 连接后 `initialize.token` -32806，`auth_gate` 传输无关零改动。
-  - D7 WS 不参与 last-disconnect 全局关闭：浏览器会话短暂，不应决定常驻内核存亡。
-  - D8 前端 `WebSocketTransport` + `RpcTransport` 扩展 + BUG-005 修复：`RpcClient`/`ResponseRouter` 既有解耦点直接复用，最小替换会让 Dashboard 看不到进度。
+- ✅ **决策 D1-D8 兑现**：
+  - D1 SDK 边界抽取、D2 生成而非手写、D3 纯 WS 客户端 + 指数退避、
+    D4 TUI 全功能清单、D5 Web 完整交互清单、D6 Tauri 仅壳不嵌后端、
+    D7 `git mv` 改名保留历史、D8 OpenTUI 兜底条件（未触发）。
 
-- ✅ **验证结果**：
-  - `cargo test --workspace` — 全量通过（含 G7 hooks 3 + G8 ws 2 + ws_classifier 4 + websocket 3 + e2e_ws 双传输 + 既有 e2e_cli/e2e_permission/e2e_serve 回归）
-  - `cargo test -p agentj-protocol -- drift` — 2 通过（33 schemas 无漂移，WS 为传输层，协议零变化）
-  - `cargo clippy --workspace --all-targets -- -D warnings` — 零警告
-  - `cargo fmt --all --check` — 通过
-  - `cd web-dashboard && npm test && npm run build` — 通过，`dist/assets/*.js` 无 `node:net`
+### 验证结果
+
+- `cargo test --workspace` — 全量通过
+  （含既有 e2e_cli/e2e_permission/e2e_serve/e2e_ws + bus/协议/会话/模型 单测 + G7/G8 回归）
+- `cargo test -p agentj-protocol -- drift` — 2 通过（33 schemas 无漂移，agentj-ui 为消费端零协议变化）
+- `cargo clippy --workspace --all-targets -- -D warnings` — 零警告
+- `cargo fmt --all --check` — 通过
+- `./scripts/check-version.sh` — `version-ok`（Cargo 0.11.0 + sdk/config 0.11.0 + desktop 0.11.0）
+- `npm test --workspace=@agentj/sdk` — 通过（client/router/Bug-002/005/transport/config/methods）
+- `npm run generate --workspace=@agentj/protocol && npm run build --workspace=@agentj/protocol` — 通过
+- `npm test --workspace=@agentj/web && npm run build --workspace=@agentj/web` — 通过
+- `bun test --prefix agentj-ui/apps/tui` — 通过（含 tui-flow + permission + palette + completion + theme + mock WS e2e）
+- `./agentj-ui/apps/desktop/check-artifacts.sh linux` — 存在性校验通过（deb + AppImage，经 Tauri build 产出）
+- `! grep -q 'web-dashboard/' README.md AGENTS.md` — 通过（已迁至 `agentj-ui/apps/web`）
+- `grep -q 'agentj-ui' README.md AGENTS.md` + `grep -q '0.11.0' README.md AGENTS.md` — 通过
 
 ### 遗留问题 / 已知限制
 
-- G7 guard 为调用线程局部（`thread_local`）：跨线程并发发布不受深度约束（语义本为单线程调用栈保护，跨线程各栈独立）。
-- G8 同端口分类器以首字节形似 HTTP 判定，极端 NDJSON 首行以 `GET ` 等开头理论误判（实际 JSON-RPC 首字节必为 `{`，无碰撞）。
-- G8 浏览器 WSS/TLS、HTTP REST 面、CORS、每连接速率限流均明确非目标，随产品需求独立设计。
-- WS 客户端重连为前端尽力而为（指数退避 + `onStatusChange`），服务端不做会话粘滞/断线续传（沿用 `session/subscribe` 重连观测语义）。
-- gap 档案 G1-G8 全部 → ✅ 已实现，全闭环。
+- `@opentui/react` + `@opentui/core` 为 pre-1.0，含 6 平台预构建二进制；
+  已通过 `testRender` spike 验证，仍需关注上游 breaking 变更。
+- `session/list` 协议无此方法：Web 为 localStorage 收藏、TUI 为本地 `session-history.json`；
+  凭收藏 ID 继续失败（已归档/删除）需手工新建并标记失效。
+- TUI 模型选择器为只读：`SessionRunParams` 无 `model` 字段，当前仅展示
+  `default_model` + providers + `config.toml [model] default_model` 提示；
+  交互式下发为 NEXT-VERSION 目标（见下）。
+- WSS/TLS、HTTP REST 面、CORS、每连接速率限流非本阶段目标，随产品需求独立设计。
+- `cargo-dist` 二进制分发仅出评估结论，未在本阶段实现（Tauri 壳已覆盖安装包面）。
+- 重连后 `session/subscribe` 续订依赖内存中 `activeSessionId` 存活；全新启动无会话则回 SessionList。
+- gap 档案 G1-G8 + agentj-ui 全部 → ✅ 已实现，全闭环。
 
 ### 下一步
 
-- G1-G8 全闭环，按产品规划启动新 feature 设计 → `/jskill-feature-design`，或进入发布流程（PR 合并 → `feature/g7-g8-eventbus-websocket-gateway` → `main`）。
-- 可选增强：serve 周期性 license 复验、`close_all` 超时控制、`[[mcp.servers]]` 热重载、WS WSS/TLS、事件追溯日志（当前仅 warn 计数）。
+- v0.11.0 已全闭环，按发布流程执行：PR 合并 `feature/agentj-ui` → `main`，打 `v0.11.0` tag。
+- 可选增强（非阻塞）：
+  - `cargo-dist` 评估落地（`agentj` 二进制跨平台分发）。
+  - WS WSS/TLS + 速率限流（随部署需求）。
+  - 事件追溯日志 / `session/list` 服务端枚举（如产品决定）。
+
+#### NEXT-VERSION 目标（已记录，不在本阶段实现）
+
+- **交互式模型选择器**：为 `session/run` 增加加性 `model?: string` wire 字段
+  （`SessionRunParams` 扩展，`skip_serializing_if` 保持向后兼容），
+  前端（Web/TUI）模型选择器从只读升级为可下发：
+  选中模型随 `session/run` 透传至服务端，服务端 `AgentLoopModule` 优先取
+  请求级 `model` 覆盖 `[model] default_model`，未知模型容忍回退默认模型。
+  设计与实施另起 feature，不改动 v0.11.0 已冻结的 16 方法面与 33 schemas 的只读消费假设。
+
+### Spec TODO 更新
+
+- `docs/superpowers/specs/2026-09-05-agentj-ui-design.md` TODO 已标记完成
+  （P0-P3 全量兑现，见本文档验证结果；基准设计 D1-D8 无遗留）。

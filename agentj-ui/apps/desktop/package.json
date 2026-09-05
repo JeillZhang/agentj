@@ -1,0 +1,15 @@
+{
+  "name": "@agentj/desktop",
+  "private": true,
+  "version": "0.11.0",
+  "type": "module",
+  "scripts": {
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "check": "./check-artifacts.sh linux",
+    "tauri": "tauri"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.11.4"
+  }
+}

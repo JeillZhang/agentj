@@ -174,3 +174,30 @@ flowchart TB
 - **前置**：Bun ≥1.2（TUI dev/build/compile）、Rust 工具链（Tauri 壳构建）、Node 24+（Web 沿用）、可联调的 `serve --port` 后端。
 - **外部依赖**：`@opentui/react` + `@opentui/core`（pre-1.0，6 平台预构建二进制）、Tauri CLI v2、npm workspaces。
 - **阻塞项**：无后端阻塞；唯一风险为 OpenTUI spike（P2 首验，失败转 Ink 兜底并另起设计变更）。
+
+## TODO 清单（v0.11.0 已全部完成 ✅）
+
+> 本设计 D1-D8 对应的 P0-P3 任务均已在
+> `docs/superpowers/plans/2026-09-05-agentj-ui-plan.md`（T0-T18）兑现，
+> 验证见 `.claude/summary/summary_and_next.md`。
+
+- [x] P0 重命名与 SDK 抽取（T0-T5）：
+  `web-dashboard` → `agentj-ui/apps/web`、`bindings` → `packages/protocol`、
+  `packages/sdk`（client/router/config/methods/transports）抽取并接线 Web
+- [x] P1 Web 对齐（T6-T7c）：
+  ConnectionBar（`resolveWsUrl`/`?token=`/`protocol_version` 横幅）+
+  SessionPanel（新建/继续/收藏）+ RunPanel（composer/`$progress`/usage）+
+  ApprovalDialog（`$permissionRequest` → `permission/respond`）
+- [x] P2 TUI 全量（T8-T15）：
+  脚手架 + 连接状态机 + 会话管理 + composer/runview + 审批模态 +
+  palette/models（只读）+ @补全 + 主题 + usage + 重连/subscribe + mock WS e2e
+- [x] P3 打包与发布（T16-T18）：
+  Tauri 壳四件套 + workspace version 0.11.0 + doc sync（README/AGENTS/summary 替换）
+- [x] 验收：`cargo test`/`clippy`/`drift` + `npm -ws build/test` + `bun test` + `check-artifacts.sh` 全绿
+- [x] 文档同步：`README.md`/`AGENTS.md`/`summary_and_next.md` 已替换为 agentj-ui 阶段内容
+
+### NEXT-VERSION 目标（不在本设计实现）
+
+- [ ] 交互式模型选择器：`session/run.model` 加性 wire 字段，
+  前端只读选择器升级为可下发，服务端以请求级 `model` 覆盖 `default_model`
+  （向后兼容 `skip_serializing_if`，另起 feature 设计）。
