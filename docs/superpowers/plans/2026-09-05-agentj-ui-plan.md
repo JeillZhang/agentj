@@ -10,12 +10,20 @@
 
 ## Global Constraints
 
-- Rust workspace stays untouched except the version bump (T16): Rust 1.96+, edition 2024. `cargo clippy --workspace --all-targets -- -D warnings` zero-warning.
+- Rust workspace stays untouched except the version bump (T17): Rust 1.96+, edition 2024. `cargo clippy --workspace --all-targets -- -D warnings` zero-warning.
 - Protocol discipline: `protocol/methods.json` + `schemas/*.json` are read-only inputs. `cargo test -p agentj-protocol -- drift` stays green.
 - Design doc (Chinese, binding): `docs/superpowers/specs/2026-09-05-agentj-ui-design.md`. Decisions D1-D8 are binding.
-- Version bump: feature → minor, `0.10.0 → 0.11.0` (T16).
-- Doc sync: `README.md` / `AGENTS.md` / `.claude/summary/summary_and_next.md` committed together (T17).
+- Version bump: feature → minor, `0.10.0 → 0.11.0` (T17).
+- Doc sync: `README.md` / `AGENTS.md` / `.claude/summary/summary_and_next.md` committed together (T18).
 - Plan tasks, ACs, and code in English; prose context may be Chinese.
+
+## Known Temporary Inconsistencies (accepted, resolved by T18)
+
+- **README/AGENTS `bindings/ts` references go stale at T1**: T1 moves `bindings/ts` →
+  `agentj-ui/packages/protocol`, so the root `README.md` Development section's
+  `cd bindings/ts && npm install ...` command and AGENTS.md's `bindings/ts/` bullets point at a
+  non-existent path until T18 rewrites them. This is a deliberate ordering (docs are synced once at
+  the end, per AGENTS.md doc-sync rule); no other tooling depends on those paths mid-plan.
 
 ---
 
@@ -29,6 +37,7 @@
   files:
     - agentj-ui/package.json
     - agentj-ui/apps/web/package.json
+    - agentj-ui/apps/web/src/App.tsx
     - agentj-ui/apps/web/src/jsonrpc.test.ts
   depends_on: []
   breaking: true
@@ -146,7 +155,14 @@
     // Move apps/web src/jsonrpc.ts -> packages/sdk/src/client.ts (RpcClient) +
     // packages/sdk/src/router.ts (ResponseRouter, RpcTransport interface) with zero logic
     // changes; keep `new RpcClient(transport, router?)` optional-router signature.
-    // packages/sdk/package.json: { "name": "@agentj/sdk", "dependencies": { "@agentj/protocol": "*" } }
+    // packages/sdk/package.json:
+    // { "name": "@agentj/sdk", "type": "module", "exports": { ".": { "types": "./src/index.ts",
+    //   "default": "./src/index.ts" } }, "dependencies": { "@agentj/protocol": "*" } }
+    // PACKAGE EXPORTS (workspaces prerequisite): apps/* consume @agentj/sdk as SOURCE (TypeScript)
+    // — vite/vitest/bun must resolve the TS entry directly (no build artifact). The `exports` map
+    // above must point at the .ts source (types + default) so `Cannot find module '@agentj/sdk'`
+    // cannot occur. Add src/index.ts re-exporting RpcClient/ResponseRouter/RpcTransport/
+    // WebSocketTransport/TcpTransport/resolveWsUrl/PROTOCOL_VERSION/METHODS.
   verify:
     - "npm test --workspace=@agentj/sdk"
 ```
@@ -186,10 +202,20 @@
       expect(Object.keys(METHODS)).toHaveLength(16);
     });
   impl_code: |
-    // config.ts: export const PROTOCOL_VERSION = "0.10.0" (single source; bumped with workspace);
-    // export function resolveWsUrl({envUrl, host="127.0.0.1", port=4096, token?}): string.
-    // methods.ts: hand-written literal map generated FROM protocol/methods.json
-    // (verify by diffing Object.values against the registry in the test setup).
+    // config.ts: export const PROTOCOL_VERSION = "0.10.0" (single source of the SOFTWARE/workspace
+    // version, per binding D5 — see note below; T17 bumps it to 0.11.0); export function
+    // resolveWsUrl({envUrl, host="127.0.0.1", port=4096, token?}): string.
+    // methods.ts: GENERATED map — binding D2 mandates "生成而非手写". Add a small codegen step
+    // (e.g. a node script reading protocol/methods.json, checked into packages/protocol or run in
+    // the workspace root) that emits the METHODS literal. The `npm run generate` script MUST
+    // regenerate this file; verify by diffing Object.values against the registry in the test setup.
+  note: |
+    PROTOCOL_VERSION vs methods.json protocol_version: `protocol/methods.json` carries a
+    `protocol_version: "0.2.0"` registry field that is NEVER used in the initialize handshake. The
+    server (agentj-ipc/src/lib.rs:500) echoes `env!("CARGO_PKG_VERSION")` — the SOFTWARE version —
+    as the wire `protocol_version` and does NOT validate the client-sent value. Binding D5 therefore
+    defines PROTOCOL_VERSION as the SOFTWARE/workspace version (0.11.0 after T17), used for the
+    expected-vs-got banner (T6). Do NOT conflate it with methods.json's stale registry version.
   verify:
     - "npm test --workspace=@agentj/sdk"
 ```
@@ -293,7 +319,7 @@
   ac:
     - given: "`VITE_AGENTJ_WS_URL` unset and port 5000 configured"
       when: "resolving the connection"
-      then: "the client connects to `ws://127.0.0.1:5000/ws` (no hardcoded 4096)"
+      then: "the client connects to `ws://127.0.0.1:5000/ws` — no hardcoded 4096 in the App/ConnectionBar component (the SDK `resolveWsUrl` keeps 4096 as its own default; the App passes its configured port through explicitly)"
     - given: "a token `abc` in the connection bar"
       when: "connecting"
       then: "the URL becomes `ws://…/ws?token=abc` and `initialize` carries no stale default version"
@@ -303,6 +329,11 @@
     - given: "no reachable kernel"
       when: "rendering the connection bar"
       then: "a hint shows the start command `agentj dashboard --port 4096` (Tauri backend-unreachable guide)"
+  note: |
+    The version-mismatch banner compares the client's PROTOCOL_VERSION (software version, T3/D5)
+    against the version the server echoes back as `protocol_version` (its CARGO_PKG_VERSION). This is
+    a software-version compatibility check, NOT a semantic handshake negotiation — the server never
+    rejects a mismatched client, it only reports its own version.
   regression:
     - "@agentj/web vitest suite from T5"
   test_code: |
@@ -504,6 +535,11 @@
     // "@opentui/core": "*" } }; app.tsx: createCliRenderer + createRoot(renderer).render(<App/>);
     // App holds connection state machine (connecting/open/closed via onStatusChange) with
     // exponential-backoff reconnect capped at 30s (D3); Ctrl-C restores terminal and exits 0.
+    // FEASIBILITY GATE (de-risk @opentui pre-1.0 dependency): the FIRST sub-step of T8 must be a
+    // spike probe asserting the exact OpenTUI test APIs used by the plan — testRender, screen.*,
+    // input.press()/type() — behave as assumed (per the app.test.tsx test_code above). If any API
+    // differs from the plan's assumptions, STOP and update this plan (or fall back per binding D8)
+    // BEFORE building T9-T15 on top; do not carry an unverified test harness forward.
   verify:
     - "bun test agentj-ui/apps/tui"
 ```
@@ -653,9 +689,17 @@
     - given: "composer input starting with `/`"
       when: "typing `/mod`"
       then: "the palette filters to the models command and Enter opens the model selector"
-    - given: "the model selector open"
-      when: "choosing a model"
-      then: "subsequent `session/run` carries the chosen `model` param"
+    - given: "the model selector open (read-only, per binding D4)"
+      when: "browsing the provider/model list"
+      then: "the currently configured `default_model` is preselected and the list is read-only — NO `model` param is injected into `session/run` (SessionRunParams has no `model` field; see note)"
+  note: |
+    `SessionRunParams` (schemas/SessionRunParams.json) has NO `model` field — the active model is
+    a server-side `[model] default_model` config resolved by AgentLoopModule from ConfigProvider.
+    Binding D4 scopes the selector as read-only display (`default_model` + providers). Sending a
+    `model` param would violate the plan's "zero backend + protocol read-only" constraints, so the
+    selector must NOT touch the run wire params. An INTERACTIVE selector (additive
+    `session/run.model` wire field) is recorded as a NEXT-VERSION goal in T18's known limitations —
+    not attempted this phase.
   regression:
     - "TUI permission.test.tsx dialog behavior"
   test_code: |
@@ -664,10 +708,24 @@
     test("palette filters by prefix", () => {
       expect(filterCommands("/mod", ["models", "sessions", "themes"])).toEqual(["models"]);
     });
+    // models.tsx read-only list — RED until models.tsx exists.
+    import { renderModelList } from "./models.js";
+    test("model selector is read-only and preselects default_model", () => {
+      const out = renderModelList({ default_model: "deepseek-chat", providers: ["deepseek-chat", "opencode-go/kimi-k3"] });
+      expect(out).toContain("▶ deepseek-chat");   // preselected marker
+      expect(out).not.toContain("model=");        // no wire param anywhere
+      expect(out).toMatch(/config\.toml/);        // anti-dead-affordance hint (see impl_code)
+    });
   impl_code: |
     // palette.tsx: exported pure filterCommands + Palette overlay component; commands:
-    // models/sessions/themes/help/exit. models.tsx: ModelSelect list bound to the run call
-    // params (default_model preselected); app.tsx mounts palette on `/` prefix.
+    // models/sessions/themes/help/exit. models.tsx: exported pure renderModelList({default_model,
+    // providers}): string rendering a READ-ONLY list (default_model preselected, arrow marker);
+    // the selector is display-only per binding D4 — it does NOT thread a model into session/run
+    // params (SessionRunParams has no model field).
+    // ANTI-DEAD-AFFORDANCE: the list renders disabled (no focus / keyboard nav) and MUST include
+    // the hint line "model is set server-side in config.toml [model] default_model (restart kernel
+    // to change)" so the read-only semantics are self-explanatory instead of a broken-looking
+    // selector. app.tsx mounts palette on `/` prefix.
   verify:
     - "bun test agentj-ui/apps/tui"
 ```
@@ -771,6 +829,9 @@
 
 ### T15: Implement TUI reconnect, shutdown, panic restore, and mock-server e2e [P2] [Sequential]
 
+<!-- Note: there is no T14 — the original numbering skipped from T13c to T15 (T14 was never
+     allocated). Task IDs in the dependency graph below intentionally reflect this. -->
+
 ```yaml
 - id: T15
   title: "Implement TUI reconnect, shutdown, panic restore, and mock-server e2e"
@@ -809,7 +870,11 @@
     }, 15000);
   impl_code: |
     // connection.ts: ConnectionManager (backoff capped 30s, onStatusChange, resubscribe via
-    // session/subscribe on open). e2e/mock-kernel.ts (test helper, not counted in files):
+    // session/subscribe on open). IMPORTANT: the activeSessionId must be kept in the ConnectionManager's
+    // in-memory state across the disconnect, so that on reconnect the resubscribe knows WHICH session id
+    // to re-register (session/subscribe is per-session; the protocol has no session/list). If no
+    // activeSessionId survived (fresh start), the TUI returns to the SessionList (T9 local history)
+    // rather than blindly resubscribing. e2e/mock-kernel.ts (test helper, not counted in files):
     // minimal WS server replaying new/run/progress/permission/done with usage.
     // Graceful shutdown: SIGINT handler restoring terminal state, exit 0 (D4).
   verify:
@@ -851,7 +916,10 @@
   impl_code: |
     # Scaffold: `npm create tauri-app` (vanilla, TS) into apps/desktop, then set
     # tauri.conf.json: productName "AgentJ UI", version synced from workspace 0.11.0 (T17 order:
-    # version string updated again in T17), frontendDist "../web/dist", devUrl for `tauri dev`.
+    # version string updated again in T17), frontendDist "../../web/dist", devUrl for `tauri dev`.
+    # PATH FIX: frontendDist is resolved relative to `apps/desktop/src-tauri/` (where tauri.conf.json
+    # lives). "web/dist" (i.e. "../web/dist") would resolve to `apps/desktop/web/dist` (nonexistent).
+    # The correct value is "../../web/dist" (= apps/desktop/src-tauri/../../web/dist = apps/web/dist).
     # src-tauri/src/main.rs + build.rs keep scaffolder defaults (generated, unmodified).
     # apps/desktop/package.json scripts: dev/build/check(./check-artifacts.sh linux).
   verify:
@@ -890,7 +958,7 @@
     # Edit [workspace.package] version 0.10.0 -> 0.11.0 in Cargo.toml; run
     # `cargo check --workspace` to refresh Cargo.lock; sync the same version string into
     # apps/desktop/src-tauri/tauri.conf.json, apps/desktop/package.json, AND
-    # agentj-ui/packages/sdk/src/config.ts `PROTOCOL_VERSION` (D2 single source: the TS side
+    # agentj-ui/packages/sdk/src/config.ts `PROTOCOL_VERSION` (D5 single source: the TS side
     # is bumped by hand here; a true single source is out of scope for this plan).
   verify:
     - "./scripts/check-version.sh"
@@ -927,6 +995,11 @@
     # version tagline v0.11.0. AGENTS.md: version line, web-dashboard bullet -> agentj-ui section,
     # crate boundaries note (frontend stays in-repo). summary_and_next.md: REPLACE with the
     # agentj-ui phase (progress per P0-P3, verification results, remaining issues, next steps).
+    # KNOWN LIMITATION + NEXT-VERSION GOAL: the model selector (T12) is read-only this phase
+    # (SessionRunParams has no model field; per D4). Record the INTERACTIVE model selection — an
+    # additive `session/run.model` wire field (protocol change) + re-enabling the selector across
+    # Web/TUI — as the NEXT-VERSION goal in README/summary, so the follow-up feature has a written
+    # entry point (carried in the "待实施" table of summary_and_next.md).
   verify:
     - "./scripts/check-version.sh"
 ```
