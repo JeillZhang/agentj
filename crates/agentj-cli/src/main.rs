@@ -154,6 +154,7 @@ async fn serve_tcp(
     )
     .await?;
     println!("listening on {}", tcp.local_addr()?);
+    println!("websocket on ws://127.0.0.1:{port}/ws");
     let signal_task = spawn_signal_task(tcp.kernel_sender());
     // Resident mode: exits when the last client disconnects or a shutdown
     // request arrives (决策 #3 按需常驻).

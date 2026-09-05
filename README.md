@@ -2,7 +2,7 @@
 
 AI 编码代理工具（Rust）——Linux 内核式「内核调度 + 可插拔模块」架构。内核通过统一的 JSON-RPC 2.0 协议（stdio / TCP，未来 WebSocket）对外暴露能力；CLI、TUI、Web Dashboard、IDE 插件均可作为协议消费者，**任意语言**可开发前端连接内核。
 
-> 当前版本：**v0.9.1**——G5 License gating + G6 MCP config wiring（16 crate，G5 License gating：`[license] key` + `--license-key` + `AGENTJ_LICENSE_KEY` + `AGENTJ_LICENSE_PUBKEY` override + per-command `run`/`serve`/`dashboard` + free mode；G6 MCP wiring：`[[mcp.servers]] name/command/args/env` + `McpServerSpec` + `close_all` + startup warn-and-continue；G3 token 级用量统计：`TokenUsage` + `ModelEvent::Usage` + `AgentEvent::Done.usage` + `OnTurnComplete` + 4 提供方流式 usage 解析 + `SessionRunResult.usage` + CLI `record_token_usage` + 33 schemas；G4 会话持久化生产接线：FileBackedStore 生产接入 + `SessionStore` trait 化 + 唯一 tmp + 目录 fsync；v0.6 全保留：per-session 路由；v0.5 全保留：内核调度全重构；v0.4 全保留：守护内核；v0.3 全保留：事件总线 + 子代理 + skills + 插件 + MCP 长驻 + 会话过期 + Ollama；v0.2 全保留：IPC 协议契约 + 权限审批；v0.9.1 patch：BUG-001/002 fixes）。
+> 当前版本：**v0.10.0**——G7 EventBus 重入防护 + G8 WebSocket 网关（16 crate，G7 EventBus 重入防护：`EventGuard` thread_local `EVENT_DEPTH`/`EVENT_STACK` + `MAX_EVENT_DEPTH=16` + 同栈循环检测 + `tracing::warn!` 丢弃 + RAII Drop 回卷；G8 WebSocket 网关：`ws://127.0.0.1:<port>/ws` 同端口连接分类器 + `WsConnection` + `WsServerState`/`ws_router`/`serve_http` + `WebSocketTransport` + `ResponseRouter` 通知分叉 + CLI `websocket on ws://…/ws`；G5 License gating + G6 MCP wiring + G3 token 级用量统计 + G4 会话持久化生产接线；v0.6 全保留：per-session 路由；v0.5 全保留：内核调度全重构；v0.4 全保留：守护内核；v0.3 全保留：事件总线 + 子代理 + skills + 插件 + MCP 长驻 + 会话过期 + Ollama；v0.2 全保留：IPC 协议契约 + 权限审批）。
 
 ## Features
 
@@ -30,13 +30,15 @@ AI 编码代理工具（Rust）——Linux 内核式「内核调度 + 可插拔�
 - [x] **用量统计**：agentj-stats UsageCollector（per-session/global totals + turns；经 AgentLoop on-turn-complete 接线 `record_token_usage` 激活；`SessionRunResult.usage` 加性返回）
 - [x] **License gating**：Ed25519 per-command entitlement `run`/`serve`/`dashboard`，free mode（无 key 零门控），flag > env > config，`AGENTJ_LICENSE_PUBKEY` override，CLI 命令边界 fail-fast
 - [x] **MCP config wiring**：`McpServerSpec` via `Command` args/env（消除 `sh -c` 注入面），startup connect（warn-and-continue）+ `close_all` 优雅关闭，`[[mcp.servers]]` 配置
+- [x] **EventBus 重入防护**：`EventGuard` thread_local `EVENT_DEPTH`/`EVENT_STACK` + `MAX_EVENT_DEPTH=16`，同栈循环检测 + `tracing::warn!` 丢弃 + RAII Drop 回卷 + `catch_unwind` 叠加，调用点零改动
+- [x] **WebSocket 网关**：`ws://127.0.0.1:<port>/ws` 同端口共存 raw TCP（NDJSON）与 HTTP/WS（单一 `TcpListener` + `MSG_PEEK` 分类器 + `looks_like_http`）；`WsConnection`（`TransportKind::WebSocket` + 原生 Text 帧 + mpsc writer 桥）；`WsServerState`/`ws_router`/`serve_http`（axum 0.8 ws + hyper-util `serve_connection_with_upgrades`，`?token=` 403 + `initialize.token` -32806 双通道，`max_connections` 独立计数，WS 不参与 last-disconnect 全局关闭）；前端 `WebSocketTransport`（`VITE_AGENTJ_WS_URL`）+ `ResponseRouter` 通知分叉（BUG-005 修复）；CLI `serve --port` 打印 `websocket on ws://…/ws`
 
 ## Project Structure
 
 ```
 crates/              # 16 个 workspace crate（统一目录）
   agentj-protocol/   # IPC 协议契约 crate（wire 类型 + schema 生成，零内核耦合；v0.6 加性 CancelParams/PermissionRequestParams session_id @since 0.6.0；v0.8 加性 UsageInfo/SessionRunResult.usage）
-  agentj-core/       # 内核：Kernel 混合总线调度 + 模块 trait 注册表 + TurnRunner（TokenUsage 聚合 + ModelEvent::Usage + AgentEvent::Done.usage + OnTurnComplete） + ToolExecutorModule + AgentLoopModule + 异步子代理
+  agentj-core/       # 内核：Kernel 混合总线调度 + 模块 trait 注册表 + TurnRunner（TokenUsage 聚合 + ModelEvent::Usage + AgentEvent::Done.usage + OnTurnComplete）+ 事件总线重入防护（EventGuard thread_local EVENT_DEPTH/EVENT_STACK + MAX_EVENT_DEPTH=16 + 同栈循环检测） + ToolExecutorModule + AgentLoopModule + 异步子代理
   agentj-config/     # TOML 配置（[model] provider/providers[]/kind/default_model；[permission] per-tool ToolPolicy；[session] dir；[license] key；[[mcp.servers]] name/command/args/env）
   agentj-session/    # 会话生命周期（InMemoryStore/FileBackedStore + 统一过期清理 + FileBackedStore 唯一 tmp + 目录 fsync）
   agentj-model/      # 模型提供方：三线格式 + OpenCodeGo 门面 + ProviderFactory + Mock + Ollama（含 4 提供方流式 usage 解析）
@@ -48,15 +50,15 @@ crates/              # 16 个 workspace crate（统一目录）
   agentj-mcp/        # MCP 客户端（子进程连接 + 工具发现注册 + McpConnectionManager 长驻连接，v0.9 McpServerSpec + close_all）
   agentj-skills/     # skills 加载器（.aj/.agents/.claude/skills 优先级合并）
   agentj-plugin/     # 插件系统（manifest + 生命周期状态机 + 依赖图 + libloading 动态加载）
-  agentj-ipc/        # JSON-RPC 2.0 IPC 服务（stdio + TCP 多客户端常驻，全面接总线：session/run→UserRequest + $/cancelRequest→agent/cancel per-session 精准路由 + permission/respond session_of 门控 + kernel/status→modules() + usage 映射）
-  agentj-cli/        # agentj 二进制（run/serve/dashboard，resolve_session_dir XDG + [session] dir → FileBackedStore 单点实例化，spawn_expiry_loop 磁盘版 + record_token_usage 三分支 + check_license_gate + mcp connect/close_all）
+  agentj-ipc/        # JSON-RPC 2.0 IPC 服务（stdio + TCP 多客户端 + WebSocket 网关，全面接总线：同端口连接分类器 MSG_PEEK + looks_like_http + ws.rs WsConnection/WsServerState/ws_router/serve_http 原生 Text 帧 + mpsc writer 桥；session/run→UserRequest + $/cancelRequest→agent/cancel per-session 精准路由 + permission/respond session_of 门控 + kernel/status→modules() + usage 映射）
+  agentj-cli/        # agentj 二进制（run/serve/dashboard，resolve_session_dir XDG + [session] dir → FileBackedStore 单点实例化，spawn_expiry_loop 磁盘版 + record_token_usage 三分支 + check_license_gate + mcp connect/close_all + serve --port 同端口 TCP+WS 打印 websocket on ws://…/ws）
   agentj-plugin-fixture/  # 插件 cdylib 测试夹具（dev-only）
 models/              # 模型目录 models/opencode-go.json（opencode-go 路由事实来源）
 schemas/             # 33 个 JSON Schema（schemars 生成，机器事实来源）
 protocol/            # 方法注册表 methods.json
 docs/specs/          # 人类可读协议规范 ipc-protocol.md
 bindings/ts/         # TypeScript 绑定测试
-web-dashboard/       # Web Dashboard 前端（Vite + React + TS，JSON-RPC 消费端）
+web-dashboard/       # Web Dashboard 前端（Vite + React + TS，WebSocketTransport over 原生 WebSocket VITE_AGENTJ_WS_URL + ResponseRouter 通知分叉 BUG-005 修复，无 node:net）
 docs/superpowers/    # 设计文档 + 实现计划（中文）
 ```
 

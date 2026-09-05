@@ -1,5 +1,6 @@
 //! Unified Connection abstraction (design 决策 #1/#2) — transport-agnostic serve.
 pub mod tcp;
+pub mod ws;
 
 use agentj_core::error::{IpcError, KernelError, ModuleError};
 use agentj_core::kernel::Kernel;
@@ -28,6 +29,7 @@ pub enum TransportKind {
     Stdio,
     Tcp,
     UnixSocket,
+    WebSocket,
 }
 
 /// Send closure shared between a connection and its registered writer handle.
@@ -2751,5 +2753,13 @@ mod tests {
 
         drop(tx_a);
         let _ = task_a.await;
+    }
+
+    #[test]
+    fn transport_kind_has_websocket_variant() {
+        let ws = TransportKind::WebSocket;
+        assert_ne!(ws, TransportKind::Tcp);
+        assert_ne!(ws, TransportKind::Stdio);
+        assert_ne!(ws, TransportKind::UnixSocket);
     }
 }
