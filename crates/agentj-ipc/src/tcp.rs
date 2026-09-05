@@ -157,6 +157,10 @@ impl TcpIpcServer {
         self.shared.kernel_sender()
     }
 
+    pub fn shared_server(&self) -> Arc<IpcServer> {
+        Arc::clone(&self.shared)
+    }
+
     /// Accept loop: refuse connections beyond `max_connections` by closing the
     /// socket; when the LAST connection drops, signal kernel shutdown (决策 #3).
     pub async fn run(&mut self) -> Result<(), IpcError> {
