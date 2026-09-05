@@ -62,7 +62,11 @@ enum Commands {
         max_connections: usize,
     },
     /// Serve the JSON-RPC API over TCP for the Web Dashboard.
-    Dashboard { port: u16 },
+    Dashboard {
+        /// TCP port to listen on for the Web Dashboard.
+        #[arg(long)]
+        port: u16,
+    },
 }
 
 /// Build the per-tool policy map from the [permission] config section
@@ -135,6 +139,39 @@ fn spawn_signal_task(sender: agentj_core::kernel::KernelSender) -> tokio::task::
     })
 }
 
+fn spawn_tcp_signal_task(shared: Arc<IpcServer>) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        #[cfg(unix)]
+        {
+            let mut sigterm =
+                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).unwrap();
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {}
+                _ = sigterm.recv() => {}
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = tokio::signal::ctrl_c().await;
+        }
+        let _ = shared.signal_shutdown();
+        #[cfg(unix)]
+        {
+            let mut sigterm2 =
+                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).unwrap();
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {}
+                _ = sigterm2.recv() => {}
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = tokio::signal::ctrl_c().await;
+        }
+        std::process::exit(130);
+    })
+}
+
 async fn serve_tcp(
     kernel: Kernel,
     session: Arc<dyn SessionStore>,
@@ -155,7 +192,7 @@ async fn serve_tcp(
     .await?;
     println!("listening on {}", tcp.local_addr()?);
     println!("websocket on ws://127.0.0.1:{port}/ws");
-    let signal_task = spawn_signal_task(tcp.kernel_sender());
+    let signal_task = spawn_tcp_signal_task(tcp.shared_server());
     // Resident mode: exits when the last client disconnects or a shutdown
     // request arrives (决策 #3 按需常驻).
     tcp.run().await?;
