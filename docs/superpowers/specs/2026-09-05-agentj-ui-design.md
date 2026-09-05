@@ -14,7 +14,7 @@
 
 - **G1**：`web-dashboard` → `agentj-ui/apps/web` 重命名（`git mv` 保留历史），根 README / AGENTS.md / CI 路径同步，CI 全绿。
 - **G2**：沉淀 `packages/protocol`（`bindings/ts` 迁入，schemas → TS 类型生成）与 `packages/sdk`（client + router + transports + 连接配置工厂），Web / TUI / Desktop 同源消费；后端协议漂移门禁纳入前端 CI 前置。
-- **G3**：Web 端对齐——方法名常量化、`?token=` 透传、`protocol_version` 与 workspace 版本同源、`$/progress` 落页面、`$/permissionRequest` 可见。
+- **G3**：Web 完整交互——方法名常量化、`?token=` 透传、`protocol_version` 与 workspace 版本同源；会话管理（新建 / 凭 session_id 继续，ID 收藏于 localStorage 弥补无 `session/list`）；composer 发 prompt；`$/progress` 流式落页面；`$/permissionRequest` 可操作审批对话框（谁发起谁审批）；usage 结算；页面布局见新增 §Web 端页面布局。
 - **G4**：TUI 全功能——连接管理、会话列表/新建/切换/继续、composer（多行输入、@文件补全、/命令面板）、run 流式渲染、审批对话框、模型选择、主题切换、usage 结算行、优雅退出。
 - **G5**：Tauri 壳输出四件套安装包（deb / AppImage / dmg / msi）；`agentj` 二进制分发（cargo-dist）只出评估结论，不实现。
 
@@ -106,10 +106,45 @@ sequenceDiagram
 - **D2 — 生成而非手写**：方法名常量由 `protocol/methods.json` 生成，类型由 `schemas/*.json` 经既有 `json-schema-to-typescript` 管线生成；`cargo test -p agentj-protocol -- drift` 纳入 `agentj-ui` CI 第一门，后端改契约而 SDK 未同步即红灯。
 - **D3 — TUI 连接模式**：纯 WS 协议客户端，连 `dashboard --port`（无 token 最简）或 `serve --port`（`?token=` 透传）；断线指数退避重连（上限 30s 间隔）+ `onStatusChange`；重连后靠 `session/subscribe` 恢复观测，不做会话粘滞（沿用 G8 语义）。
 - **D4 — TUI 功能清单**：连接管理 → 会话列表/新建/切换/继续（`session/*`）→ composer（多行输入、@文件补全、/命令面板）→ run 流式渲染（`$/progress`）→ 审批对话框（`$/permissionRequest` → `permission/respond`，含 allow_always 会话态提示）→ 模型选择（`default_model` + providers 只读展示）→ 主题切换 → usage 结算行（`SessionRunResult.usage`）→ 优雅退出。
-- **D5 — Web 对齐清单**：方法名常量化、`initialize.protocol_version` 与 workspace 版本同源、`?token=` 拼接、`$/progress` 落页面（现仅 console.debug）、`$/permissionRequest` 只读横幅（审批主入口在 TUI）。
+- **D5 — Web 完整交互清单**：方法名常量化、`initialize.protocol_version` 与 workspace 版本同源、`?token=` 拼接；ConnectionBar（地址/token/连接按钮，未连接时附 `agentj dashboard --port …` 引导）；会话区（新建会话、凭 session_id 继续、localStorage 收藏）；composer（多行输入 + 提交）；ProgressFeed（`$/progress` 落页面）；审批可操作对话框（`permission/respond`，含 allow_always 选项；仅本端发起的会话可批，`session_owner` 门控失败则报错）；usage 结算行；页面布局见 §Web 端页面布局。
 - **D6 — Tauri 壳**：`apps/desktop` 仅壳（`tauri.conf.json` + 图标 + 与 workspace 版本同源的版本号），`frontendDist` 指向 `apps/web` 构建产物；第一版不嵌后端（用户本机另起 `serve --port`，壳内提供连接地址输入）。
 - **D7 — 改名迁移**：`git mv web-dashboard agentj-ui/apps/web` → 建 workspaces 根 → `packages/*` 抽取 → 更新根 README / AGENTS.md / CI 路径 → 版本 **0.10.0 → 0.11.0**（minor，feature 级）。
 - **D8 — 兜底触发条件**：P2 首个可运行 TUI 版本连续阻塞，或 OpenTUI 出现不可绕过的内存/渲染缺陷 → 切 Ink 兜底并另起设计变更；不预写 Ink 代码。
+
+## Web 端页面布局
+
+三栏式（桌面宽屏；窄屏自动堆叠为单列：连接 → 会话 → 运行 → 审批）：
+
+```mermaid
+flowchart TB
+    HEADER["顶栏：AgentJ UI | 连接状态灯 | 版本横幅位"]
+    CONN["连接条 ConnectionBar\n地址 + 端口 + token + 连接按钮\n未连接时附引导命令"]
+    SESS["左栏·会话区 SessionPanel\n新建会话按钮\nsession_id 输入 + 继续按钮\n收藏列表（localStorage）\n当前会话状态"]
+    RUN["中栏·运行区 RunPanel\ncomposer（多行输入 + 提交）\nProgressFeed（流式追加，底钉自动滚）\nusage 结算行"]
+    APPR["审批弹窗 ApprovalDialog（模态）\ntool + args + session_id\nAllow / Deny / AllowAll"]
+    HEADER --> CONN --> SESS
+    CONN --> RUN
+    RUN -.->|$/permissionRequest| APPR
+    SESS -.->|切换/新建| RUN
+```
+
+- **状态机**：未连接（仅连接条可用，其余置灰）→ 已连接无会话（会话区可用）→ 会话空闲（composer 可提交）→ 运行中（composer 禁用，ProgressFeed 追加）→ 待审批（模态弹窗阻塞，run 视图保留）→ 结算（usage 行 + composer 恢复）。
+- **交互规则**：审批弹窗仅本端发起会话可操作（`session_owner` 门控）；收藏的 session_id 一键继续（`session/status` + `session/subscribe`）；窄屏 <900px 时三栏纵向堆叠，顺序同上。
+
+## TUI 屏布局
+
+固定分区（终端全屏；transcript 为不可变追加区，footer 为可变控制面，沿用 opencode split-footer 模式）：
+
+```mermaid
+flowchart TB
+    SBAR["顶状态行：连接态 | 会话ID | 模型 | 主题"]
+    TRANS["transcript（runview，追加滚动）\n历史帧只增不改"]
+    FOOT["footer 控制面\ncomposer（多行 Textarea）\n/palette 浮层 · @补全浮层\n审批模态 · usage 结算行"]
+    SBAR --> TRANS --> FOOT
+```
+
+- **焦点流转**：composer ⇄ (`/` 触发 palette，`@` 触发补全）→ Enter 提交 run → 运行中焦点锁 composer（Esc 可清空）→ `$/permissionRequest` 弹出模态（Allow/Deny/AllowAll，Tab 切换）→ 关闭回 composer。
+- ** unhealthy 态**：断线时 footer 顶部插一行 `reconnecting…`，transcript 保留；403 时停重试并提示改 token（同 Web 行径）。
 
 ## 错误处理
 
@@ -122,6 +157,8 @@ sequenceDiagram
 | 断线时 pending 请求悬挂 | `rejectAll` 全量拒绝并标记，UI 对应区域置过期态 |
 | TUI 原生层 panic（OpenTUI Zig 侧） | 捕获 → 恢复终端状态 → 打印错误码退出，不留脏终端 |
 | Tauri 壳内后端未启动 | 引导页提示 `agentj dashboard --port …` 并提供地址输入框 |
+| 审批响应被拒（request 已过期 / 非本端发起） | 对话框内联报错并可关闭，不阻塞 run 视图；TUI/Web 同行径 |
+| 凭收藏 ID 继续失败（会话已归档/删除） | 会话区报错并提供新建按钮，收藏条目标记失效 |
 
 ## 测试策略
 
