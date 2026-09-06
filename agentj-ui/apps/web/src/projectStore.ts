@@ -26,6 +26,13 @@ function persistProjects(list: Project[]): void {
   } catch {}
 }
 
+function notifyProjectsUpdated(): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.dispatchEvent(new CustomEvent("agentj:projects-updated"));
+  } catch {}
+}
+
 export function loadProjects(): Project[] {
   const raw = (() => {
     try {
@@ -95,6 +102,7 @@ export function createProject(name: string): Project {
   const proj: Project = { id: slug(finalName), name: finalName, createdAt: Date.now() };
   projects.push(proj);
   persistProjects(projects);
+  notifyProjectsUpdated();
   return proj;
 }
 

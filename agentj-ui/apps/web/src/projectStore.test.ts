@@ -35,6 +35,18 @@ describe("projectStore", () => {
     expect(getProjectForSession("unknown")).toBe("default");
   });
 
+  test("createProject dispatches agentj:projects-updated for same-tab sync", () => {
+    const seen: string[] = [];
+    const handler = (e: Event) => seen.push(e.type);
+    window.addEventListener("agentj:projects-updated", handler);
+    try {
+      createProject("Foo");
+    } finally {
+      window.removeEventListener("agentj:projects-updated", handler);
+    }
+    expect(seen).toContain("agentj:projects-updated");
+  });
+
   test("rename and empty rejected", () => {
     const p = createProject("Foo");
     renameProject(p.id, "Bar");

@@ -1,8 +1,11 @@
 import "@testing-library/jest-dom/vitest";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import RunPanel, { ConversationFeed, failRun, fmtDuration, reduceRunFeed, type RunEntry } from "./RunPanel.tsx";
+import UnifiedSidebar from "./components/UnifiedSidebar";
 import type { ProgressFrame } from "@agentj/sdk";
+
+beforeEach(() => localStorage.clear());
 
 const noopClient = {
   setNotificationHandler: () => {},
@@ -272,5 +275,21 @@ describe("RunPanel composer status popover wiring", () => {
     const dialog = screen.getByRole("dialog", { name: "status" });
     expect(dialog.querySelector(".aj-status-light")?.getAttribute("data-state")).toBe("unreachable");
     expect(screen.getByText("kernel unreachable on ws://x")).toBeInTheDocument();
+  });
+});
+
+describe("RunPanel project picker → UnifiedSidebar sync", () => {
+  it("shows a project created via the composer picker in the already-mounted sidebar immediately", () => {
+    render(
+      <>
+        <UnifiedSidebar wsUrl="ws://x" client={null} activeSessionId="s1" onActiveChange={() => {}} />
+        <RunPanel client={noopClient} activeSessionId="s1" />
+      </>,
+    );
+    expect(screen.getByRole("button", { name: /Inbox folder/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /New Project folder/ })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /project picker/i }));
+    fireEvent.click(screen.getByText("New Project"));
+    expect(screen.getByRole("button", { name: /New Project folder/ })).toBeInTheDocument();
   });
 });
