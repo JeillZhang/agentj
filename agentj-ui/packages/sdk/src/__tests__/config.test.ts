@@ -15,6 +15,6 @@ describe("config", () => {
 
   it("methods cover the 16-method registry", () => {
     expect(METHODS.kernelStatus).toBe("kernel/status");
-    expect(Object.keys(METHODS)).toHaveLength(16);
+    expect(Object.keys(METHODS)).toHaveLength(18);
   });
 });
