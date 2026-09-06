@@ -2,9 +2,12 @@ import { createCliRenderer } from "@opentui/core";
 import { createRoot, useKeyboard, useRenderer } from "@opentui/react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Dispatch, MutableRefObject, SetStateAction } from "react";
-import { METHODS, ResponseRouter, RpcClient, WebSocketTransport } from "@agentj/sdk";
-import type { TransportStatus } from "@agentj/sdk";
+import { METHODS, ResponseRouter, RpcClient, WebSocketTransport, parseProgress } from "@agentj/sdk";
+import type { NotificationHandler, ProgressFrame, TransportStatus } from "@agentj/sdk";
 import { resolveWsUrl } from "@agentj/sdk";
+import { Composer } from "./composer.tsx";
+import { nextKey, rowsFromFrame, RunTranscript } from "./runview.tsx";
+import type { TranscriptRow } from "./runview.tsx";
 import { restoreTerminal, setupGracefulShutdown } from "./connection.ts";
 import {
   SessionList,
@@ -337,15 +340,43 @@ function AppInner({ url, createTransport, backoffBaseMs = 1000 }: AppProps) {
   const st = useSessionState();
   const { handleSelect, handleNew } = useAppHandlers(client, st);
   const { pending: permReq, respond: handlePermRespond, clear: clearPerm } = usePermissionState(client);
-  const { toggle: toggleTheme } = useTheme();
-  const palette = usePaletteControl(toggleTheme);
+  const { toggle: toggleTheme, palette } = useTheme();
+  const paletteCtrl = usePaletteControl(toggleTheme);
   const statusLine = getStatusLine(authError, status);
   const modelConfig = useModelConfig(client);
+  const [transcriptRows, setTranscriptRows] = useState<TranscriptRow[]>([]);
+  useEffect(() => {
+    setTranscriptRows([]);
+  }, [st.activeId]);
+  useEffect(() => {
+    if (!client) return;
+    const handler: NotificationHandler = (method, params) => {
+      if (method !== METHODS.progress) return;
+      setTranscriptRows((prev) => rowsFromFrame(prev, parseProgress(params)));
+    };
+    client.setNotificationHandler(handler);
+  }, [client]);
+  const handleSubmit = useCallback(
+    async (text: string) => {
+      const sid = st.activeId;
+      if (!client || !sid) return;
+      st.setErr(null);
+      setTranscriptRows((prev) => [...prev, { key: nextKey(prev), kind: "user", text }]);
+      try {
+        await client.request(METHODS.sessionRun, { session_id: sid, prompt: text });
+      } catch (e) {
+        st.setErr(e instanceof Error ? e.message : String(e));
+      }
+    },
+    [client, st],
+  );
+  const statusColor =
+    authError !== null ? palette.error : status === "open" ? palette.success : palette.warning;
   return (
     <box flexDirection="column" padding={1}>
-      <text>{statusLine}</text>
-      {status === "connecting" && !authError ? <text>Connecting to kernel...</text> : null}
-      {authError ? <text>Authentication failed (403)</text> : null}
+      <text style={{ fg: statusColor }}>{statusLine}</text>
+      {status === "connecting" && !authError ? <text style={{ fg: palette.warning }}>Connecting to kernel...</text> : null}
+      {authError ? <text style={{ fg: palette.error }}>Authentication failed (403)</text> : null}
       {permReq ? (
         <PermissionDialog
           tool={permReq.tool}
@@ -356,27 +387,30 @@ function AppInner({ url, createTransport, backoffBaseMs = 1000 }: AppProps) {
           onClose={clearPerm}
         />
       ) : null}
-      {palette.modelOpen ? (
+      {paletteCtrl.modelOpen ? (
         <ModelSelector default_model={modelConfig.default_model} providers={modelConfig.providers} />
       ) : null}
-      {palette.paletteQuery !== null && !palette.modelOpen ? (
+      {paletteCtrl.paletteQuery !== null && !paletteCtrl.modelOpen ? (
         <Palette
-          query={palette.paletteQuery}
-          onSelect={palette.handleSelect}
-          onClose={palette.handleClose}
+          query={paletteCtrl.paletteQuery}
+          onSelect={paletteCtrl.handleSelect}
+          onClose={paletteCtrl.handleClose}
         />
       ) : null}
-      {status === "open" && st.activeId === null && !permReq && !palette.modelOpen && palette.paletteQuery === null ? (
+      {status === "open" && st.activeId === null && !permReq && !paletteCtrl.modelOpen && paletteCtrl.paletteQuery === null ? (
         <SessionList history={st.history} onSelect={handleSelect} onNew={handleNew} activeId={st.activeId} />
       ) : null}
       {status === "open" && st.activeId !== null ? (
-        <box flexDirection="column">
-          <text>session: {st.activeId}</text>
-          <text>targets {st.activeId}</text>
-          {st.info ? <text>{st.info}</text> : null}
+        <box flexDirection="column" flexGrow={1}>
+          <text style={{ fg: palette.textMuted }}>session: {st.activeId}</text>
+          {st.info ? <text style={{ fg: palette.textMuted }}>{st.info}</text> : null}
+          <RunTranscript rows={transcriptRows} />
+          {!permReq && !paletteCtrl.modelOpen && paletteCtrl.paletteQuery === null ? (
+            <Composer onSubmit={handleSubmit} placeholder="send a message" />
+          ) : null}
         </box>
       ) : null}
-      {st.err ? <text>{st.err}</text> : null}
+      {st.err ? <text style={{ fg: palette.error }}>{st.err}</text> : null}
     </box>
   );
 }

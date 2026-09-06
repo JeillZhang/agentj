@@ -12,6 +12,15 @@ export const MODEL_CONFIG: ModelListInput = {
   providers: ["deepseek-chat", "opencode-go/kimi-k3"],
 };
 
+export function providersFromStatus(data: Record<string, unknown>): string[] {
+  const prov = data?.["providers"];
+  if (!Array.isArray(prov) || prov.length === 0) return MODEL_CONFIG.providers;
+  const ids = (prov as Array<{ id?: unknown }>)
+    .map((p) => (typeof p?.id === "string" ? p.id : null))
+    .filter((x): x is string => x !== null);
+  return ids.length > 0 ? ids : MODEL_CONFIG.providers;
+}
+
 export function useModelConfig(client: RpcClient | null): ModelListInput {
   const [cfg, setCfg] = useState<ModelListInput>(MODEL_CONFIG);
   useEffect(() => {
@@ -21,9 +30,8 @@ export function useModelConfig(client: RpcClient | null): ModelListInput {
       .then((r) => {
         const data = r as unknown as Record<string, unknown>;
         const dm = data?.["default_model"];
-        const prov = data?.["providers"];
         if (typeof dm === "string" && dm.length > 0) {
-          const providers = Array.isArray(prov) && prov.length > 0 ? (prov as string[]) : MODEL_CONFIG.providers;
+          const providers = providersFromStatus(data);
           setCfg({ default_model: dm, providers });
         }
       })
