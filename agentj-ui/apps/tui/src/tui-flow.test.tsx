@@ -211,7 +211,7 @@ describe("Progress feed via METHODS.progress", () => {
     } as unknown as RpcClient;
     function Wrapped() {
       const onSubmit = (text: string) => {
-        void fake.request(METHODS.sessionRun, { session_id: "s1", prompt: text });
+        void fake.request(METHODS.sessionRun, { session_id: "s1", content: text });
       };
       return <Composer onSubmit={onSubmit} />;
     }
@@ -229,7 +229,7 @@ describe("Progress feed via METHODS.progress", () => {
       await setup.waitFor(() => calls.length > 0).catch(() => {});
     });
     expect(calls[0]?.method).toBe(METHODS.sessionRun);
-    expect(calls[0]?.params.prompt).toBe("hi");
+    expect(calls[0]?.params.content).toBe("hi");
     expect(calls[0]?.params.session_id).toBe("s1");
     act(() => setup.renderer.destroy());
   });

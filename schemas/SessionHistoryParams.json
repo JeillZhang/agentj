@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SessionHistoryParams",
+  "description": "Page of a session trajectory. @since 0.12.0",
+  "type": "object",
+  "properties": {
+    "cursor": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint64",
+      "minimum": 0
+    },
+    "limit": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint64",
+      "minimum": 0
+    },
+    "session_id": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "session_id"
+  ]
+}

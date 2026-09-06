@@ -13,6 +13,8 @@ export const METHODS = {
   sessionDelete: "session/delete",
   sessionSubscribe: "session/subscribe",
   sessionUnsubscribe: "session/unsubscribe",
+  sessionList: "session/list",
+  sessionHistory: "session/history",
   kernelStatus: "kernel/status",
   cancelRequest: "$/cancelRequest",
   progress: "$/progress",

@@ -518,6 +518,27 @@ pub trait SessionStore: Send + Sync {
         Ok(vec![])
     }
 
+    /// Enumerate known sessions, newest-first by updated_at. Default body maps
+    /// `load_all()` — FileBackedStore::new preloads the dir so restarted daemons
+    /// are covered; InMemoryStore keeps its documented empty contract.
+    fn list(&self) -> Result<Vec<crate::types::SessionListEntry>, ModuleError> {
+        let mut entries: Vec<crate::types::SessionListEntry> = self
+            .load_all()?
+            .into_iter()
+            .map(|snap| {
+                let preview = crate::types::preview_of(&snap);
+                crate::types::SessionListEntry {
+                    session_id: snap.session_id,
+                    updated_at: snap.updated_at,
+                    status: snap.status,
+                    preview,
+                }
+            })
+            .collect();
+        entries.sort_by_key(|e| std::cmp::Reverse(e.updated_at));
+        Ok(entries)
+    }
+
     /// Archive every Active session idle longer than `ttl`, publishing
     /// EventType::SessionExpired per archived session; returns archived count.
     /// Default: no-op for stores without expiry support.

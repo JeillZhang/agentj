@@ -148,6 +148,13 @@ impl Kernel {
         }
     }
 
+    /// Read-only access to the registered KernelContext (None before the first
+    /// register_module). IPC surface queries (e.g. kernel/status) use it to
+    /// report boot-time config such as the default model.
+    pub fn ctx(&self) -> Option<KernelContext> {
+        self.ctx.read().ok()?.clone()
+    }
+
     fn set_state(&self, id: &str, state: ModuleState) {
         self.states.lock().unwrap().insert(id.to_string(), state);
     }
@@ -740,5 +747,27 @@ mod tests {
         kernel.sender().send(KernelMessage::Shutdown).unwrap();
         let result = handle.await.unwrap();
         assert!(matches!(result, Err(KernelError::ShutdownTimeout(_))));
+    }
+
+    #[test]
+    fn ctx_is_none_until_first_register_module() {
+        let mut kernel = Kernel::new();
+        assert!(kernel.ctx().is_none());
+        let handled = Arc::new(StdMutex::new(vec![]));
+        let shutdowns = Arc::new(StdMutex::new(vec![]));
+        let mut register = ModuleRegister::new(
+            Arc::new(ToolRegistry::new()),
+            Arc::new(ProviderRegistry::new()),
+        );
+        kernel
+            .register_module(
+                Box::new(spy("spy", handled.clone(), shutdowns.clone(), None, false)),
+                &dummy_kernel_context(),
+                &mut register,
+            )
+            .unwrap();
+        let ctx = kernel.ctx().expect("ctx is set once a module registered");
+        assert!(ctx.config().get_str("model.default_model").is_none());
+        assert!(ctx.config().providers().is_empty());
     }
 }

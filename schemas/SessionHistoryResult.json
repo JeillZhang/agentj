@@ -1,0 +1,232 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SessionHistoryResult",
+  "description": "@since 0.12.0",
+  "type": "object",
+  "properties": {
+    "events": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/TrajectoryEvent"
+      }
+    },
+    "next_cursor": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint64",
+      "minimum": 0
+    }
+  },
+  "required": [
+    "events"
+  ],
+  "$defs": {
+    "PermissionDecision": {
+      "description": "Decision value in `PermissionRespondParams`. `Unknown` tolerates forward\nvalues (serde(other)); schema lists only the known values.",
+      "type": "string",
+      "enum": [
+        "allow",
+        "deny",
+        "allow_always"
+      ]
+    },
+    "ToolCall": {
+      "type": "object",
+      "properties": {
+        "arguments": true,
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "arguments"
+      ]
+    },
+    "TrajectoryEvent": {
+      "type": "object",
+      "properties": {
+        "seq": {
+          "description": "Monotonic per-session sequence number; page cursor = last seen seq + 1.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "ts": {
+          "description": "Unix epoch **milliseconds**.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "value": {
+          "$ref": "#/$defs/TrajectoryValue"
+        }
+      },
+      "required": [
+        "session_id",
+        "seq",
+        "ts",
+        "value"
+      ]
+    },
+    "TrajectoryValue": {
+      "description": "Kind payload of a trajectory event, discriminated by `value.kind`.\nForward-compat by the standard rule: consumers ignore unknown kinds, and the\nstore replay skips unparseable lines defensively (see T7) — no serde(other)\nneeded on a tagged enum with payloads, matching ProgressValue's policy.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "content": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "user"
+            }
+          },
+          "required": [
+            "kind",
+            "content"
+          ]
+        },
+        {
+          "description": "Merged streamed deltas of one assistant thought span — a single node (concretization 4).",
+          "type": "object",
+          "properties": {
+            "content": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "thinking"
+            }
+          },
+          "required": [
+            "kind",
+            "content"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "tool_call"
+            },
+            "tool_call": {
+              "$ref": "#/$defs/ToolCall"
+            }
+          },
+          "required": [
+            "kind",
+            "tool_call"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "content": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "tool_result"
+            },
+            "tool_call_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "tool_call_id",
+            "content"
+          ]
+        },
+        {
+          "description": "Recorded on the explicit permission respond path only (concretization 4).",
+          "type": "object",
+          "properties": {
+            "decision": {
+              "$ref": "#/$defs/PermissionDecision"
+            },
+            "kind": {
+              "type": "string",
+              "const": "permission"
+            },
+            "request_id": {
+              "type": "string"
+            },
+            "tool": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "request_id",
+            "tool",
+            "decision"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "usage"
+            },
+            "usage": {
+              "$ref": "#/$defs/UsageInfo"
+            }
+          },
+          "required": [
+            "kind",
+            "usage"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "error"
+            },
+            "message": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "message"
+          ]
+        }
+      ]
+    },
+    "UsageInfo": {
+      "type": "object",
+      "properties": {
+        "completion_tokens": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "prompt_tokens": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "prompt_tokens",
+        "completion_tokens"
+      ]
+    }
+  }
+}

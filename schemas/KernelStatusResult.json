@@ -3,10 +3,27 @@
   "title": "KernelStatusResult",
   "type": "object",
   "properties": {
+    "default_model": {
+      "description": "Config model.default_model, e.g. \"deepseek-chat\". Absent when no config. @since 0.12.0",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "modules": {
       "type": "array",
       "items": {
         "$ref": "#/$defs/ModuleInfo"
+      }
+    },
+    "providers": {
+      "description": "Provider list from config (name → base_url); models reserved, empty. @since 0.12.0",
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "$ref": "#/$defs/ProviderInfo"
       }
     },
     "version": {
@@ -42,6 +59,24 @@
         "stopping",
         "stopped",
         "failed"
+      ]
+    },
+    "ProviderInfo": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "models": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "models"
       ]
     }
   }
