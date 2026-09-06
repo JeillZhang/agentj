@@ -10,6 +10,26 @@
   --aj-ease: cubic-bezier(0.4,0,0.2,1);
   --aj-font: system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
   --aj-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  --aj-space-1: 4px;
+  --aj-space-2: 8px;
+  --aj-space-3: 12px;
+  --aj-space-4: 16px;
+  --aj-space-5: 24px;
+  --aj-space-6: 32px;
+  --aj-font-sm: 13px;
+  --aj-font-md: 15px;
+  --aj-font-lg: 18px;
+  --aj-line-height: 1.6;
+  --aj-content-max: 960px;
+  --aj-content-fluid: clamp(680px, 64%, 920px);
+  --aj-composer-max: 760px;
+  --aj-z-drawer: 40;
+  --aj-z-dialog: 100;
+  --aj-motion-fast: 150ms;
+  --aj-motion-base: 220ms;
+  --aj-icon-sm: 16px;
+  --aj-icon-md: 20px;
+  --aj-icon-lg: 24px;
 }
 @media (prefers-color-scheme: dark) {
   :root { color-scheme: dark; }

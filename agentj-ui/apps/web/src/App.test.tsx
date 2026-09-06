@@ -205,6 +205,7 @@ describe("App with mocked SDK transport", () => {
 
   it("renders modules from kernel/status via SDK client", async () => {
     render(<App />);
+    fireEvent.click(screen.getByLabelText(/more/i));
     await waitFor(() =>
       expect(screen.getByText("test-mod: running")).toBeInTheDocument(),
     );
@@ -219,6 +220,10 @@ describe("App with mocked SDK transport", () => {
 
   it("applies token to wsUrl via connection bar", async () => {
     render(<App />);
+    const hostInput = screen.getByLabelText(/^host$/i);
+    fireEvent.change(hostInput, { target: { value: "127.0.0.1" } });
+    const portInput = screen.getByLabelText(/^port$/i);
+    fireEvent.change(portInput, { target: { value: "4096" } });
     const tokenInput = screen.getByLabelText(/token/i);
     fireEvent.change(tokenInput, { target: { value: "abc" } });
     fireEvent.click(screen.getByRole("button", { name: /connect/i }));
@@ -246,7 +251,7 @@ describe("App with mocked SDK transport", () => {
   it("new session becomes active and favorited", async () => {
     shared.newSessionId.value = "s9";
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: /new session/i }));
+    fireEvent.click(screen.getAllByRole("button", { name: /new session/i })[0]);
     expect(await screen.findByText("s9")).toBeInTheDocument();
     expect(await screen.findByText(/active: s9/i)).toBeInTheDocument();
     expect(
@@ -294,7 +299,7 @@ describe("App with mocked SDK transport", () => {
   it("composer submits and streams progress rows", async () => {
     shared.newSessionId.value = "s1";
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: /new session/i }));
+    fireEvent.click(screen.getAllByRole("button", { name: /new session/i })[0]);
     await waitFor(() =>
       expect(screen.getByText(/active: s1/i)).toBeInTheDocument(),
     );
@@ -322,7 +327,7 @@ describe("App with mocked SDK transport", () => {
   it("approval dialog shows modal with tool+args+session_id and Allow/Deny/AllowAll", async () => {
     shared.newSessionId.value = "s1";
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: /new session/i }));
+    fireEvent.click(screen.getAllByRole("button", { name: /new session/i })[0]);
     await waitFor(() => expect(screen.getByText(/active: s1/i)).toBeInTheDocument());
     await waitFor(() => expect(shared.notificationHandler.value).not.toBeNull());
     const handler = shared.notificationHandler.value!;
@@ -347,7 +352,7 @@ describe("App with mocked SDK transport", () => {
   it("filters permission request not for active session", async () => {
     shared.newSessionId.value = "s1";
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: /new session/i }));
+    fireEvent.click(screen.getAllByRole("button", { name: /new session/i })[0]);
     await waitFor(() => expect(screen.getByText(/active: s1/i)).toBeInTheDocument());
     await waitFor(() => expect(shared.notificationHandler.value).not.toBeNull());
     const handler = shared.notificationHandler.value!;
@@ -367,7 +372,7 @@ describe("App with mocked SDK transport", () => {
   it("AllowAll sends permission/respond with decision allow_always and closes", async () => {
     shared.newSessionId.value = "s1";
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: /new session/i }));
+    fireEvent.click(screen.getAllByRole("button", { name: /new session/i })[0]);
     await waitFor(() => expect(screen.getByText(/active: s1/i)).toBeInTheDocument());
     await waitFor(() => expect(shared.notificationHandler.value).not.toBeNull());
     const handler = shared.notificationHandler.value!;
@@ -395,7 +400,7 @@ describe("App with mocked SDK transport", () => {
     shared.permShouldFail.value = true;
     shared.permError.value = "stale request";
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: /new session/i }));
+    fireEvent.click(screen.getAllByRole("button", { name: /new session/i })[0]);
     await waitFor(() => expect(screen.getByText(/active: s1/i)).toBeInTheDocument());
     await new Promise((r) => setTimeout(r, 10));
     await waitFor(() => expect(shared.notificationHandler.value).not.toBeNull());
@@ -576,5 +581,34 @@ describe("App shell + history rebuild", () => {
     fireEvent.click(toggle);
     expect(toggle.getAttribute("aria-expanded")).toBe("false");
     expect(app().dataset.drawer).toBe("closed");
+  });
+});
+
+describe("T2 App Shell grid + popover + scrim", () => {
+  beforeEach(() => {
+    shared.initVersion.value = "0.12.1";
+    shared.shouldFail.value = false;
+    shared.historyResult.value = { events: [] as never[], next_cursor: null };
+    localStorage.clear();
+    document.documentElement.removeAttribute("data-theme");
+  });
+  it("shell uses grid and centered main with popover", () => {
+    render(<App />);
+    const topbar = document.querySelector(".aj-topbar");
+    expect(topbar).not.toBeNull();
+    expect(topbar).toHaveClass("aj-topbar");
+    expect(document.querySelector(".aj-main")).not.toBeNull();
+    expect(screen.getByLabelText(/more/i)).toBeInTheDocument();
+  });
+  it("layout.css has grid and clamp", () => {
+    const p = join(dirname(fileURLToPath(import.meta.url)), "components/layout.css");
+    const css = readFileSync(p, "utf8");
+    expect(css).toContain("display: grid");
+    expect(css).toContain("backdrop-filter");
+    expect(css).toContain("clamp");
+    expect(css).toContain("--aj-content-max");
+    expect(css).toContain("rgba(0,0,0,.24)");
+    expect(css).toContain("280px");
+    expect(css).toContain("var(--aj-space-4)");
   });
 });

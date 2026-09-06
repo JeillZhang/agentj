@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { X } from "lucide-react";
 
 type PermissionArgs = unknown;
 
@@ -38,6 +39,51 @@ export function fieldRows(tool: string, args: unknown): Array<{ label: string; v
 export default function ApprovalDialog({ request, error, onRespond, onClose }: Props) {
   const [allowAlways, setAllowAlways] = useState(false);
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
+  const scrimRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!request) return;
+    const el = scrimRef.current;
+    if (!el) return;
+    const focusables = el.querySelectorAll<HTMLElement>(
+      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+    );
+    if (focusables.length > 0) {
+      // focus first focusable element
+      focusables[0].focus();
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        onClose();
+        return;
+      }
+      if (e.key === "Tab") {
+        const nodes = Array.from(
+          el!.querySelectorAll<HTMLElement>(
+            'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+          ),
+        ).filter((n) => !(n as HTMLButtonElement).disabled && n.tabIndex !== -1);
+        if (nodes.length === 0) return;
+        const first = nodes[0];
+        const last = nodes[nodes.length - 1];
+        const active = document.activeElement as HTMLElement | null;
+        if (e.shiftKey) {
+          if (active === first) {
+            e.preventDefault();
+            last.focus();
+          }
+        } else {
+          if (active === last) {
+            e.preventDefault();
+            first.focus();
+          }
+        }
+      }
+    }
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [request, onClose]);
 
   if (!request) return null;
 
@@ -53,9 +99,28 @@ export default function ApprovalDialog({ request, error, onRespond, onClose }: P
   }
 
   return (
-    <div role="dialog" aria-label="permission request" aria-modal="true">
+    <div ref={scrimRef} role="dialog" aria-label="permission request" aria-modal="true">
       <div className="aj-dialog-card">
-        <h2>Permission request</h2>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+          <h2 style={{ margin: 0, fontSize: 16 }}>Permission request</h2>
+          <button
+            type="button"
+            aria-label="close"
+            onClick={onClose}
+            style={{
+              border: "none",
+              background: "transparent",
+              cursor: "pointer",
+              padding: 4,
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              color: "var(--aj-textMuted)",
+            }}
+          >
+            <X size={16} aria-hidden="true" />
+          </button>
+        </div>
         <p>tool: {request.tool}</p>
         {request.session_id && <p>session: {request.session_id}</p>}
         {request.reason && <p>reason: {request.reason}</p>}
@@ -80,7 +145,7 @@ export default function ApprovalDialog({ request, error, onRespond, onClose }: P
             </div>
           );
         })}
-        <div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           <button type="button" className="aj-button--ghost" onClick={() => void onRespond("deny")}>
             Deny
           </button>
@@ -91,14 +156,9 @@ export default function ApprovalDialog({ request, error, onRespond, onClose }: P
           >
             Allow
           </button>
-          <button type="button" className="aj-button" onClick={() => void onRespond("allow_always")}>
+          <button type="button" className="aj-button--danger" onClick={() => void onRespond("allow_always")}>
             Allow All
           </button>
-          {error && (
-            <button type="button" onClick={onClose}>
-              Close
-            </button>
-          )}
         </div>
         <label className="aj-always">
           <input type="checkbox" checked={allowAlways} onChange={(e) => setAllowAlways(e.target.checked)} />

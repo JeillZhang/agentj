@@ -1,0 +1,77 @@
+.aj-connection-card {
+  background: var(--aj-raised);
+  border-radius: 12px;
+  padding: var(--aj-space-3);
+  box-shadow: var(--aj-shadowSoft), 0 0 0 1px var(--aj-border);
+  display: flex;
+  flex-direction: column;
+  gap: var(--aj-space-3);
+}
+
+.aj-connection-header {
+  display: flex;
+  align-items: center;
+  gap: var(--aj-space-2);
+  font-weight: 600;
+  font-size: var(--aj-font-sm);
+  color: var(--aj-text);
+}
+
+.aj-connection-fields {
+  display: flex;
+  gap: var(--aj-space-3);
+  flex-wrap: wrap;
+}
+
+.aj-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+  min-width: 140px;
+}
+
+.aj-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--aj-textMuted);
+}
+
+.aj-input {
+  min-height: 40px;
+  border-radius: var(--aj-radius-ctl);
+  border: 1px solid var(--aj-border);
+  background: var(--aj-panel);
+  color: var(--aj-text);
+  font: inherit;
+  font-size: var(--aj-font-md);
+  padding: 8px 10px;
+  width: 100%;
+  outline: none;
+}
+
+.aj-input:focus {
+  border-color: var(--aj-accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--aj-accent) 20%, transparent);
+}
+
+.aj-input[aria-invalid="true"] {
+  border-color: var(--aj-error);
+}
+
+.aj-helper {
+  font-size: 12px;
+  color: var(--aj-textMuted);
+  margin: 0;
+  line-height: 1.4;
+}
+
+.aj-error {
+  font-size: 12px;
+  color: var(--aj-error);
+  margin: 0;
+  line-height: 1.4;
+}

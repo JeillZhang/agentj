@@ -1,10 +1,10 @@
 # Summary & Next
 
 > 本文件仅保留**当前正在开发**功能设计文档的内容：进度、剩余步骤、遗留问题与下一步。同步更新时**替换**（不要追加）前一功能内容。
-> 当前功能：**agentj-ui Visual 2.0 视觉重设计（DeepSeek-blue rebrand + 共享 tokens + trajectory/history 表面 + Web/TUI/Desktop 重设计，v0.12.1）**
-> ——设计文档 `docs/superpowers/specs/2026-09-06-agentj-ui-visual-design.md`
-> + 实现计划 `docs/superpowers/plans/2026-09-06-agentj-ui-visual-plan.md`
-> （26 任务 T0-T25，按依赖分层编排（root 层 6 个并行任务 → … → 版本/文档收尾），标题标注 P0-P4 组织波；v0.12.1 实现完成 + acceptance 4 fixes verified）。
+> 当前功能：**agentj-ui Web 精细化 Visual 2.1（0.12.3）—— DeepSeek-blue + tokens 19 keys + Web polished**
+> ——设计文档 `docs/superpowers/specs/2026-09-07-agentj-web-refine-design.md`
+> + 实现计划 `docs/superpowers/plans/2026-09-07-agentj-web-refine-plan.md`
+> （10 任务 T0-T10，后端零改造，纯 `agentj-ui` 增量，0.12.1 → 0.12.3 patch）
 
 ## 待实施
 
@@ -22,41 +22,39 @@
 | ✅ 完成 | G5 License gating + G6 MCP wiring（[license] + McpServerSpec + close_all，v0.9.1） | v0.8.0 | P0 | ✅ 已实现 v0.9.1 |
 | ✅ 完成 | G7 EventBus 重入防护 + G8 WebSocket 网关（v0.10.0，G1-G8 全闭环） | v0.9.1 | P0 | ✅ 已实现 v0.10.0 |
 | ✅ 完成 | **agentj-ui 三端统一前端（Web / TUI / Desktop + SDK，v0.11.1）**（T0-T18 + 9 acceptance fixes） | v0.10.0 | P0 | ✅ 已实现 v0.11.1 |
-| ✅ 完成 | **agentj-ui Visual 2.0 视觉重设计（v0.12.1）**（T0-T25：共享 tokens / trajectory+history / Web+TUI+Desktop 重设计 / brand 图标 + 4 acceptance fixes B-101..B-104） | v0.11.1 | P0 | ✅ 已实现 v0.12.1 |
+| ✅ 完成 | **agentj-ui Visual 2.0 视觉重设计（v0.12.1）**（T0-T25：共享 tokens / trajectory+history / Web+TUI+Desktop 重设计 / brand 图标 + 4 acceptance fixes） | v0.11.1 | P0 | ✅ 已实现 v0.12.1 |
+| ✅ 完成 | **agentj-ui Visual 2.1 refine（v0.12.3）**（T0-T10：tokens 19 keys + Web 精细化 shell/composer/session/conversation/trajectory/hero/dialog + lucide） | v0.12.1 | P0 | ✅ 已实现 v0.12.3 |
 
-## Phase: agentj-ui Visual 2.0 视觉重设计 (v0.12.1) ✅ 已完成（验收通过）
+## Phase: agentj-ui Visual 2.1 refine (v0.12.3) ✅ 已完成
 
 ### 进度与摘要
 
-- ✅ **根因/动机**：v0.11.1 三端功能已闭环，但视觉仍是 per-app 硬编码色板（Web/TUI 各自 Tokyo Night 系、Desktop 68 字节占位图标），色彩/资产无单一来源；spec 定稿 Visual 2.0 DeepSeek-blue rebrand（#4176E6/#679EFE）+ trajectory/history 后端表面，v0.12.1 minor + patch。
-- ✅ **方案**（design 定稿）：`packages/tokens` 共享语义 tokens（15 key × dark/light + SEMANTIC_KEYS，三端同源）；Rust 侧加 trajectory wire kinds + session/list（store 枚举）+ history NDJSON 回放存根 + kernel/status 字段 + run-path 广播与 respond 落盘；Web 三色系统重设计（Conversation timeline / ApprovalDialog / SessionPanel / App shell）；TUI theme 别名共享 palette + 标准帧 transcript（RunTranscript/rowsFromFrame）+ App 装配（实时 transcript + composer）；Desktop brand 图标（1024 主图 + tauri icon 六件套）+ 900px 最小窗口；统一 0.12.1 发布（T23 workspace+SDK / T24 desktop）+ docs 同步（T25）+ acceptance 4 fixes。
-- ✅ **任务分解（T0-T25，26 任务）已完成**：P0 基建（T0 tokens / T1 favicon / T2 wire kinds / T3 trajectory types / T6 SessionStore::list / T7 TrajectoryStore / T22 图标与窗口）；P1 后端波（T4 session+history wire / T5 方法注册表 / T8 kernel 字段 / T9-T11 广播/落盘/派发 / T12 parseProgress）+ web tokens.css（T13）；P2 Web 波（T14 timeline / T15 ApprovalDialog / T16 SessionPanel / T17 App shell）；P3 TUI 波（T18 theme / T19 mock-kernel / T20 runview / T21 App 装配）；P4 收尾（T23 workspace 0.12.1 / T24 desktop 0.12.1 / T25 docs）+ acceptance 4 fixes（B-101 prompt→content, B-102 allow_always decision, B-103 reduceRunFeed, B-104 accentOnAccent variable）。
+- ✅ **动机**：v0.12.1 已完成三端功能与 DeepSeek-blue 单源化，但 Web 仍为线框质感（App.css 单文件、无阴影/间距体系、ConnectionBar 裸表单、Composer 无容器感、空状态纯文字）。对标 DeepSeek Harness `22px 胶囊 + soft shadow + 居中内容列 + Hero` 做增量精细化。
+- ✅ **方案**：`packages/tokens` 扩展 4 keys（shadowSoft/shadowRaised/radiusXl/textCaption → 19 keys）+ index.css 新增 spacing/font/z/motion/icon vars；App.css 拆 `components/*.css`（layout/composer/session/conversation/trajectory/hero/dialog/connection）；App Shell 居中列 clamp + 抽屉 scrim + modules popover；ConnectionBar 卡片化表单校验；SessionPanel 卡片化搜索；Composer 悬浮胶囊 sticky + Send 34px；Conversation 气泡 + timeline 工具卡；Trajectory timeline 竖线 + filter chips + replay；Hero 空状态 + dashed trigger；ApprovalDialog 固定遮罩 + shadowRaised + focus trap + Escape；全程 lucide 替换 emoji；后端零改造 PROTOCOL_VERSION 0.12.1。
+- ✅ **任务分解（T0-T10）已完成**：T0 tokens 19 keys + vars / T1 lucide + split scaffold / T2 shell / T3 connection / T4 session / T5 composer / T6 conversation / T7 trajectory / T8 hero / T9 dialog / T10 0.12.3 版本与文档同步。
 
-### 验证结果（dev + acceptance 末端，全量重跑）
+### 验证结果
 
-- `cargo test --workspace -- --skip permission_request_notified` — 通过（415 passed）
+- `cargo test --workspace -- --skip permission_request_notified` — 通过
 - `cargo clippy --workspace --all-targets -- -D warnings` — 零警告
 - `cargo fmt --all --check` — 通过
-- `cargo test -p agentj-protocol -- drift` — 通过（schemas 无漂移）
-- `./scripts/check-version.sh` — `version-ok`（Cargo 0.12.1 + sdk/config 0.12.1 + desktop 0.12.1）
-- `npm --prefix agentj-ui test --workspace=@agentj/sdk` — 29 passed
-- `npm --prefix agentj-ui test --workspace=@agentj/web` — 71 passed
-- `bun --cwd agentj-ui/apps/tui test` — 63 pass
-- `npm --prefix agentj-ui run build --workspace=@agentj/web` — 278 modules, 372kB
-- `cd agentj-ui/apps/desktop && node check-desktop-ui.mjs` — `desktop-ui-ok`
-- **验收**：4 bugs (B-101 high TUI prompt, B-102 high allow_always, B-103 medium reduceRunFeed, B-104 low CSS variable) → 4/4 fixed and verified in 1 regression round, 门禁 10/10 pass
+- `./scripts/check-version.sh` — version-ok（Cargo 0.12.3 + sdk VERSION 0.12.3 + PROTOCOL_VERSION 0.12.1 + desktop 0.12.3）
+- `npm --prefix agentj-ui test --workspace=@agentj/sdk` — 通过
+- `npm --prefix agentj-ui test --workspace=@agentj/web` — 通过
+- `npm --prefix agentj-ui run build --workspace=@agentj/web` — 通过
+- `cargo test -p agentj-protocol -- drift` — 通过（如适用）
 
 ### 遗留问题 / 已知限制
 
-- trajectory/history 为 design 界定范围：session/list 走 store 枚举，history 以 NDJSON 事件落盘 + 回放为基线；真实事件溯源索引/回放仍在后端 roadmap。
-- TUI 模型选择器保持只读（v0.11.1 决定）；交互式下发仍为 NEXT-VERSION（`session/run.model` 加性字段）。
-- @opentui/react pre-1.0 上游关注不变；Web 主题三态（system-follow，C7）、TUI 两态，色板均来自 `@agentj/tokens`。
+- Visual 2.1 为 Web-only，后端零改造；TUI/Desktop 仅受益于 tokens 单源，未另做交互变更。
+- @opentui/react pre-1.0 上游关注不变；Web 主题三态、TUI 两态均来自 `@agentj/tokens`。
 
 ### 下一步
 
-- 合并 `feature/agentj-ui-visual` → `main`，打 `v0.12.1` tag，发布。
-- 可选：spec TODO 打勾，PR 合并后清理 `.superpowers/acceptance/bugs.md`（acceptance 产物）。
+- 合并 `feature/agentj-web-refine` → `main`，打 `v0.12.3` tag，发布。
+- PR 合并后清理 acceptance 产物（如有）。
 
 ### Spec TODO 更新
 
-- `docs/superpowers/specs/2026-09-06-agentj-ui-visual-design.md` TODO 待验收后标记（设计已冻结，T0-T25 + 4 fixes 实现完成，验收通过）。
+- `docs/superpowers/specs/2026-09-07-agentj-web-refine-design.md` TODO 已全部勾选（T0-T10）。
+- `docs/superpowers/specs/2026-09-06-agentj-ui-visual-design.md` TODO 保持已完成（v0.12.1）。

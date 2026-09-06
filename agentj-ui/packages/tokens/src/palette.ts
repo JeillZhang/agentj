@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 export const SEMANTIC_KEYS = [
   "bg","sidebar","panel","raised","text","textMuted","accent","accentOnAccent",
   "userBubble","border","codeBg","inlineCodeBg","success","error","warning",
+  "shadowSoft","shadowRaised","radiusXl","textCaption",
 ] as const;
 export type SemanticKey = (typeof SEMANTIC_KEYS)[number];
 export type ThemeName = "light" | "dark";
@@ -17,6 +18,9 @@ const deepsuite = {
     accentOnAccent: "#FFFFFF", userBubble: "#EAF1FE", border: "#E4E7EA",
     codeBg: "#F9FAFB", inlineCodeBg: "#FAFAFA", success: "#22C55E",
     error: "#EC1313", warning: "#F59E0B",
+    shadowSoft: "0 8px 24px rgba(0,0,0,.08)",
+    shadowRaised: "0 12px 32px rgba(0,0,0,.12)",
+    radiusXl: "22px", textCaption: "#8A8F98",
   },
   dark: {
     bg: "#151517", sidebar: "#1B1B1C", panel: "#232324", raised: "#2C2C2E",
@@ -24,6 +28,9 @@ const deepsuite = {
     accentOnAccent: "#0A0C12", userBubble: "#2C2C2E", border: "#2E2E31",
     codeBg: "#1B1B1C", inlineCodeBg: "#292929", success: "#22C55E",
     error: "#F25A5A", warning: "#F59E0B",
+    shadowSoft: "0 8px 24px rgba(0,0,0,.08)",
+    shadowRaised: "0 12px 32px rgba(0,0,0,.12)",
+    radiusXl: "22px", textCaption: "#8B8F98",
   },
 } satisfies Record<ThemeName, Record<SemanticKey, string>>;
 
