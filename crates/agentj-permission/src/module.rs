@@ -299,8 +299,16 @@ fn rule_key_for(tool: &str, args: &serde_json::Value) -> String {
     match tool {
         "bash" => bash_arg(args).unwrap_or("").trim().to_string(),
         "grep" => {
-            let pattern = args.get("pattern").and_then(|v| v.as_str()).unwrap_or("").trim();
-            let include = args.get("include").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let pattern = args
+                .get("pattern")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim();
+            let include = args
+                .get("include")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim();
             format!("{pattern}\u{0}{include}")
         }
         "glob" => args
