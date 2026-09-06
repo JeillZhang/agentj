@@ -27,9 +27,11 @@ function createStayConnecting(): TransportHandle {
 describe("App connection screen", () => {
   test("unreachable shows kernel unreachable", async () => {
     const setup = await testRender(<App createTransport={createUnreachable} backoffBaseMs={10} />, {});
-    await setup.waitFor(() => {
-      const frame = setup.captureCharFrame();
-      return frame.toLowerCase().includes("kernel unreachable");
+    await act(async () => {
+      await setup.waitFor(() => {
+        const frame = setup.captureCharFrame();
+        return frame.toLowerCase().includes("kernel unreachable");
+      });
     });
     const frame = setup.captureCharFrame();
     expect(frame.toLowerCase()).toContain("kernel unreachable");
@@ -43,9 +45,11 @@ describe("App connection screen", () => {
       return createWithAuthError();
     };
     const setup = await testRender(<App createTransport={createAuth} backoffBaseMs={10} />, {});
-    await setup.waitFor(() => {
-      const frame = setup.captureCharFrame().toLowerCase();
-      return frame.includes("auth error") || frame.includes("403");
+    await act(async () => {
+      await setup.waitFor(() => {
+        const frame = setup.captureCharFrame().toLowerCase();
+        return frame.includes("auth error") || frame.includes("403");
+      });
     });
     const frame = setup.captureCharFrame().toLowerCase();
     expect(frame).toContain("auth");
@@ -61,7 +65,9 @@ describe("App connection screen", () => {
 
   test("snapshot contains status line", async () => {
     const setup = await testRender(<App createTransport={createStayConnecting} backoffBaseMs={10000} />, {});
-    await setup.flush();
+    await act(async () => {
+      await setup.flush();
+    });
     const frame = setup.captureCharFrame();
     expect(frame.toLowerCase()).toContain("connecting");
     expect(frame.length).toBeGreaterThan(0);

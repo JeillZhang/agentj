@@ -33,11 +33,17 @@ describe("Composer", () => {
     const onSubmit = mock(() => {});
     const setup = await testRender(<Composer onSubmit={onSubmit} />, {});
     const input = getInput(setup);
-    await input.type("hi");
-    await setup.flush();
-    act(() => input.press("enter"));
-    await setup.flush();
-    await setup.waitFor(() => onSubmit.mock.calls.length > 0).catch(() => {});
+    await act(async () => {
+      await input.type("hi");
+      await setup.flush();
+    });
+    await act(async () => {
+      input.press("enter");
+      await setup.flush();
+    });
+    await act(async () => {
+      await setup.waitFor(() => onSubmit.mock.calls.length > 0).catch(() => {});
+    });
     expect(onSubmit).toHaveBeenCalledWith("hi");
     act(() => setup.renderer.destroy());
   });
@@ -46,12 +52,16 @@ describe("Composer", () => {
     const onSubmit = mock(() => {});
     const setup = await testRender(<Composer onSubmit={onSubmit} />, {});
     const input = getInput(setup);
-    await input.type("hi");
-    await setup.flush();
-    act(() => input.press("enter"));
-    await setup.flush();
-    await new Promise((r) => setTimeout(r, 20));
-    await setup.flush();
+    await act(async () => {
+      await input.type("hi");
+      await setup.flush();
+    });
+    await act(async () => {
+      input.press("enter");
+      await setup.flush();
+      await new Promise((r) => setTimeout(r, 20));
+      await setup.flush();
+    });
     expect(setup.captureCharFrame()).not.toContain("hi");
     act(() => setup.renderer.destroy());
   });
@@ -60,32 +70,46 @@ describe("Composer", () => {
     const onSubmit = mock(() => {});
     const setup = await testRender(<Composer onSubmit={onSubmit} />, {});
     const input = getInput(setup);
-    await input.type("first");
-    await setup.flush();
-    act(() => input.press("enter"));
-    await setup.flush();
-    await new Promise((r) => setTimeout(r, 20));
-    await setup.flush();
-    await input.type("second");
-    await setup.flush();
-    act(() => input.press("enter"));
-    await setup.flush();
-    await new Promise((r) => setTimeout(r, 20));
-    await setup.flush();
-    act(() => input.press("up"));
-    await setup.flush();
-    await new Promise((r) => setTimeout(r, 20));
-    await setup.flush();
+    await act(async () => {
+      await input.type("first");
+      await setup.flush();
+    });
+    await act(async () => {
+      input.press("enter");
+      await setup.flush();
+      await new Promise((r) => setTimeout(r, 20));
+      await setup.flush();
+    });
+    await act(async () => {
+      await input.type("second");
+      await setup.flush();
+    });
+    await act(async () => {
+      input.press("enter");
+      await setup.flush();
+      await new Promise((r) => setTimeout(r, 20));
+      await setup.flush();
+    });
+    await act(async () => {
+      input.press("up");
+      await setup.flush();
+      await new Promise((r) => setTimeout(r, 20));
+      await setup.flush();
+    });
     expect(setup.captureCharFrame()).toContain("second");
-    act(() => input.press("up"));
-    await setup.flush();
-    await new Promise((r) => setTimeout(r, 20));
-    await setup.flush();
+    await act(async () => {
+      input.press("up");
+      await setup.flush();
+      await new Promise((r) => setTimeout(r, 20));
+      await setup.flush();
+    });
     expect(setup.captureCharFrame()).toContain("first");
-    act(() => input.press("down"));
-    await setup.flush();
-    await new Promise((r) => setTimeout(r, 20));
-    await setup.flush();
+    await act(async () => {
+      input.press("down");
+      await setup.flush();
+      await new Promise((r) => setTimeout(r, 20));
+      await setup.flush();
+    });
     expect(setup.captureCharFrame()).toContain("second");
     act(() => setup.renderer.destroy());
   });
@@ -94,12 +118,16 @@ describe("Composer", () => {
     const onSubmit = mock(() => {});
     const setup = await testRender(<Composer onSubmit={onSubmit} />, {});
     const input = getInput(setup);
-    await input.type("hello");
-    await setup.flush();
-    act(() => input.press("escape"));
-    await setup.flush();
-    await new Promise((r) => setTimeout(r, 30));
-    await setup.flush();
+    await act(async () => {
+      await input.type("hello");
+      await setup.flush();
+    });
+    await act(async () => {
+      input.press("escape");
+      await setup.flush();
+      await new Promise((r) => setTimeout(r, 30));
+      await setup.flush();
+    });
     const frame = setup.captureCharFrame();
     expect(frame).not.toContain("hello");
     act(() => setup.renderer.destroy());
@@ -109,12 +137,16 @@ describe("Composer", () => {
 describe("RunView", () => {
   test("runview appends progress frames in order", async () => {
     const setup = await testRender(<RunView frames={["a"]} />, {});
-    await setup.flush();
+    await act(async () => {
+      await setup.flush();
+    });
     let frame = setup.captureCharFrame();
     expect(frame).toContain("a");
     act(() => setup.renderer.destroy());
     const setup2 = await testRender(<RunView frames={["a", "b"]} />, {});
-    await setup2.flush();
+    await act(async () => {
+      await setup2.flush();
+    });
     frame = setup2.captureCharFrame();
     expect(frame).toContain("a");
     expect(frame).toContain("b");
@@ -123,11 +155,15 @@ describe("RunView", () => {
 
   test("runview append without dropping prior rows", async () => {
     const setup = await testRender(<RunView frames={["first"]} />, {});
-    await setup.flush();
+    await act(async () => {
+      await setup.flush();
+    });
     expect(setup.captureCharFrame()).toContain("first");
     act(() => setup.renderer.destroy());
     const setup2 = await testRender(<RunView frames={["first", "second", "third"]} />, {});
-    await setup2.flush();
+    await act(async () => {
+      await setup2.flush();
+    });
     const frame = setup2.captureCharFrame();
     expect(frame).toContain("first");
     expect(frame).toContain("second");
@@ -150,11 +186,17 @@ describe("Progress feed via METHODS.progress", () => {
       return <text>probe</text>;
     }
     const setup = await testRender(<Probe />, {});
-    await setup.flush();
-    handler?.(METHODS.progress, { text: "hello" });
-    handler?.("other/method", { text: "ignore" });
-    handler?.(METHODS.progress, { text: "world" });
-    await setup.flush();
+    await act(async () => {
+      await setup.flush();
+    });
+    act(() => {
+      handler?.(METHODS.progress, { text: "hello" });
+      handler?.("other/method", { text: "ignore" });
+      handler?.(METHODS.progress, { text: "world" });
+    });
+    await act(async () => {
+      await setup.flush();
+    });
     expect(frames).toEqual(["hello", "world"]);
     act(() => setup.renderer.destroy());
   });
@@ -175,11 +217,17 @@ describe("Progress feed via METHODS.progress", () => {
     }
     const setup = await testRender(<Wrapped />, {});
     const input = getInput(setup);
-    await input.type("hi");
-    await setup.flush();
-    act(() => input.press("enter"));
-    await setup.flush();
-    await setup.waitFor(() => calls.length > 0).catch(() => {});
+    await act(async () => {
+      await input.type("hi");
+      await setup.flush();
+    });
+    await act(async () => {
+      input.press("enter");
+      await setup.flush();
+    });
+    await act(async () => {
+      await setup.waitFor(() => calls.length > 0).catch(() => {});
+    });
     expect(calls[0]?.method).toBe(METHODS.sessionRun);
     expect(calls[0]?.params.prompt).toBe("hi");
     expect(calls[0]?.params.session_id).toBe("s1");

@@ -38,7 +38,9 @@ describe("PermissionDialog", () => {
       />,
       {},
     );
-    await setup.flush();
+    await act(async () => {
+      await setup.flush();
+    });
     const frame = setup.captureCharFrame();
     expect(frame).toContain("Permission required");
     expect(frame).toContain("bash");
@@ -55,7 +57,9 @@ describe("PermissionDialog", () => {
       <PermissionDialog tool="bash" args="rm -rf /tmp/x" session_id="s-9" onRespond={onRespond} />,
       {},
     );
-    await setup.flush();
+    await act(async () => {
+      await setup.flush();
+    });
     const frame = setup.captureCharFrame();
     expect(frame).toContain("rm -rf /tmp/x");
     expect(frame).toContain("session: s-9");
@@ -69,14 +73,30 @@ describe("PermissionDialog", () => {
       {},
     );
     const input = getInput(setup);
-    await setup.flush();
-    act(() => input.press("tab"));
-    await setup.flush();
-    act(() => input.press("tab"));
-    await setup.flush();
-    act(() => input.press("enter"));
-    await setup.flush();
-    await setup.waitFor(() => onRespond.mock.calls.length > 0).catch(() => {});
+    await act(async () => {
+      await setup.flush();
+    });
+    await act(async () => {
+      input.press("tab");
+    });
+    await act(async () => {
+      await setup.flush();
+    });
+    await act(async () => {
+      input.press("tab");
+    });
+    await act(async () => {
+      await setup.flush();
+    });
+    await act(async () => {
+      input.press("enter");
+    });
+    await act(async () => {
+      await setup.flush();
+    });
+    await act(async () => {
+      await setup.waitFor(() => onRespond.mock.calls.length > 0).catch(() => {});
+    });
     expect(onRespond).toHaveBeenCalledWith({ decision: "allow", allow_always: true });
     act(() => setup.renderer.destroy());
   });
@@ -88,10 +108,18 @@ describe("PermissionDialog", () => {
       {},
     );
     const input = getInput(setup);
-    await setup.flush();
-    act(() => input.press("enter"));
-    await setup.flush();
-    await setup.waitFor(() => onRespond.mock.calls.length > 0).catch(() => {});
+    await act(async () => {
+      await setup.flush();
+    });
+    await act(async () => {
+      input.press("enter");
+    });
+    await act(async () => {
+      await setup.flush();
+    });
+    await act(async () => {
+      await setup.waitFor(() => onRespond.mock.calls.length > 0).catch(() => {});
+    });
     const arg = onRespond.mock.calls[0][0] as Record<string, unknown>;
     expect(arg.decision).toBe("allow");
     expect(arg.allow_always).toBeUndefined();
@@ -105,12 +133,24 @@ describe("PermissionDialog", () => {
       {},
     );
     const input = getInput(setup);
-    await setup.flush();
-    act(() => input.press("tab"));
-    await setup.flush();
-    act(() => input.press("enter"));
-    await setup.flush();
-    await setup.waitFor(() => onRespond.mock.calls.length > 0).catch(() => {});
+    await act(async () => {
+      await setup.flush();
+    });
+    await act(async () => {
+      input.press("tab");
+    });
+    await act(async () => {
+      await setup.flush();
+    });
+    await act(async () => {
+      input.press("enter");
+    });
+    await act(async () => {
+      await setup.flush();
+    });
+    await act(async () => {
+      await setup.waitFor(() => onRespond.mock.calls.length > 0).catch(() => {});
+    });
     expect(onRespond).toHaveBeenCalledWith({ decision: "deny" });
     act(() => setup.renderer.destroy());
   });
@@ -122,19 +162,33 @@ describe("PermissionDialog", () => {
       {},
     );
     const input = getInput(setup);
-    await setup.flush();
+    await act(async () => {
+      await setup.flush();
+    });
     let frame = setup.captureCharFrame();
     expect(frame).toContain("▶ Allow");
-    act(() => input.press("tab"));
-    await setup.flush();
+    await act(async () => {
+      input.press("tab");
+    });
+    await act(async () => {
+      await setup.flush();
+    });
     frame = setup.captureCharFrame();
     expect(frame).toContain("▶ Deny");
-    act(() => input.press("tab"));
-    await setup.flush();
+    await act(async () => {
+      input.press("tab");
+    });
+    await act(async () => {
+      await setup.flush();
+    });
     frame = setup.captureCharFrame();
     expect(frame).toContain("▶ AllowAll");
-    act(() => input.press("tab"));
-    await setup.flush();
+    await act(async () => {
+      input.press("tab");
+    });
+    await act(async () => {
+      await setup.flush();
+    });
     frame = setup.captureCharFrame();
     expect(frame).toContain("▶ Allow");
     act(() => setup.renderer.destroy());
@@ -163,7 +217,9 @@ describe("Permission notification wiring", () => {
     }
 
     const setup = await testRender(<Host />, {});
-    await setup.flush();
+    await act(async () => {
+      await setup.flush();
+    });
     expect(setup.captureCharFrame()).toContain("idle");
     act(() => {
       notify?.(METHODS.permissionRequest, {
@@ -173,8 +229,12 @@ describe("Permission notification wiring", () => {
         session_id: "s-1",
       });
     });
-    await setup.flush();
-    await setup.waitFor(() => setup.captureCharFrame().includes("got:bash")).catch(() => {});
+    await act(async () => {
+      await setup.flush();
+    });
+    await act(async () => {
+      await setup.waitFor(() => setup.captureCharFrame().includes("got:bash")).catch(() => {});
+    });
     expect(setup.captureCharFrame()).toContain("got:bash");
     act(() => setup.renderer.destroy());
   });
@@ -210,7 +270,9 @@ describe("Permission notification wiring", () => {
     }
 
     const setup = await testRender(<FlowHost />, {});
-    await setup.flush();
+    await act(async () => {
+      await setup.flush();
+    });
     const dispatch = (m: string, p: unknown) => handlers.forEach((h) => h(m, p));
     act(() => {
       dispatch(METHODS.permissionRequest, {
@@ -220,18 +282,36 @@ describe("Permission notification wiring", () => {
         session_id: "sess-123",
       });
     });
-    await setup.flush();
-    await setup.waitFor(() => setup.captureCharFrame().includes("Permission required")).catch(() => {});
+    await act(async () => {
+      await setup.flush();
+    });
+    await act(async () => {
+      await setup.waitFor(() => setup.captureCharFrame().includes("Permission required")).catch(() => {});
+    });
     expect(setup.captureCharFrame()).toContain("sess-123");
     expect(setup.captureCharFrame()).toContain("AllowAll");
     const mi = getInput(setup);
-    act(() => mi.press("tab"));
-    await setup.flush();
-    act(() => mi.press("tab"));
-    await setup.flush();
-    act(() => mi.press("enter"));
-    await setup.flush();
-    await setup.waitFor(() => calls.length > 0).catch(() => {});
+    await act(async () => {
+      mi.press("tab");
+    });
+    await act(async () => {
+      await setup.flush();
+    });
+    await act(async () => {
+      mi.press("tab");
+    });
+    await act(async () => {
+      await setup.flush();
+    });
+    await act(async () => {
+      mi.press("enter");
+    });
+    await act(async () => {
+      await setup.flush();
+    });
+    await act(async () => {
+      await setup.waitFor(() => calls.length > 0).catch(() => {});
+    });
     expect(calls[0].request_id).toBe("req-9");
     expect(calls[0].decision).toBe("allow");
     expect(calls[0].allow_always).toBe(true);

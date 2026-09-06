@@ -70,7 +70,9 @@ describe("ModelSelector read-only display", () => {
       <ModelSelector default_model="deepseek-chat" providers={["deepseek-chat", "opencode-go/kimi-k3"]} />,
       {},
     );
-    await setup.flush();
+    await act(async () => {
+      await setup.flush();
+    });
     const frame = setup.captureCharFrame();
     expect(frame).toContain("deepseek-chat");
     expect(frame).toContain("config.toml");
@@ -91,8 +93,12 @@ describe("App palette integration", () => {
 
   test("/mod filters to models and Enter opens selector", async () => {
     const setup = await testRender(<App createTransport={createOpenTransport} backoffBaseMs={10000} />, {});
-    await setup.waitFor(() => setup.captureCharFrame().includes("connected"));
-    await setup.flush();
+    await act(async () => {
+      await setup.waitFor(() => setup.captureCharFrame().includes("connected"));
+    });
+    await act(async () => {
+      await setup.flush();
+    });
     expect(filterCommands("/mod", [...COMMANDS])).toEqual(["models"]);
     const out = renderModelList({
       default_model: "deepseek-chat",

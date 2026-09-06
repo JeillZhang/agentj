@@ -24,15 +24,21 @@ describe("SessionList", () => {
         else if (k === "enter" || k === "return") mockInput.pressEnter();
       };
     }
-    act(() => {
+    await act(async () => {
       input.press?.("down");
     });
-    await setup.flush();
-    act(() => {
+    await act(async () => {
+      await setup.flush();
+    });
+    await act(async () => {
       input.press?.("enter");
     });
-    await setup.flush();
-    await setup.waitFor(() => onSelect.mock.calls.length > 0).catch(() => {});
+    await act(async () => {
+      await setup.flush();
+    });
+    await act(async () => {
+      await setup.waitFor(() => onSelect.mock.calls.length > 0).catch(() => {});
+    });
     expect(onSelect).toHaveBeenCalledWith("s2");
     act(() => setup.renderer.destroy());
   });
@@ -62,7 +68,9 @@ describe("useSession", () => {
     }
     let result = "";
     const setup = await testRender(<Probe done={(id) => (result = id)} />, {});
-    await setup.waitFor(() => result === "s9");
+    await act(async () => {
+      await setup.waitFor(() => result === "s9");
+    });
     expect(calls).toContain(METHODS.sessionNew);
     expect(result).toBe("s9");
     act(() => setup.renderer.destroy());
@@ -85,7 +93,9 @@ describe("useSession", () => {
     }
     let done = "";
     const setup = await testRender(<Probe done={(v) => (done = v)} />, {});
-    await setup.waitFor(() => done === "s2");
+    await act(async () => {
+      await setup.waitFor(() => done === "s2");
+    });
     expect(calls).toContain(METHODS.sessionStatus);
     expect(calls).toContain(METHODS.sessionSubscribe);
     act(() => setup.renderer.destroy());
