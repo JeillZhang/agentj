@@ -21,15 +21,14 @@ describe("ConnectionBar validation (BUG-001)", () => {
     expect(screen.getByLabelText(/^host$/i)).toHaveAttribute("aria-describedby", "host-error");
   });
 
-  it("blocks onConnect when port is empty and shows inline error", () => {
+  it("allows empty port and defaults to 4096", () => {
     const onConnect = vi.fn();
     render(<ConnectionBar onConnect={onConnect} />);
     fireEvent.change(screen.getByLabelText(/^host$/i), { target: { value: "127.0.0.1" } });
     fireEvent.click(screen.getByRole("button", { name: /connect/i }));
-    expect(onConnect).not.toHaveBeenCalled();
-    expect(screen.getByText(/port required/i)).toBeInTheDocument();
-    expect(screen.getByRole("alert")).toBeInTheDocument();
-    expect(screen.getByLabelText(/^port$/i)).toHaveAttribute("aria-describedby", "port-error");
+    expect(onConnect).toHaveBeenCalledTimes(1);
+    expect(onConnect).toHaveBeenCalledWith("127.0.0.1", "4096", "");
+    expect(screen.queryByText(/port required/i)).not.toBeInTheDocument();
   });
 
   it("calls onConnect with host/port/token when fields are valid", () => {

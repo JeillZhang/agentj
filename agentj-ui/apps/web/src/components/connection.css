@@ -18,17 +18,20 @@
 }
 
 .aj-connection-fields {
-  display: flex;
+  display: grid;
+  grid-template-columns: 3fr 1fr;
   gap: var(--aj-space-3);
-  flex-wrap: wrap;
+}
+
+.aj-connection-fields .aj-field:last-child {
+  grid-column: 1 / -1;
 }
 
 .aj-field {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  flex: 1;
-  min-width: 140px;
+  min-width: 0;
 }
 
 .aj-label {
@@ -74,4 +77,48 @@
   color: var(--aj-error);
   margin: 0;
   line-height: 1.4;
+}
+
+.aj-input-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.aj-input-wrap .aj-input {
+  padding-right: 36px;
+}
+
+.aj-input[type="password"]::-ms-reveal,
+.aj-input[type="password"]::-ms-clear {
+  display: none;
+}
+
+.aj-input[type="password"]::-webkit-credentials-auto-fill-button,
+.aj-input[type="password"]::-webkit-contacts-auto-fill-button {
+  visibility: hidden;
+  display: none !important;
+  pointer-events: none;
+  position: absolute;
+  right: 0;
+}
+
+.aj-input-addon {
+  position: absolute;
+  right: 6px;
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--aj-textMuted);
+  cursor: pointer;
+}
+
+.aj-input-addon:hover {
+  background: var(--aj-raised);
+  color: var(--aj-text);
 }

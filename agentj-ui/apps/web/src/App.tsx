@@ -86,7 +86,7 @@ function openOpClient(wsUrl: string) {
 
 
 
-function useSharedKernel(wsUrl: string) {
+function useSharedKernel(wsUrl: string, seq: number) {
   const [modules, setModules] = useState<{ id: string; state: string }[]>([]);
   const [status, setStatus] = useState(`connecting to kernel on ${wsUrl}…`);
   const [banner, setBanner] = useState<string | null>(null);
@@ -144,7 +144,7 @@ function useSharedKernel(wsUrl: string) {
       setClient(null);
       transportRef.current = null;
     };
-  }, [wsUrl]);
+  }, [wsUrl, seq]);
 
   return { client, modules, status, banner, unreachable, modelName };
 }
@@ -194,7 +194,8 @@ function useApproval(client: RpcClient | null, activeSessionId: string | null) {
 
 export default function App() {
   const [wsUrl, setWsUrl] = useState(() => resolveWsUrl({ envUrl: envWsUrl }));
-  const { client: sharedClient, modules, status, banner, unreachable, modelName } = useSharedKernel(wsUrl);
+  const [connectSeq, setConnectSeq] = useState(0);
+  const { client: sharedClient, modules, status, banner, unreachable, modelName } = useSharedKernel(wsUrl, connectSeq);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const { pending, approvalError, respond, close } = useApproval(sharedClient, activeSessionId);
   const [theme, setTheme] = useState<ThemeMode>(storedThemeMode() ?? "system");
@@ -267,21 +268,7 @@ export default function App() {
             <span className="aj-status-text">{status}</span>
           </p>
         </div>
-        <div className="aj-topbar__center">
-          <ConnectionBar
-            onConnect={(host, port, token) => {
-              const p = port ? Number(port) : undefined;
-              const next = resolveWsUrl({
-                envUrl: envWsUrl,
-                host: host || undefined,
-                port: p,
-                token: token || undefined,
-              });
-              setWsUrl(next);
-              setDrawerOpen(false);
-            }}
-          />
-        </div>
+        <div className="aj-topbar__center" aria-hidden="true" />
         <div className="aj-topbar__actions">
           {modelName !== null && (
             <span className="aj-chip aj-chip--model" aria-label="model">{modelName}</span>
@@ -334,6 +321,20 @@ export default function App() {
       )}
       <div className="aj-layout">
         <aside className="aj-session-rail" id="aj-session-rail">
+          <ConnectionBar
+            onConnect={(host, port, token) => {
+              const p = port ? Number(port) : undefined;
+              const next = resolveWsUrl({
+                envUrl: envWsUrl,
+                host: host || undefined,
+                port: p,
+                token: token || undefined,
+              });
+              setWsUrl(next);
+              setConnectSeq((n) => n + 1);
+              setDrawerOpen(false);
+            }}
+          />
           <SessionPanel wsUrl={wsUrl} client={sharedClient} activeSessionId={activeSessionId} onActiveChange={(id) => { setActiveSessionId(id); setDrawerOpen(false); }} />
         </aside>
         <main className="aj-main">
