@@ -135,7 +135,7 @@ export default function App() {
       {banner && <p>{banner}</p>}
       <p>{status}</p>
       {unreachable && (
-        <p>{`agentj dashboard --port ${new URL(resolveWsUrl({})).port}`}</p>
+        <p>{`agentj dashboard --port ${new URL(resolveWsUrl({ envUrl: envWsUrl })).port || new URL(resolveWsUrl({})).port}`}</p>
       )}
       <div style={{ display: "flex", gap: "1rem" }}>
         <SessionPanel
