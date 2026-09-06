@@ -2,7 +2,7 @@
 .aj-conv {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
   overflow-y: auto;
   padding: 14px;
   min-height: 0;
@@ -48,7 +48,7 @@
   align-self: flex-start;
   background: var(--aj-raised);
   border-radius: var(--aj-radius-card);
-  padding: 8px 12px;
+  padding: 6px 10px;
   flex-wrap: wrap;
   max-width: 100%;
   border-left: 2px solid var(--aj-border);

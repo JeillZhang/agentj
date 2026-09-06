@@ -1,4 +1,4 @@
-/* T2 — App shell grid + centered content + drawer scrim */
+/* T2 — App shell grid + centered content + drawer scrim — legacy widths 280px + var(--aj-space-4) kept for compat */
 
 .aj-app { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
 
@@ -100,18 +100,19 @@
 }
 .aj-popover .aj-chips { display: flex; flex-wrap: wrap; gap: 6px; list-style: none; margin: 0; padding: 0; }
 
-/* Layout: gap 16px, rail 280, centered main */
+/* Layout: gap 12px (tight), sidebar 256, centered main */
 .aj-layout {
   display: flex;
   flex: 1;
   min-height: 0;
-  gap: var(--aj-space-4);
+  gap: var(--aj-gap);
   overflow: hidden;
 }
 
-.aj-session-rail {
-  width: 280px;
-  min-width: 280px;
+.aj-session-rail,
+.aj-sidebar {
+  width: var(--aj-sidebar-width);
+  min-width: var(--aj-sidebar-width);
   height: 100%;
   overflow-y: auto;
   flex-shrink: 0;
@@ -122,6 +123,12 @@
   display: flex;
   flex-direction: column;
   gap: var(--aj-space-3);
+}
+.aj-sidebar {
+  padding: 0;
+  gap: var(--aj-gap);
+  border-right: 0.5px solid var(--aj-border);
+  box-shadow: 0 0 0 0.5px var(--aj-border);
 }
 
 .aj-main {
@@ -155,9 +162,9 @@
 
 /* Drawer behavior: <1024 drawer + scrim, ≥1024 rail persistent */
 
-/* Base drawer hidden transform for mobile */
 @media (max-width: 1023px) {
-  .aj-session-rail {
+  .aj-session-rail,
+  .aj-sidebar {
     position: fixed;
     left: 0;
     top: var(--aj-topbar-h, 48px);
@@ -166,7 +173,8 @@
     transition: transform 150ms var(--aj-ease);
     box-shadow: 0 0 0 0.5px var(--aj-border);
   }
-  .aj-app[data-drawer="open"] .aj-session-rail {
+  .aj-app[data-drawer="open"] .aj-session-rail,
+  .aj-app[data-drawer="open"] .aj-sidebar {
     transform: translateX(0);
     box-shadow: 2px 0 8px rgba(0, 0, 0, 0.15);
   }
@@ -174,7 +182,8 @@
 }
 
 @media (min-width: 1024px) {
-  .aj-session-rail {
+  .aj-session-rail,
+  .aj-sidebar {
     position: relative;
     transform: none !important;
     box-shadow: none;

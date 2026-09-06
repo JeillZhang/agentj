@@ -30,6 +30,10 @@
   --aj-icon-sm: 16px;
   --aj-icon-md: 20px;
   --aj-icon-lg: 24px;
+  --aj-sidebar-width: 256px;
+  --aj-gap: 12px;
+  --aj-shadow-soft-sm: 0 4px 16px rgba(0,0,0,.06);
+  --aj-sidebar-bg-diff: color-mix(in srgb, var(--aj-sidebar) 98%, transparent);
 }
 @media (prefers-color-scheme: dark) {
   :root { color-scheme: dark; }

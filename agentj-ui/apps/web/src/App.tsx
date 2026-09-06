@@ -11,12 +11,12 @@ import type { NotificationHandler } from "@agentj/sdk";
 import { MoreHorizontal, Moon, Sun, Monitor, Menu } from "lucide-react";
 import ApprovalDialog from "./ApprovalDialog";
 import type { ApprovalRequest } from "./ApprovalDialog";
-import ConnectionBar from "./ConnectionBar";
 import RunPanel from "./RunPanel";
-import SessionPanel from "./SessionPanel";
+import UnifiedSidebar from "./components/UnifiedSidebar";
 import { Trajectory, historyToConversation } from "./Trajectory";
 import type { RawEvent } from "./Trajectory";
 import heroImg from "./assets/hero.png";
+import { loadCurrentProject, setCurrentProject } from "./projectStore";
 
 const rawWsEnv = import.meta.env.VITE_AGENTJ_WS_URL;
 const envWsUrl = typeof rawWsEnv === "string" ? rawWsEnv : undefined;
@@ -200,10 +200,34 @@ export default function App() {
   const { pending, approvalError, respond, close } = useApproval(sharedClient, activeSessionId);
   const [theme, setTheme] = useState<ThemeMode>(storedThemeMode() ?? "system");
   const [drawerOpen, setDrawerOpen] = useState(false);
-  const [moreOpen, setMoreOpen] = useState(false);
+  const [statusOpen, setStatusOpen] = useState(false);
   const [tab, setTab] = useState<"conversation" | "trajectory">("conversation");
   const [historyEvents, setHistoryEvents] = useState<RawEvent[] | null>(null);
   const [historySession, setHistorySession] = useState<string | null>(null);
+  const [currentProjectId, setCurrentProjectIdState] = useState<string>(() => {
+    try { return loadCurrentProject(); } catch { return "default"; }
+  });
+
+  // stale currentProject fallback + cleanup
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem("agentj.currentProject");
+      const resolved = loadCurrentProject();
+      if (raw && raw !== resolved) {
+        try { localStorage.removeItem("agentj.currentProject"); } catch {}
+        // also ensure set to default via helper for consistency
+        try { setCurrentProject(resolved); localStorage.removeItem("agentj.currentProject"); } catch {}
+        // if resolved is default, the removals ensure cleaned state
+      }
+      if (resolved !== currentProjectId) setCurrentProjectIdState(resolved);
+    } catch {}
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const handleProjectChange = useCallback((id: string) => {
+    try { setCurrentProject(id); } catch {}
+    setCurrentProjectIdState(id);
+  }, []);
 
   useEffect(() => {
     const el = document.documentElement;
@@ -258,6 +282,24 @@ export default function App() {
 
   const connState = connectionLight(status, unreachable);
 
+  const handleConnect = useCallback((host: string, port: string, token: string) => {
+    const p = port ? Number(port) : undefined;
+    const next = resolveWsUrl({
+      envUrl: envWsUrl,
+      host: host || undefined,
+      port: p,
+      token: token || undefined,
+    });
+    setWsUrl(next);
+    setConnectSeq((n) => n + 1);
+    setDrawerOpen(false);
+  }, []);
+
+  // expose currentProjectId wiring via window for UnifiedSidebar new session assignment
+  useEffect(() => {
+    (window as unknown as Record<string, unknown>).__agentjCurrentProject = currentProjectId;
+  }, [currentProjectId]);
+
   return (
     <div className="aj-app" data-drawer={drawerOpen ? "open" : "closed"}>
       <header className="aj-topbar" role="banner">
@@ -276,17 +318,21 @@ export default function App() {
           <div className="aj-popover-wrap">
             <button
               type="button"
-              aria-label="more"
+              aria-label="status more"
               className="aj-popover-trigger"
-              aria-expanded={moreOpen}
+              aria-expanded={statusOpen}
               aria-haspopup="true"
-              onClick={() => setMoreOpen((o) => !o)}
+              onClick={() => setStatusOpen((o) => !o)}
             >
               <MoreHorizontal size={16} aria-hidden="true" />
             </button>
-            {moreOpen && (
-              <div className="aj-popover" role="dialog" aria-label="modules">
-                <ul className="aj-chips" aria-label="modules">
+            {statusOpen && (
+              <div className="aj-popover" role="dialog" aria-label="status">
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                  <span className="aj-status-light" data-state={connState} aria-hidden="true" />
+                  <span style={{ fontSize: 12, color: "var(--aj-textMuted)" }}>{status}</span>
+                </div>
+                <ul className="aj-chips" aria-label="status">
                   {modules.length === 0 ? (
                     <li className="aj-chip">no modules</li>
                   ) : (
@@ -300,7 +346,7 @@ export default function App() {
               </div>
             )}
           </div>
-          <button type="button" aria-label="toggle sessions" className="aj-button aj-drawer-toggle" aria-expanded={drawerOpen} aria-controls="aj-session-rail" onClick={() => setDrawerOpen((o) => !o)}><Menu size={16} aria-hidden="true" /></button>
+          <button type="button" aria-label="toggle sessions" className="aj-button aj-drawer-toggle" aria-expanded={drawerOpen} aria-controls="aj-sidebar" onClick={() => setDrawerOpen((o) => !o)}><Menu size={16} aria-hidden="true" /></button>
           <button type="button" aria-label="toggle theme" className="aj-button--ghost" onClick={() => setTheme((t) => THEME_CYCLE[t])}>
             {theme === "dark" ? <Moon size={16} aria-hidden="true" /> : theme === "light" ? <Sun size={16} aria-hidden="true" /> : <Monitor size={16} aria-hidden="true" />}
           </button>
@@ -320,23 +366,14 @@ export default function App() {
         <p>{`agentj dashboard --port ${new URL(resolveWsUrl({ envUrl: envWsUrl })).port || new URL(resolveWsUrl({})).port}`}</p>
       )}
       <div className="aj-layout">
-        <aside className="aj-session-rail" id="aj-session-rail">
-          <ConnectionBar
-            onConnect={(host, port, token) => {
-              const p = port ? Number(port) : undefined;
-              const next = resolveWsUrl({
-                envUrl: envWsUrl,
-                host: host || undefined,
-                port: p,
-                token: token || undefined,
-              });
-              setWsUrl(next);
-              setConnectSeq((n) => n + 1);
-              setDrawerOpen(false);
-            }}
-          />
-          <SessionPanel wsUrl={wsUrl} client={sharedClient} activeSessionId={activeSessionId} onActiveChange={(id) => { setActiveSessionId(id); setDrawerOpen(false); }} />
-        </aside>
+        <UnifiedSidebar
+          wsUrl={wsUrl}
+          client={sharedClient}
+          activeSessionId={activeSessionId}
+          onActiveChange={(id) => { setActiveSessionId(id); handleProjectChange(loadCurrentProject()); setDrawerOpen(false); }}
+          onConnect={handleConnect}
+          unreachable={unreachable}
+        />
         <main className="aj-main">
           <div role="tablist" aria-label="views">
             <button role="tab" aria-selected={tab === "conversation"} className="aj-tab" onClick={() => setTab("conversation")}>Conversation</button>
@@ -352,7 +389,7 @@ export default function App() {
                   type="button"
                   className="aj-button aj-hero-trigger"
                   onClick={() => {
-                    const btn = document.querySelector<HTMLButtonElement>(".aj-session-actions button");
+                    const btn = document.querySelector<HTMLButtonElement>(".aj-session-actions button, .aj-project-new");
                     if (btn) btn.click();
                     else window.dispatchEvent(new CustomEvent("agentj:new-session"));
                   }}
