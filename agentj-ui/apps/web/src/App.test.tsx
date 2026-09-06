@@ -220,6 +220,10 @@ describe("App with mocked SDK transport", () => {
 
   it("applies token to wsUrl via connection bar", async () => {
     render(<App />);
+    const hostInput = screen.getByLabelText(/^host$/i);
+    fireEvent.change(hostInput, { target: { value: "127.0.0.1" } });
+    const portInput = screen.getByLabelText(/^port$/i);
+    fireEvent.change(portInput, { target: { value: "4096" } });
     const tokenInput = screen.getByLabelText(/token/i);
     fireEvent.change(tokenInput, { target: { value: "abc" } });
     fireEvent.click(screen.getByRole("button", { name: /connect/i }));

@@ -30,7 +30,7 @@ export default function ConnectionBar({ onConnect }: Props) {
   }
 
   function handleConnect() {
-    validate();
+    if (!validate()) return;
     onConnect(host, port, token);
   }
 
@@ -63,14 +63,9 @@ export default function ConnectionBar({ onConnect }: Props) {
             aria-invalid={hostError ? true : undefined}
           />
           {hostError ? (
-            <>
-              <p id="host-error" role="alert" className="aj-error">
-                {hostError}
-              </p>
-              <span id="aj-host-error" style={{ display: "none" }}>
-                {hostError}
-              </span>
-            </>
+            <p id="host-error" role="alert" className="aj-error">
+              {hostError}
+            </p>
           ) : (
             <p id="aj-host-helper" className="aj-helper">
               e.g. 127.0.0.1
@@ -99,14 +94,9 @@ export default function ConnectionBar({ onConnect }: Props) {
             aria-invalid={portError ? true : undefined}
           />
           {portError ? (
-            <>
-              <p id="port-error" role="alert" className="aj-error">
-                {portError}
-              </p>
-              <span id="aj-port-error" style={{ display: "none" }}>
-                {portError}
-              </span>
-            </>
+            <p id="port-error" role="alert" className="aj-error">
+              {portError}
+            </p>
           ) : (
             <p id="aj-port-helper" className="aj-helper">
               e.g. 4096
