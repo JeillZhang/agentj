@@ -204,6 +204,22 @@
   padding-left: 24px;
 }
 
+.aj-session-list .aj-sidebar__subgroup {
+  display: flex;
+  align-items: center;
+  min-height: 24px;
+  margin-top: 4px;
+}
+
+.aj-sidebar__subgroup-title {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--aj-textCaption);
+}
+
 .aj-project-empty {
   display: flex;
   flex-direction: column;

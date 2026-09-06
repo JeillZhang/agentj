@@ -41,6 +41,40 @@ type ListRow = {
   updatedAt?: string | number | null;
 };
 
+const SUBGROUP_TITLES: Array<"Today" | "Previous 7 days" | "Older"> = ["Today", "Previous 7 days", "Older"];
+
+function SessionListItem({
+  row,
+  activeSessionId,
+  onContinue,
+}: {
+  row: ListRow;
+  activeSessionId: string | null;
+  onContinue: (id: string) => void;
+}) {
+  return (
+    <li>
+      <button
+        type="button"
+        tabIndex={0}
+        aria-selected={row.id === activeSessionId}
+        className={`aj-session-row${row.id === activeSessionId ? " aj-session-row--active" : ""}`}
+        onClick={() => void onContinue(row.id)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            void onContinue(row.id);
+          }
+        }}
+      >
+        <span className="aj-session-state" data-state={row.state} />
+        <span className="aj-session-id">{row.id}</span>
+        {row.preview !== undefined && <span className="aj-session-preview">{row.preview}</span>}
+      </button>
+    </li>
+  );
+}
+
 function rowsFromList(
   sessions: Array<Record<string, unknown>>,
 ): ListRow[] {
@@ -356,6 +390,15 @@ export default function UnifiedSidebar({ wsUrl, client, activeSessionId, onActiv
     }
   }, [listRows, projects]);
 
+  const defaultSubgroupIndex = useMemo(() => {
+    const g = (grouped as Record<string, { subgroups?: Record<string, ListRow[]> }>).default;
+    const map = new Map<string, string>();
+    for (const title of SUBGROUP_TITLES) {
+      for (const r of g?.subgroups?.[title] ?? []) map.set(r.id, title);
+    }
+    return map;
+  }, [grouped]);
+
   const filteredForProject = useCallback(
     (projectId: string): ListRow[] => {
       const g = (grouped as Record<string, { sessions: ListRow[] }>)[projectId];
@@ -510,29 +553,28 @@ export default function UnifiedSidebar({ wsUrl, client, activeSessionId, onActiv
                     </div>
                   ) : (
                     <>
-                      <ul aria-label={project.id === "default" ? "session list" : `sessions for ${project.name}`} className="aj-session-list">
-                        {sliced.map((r) => (
-                          <li key={r.id}>
-                            <button
-                              type="button"
-                              tabIndex={0}
-                              aria-selected={r.id === activeSessionId}
-                              className={`aj-session-row${r.id === activeSessionId ? " aj-session-row--active" : ""}`}
-                              onClick={() => void handleContinue(r.id)}
-                              onKeyDown={(e) => {
-                                if (e.key === "Enter" || e.key === " ") {
-                                  e.preventDefault();
-                                  void handleContinue(r.id);
-                                }
-                              }}
-                            >
-                              <span className="aj-session-state" data-state={r.state} />
-                              <span className="aj-session-id">{r.id}</span>
-                              {r.preview !== undefined && <span className="aj-session-preview">{r.preview}</span>}
-                            </button>
-                          </li>
-                        ))}
-                      </ul>
+                      {project.id === "default" ? (
+                        <ul className="aj-session-list" aria-label="session list">
+                          {SUBGROUP_TITLES.flatMap((title) => {
+                            const bucketRows = sliced.filter((r) => (defaultSubgroupIndex.get(r.id) ?? "Today") === title);
+                            if (bucketRows.length === 0) return [];
+                            return [
+                              <li key={`${title}-header`} className="aj-sidebar__subgroup">
+                                <h4 className="aj-sidebar__subgroup-title">{title}</h4>
+                              </li>,
+                              ...bucketRows.map((r) => (
+                                <SessionListItem key={r.id} row={r} activeSessionId={activeSessionId} onContinue={handleContinue} />
+                              )),
+                            ];
+                          })}
+                        </ul>
+                      ) : (
+                        <ul aria-label={`sessions for ${project.name}`} className="aj-session-list">
+                          {sliced.map((r) => (
+                            <SessionListItem key={r.id} row={r} activeSessionId={activeSessionId} onContinue={handleContinue} />
+                          ))}
+                        </ul>
+                      )}
                       {hasMore && (
                         <button type="button" className="aj-button aj-button--ghost aj-project-more" onClick={() => showMore(project.id)}>
                           Show more ({rows.length - sliced.length} more)
