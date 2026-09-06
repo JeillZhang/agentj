@@ -330,7 +330,7 @@ async fn main() -> anyhow::Result<()> {
     let mut runner = TurnRunner::new(
         ctx.clone(),
         Arc::new(ContextPipeline::new()),
-        "You are AgentJ, an AI coding assistant.".into(),
+        "你是 AgentJ，一位专业的 AI 编程助手。请始终使用中文回答，代码注释和解释均使用中文，保持专业、简洁。".into(),
         kernel.sender(),
         "tool_executor".into(),
     );

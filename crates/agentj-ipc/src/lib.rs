@@ -960,7 +960,7 @@ impl IpcServer {
     /// connection is registered for owner routing / subscription broadcasts
     /// and unregistered on every exit path (EOF, error, requested shutdown).
     pub async fn serve_connection(
-        &self,
+        self: Arc<Self>,
         conn: Box<dyn Connection>,
         _token: Option<&str>,
     ) -> Result<(), IpcError> {
@@ -972,7 +972,9 @@ impl IpcServer {
         if let Ok(mut reg) = self.registry.write() {
             reg.register_writer(conn.writer());
         }
-        let serve_result = self.serve_connection_requests(conn, &conn_id).await;
+        let serve_result = Arc::clone(&self)
+            .serve_connection_requests(conn, &conn_id)
+            .await;
         if let Ok(mut reg) = self.registry.write() {
             reg.unregister(&conn_id);
         }
@@ -980,15 +982,19 @@ impl IpcServer {
     }
 
     /// Per-connection request loop body. The connection stays owned by this
-    /// loop for its whole lifetime (reader half for `recv`, writer half for
-    /// responses), while the registry holds a detached `ConnectionWriter`
-    /// handle — so an idle subscriber never drops out of broadcast reach, and
-    /// no std RwLock guard is held across an await.
+    /// loop for its whole lifetime (reader half for `recv`), while the
+    /// registry holds a detached `ConnectionWriter` handle — so an idle
+    /// subscriber never drops out of broadcast reach, and no std RwLock guard
+    /// is held across an await. Each request is spawned into its own task so
+    /// a long-running `session/run` does not block `permission/respond` or
+    /// `$/cancelRequest` on the same connection.
     async fn serve_connection_requests(
-        &self,
+        self: Arc<Self>,
         mut conn: Box<dyn Connection>,
         conn_id: &str,
     ) -> Result<(), IpcError> {
+        let conn_id_owned = conn_id.to_string();
+        let mut pending = tokio::task::JoinSet::new();
         loop {
             let Some(line) = conn.recv().await else {
                 break; // EOF — connection dropped here; unregistered by the caller
@@ -1000,21 +1006,30 @@ impl IpcServer {
             if trimmed.is_empty() {
                 continue;
             }
-            let response = self
-                .handle_request_from(&trimmed, conn_id)
-                .await
-                .unwrap_or_else(|e| {
-                    format!(
-                        r#"{{"jsonrpc":"2.0","id":null,"error":{{"code":-32603,"message":"{e}"}}}}"#
-                    )
-                });
-            if !response.is_empty() {
-                conn.send(&response)?;
-            }
+            let this = Arc::clone(&self);
+            let registry = Arc::clone(&self.registry);
+            let cid = conn_id_owned.clone();
+            let trimmed_owned = trimmed.clone();
+            pending.spawn(async move {
+                let response = this
+                    .handle_request_from(&trimmed_owned, &cid)
+                    .await
+                    .unwrap_or_else(|e| {
+                        format!(
+                            r#"{{"jsonrpc":"2.0","id":null,"error":{{"code":-32603,"message":"{e}"}}}}"#
+                        )
+                    });
+                if !response.is_empty()
+                    && let Ok(reg) = registry.read()
+                {
+                    let _ = reg.send_to(&cid, &response);
+                }
+            });
             if self.shutdown_requested() {
                 break;
             }
         }
+        while pending.join_next().await.is_some() {}
         Ok(())
     }
 

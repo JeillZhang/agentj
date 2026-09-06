@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { METHODS, parseProgress, ResponseRouter, RpcClient, WebSocketTransport } from "@agentj/sdk";
+import { METHODS, parseProgress, RpcClient } from "@agentj/sdk";
 import type { ProgressFrame } from "@agentj/sdk";
 
 export type RunEntry =
@@ -69,12 +69,13 @@ export function fmtDuration(ms: number): string {
 }
 
 type Props = {
-  wsUrl: string;
+  client: RpcClient | null;
   activeSessionId: string | null;
   initialEntries?: RunEntry[];
   pendingTool?: string;
   model?: string;
   elapsedMs?: number;
+  wsUrl?: string;
 };
 
 export function toolGlyph(entry: Extract<RunEntry, { kind: "tool" }>, pending: boolean) {
@@ -179,7 +180,7 @@ export function ConversationFeed({
 }
 
 export default function RunPanel({
-  wsUrl,
+  client,
   activeSessionId,
   initialEntries = [],
   pendingTool,
@@ -193,36 +194,39 @@ export default function RunPanel({
     if (initialEntries.length > 0) setEntries(initialEntries);
   }, [initialEntries]);
 
+  useEffect(() => {
+    if (!client) return;
+    const handler = (method: string, params: unknown) => {
+      if (method !== METHODS.progress) return;
+      const f = parseProgress(params);
+      if (f.kind === "unknown") {
+        console.debug("run:ignored-frame", params);
+        return;
+      }
+      setEntries((prev) => reduceRunFeed(prev, f));
+    };
+    client.setNotificationHandler(handler);
+    return () => {
+      client.removeNotificationHandler?.(handler);
+    };
+  }, [client]);
+
   async function submit(text: string) {
-    if (!activeSessionId || busy.current || text.trim() === "") return;
+    if (!activeSessionId || busy.current || text.trim() === "" || !client) return;
     busy.current = true;
     setElapsedMs(undefined);
     const startedAt = performance.now();
     setEntries((prev) => [...prev, { kind: "user", text }]);
     let usage: { usage?: { prompt_tokens?: number; completion_tokens?: number } } | null = null;
     try {
-      const { transport, client } = openRunClient(wsUrl);
       try {
-        client.setNotificationHandler((method: string, params: unknown) => {
-          if (method !== METHODS.progress) return;
-          const f = parseProgress(params);
-          if (f.kind === "unknown") {
-            console.debug("run:ignored-frame", params);
-            return;
-          }
-          setEntries((prev) => reduceRunFeed(prev, f));
-        });
-        try {
-          usage = (await client.request(METHODS.sessionRun, {
-            session_id: activeSessionId,
-            content: text,
-          })) as { usage?: { prompt_tokens?: number; completion_tokens?: number } } | null;
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          setEntries((prev) => failRun(prev, message));
-        }
-      } finally {
-        transport.close();
+        usage = (await client.request(METHODS.sessionRun, {
+          session_id: activeSessionId,
+          content: text,
+        })) as { usage?: { prompt_tokens?: number; completion_tokens?: number } } | null;
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        setEntries((prev) => failRun(prev, message));
       }
     } finally {
       setElapsedMs(performance.now() - startedAt);
@@ -237,13 +241,6 @@ export default function RunPanel({
         return [...prev, { kind: "usage", prompt_tokens: pt, completion_tokens: ct }];
       });
     }
-  }
-
-  function openRunClient(url: string) {
-    const router = new ResponseRouter();
-    const transport = new WebSocketTransport(url, router);
-    const client = new RpcClient(transport, router);
-    return { router, transport, client };
   }
 
   return (

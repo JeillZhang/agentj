@@ -39,7 +39,7 @@ impl OpenAICompatibleProvider {
         };
         serde_json::json!({
             "model": model,
-            "messages": messages,
+            "messages": map_messages(messages),
             "tools": tools.iter().map(|t| serde_json::json!({
                 "type": "function",
                 "function": { "name": t.name, "description": t.description, "parameters": t.input_schema }
@@ -86,6 +86,57 @@ impl OpenAICompatibleProvider {
         });
         Ok(Box::pin(stream))
     }
+}
+
+fn map_messages(messages: &[ChatMessage]) -> Value {
+    let mapped: Vec<Value> = messages
+        .iter()
+        .map(|m| match m.role {
+            Role::Tool => serde_json::json!({
+                "role": "tool",
+                "tool_call_id": m.tool_call_id.clone().unwrap_or_default(),
+                "content": m.content
+            }),
+            Role::Assistant if !m.tool_calls.is_empty() => {
+                let content = if m.content.is_empty() {
+                    Value::Null
+                } else {
+                    Value::String(m.content.clone())
+                };
+                serde_json::json!({
+                    "role": "assistant",
+                    "content": content,
+                    "tool_calls": m.tool_calls.iter().map(|tc| {
+                        let args_str = match &tc.arguments {
+                            Value::String(s) => s.clone(),
+                            _ => serde_json::to_string(&tc.arguments).unwrap_or_default(),
+                        };
+                        serde_json::json!({
+                            "id": tc.id,
+                            "type": "function",
+                            "function": {
+                                "name": tc.name,
+                                "arguments": args_str
+                            }
+                        })
+                    }).collect::<Vec<_>>()
+                })
+            }
+            _ => {
+                let role_str = match m.role {
+                    Role::System => "system",
+                    Role::User => "user",
+                    Role::Assistant => "assistant",
+                    Role::Tool => "tool",
+                };
+                serde_json::json!({
+                    "role": role_str,
+                    "content": m.content
+                })
+            }
+        })
+        .collect();
+    Value::Array(mapped)
 }
 
 /// Stateful parser for OpenAI Chat Completions SSE (design 4.2: tool-call delta
@@ -239,7 +290,7 @@ impl ModelProvider for OpenAICompatibleProvider {
         let url = format!("{}/v1/chat/completions", self.base_url);
         let response = self.client.post(&url)
             .header("Authorization", format!("Bearer {}", self.api_key))
-            .json(&serde_json::json!({ "model": options.model, "messages": messages, "stream": false }))
+            .json(&serde_json::json!({ "model": options.model, "messages": map_messages(&messages), "stream": false }))
             .send().await
             .map_err(|e| ModelError::Network(e.to_string()))?;
         let status = response.status().as_u16();
