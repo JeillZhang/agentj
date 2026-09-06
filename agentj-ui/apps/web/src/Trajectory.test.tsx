@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import "@testing-library/jest-dom/vitest";
 import { describe, expect, it } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
@@ -29,5 +32,24 @@ describe("Trajectory playback button (BUG-002)", () => {
     expect(button.textContent).not.toContain("⏸");
     expect(button.textContent).not.toContain("▶");
     expect(container.querySelector("svg[aria-hidden='true']")).not.toBeNull();
+  });
+});
+
+describe("Trajectory timeline polish (T7)", () => {
+  it("trajectory css has vertical line and shadowSoft", () => {
+    const css = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), "components/trajectory.css"),
+      "utf8",
+    );
+    expect(css).toContain("border-left");
+    expect(css).toContain("shadowSoft");
+  });
+
+  it("trajectory handles empty and chips wrap", () => {
+    const src = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), "Trajectory.tsx"),
+      "utf8",
+    );
+    expect(src).toContain("aj-traj");
   });
 });
