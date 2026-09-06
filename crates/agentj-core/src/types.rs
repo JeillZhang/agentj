@@ -161,6 +161,21 @@ pub struct SessionSnapshot {
     pub updated_at: u64,
 }
 
+#[derive(Debug, Clone)]
+pub struct SessionListEntry {
+    pub session_id: SessionId,
+    pub updated_at: u64,
+    pub status: crate::module::SessionStatus,
+    pub preview: Option<String>,
+}
+
+pub const PREVIEW_MAX_CHARS: usize = 120;
+
+pub fn preview_of(snapshot: &SessionSnapshot) -> Option<String> {
+    let last = snapshot.messages.last()?.content.clone();
+    Some(last.chars().take(PREVIEW_MAX_CHARS).collect())
+}
+
 /// Current UNIX epoch seconds (shared by trait default + InMemoryStore).
 pub fn now_epoch_secs() -> u64 {
     std::time::SystemTime::now()
