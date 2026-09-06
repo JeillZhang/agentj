@@ -555,6 +555,26 @@ impl IpcServer {
         Ok(serde_json::json!({ "session_id": sid }))
     }
 
+    fn record_trajectory(&self, sid: &str, value: agentj_protocol::trajectory::TrajectoryValue) {
+        let Some(store) = self.trajectory_store.as_ref() else {
+            return;
+        };
+        if let Err(e) = store.record(&sid.to_string(), value) {
+            tracing::warn!("trajectory record failed for {sid}: {e}");
+        }
+    }
+
+    fn flush_thinking(&self, pending: &mut String, sid: &str) {
+        if !pending.is_empty() {
+            self.record_trajectory(
+                sid,
+                agentj_protocol::trajectory::TrajectoryValue::Thinking {
+                    content: std::mem::take(pending),
+                },
+            );
+        }
+    }
+
     async fn dispatch_session_run(
         &self,
         req: &JsonRpcRequest,
@@ -602,14 +622,22 @@ impl IpcServer {
                 id => id.clone(),
             },
         };
+        self.record_trajectory(
+            sid,
+            agentj_protocol::trajectory::TrajectoryValue::User {
+                content: content.to_string(),
+            },
+        );
         let mut rx = self.run_turn_stream(sid, content);
         let mut text = String::new();
         let mut tc_list = vec![];
         let mut usage_opt: Option<serde_json::Value> = None;
+        let mut pending_thinking = String::new();
         while let Some(event) = rx.recv().await {
             match event {
                 AgentEvent::Delta(d) => {
                     text.push_str(&d);
+                    pending_thinking.push_str(&d);
                     let progress = serde_json::json!({
                         "jsonrpc": "2.0",
                         "method": "$/progress",
@@ -623,9 +651,73 @@ impl IpcServer {
                         reg.broadcast_to_session(&sid.to_string(), &progress);
                     }
                 }
+                AgentEvent::ToolCall(tc) => {
+                    self.flush_thinking(&mut pending_thinking, sid);
+                    let wire: agentj_protocol::types::ToolCall =
+                        agentj_protocol::types::ToolCall {
+                            id: tc.id.clone(),
+                            name: tc.name.clone(),
+                            arguments: tc.arguments.clone(),
+                        };
+                    let frame = build_progress_frame(
+                        &progress_token,
+                        &agentj_protocol::streaming::ProgressValue::ToolCall {
+                            tool_call: wire.clone(),
+                        },
+                    );
+                    if let Ok(reg) = self.registry.read() {
+                        reg.broadcast_to_session(&sid.to_string(), &frame);
+                    }
+                    self.record_trajectory(
+                        sid,
+                        agentj_protocol::trajectory::TrajectoryValue::ToolCall {
+                            tool_call: wire,
+                        },
+                    );
+                }
+                AgentEvent::ToolResult { call_id, result } => {
+                    self.flush_thinking(&mut pending_thinking, sid);
+                    let frame = build_progress_frame(
+                        &progress_token,
+                        &agentj_protocol::streaming::ProgressValue::ToolResult {
+                            tool_call_id: call_id.clone(),
+                            content: result.clone(),
+                        },
+                    );
+                    if let Ok(reg) = self.registry.read() {
+                        reg.broadcast_to_session(&sid.to_string(), &frame);
+                    }
+                    self.record_trajectory(
+                        sid,
+                        agentj_protocol::trajectory::TrajectoryValue::ToolResult {
+                            tool_call_id: call_id,
+                            content: result,
+                        },
+                    );
+                }
                 AgentEvent::Done {
                     tool_calls, usage, ..
                 } => {
+                    self.flush_thinking(&mut pending_thinking, sid);
+                    if let Some(u) = &usage {
+                        let info = agentj_protocol::session::UsageInfo {
+                            prompt_tokens: u.prompt_tokens,
+                            completion_tokens: u.completion_tokens,
+                        };
+                        let frame = build_progress_frame(
+                            &progress_token,
+                            &agentj_protocol::streaming::ProgressValue::Usage {
+                                usage: info.clone(),
+                            },
+                        );
+                        if let Ok(reg) = self.registry.read() {
+                            reg.broadcast_to_session(&sid.to_string(), &frame);
+                        }
+                        self.record_trajectory(
+                            sid,
+                            agentj_protocol::trajectory::TrajectoryValue::Usage { usage: info },
+                        );
+                    }
                     tc_list = tool_calls;
                     usage_opt = usage.map(|u| {
                         serde_json::json!({
@@ -642,9 +734,15 @@ impl IpcServer {
                             message: "RequestCancelled".into(),
                         });
                     }
+                    self.flush_thinking(&mut pending_thinking, sid);
+                    self.record_trajectory(
+                        sid,
+                        agentj_protocol::trajectory::TrajectoryValue::Error {
+                            message: e.clone(),
+                        },
+                    );
                     return Err(DispatchError::internal(e));
                 }
-                _ => {}
             }
         }
         let mut result = serde_json::json!({ "content": text, "tool_calls": tc_list });
@@ -970,6 +1068,18 @@ impl IpcServer {
         }
         Ok(())
     }
+}
+
+fn build_progress_frame(
+    token: &Value,
+    value: &agentj_protocol::streaming::ProgressValue,
+) -> String {
+    serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "$/progress",
+        "params": { "token": token.clone(), "value": serde_json::to_value(value).expect("serializable") },
+    })
+    .to_string()
 }
 
 fn kernel_model_info(
@@ -2846,5 +2956,263 @@ mod tests {
         assert_eq!(ps.len(), 1);
         assert_eq!(ps[0].id, "mock");
         assert!(ps[0].models.is_empty(), "models is reserved and stays empty");
+    }
+
+    fn temp_dir_traj(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("aj-ipc-traj-{tag}-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn wired_store(dir: &std::path::Path) -> Arc<crate::trajectory::TrajectoryStore> {
+        Arc::new(crate::trajectory::TrajectoryStore::new(dir.to_path_buf(), None, None))
+    }
+
+    fn read_traj_events(dir: &std::path::Path, sid: &str) -> Vec<agentj_protocol::trajectory::TrajectoryEvent> {
+        let path = dir.join(format!("{sid}.trajectory"));
+        if !path.exists() {
+            return vec![];
+        }
+        let f = std::fs::File::open(path).unwrap();
+        std::io::BufRead::lines(std::io::BufReader::new(f))
+            .map(|l| serde_json::from_str(&l.unwrap()).unwrap())
+            .collect()
+    }
+
+    fn traj_kinds(events: &[agentj_protocol::trajectory::TrajectoryEvent]) -> Vec<String> {
+        events
+            .iter()
+            .map(|e| {
+                serde_json::to_value(&e.value).unwrap()["kind"]
+                    .as_str()
+                    .unwrap()
+                    .to_string()
+            })
+            .collect()
+    }
+
+    fn scripted_run_server(
+        script: Vec<Result<agentj_core::types::ModelEvent, agentj_core::error::ModelError>>,
+    ) -> IpcServer {
+        let store: Arc<InMemoryStore> = Arc::new(InMemoryStore::new());
+        let session_dyn: Arc<dyn SessionStore> = store.clone();
+        let tools = Arc::new(ToolRegistry::new());
+        let providers = Arc::new(ProviderRegistry::new());
+        providers.register("mock".into(), Arc::new(MockModelProvider::new(script)));
+        let ctx = KernelContext {
+            session: session_dyn.clone(),
+            tools: tools.clone(),
+            providers: providers.clone(),
+            config: Arc::new(MockConfig),
+        };
+        let mut kernel = Kernel::new();
+        let mut register =
+            ModuleRegister::with_services(tools.clone(), providers.clone(), kernel.services());
+        kernel
+            .register_module(
+                Box::new(ToolExecutorModule::new(ctx.clone())),
+                &ctx,
+                &mut register,
+            )
+            .unwrap();
+        let runner = TurnRunner::new(
+            ctx.clone(),
+            Arc::new(ContextPipeline::new()),
+            "You are helpful.".into(),
+            kernel.sender(),
+            "tool_executor".into(),
+        );
+        kernel
+            .register_module(Box::new(AgentLoopModule::new(runner)), &ctx, &mut register)
+            .unwrap();
+        IpcServer::new(kernel, session_dyn)
+    }
+
+    #[tokio::test]
+    async fn run_records_user_thinking_usage_and_keeps_response_shape() {
+        let dir = temp_dir_traj("usage");
+        let mut server = stub_bus_server_with_usage();
+        server.trajectory_store = Some(wired_store(&dir));
+        let resp = server
+            .handle_request(r#"{"jsonrpc":"2.0","id":2,"method":"session/run","params":{"session_id":"s1","content":"hi"}}"#)
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(v["result"]["content"], "hello");
+        assert_eq!(v["result"]["usage"]["prompt_tokens"], 100);
+        assert_eq!(v["result"]["usage"]["completion_tokens"], 20);
+        let events = read_traj_events(&dir, "s1");
+        assert_eq!(traj_kinds(&events), vec!["user", "thinking", "usage"]);
+        assert_eq!(events[0].seq, 1);
+        assert_eq!(events[1].seq, 2);
+        assert_eq!(events[2].seq, 3);
+        let agentj_protocol::trajectory::TrajectoryValue::User { content } = &events[0].value else {
+            panic!()
+        };
+        assert_eq!(content, "hi");
+        let agentj_protocol::trajectory::TrajectoryValue::Thinking { content } = &events[1].value else {
+            panic!()
+        };
+        assert_eq!(content, "hello");
+        assert_eq!(events[2].session_id, "s1");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn run_records_one_merged_thinking_node_for_two_deltas() {
+        let dir = temp_dir_traj("merge");
+        let mut server = scripted_run_server(vec![
+            Ok(agentj_core::types::ModelEvent::Delta("hel".into())),
+            Ok(agentj_core::types::ModelEvent::Delta("lo".into())),
+            Ok(agentj_core::types::ModelEvent::Done),
+        ]);
+        server.trajectory_store = Some(wired_store(&dir));
+        let resp = server
+            .handle_request(r#"{"jsonrpc":"2.0","id":2,"method":"session/run","params":{"session_id":"s1","content":"hi"}}"#)
+            .await
+            .unwrap();
+        assert!(resp.contains("\"result\""), "{resp}");
+        let events = read_traj_events(&dir, "s1");
+        assert_eq!(traj_kinds(&events), vec!["user", "thinking"], "exactly two nodes");
+        let agentj_protocol::trajectory::TrajectoryValue::Thinking { content } = &events[1].value else {
+            panic!("expected one merged thinking node, got {events:?}")
+        };
+        assert_eq!(content, "hello", "both deltas concatenated into ONE node");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn run_records_tool_call_and_tool_result_nodes() {
+        let dir = temp_dir_traj("tools");
+        let mut server = scripted_run_server(vec![
+            Ok(agentj_core::types::ModelEvent::ToolCall(agentj_core::types::ToolCall {
+                id: "call_1".into(),
+                name: "bash".into(),
+                arguments: serde_json::json!({"command": "curl x"}),
+            })),
+            Ok(agentj_core::types::ModelEvent::Done),
+        ]);
+        server.trajectory_store = Some(wired_store(&dir));
+        let resp = server
+            .handle_request(r#"{"jsonrpc":"2.0","id":2,"method":"session/run","params":{"session_id":"s1","content":"hi"}}"#)
+            .await
+            .unwrap();
+        assert!(resp.contains("\"result\""), "{resp}");
+        let events = read_traj_events(&dir, "s1");
+        assert_eq!(traj_kinds(&events), vec!["user", "tool_call", "tool_result"]);
+        let agentj_protocol::trajectory::TrajectoryValue::ToolCall { tool_call } = &events[1].value else {
+            panic!("tool_call node at index 1: {events:?}")
+        };
+        assert_eq!(tool_call.id, "call_1");
+        assert_eq!(tool_call.name, "bash");
+        assert_eq!(tool_call.arguments["command"], "curl x");
+        let agentj_protocol::trajectory::TrajectoryValue::ToolResult { tool_call_id, content } =
+            &events[2].value
+        else {
+            panic!("tool_result node at index 2: {events:?}")
+        };
+        assert_eq!(tool_call_id, "call_1");
+        assert!(
+            content.starts_with("Error:"),
+            "unregistered tool surfaces as executor error CONTENT (C9: content is a plain string): {content}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn run_records_error_node_on_provider_failure() {
+        let dir = temp_dir_traj("boom");
+        let mut server = scripted_run_server(vec![
+            Ok(agentj_core::types::ModelEvent::Delta("x".into())),
+            Err(agentj_core::error::ModelError::Network("boom".into())),
+        ]);
+        server.trajectory_store = Some(wired_store(&dir));
+        let resp = server
+            .handle_request(r#"{"jsonrpc":"2.0","id":2,"method":"session/run","params":{"session_id":"s1","content":"hi"}}"#)
+            .await
+            .unwrap();
+        assert!(resp.contains("-32603"), "internal error, not cancel: {resp}");
+        let events = read_traj_events(&dir, "s1");
+        assert_eq!(traj_kinds(&events), vec!["user", "thinking", "error"]);
+        let agentj_protocol::trajectory::TrajectoryValue::Thinking { content } = &events[1].value else {
+            panic!()
+        };
+        assert_eq!(content, "x");
+        let agentj_protocol::trajectory::TrajectoryValue::Error { message } = &events[2].value else {
+            panic!()
+        };
+        assert!(message.contains("boom"), "error node carries the failure: {message}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn cancelled_run_trajectory_has_no_error_or_tail_nodes() {
+        let dir = temp_dir_traj("cancel");
+        let (mut server, _module) = blocking_run_server();
+        server.trajectory_store = Some(wired_store(&dir));
+        server
+            .registry
+            .write()
+            .unwrap()
+            .set_session_owner(&"s1".to_string(), "stdio");
+        let server = Arc::new(server);
+        let run = tokio::spawn({
+            let s = Arc::clone(&server);
+            async move {
+                s.handle_request(r#"{"jsonrpc":"2.0","id":2,"method":"session/run","params":{"session_id":"s1","content":"hi"}}"#)
+                    .await
+                    .unwrap()
+            }
+        });
+        wait_for_pending_run(&server, "s1").await.expect("run must be in-flight");
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let _ = server
+            .handle_request(r#"{"jsonrpc":"2.0","method":"$/cancelRequest","params":{"id":5,"session_id":"s1"}}"#)
+            .await
+            .unwrap();
+        let resp = run.await.unwrap();
+        // Cancel should surface -32800; allow a brief retry if race produced tool_result instead.
+        if !resp.contains("-32800") {
+            // If we got a normal result, the permission deny path won; still verify trajectory
+            // has no error/usage nodes and at least user+tool_call.
+            let events = read_traj_events(&dir, "s1");
+            assert!(
+                traj_kinds(&events).starts_with(&["user".to_string(), "tool_call".to_string()]),
+                "cancelled run must at least have user+tool_call: {events:?}"
+            );
+            assert!(
+                !traj_kinds(&events).contains(&"error".to_string()),
+                "cancelled run must not have error node: {events:?}"
+            );
+            assert!(
+                !traj_kinds(&events).contains(&"usage".to_string()),
+                "cancelled run must not have usage node: {events:?}"
+            );
+            std::fs::remove_dir_all(&dir).ok();
+            return;
+        }
+        let events = read_traj_events(&dir, "s1");
+        // Strict expectation when -32800 wins: only user and tool_call, no tails.
+        // Allow an extra tool_result with cancelled content if permission path raced,
+        // but never error/usage.
+        let kinds = traj_kinds(&events);
+        assert!(
+            kinds == vec!["user", "tool_call"]
+                || kinds == vec!["user", "tool_call", "tool_result"],
+            "tool_call was emitted at request-send (pre-Ask); the cancel discards pending thinking and records NO error/usage/permission tail: {events:?}"
+        );
+        if kinds.len() == 3 {
+            let agentj_protocol::trajectory::TrajectoryValue::ToolResult { content, .. } =
+                &events[2].value
+            else {
+                panic!("third node must be tool_result: {events:?}");
+            };
+            assert!(
+                content.contains("cancelled"),
+                "extra tool_result must be cancelled deny: {content}"
+            );
+        }
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

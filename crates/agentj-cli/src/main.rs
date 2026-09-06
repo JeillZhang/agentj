@@ -113,9 +113,11 @@ fn build_ipc_server(
     kernel: Kernel,
     session: Arc<dyn SessionStore>,
     permission_module: Arc<agentj_permission::PermissionModule>,
+    trajectory_store: Option<Arc<agentj_ipc::trajectory::TrajectoryStore>>,
 ) -> IpcServer {
     let mut ipc_server = IpcServer::new(kernel, session);
     ipc_server.permission_module = Some(permission_module);
+    ipc_server.trajectory_store = trajectory_store;
     ipc_server
 }
 
@@ -275,6 +277,12 @@ async fn main() -> anyhow::Result<()> {
     // Keep a concrete Arc before the ctx move: spawn_expiry_loop is NOT
     // object-safe (self: Arc<Self>) so it must be called on the concrete type.
     let session_dir = resolve_session_dir(&config);
+    let session_cfg = config.inner().session.as_ref();
+    let trajectory_store = Arc::new(agentj_ipc::trajectory::TrajectoryStore::new(
+        session_dir.clone(),
+        session_cfg.and_then(|s| s.trajectory_max_events),
+        session_cfg.and_then(|s| s.trajectory_max_bytes),
+    ));
     let session_store = Arc::new(FileBackedStore::new(&session_dir)?);
     let session: Arc<dyn SessionStore> = session_store.clone() as Arc<dyn SessionStore>;
 
@@ -411,8 +419,12 @@ async fn main() -> anyhow::Result<()> {
                 run_attached(&url, &prompt).await?;
                 mcp_manager.close_all().await;
             } else {
-                let ipc_server =
-                    build_ipc_server(kernel, session_for_ipc.clone(), permission_module);
+                let ipc_server = build_ipc_server(
+                    kernel,
+                    session_for_ipc.clone(),
+                    permission_module,
+                    Some(Arc::clone(&trajectory_store)),
+                );
                 let signal_task = spawn_signal_task(ipc_server.kernel_sender());
                 let sid = ipc_server.create_session()?;
                 let mut rx = ipc_server.run_turn_stream(&sid, &prompt);
@@ -438,7 +450,12 @@ async fn main() -> anyhow::Result<()> {
             }
         }
         Some(Commands::Serve { port: None, .. }) => {
-            let mut ipc_server = build_ipc_server(kernel, session_for_ipc, permission_module);
+            let mut ipc_server = build_ipc_server(
+                kernel,
+                session_for_ipc,
+                permission_module,
+                Some(Arc::clone(&trajectory_store)),
+            );
             let signal_task = spawn_signal_task(ipc_server.kernel_sender());
             ipc_server.serve_stdio().await?;
             signal_task.abort();
@@ -474,7 +491,12 @@ async fn main() -> anyhow::Result<()> {
         }
         None => {
             println!("Use `agentj run \"your prompt\"` or `agentj serve`");
-            let ipc_server = build_ipc_server(kernel, session_for_ipc, permission_module);
+            let ipc_server = build_ipc_server(
+                kernel,
+                session_for_ipc,
+                permission_module,
+                Some(Arc::clone(&trajectory_store)),
+            );
             ipc_server.signal_shutdown()?;
             mcp_manager.close_all().await;
         }
