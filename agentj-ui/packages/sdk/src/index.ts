@@ -9,5 +9,4 @@ export type { TransportStatus } from "./transports/websocket.js";
 
 export { PROTOCOL_VERSION, resolveWsUrl } from "./config.js";
 export { METHODS } from "./methods.js";
-
-export { TcpTransport } from "./transports/tcp.js";
+// TcpTransport is Node-only (node:net) — import via "@agentj/sdk/src/transports/tcp.js" for Node consumers.

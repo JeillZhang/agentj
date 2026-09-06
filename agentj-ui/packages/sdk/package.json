@@ -6,6 +6,10 @@
     ".": {
       "types": "./src/index.ts",
       "default": "./src/index.ts"
+    },
+    "./transports/tcp": {
+      "types": "./src/transports/tcp.ts",
+      "default": "./src/transports/tcp.ts"
     }
   },
   "dependencies": {
