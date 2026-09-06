@@ -40,7 +40,11 @@ impl TurnRunner {
             .config
             .get_int("agent.max_tool_iterations")
             .and_then(|v| if v > 0 { Some(v as usize) } else { None })
-            .or_else(|| ctx.config.get_int("max_tool_iterations").and_then(|v| if v > 0 { Some(v as usize) } else { None }))
+            .or_else(|| {
+                ctx.config
+                    .get_int("max_tool_iterations")
+                    .and_then(|v| if v > 0 { Some(v as usize) } else { None })
+            })
             .unwrap_or(50);
         Self {
             ctx,
