@@ -1,8 +1,6 @@
-import type {
-  NotificationHandler,
-  RpcTransport,
-} from "./router.js";
+import type { NotificationHandler, RpcTransport } from "./router.js";
 import { ResponseRouter } from "./router.js";
+import { PROTOCOL_VERSION } from "./config.js";
 
 export interface RpcResponse {
   jsonrpc: "2.0";
@@ -48,7 +46,7 @@ export class RpcClient {
 
   /// Reads connection_id + capabilities.multi_client from the initialize
   /// result (决策 #6, snake_case wire fields).
-  async initialize(protocol_version = "0.4.0"): Promise<InitializeResult> {
+  async initialize(protocol_version = PROTOCOL_VERSION): Promise<InitializeResult> {
     return (await this.request("initialize", {
       protocol_version,
     })) as InitializeResult;
