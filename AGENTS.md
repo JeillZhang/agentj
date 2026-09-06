@@ -1,6 +1,6 @@
 # AGENTS.md
 
-> Updated 2026-09-05 — v0.11.0 released
+> Updated 2026-09-06 — v0.11.1 released (acceptance fixes B-001..B-009 + patch bump)
 > (16 crates + agentj-ui monorepo：Web / TUI / Desktop + SDK，
 > npm workspaces `apps/*`+`packages/*`，共享 SDK + protocol，
 > WebSocket 网关同端口复用，后端零改造，frontend stays in-repo)

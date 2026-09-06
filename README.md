@@ -4,7 +4,7 @@ AI 编码代理工具（Rust）——Linux 内核式「内核调度 + 可插拔�
 内核通过统一的 JSON-RPC 2.0 协议（stdio / TCP / WebSocket）对外暴露能力；
 CLI、TUI、Web、Desktop 均通过 `agentj-ui` 协议消费者接入，任意语言可开发前端。
 
-> 当前版本：**v0.11.0**——agentj-ui 三端统一前端
+> 当前版本：**v0.11.1**——agentj-ui 三端统一前端（acceptance fixes 9 bugs + patch bump）
 > （Web / TUI / Desktop + SDK，16 crate + npm workspaces monorepo，
 > 共享 `packages/sdk` + `packages/protocol`，后端零改造）
 
