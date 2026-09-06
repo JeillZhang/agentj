@@ -1,7 +1,7 @@
 .aj-topbar, .aj-rail, .aj-card, .aj-dialog-card { box-shadow: 0 0 0 0.5px var(--aj-border); }
 .aj-button {
   border: none; border-radius: var(--aj-radius-ctl);
-  background: var(--aj-accent); color: var(--aj-accent-on-accent);
+  background: var(--aj-accent); color: var(--aj-accentOnAccent);
   padding: 7px 14px; font: inherit; cursor: pointer;
   transition: opacity var(--aj-motion) var(--aj-ease);
 }

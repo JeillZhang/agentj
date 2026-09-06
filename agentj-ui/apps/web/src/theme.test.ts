@@ -65,4 +65,10 @@ describe("web theme layer", () => {
     }
     expect(appCss).not.toMatch(/\.counter|\.hero|#center|#next-steps/);
   });
+  it("uses the defined accentOnAccent token for on-accent text", () => {
+    // B-104 regression: --aj-accent-on-accent (kebab) was used in .aj-button but
+    // only the palette key accentOnAccent is defined (varName = --aj-accentOnAccent).
+    expect(appCss).not.toContain("--aj-accent-on-accent");
+    expect(appCss).toContain("--aj-accentOnAccent");
+  });
 });
