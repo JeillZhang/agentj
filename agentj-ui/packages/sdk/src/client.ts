@@ -30,6 +30,12 @@ export class RpcClient {
     this.router.setNotificationHandler(handler);
   }
 
+  removeNotificationHandler(handler: NotificationHandler): void {
+    if (typeof (this.router as unknown as { removeNotificationHandler?: (h: NotificationHandler) => void }).removeNotificationHandler === "function") {
+      (this.router as unknown as { removeNotificationHandler: (h: NotificationHandler) => void }).removeNotificationHandler(handler);
+    }
+  }
+
   async request(
     method: string,
     params: Record<string, unknown> = {},

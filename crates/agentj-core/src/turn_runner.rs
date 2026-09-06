@@ -36,11 +36,17 @@ impl TurnRunner {
         sender: KernelSender,
         tool_executor_id: ModuleId,
     ) -> Self {
+        let max_tool_iterations = ctx
+            .config
+            .get_int("agent.max_tool_iterations")
+            .and_then(|v| if v > 0 { Some(v as usize) } else { None })
+            .or_else(|| ctx.config.get_int("max_tool_iterations").and_then(|v| if v > 0 { Some(v as usize) } else { None }))
+            .unwrap_or(50);
         Self {
             ctx,
             pipeline,
             default_system_prompt,
-            max_tool_iterations: 10,
+            max_tool_iterations,
             on_turn_complete: None,
             sender,
             tool_executor_id,

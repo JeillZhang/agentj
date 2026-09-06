@@ -137,8 +137,7 @@ async fn ws_upgrade(
     ws.on_upgrade(move |socket| async move {
         let conn = WsConnection::new(socket, peer.to_string());
         // 设计 D7: WS 连接走既有 serve_connection（注册表/订阅/鉴权零改动）。
-        let _ = state
-            .shared
+        let _ = Arc::clone(&state.shared)
             .serve_connection(Box::new(conn), state.token.as_deref())
             .await;
         state.active_ws.fetch_sub(1, Ordering::SeqCst);
