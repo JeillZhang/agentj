@@ -8,15 +8,15 @@ export type RunViewProps = {
 };
 
 export type RunUsage = {
-  input_tokens: number;
-  output_tokens: number;
+  prompt_tokens: number;
+  completion_tokens: number;
 };
 
 export type UsageInfo = RunUsage;
 
 export function formatUsage(usage?: UsageInfo | null): string {
   if (!usage) return "usage: n/a";
-  return `in=${usage.input_tokens} out=${usage.output_tokens}`;
+  return `in=${usage.prompt_tokens} out=${usage.completion_tokens}`;
 }
 
 export type RunViewWithUsageProps = {
