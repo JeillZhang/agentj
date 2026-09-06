@@ -95,6 +95,28 @@ mod tests {
     }
 
     #[test]
+    fn probe_allow_always_bool_is_silently_dropped() {
+        // B-102 regression lock: an `allow_always` boolean is not part of the wire
+        // contract — it is silently dropped, so the decision stays Allow.
+        let v: PermissionRespondParams = serde_json::from_value(serde_json::json!({
+            "request_id": "r1",
+            "decision": "allow",
+            "allow_always": true,
+        }))
+        .unwrap();
+        assert!(matches!(v.decision, PermissionDecision::Allow));
+        let schema = serde_json::to_value(schemars::schema_for!(PermissionRespondParams)).unwrap();
+        let props = schema["properties"].as_object().unwrap();
+        assert!(!props.contains_key("allow_always"));
+        let ok: PermissionRespondParams = serde_json::from_value(serde_json::json!({
+            "request_id": "r1",
+            "decision": "allow_always",
+        }))
+        .unwrap();
+        assert!(matches!(ok.decision, PermissionDecision::AllowAlways));
+    }
+
+    #[test]
     fn permission_decision_unknown_kind_falls_back() {
         // Forward compatibility: an unknown decision value must deserialize
         // to the Unknown variant instead of failing (serde(other)).

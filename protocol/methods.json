@@ -1,5 +1,5 @@
 {
-  "protocol_version": "0.2.0",
+  "protocol_version": "0.3.0",
   "methods": [
     { "method": "initialize", "kind": "request", "direction": "client_to_server", "params": "InitializeParams", "result": "InitializeResult" },
     { "method": "initialized", "kind": "notification", "direction": "client_to_server", "params": null, "result": null },
@@ -12,6 +12,8 @@
     { "method": "session/delete", "kind": "request", "direction": "client_to_server", "params": "SessionIdParams", "result": null },
     { "method": "session/subscribe", "kind": "request", "direction": "client_to_server", "params": "SessionSubscribeParams", "result": null },
     { "method": "session/unsubscribe", "kind": "request", "direction": "client_to_server", "params": "SessionIdParams", "result": null },
+    { "method": "session/list", "kind": "request", "direction": "client_to_server", "params": "SessionListParams", "result": "SessionListResult" },
+    { "method": "session/history", "kind": "request", "direction": "client_to_server", "params": "SessionHistoryParams", "result": "SessionHistoryResult" },
     { "method": "kernel/status", "kind": "request", "direction": "client_to_server", "params": null, "result": "KernelStatusResult" },
     { "method": "$/cancelRequest", "kind": "notification", "direction": "both", "params": "CancelParams", "result": null },
     { "method": "$/progress", "kind": "notification", "direction": "server_to_client", "params": "ProgressParams", "result": null },

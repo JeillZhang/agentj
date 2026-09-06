@@ -61,13 +61,12 @@ export function usePermissionState(client: RpcClient | null) {
   const [pending, setPending] = useState<PermissionRequest | null>(null);
   usePermission(client, setPending);
   const respond = useCallback(
-    async (payload: { decision: string; allow_always?: boolean }) => {
+    async (payload: { decision: string }) => {
       if (!client || !pending) return;
       try {
         await client.request(METHODS.permissionRespond, {
           request_id: pending.request_id,
           decision: payload.decision,
-          allow_always: payload.allow_always,
         });
       } catch {}
       setPending(null);
@@ -101,7 +100,6 @@ export type PermissionDialogProps = {
   request_id?: string;
   onRespond: (payload: {
     decision: string;
-    allow_always?: boolean;
     request_id?: string;
     requestId?: string;
   }) => void;
@@ -115,10 +113,10 @@ export function PermissionDialog(props: PermissionDialogProps): React.ReactNode 
 
   const handleRespond = useCallback(
     (idx: number) => {
-      let p: { decision: string; allow_always?: boolean };
+      let p: { decision: string };
       if (idx === 0) p = { decision: "allow" };
       else if (idx === 1) p = { decision: "deny" };
-      else p = { decision: "allow", allow_always: true };
+      else p = { decision: "allow_always" };
       const rid = props.requestId ?? props.request_id;
       if (rid) props.onRespond({ ...p, request_id: rid, requestId: rid });
       else props.onRespond(p);
@@ -163,6 +161,5 @@ export function permissionRespondPayload(
   decision: string,
   allowAlways?: boolean,
 ): Record<string, unknown> {
-  if (allowAlways) return { request_id: requestId, decision, allow_always: true };
-  return { request_id: requestId, decision };
+  return { request_id: requestId, decision: allowAlways ? "allow_always" : decision };
 }

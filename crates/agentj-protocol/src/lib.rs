@@ -5,6 +5,7 @@ pub mod permission;
 pub mod schema;
 pub mod session;
 pub mod streaming;
+pub mod trajectory;
 pub mod types;
 
 #[cfg(test)]

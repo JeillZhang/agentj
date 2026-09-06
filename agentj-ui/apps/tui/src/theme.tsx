@@ -3,29 +3,22 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-export type ThemeMode = "dark" | "light";
+import { palettes, type Palette } from "@agentj/tokens";
+
+export type ThemeMode = "dark" | "light"; // TUI is two-state; system-follow is Web (C7)
 
 export function nextTheme(mode: ThemeMode): ThemeMode {
   return mode === "dark" ? "light" : "dark";
 }
 
-export type ThemePalette = {
-  background: string;
-  foreground: string;
-  accent: string;
-};
-
-export const darkPalette: ThemePalette = {
-  background: "#1a1b26",
-  foreground: "#c0caf5",
-  accent: "#7aa2f7",
-};
-
-export const lightPalette: ThemePalette = {
-  background: "#ffffff",
-  foreground: "#1a1b26",
-  accent: "#34548a",
-};
+// The palette is now the full semantic token record — 15 keys from @agentj/tokens:
+// bg/sidebar/panel/raised/text/textMuted/accent/accentOnAccent/userBubble/border/codeBg/
+// inlineCodeBg/success/error/warning. No live consumer read the old keys (only toggle was
+// consumed), so they are deleted. Future readers wanting old semantics: background → bg,
+// foreground → text.
+export type ThemePalette = Palette;
+export const darkPalette: ThemePalette = palettes.dark;
+export const lightPalette: ThemePalette = palettes.light;
 
 export function getThemeConfigDir(): string {
   const xdg = process.env.XDG_CONFIG_HOME;

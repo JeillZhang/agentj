@@ -483,4 +483,96 @@ mod tests {
         assert_eq!(reloaded.load_all()?.len(), 1);
         Ok(())
     }
+
+    use crate::InMemoryStore;
+    use agentj_core::module::SessionStore as SessionStoreTrait;
+    use agentj_core::types::{ChatMessage as Cm2, Role as Role2};
+
+    fn msg(content: &str) -> Cm2 {
+        Cm2 {
+            role: Role2::User,
+            content: content.into(),
+            tool_call_id: None,
+            tool_calls: vec![],
+        }
+    }
+
+    fn temp_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "agentj-list-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn file_backed_list_preview_truncates_last_message_to_120() {
+        let dir = temp_dir("preview");
+        let store = FileBackedStore::new(&dir).unwrap();
+        let sid = store.create().unwrap();
+        store.append(&sid, msg("first")).unwrap();
+        let long = "x".repeat(150);
+        store.append(&sid, msg(&long)).unwrap();
+        let list = store.list().unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].session_id, sid);
+        assert_eq!(list[0].status, SessionStatus::Active);
+        let preview = list[0].preview.as_deref().expect("preview present");
+        assert_eq!(preview.len(), 120, "preview is capped at 120 chars");
+        assert!(preview.starts_with("xxxxx"));
+        drop(store);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn file_backed_list_reflects_archived_status_and_preview() {
+        let dir = temp_dir("archived");
+        let store = FileBackedStore::new(&dir).unwrap();
+        let sid = store.create().unwrap();
+        store.append(&sid, msg("hello world")).unwrap();
+        store.archive(&sid).unwrap();
+        let list = store.list().unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].status, SessionStatus::Archived);
+        assert_eq!(list[0].preview.as_deref(), Some("hello world"));
+        drop(store);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn file_backed_list_survives_store_restart() {
+        let dir = temp_dir("restart");
+        {
+            let store = FileBackedStore::new(&dir).unwrap();
+            let sid = store.create().unwrap();
+            store.append(&sid, msg("persisted")).unwrap();
+        } // store dropped — "daemon restart"
+        let store2 = FileBackedStore::new(&dir).unwrap();
+        let list = store2.list().unwrap();
+        assert_eq!(
+            list.len(),
+            1,
+            "preload at construction keeps sessions listable"
+        );
+        assert_eq!(list[0].preview.as_deref(), Some("persisted"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn list_is_empty_on_fresh_dir_and_on_inmemory() {
+        let dir = temp_dir("empty");
+        let store = FileBackedStore::new(&dir).unwrap();
+        assert!(store.list().unwrap().is_empty());
+        let mem = InMemoryStore::new();
+        assert!(
+            mem.list().unwrap().is_empty(),
+            "InMemory: non-persistent contract"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }

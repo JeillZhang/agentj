@@ -6,6 +6,33 @@ import {
   WebSocketTransport,
 } from "@agentj/sdk";
 
+export type ListRow = { id: string; state: string; preview?: string };
+const PREVIEW_MAX = 120;
+export function rowsFromList(
+  sessions: Array<{ session_id?: string; id?: string; state?: string; preview?: string | null }>,
+): ListRow[] {
+  return (sessions ?? []).map((s) => {
+    const preview = s.preview;
+    return {
+      id: String(s.session_id ?? s.id ?? ""),
+      state: s.state ?? "active",
+      preview:
+        preview == null
+          ? undefined
+          : preview.length > PREVIEW_MAX
+            ? `${preview.slice(0, PREVIEW_MAX - 1)}…`
+            : preview,
+    };
+  });
+}
+
+function openOpClient(wsUrl: string) {
+  const router = new ResponseRouter();
+  const transport = new WebSocketTransport(wsUrl, router);
+  const client = new RpcClient(transport, router);
+  return { router, transport, client };
+}
+
 const FAVORITES_KEY = "agentj.favorites";
 const STALE_KEY = "agentj.favorites.stale";
 
@@ -183,6 +210,31 @@ export default function SessionPanel({
 }: Props) {
   const { input, setInput, favorites, stale, error, busy, newSession, continueSession } =
     usePanelState(wsUrl, onActiveChange);
+  const [listRows, setListRows] = useState<ListRow[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const { transport, client } = openOpClient(wsUrl);
+        try {
+          const res = (await client.request(METHODS.sessionList, {})) as {
+            sessions?: Array<{ session_id?: string; id?: string; state?: string; preview?: string | null }>;
+          } | null;
+          if (!cancelled) setListRows(rowsFromList(res?.sessions ?? []));
+        } finally {
+          (transport as unknown as { close?: () => void }).close?.();
+        }
+      } catch (err) {
+        if (!cancelled) {
+          console.debug("session-list", err);
+          setListRows([]);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [wsUrl]);
 
   return (
     <section aria-label="sessions">
@@ -221,6 +273,18 @@ export default function SessionPanel({
           ))}
         </ul>
       )}
+      <h3>Recent sessions</h3>
+      <ul aria-label="session list" className="aj-session-list">
+        {listRows.map((r) => (
+          <li key={r.id}>
+            <button type="button" className="aj-session-row" onClick={() => continueSession(r.id)}>
+              <span className="aj-session-state" data-state={r.state} />
+              <span className="aj-session-id">{r.id}</span>
+              {r.preview !== undefined && <span className="aj-session-preview">{r.preview}</span>}
+            </button>
+          </li>
+        ))}
+      </ul>
     </section>
   );
 }

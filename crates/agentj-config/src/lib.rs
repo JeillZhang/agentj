@@ -48,6 +48,11 @@ impl Default for ModelSection {
 pub struct SessionConfig {
     #[serde(default)]
     pub dir: Option<PathBuf>,
+    /// Trajectory rolling-trim caps (defaults 10_000 / 5 MiB, see ipc::trajectory).
+    #[serde(default)]
+    pub trajectory_max_events: Option<u64>,
+    #[serde(default)]
+    pub trajectory_max_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -354,6 +359,7 @@ mod tests {
         let file = AgentJConfig {
             session: Some(SessionConfig {
                 dir: Some("/tmp/x".into()),
+                ..Default::default()
             }),
             ..AgentJConfig::default()
         };

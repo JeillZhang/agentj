@@ -1,10 +1,13 @@
 import "@testing-library/jest-dom/vitest";
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { render, screen, waitFor, fireEvent, act } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent, act, within } from "@testing-library/react";
+import { readFileSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const shared = vi.hoisted(() => ({
   lastWsUrl: { value: "" },
-  initVersion: { value: "0.11.0" },
+  initVersion: { value: "0.12.1" },
   shouldFail: { value: false },
   newSessionId: { value: "s9" },
   statusShouldFail: { value: false },
@@ -16,6 +19,9 @@ const shared = vi.hoisted(() => ({
   lastPermissionParams: { value: null as Record<string, unknown> | null },
   permShouldFail: { value: false },
   permError: { value: "stale" },
+  sessionListResult: { value: { sessions: [] as Array<Record<string, unknown>> } },
+  historyResult: { value: { events: [] as Array<Record<string, unknown>>, next_cursor: null as number | null } },
+  lastHistoryParams: { value: null as Record<string, unknown> | null },
 }));
 
 vi.mock("@agentj/sdk", () => {
@@ -65,8 +71,13 @@ vi.mock("@agentj/sdk", () => {
         return {};
       }
       if (shared.shouldFail.value) throw new Error("unreachable");
+      if (method === "session/list") return shared.sessionListResult.value;
+      if (method === "session/history") {
+        shared.lastHistoryParams.value = params as Record<string, unknown> | null;
+        return shared.historyResult.value;
+      }
       if (method === "kernel/status") {
-        return { modules: [{ id: "test-mod", state: "running" }] };
+        return { modules: [{ id: "test-mod", state: "running" }], default_model: "deepseek-chat" };
       }
       if (method === "initialize") {
         return { protocol_version: shared.initVersion.value };
@@ -96,6 +107,49 @@ vi.mock("@agentj/sdk", () => {
         return o?.token ? `${base}?token=${o.token}` : base;
       },
     ),
+    // T14: real parser coverage lives in @agentj/sdk progress.test.ts (T12); this
+    // double mirrors T12's translation table for the standard frame kinds so the
+    // web flows exercise the same shapes. DRIFT WARNING: keep in step with T12.
+    parseProgress: (params: unknown) => {
+      if (typeof (params as { text?: unknown })?.text === "string") {
+        return { kind: "text", text: (params as { text: string }).text };
+      }
+      const v = (params as { value?: unknown })?.value as
+        | Record<string, unknown>
+        | undefined;
+      if (!v || typeof v["kind"] !== "string") return { kind: "unknown", raw: params };
+      const kind = v["kind"] as string;
+      if (kind === "text") {
+        return typeof v["delta"] === "string"
+          ? { kind: "text", text: v["delta"] }
+          : { kind: "unknown", raw: params };
+      }
+      if (kind === "tool_call") {
+        const tc = v["tool_call"] as Record<string, unknown> | undefined;
+        return tc && typeof tc["id"] === "string" && typeof tc["name"] === "string"
+          ? { kind: "tool_call", id: tc["id"], name: tc["name"], arguments: tc["arguments"] ?? null }
+          : { kind: "unknown", raw: params };
+      }
+      if (kind === "tool_result") {
+        return typeof v["content"] === "string" && typeof v["tool_call_id"] === "string"
+          ? { kind: "tool_result", call_id: v["tool_call_id"], content: v["content"] }
+          : { kind: "unknown", raw: params };
+      }
+      if (kind === "usage") {
+        const u = v["usage"] as { prompt_tokens?: unknown; completion_tokens?: unknown } | undefined;
+        return u && typeof u.prompt_tokens === "number" && typeof u.completion_tokens === "number"
+          ? { kind: "usage", usage: { prompt_tokens: u.prompt_tokens, completion_tokens: u.completion_tokens } }
+          : { kind: "unknown", raw: params };
+      }
+      if (kind === "permission") {
+        return typeof v["request_id"] === "string" && typeof v["tool"] === "string"
+          && typeof v["decision"] === "string"
+          ? { kind: "permission", request_id: v["request_id"] as string, tool: v["tool"] as string,
+              decision: v["decision"] as string }
+          : { kind: "unknown", raw: params };
+      }
+      return { kind: "unknown", raw: params };
+    },
     METHODS: {
       kernelStatus: "kernel/status",
       initialize: "initialize",
@@ -103,20 +157,34 @@ vi.mock("@agentj/sdk", () => {
       sessionStatus: "session/status",
       sessionSubscribe: "session/subscribe",
       sessionRun: "session/run",
+      sessionList: "session/list",
+      sessionHistory: "session/history",
       progress: "$/progress",
       permissionRequest: "$/permissionRequest",
       permissionRespond: "permission/respond",
     },
-    PROTOCOL_VERSION: "0.11.0",
+    PROTOCOL_VERSION: "0.12.1",
   };
 });
 
-import App from "./App";
+import App, { connectionLight } from "./App";
+import { historyToEntries, historyToConversation, filterNodes } from "./Trajectory";
+import { Trajectory } from "./Trajectory";
+
+const WIRE_CORPUS = [
+  { session_id: "s1", seq: 1, ts: 100, value: { kind: "user", content: "hi" } },
+  { session_id: "s1", seq: 2, ts: 101, value: { kind: "thinking", content: "hello world" } },
+  { session_id: "s1", seq: 3, ts: 102, value: { kind: "tool_call", tool_call: { id: "c1", name: "bash", arguments: { cmd: "ls" } } } },
+  { session_id: "s1", seq: 4, ts: 103, value: { kind: "tool_result", tool_call_id: "c1", content: "auth.rs\nmain.rs" } },
+  { session_id: "s1", seq: 5, ts: 104, value: { kind: "permission", request_id: "r1", tool: "bash", decision: "allow" } },
+  { session_id: "s1", seq: 6, ts: 105, value: { kind: "usage", usage: { prompt_tokens: 10, completion_tokens: 5 } } },
+  { session_id: "s1", seq: 7, ts: 106, value: { kind: "error", message: "boom" } },
+] as Array<Record<string, unknown>>;
 
 describe("App with mocked SDK transport", () => {
   beforeEach(() => {
     shared.lastWsUrl.value = "";
-    shared.initVersion.value = "0.11.0";
+    shared.initVersion.value = "0.12.1";
     shared.shouldFail.value = false;
     shared.newSessionId.value = "s9";
     shared.statusShouldFail.value = false;
@@ -128,7 +196,11 @@ describe("App with mocked SDK transport", () => {
     shared.lastPermissionParams.value = null;
     shared.permShouldFail.value = false;
     shared.permError.value = "stale";
+    shared.sessionListResult.value = { sessions: [] as Array<Record<string, unknown>> };
+    shared.historyResult.value = { events: [] as Array<Record<string, unknown>>, next_cursor: null as number | null };
+    shared.lastHistoryParams.value = null;
     localStorage.clear();
+    document.documentElement.removeAttribute("data-theme");
   });
 
   it("renders modules from kernel/status via SDK client", async () => {
@@ -155,11 +227,11 @@ describe("App with mocked SDK transport", () => {
     );
   });
 
-  it("shows version mismatch banner expected 0.11.0 got 0.9.0", async () => {
+  it("shows version mismatch banner expected 0.12.1 got 0.9.0", async () => {
     shared.initVersion.value = "0.9.0";
     render(<App />);
     expect(
-      await screen.findByText(/expected 0\.11\.0, got 0\.9\.0/i),
+      await screen.findByText(/expected 0\.12\.1, got 0\.9\.0/i),
     ).toBeInTheDocument();
   });
 
@@ -292,7 +364,7 @@ describe("App with mocked SDK transport", () => {
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
-  it("AllowAll sends permission/respond with allow_always true and closes", async () => {
+  it("AllowAll sends permission/respond with decision allow_always and closes", async () => {
     shared.newSessionId.value = "s1";
     render(<App />);
     fireEvent.click(screen.getByRole("button", { name: /new session/i }));
@@ -313,8 +385,7 @@ describe("App with mocked SDK transport", () => {
     await waitFor(() => expect(shared.requests.value).toContain("permission/respond"));
     expect(shared.lastPermissionParams.value).toEqual({
       request_id: "r1",
-      decision: "allow",
-      allow_always: true,
+      decision: "allow_always",
     });
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
   });
@@ -348,5 +419,162 @@ describe("App with mocked SDK transport", () => {
     expect(screen.getByLabelText(/progress feed/i)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /close/i }));
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  });
+});
+
+describe("Trajectory mappers", () => {
+  it("historyToEntries collapses the tool pair and keeps wire seqs", () => {
+    const nodes = historyToEntries(WIRE_CORPUS as never);
+    expect(nodes.map((n) => n.kind)).toEqual(["user", "thinking", "tool", "approval", "usage", "error"]);
+    const toolNode = nodes[2] as { seq: number; state: string; output?: string };
+    expect(toolNode.seq).toBe(3);
+    expect(toolNode.state).toBe("ok");
+    expect(toolNode.output).toContain("auth.rs");
+  });
+  it("historyToConversation skips allow-approval and error rows", () => {
+    const entries = historyToConversation(WIRE_CORPUS as never);
+    expect(entries.map((e) => e.kind)).toEqual(["user", "ai", "tool", "usage"]);
+    expect(entries[1]).toEqual({ kind: "ai", text: "hello world" });
+    expect(screen.queryByText("boom")).not.toBeInTheDocument();
+  });
+  it("a deny permission row marks the newest running tool denied", () => {
+    const corpus = WIRE_CORPUS.map((e) => (e.seq === 5 ? { ...e, value: { ...(e.value as Record<string, unknown>), decision: "deny" } } : e));
+    const entries = historyToConversation(corpus as never);
+    const toolEntry = entries[2] as { state: string };
+    expect(toolEntry.state).toBe("denied");
+  });
+  it("filterNodes filters by text and by kind chips", () => {
+    const nodes = historyToEntries(WIRE_CORPUS as never);
+    expect(filterNodes(nodes, "auth", []).map((n) => n.kind)).toEqual(["tool"]);
+    expect(filterNodes(nodes, "", ["error"]).map((n) => n.kind)).toEqual(["error"]);
+  });
+});
+
+describe("Trajectory replay", () => {
+  it("highlights nodes in seq order and pauses at the end", () => {
+    vi.useFakeTimers();
+    try {
+      const nodes = historyToEntries(WIRE_CORPUS as never);
+      void nodes;
+      render(<Trajectory events={WIRE_CORPUS as never} />);
+      fireEvent.click(screen.getByRole("button", { name: /play/i }));
+      expect(screen.getByLabelText(/step 1 of 6/i)).toBeInTheDocument();
+      act(() => { vi.advanceTimersByTime(700); });
+      expect(screen.getByLabelText(/step 2 of 6/i)).toBeInTheDocument();
+      act(() => { vi.advanceTimersByTime(700 * 6); });
+      expect(screen.getByLabelText(/step 6 of 6/i)).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /play/i })).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("App shell + history rebuild", () => {
+  beforeEach(() => {
+    shared.initVersion.value = "0.12.1";
+    shared.shouldFail.value = false;
+    shared.historyResult.value = { events: [] as Array<Record<string, unknown>>, next_cursor: null as number | null };
+    shared.sessionListResult.value = { sessions: [] as Array<Record<string, unknown>> };
+    shared.lastHistoryParams.value = null;
+    localStorage.clear();
+    document.documentElement.removeAttribute("data-theme");
+  });
+  it("rebuilds the conversation from session/history when continuing s1", async () => {
+    shared.historyResult.value = { events: WIRE_CORPUS, next_cursor: null };
+    shared.sessionListResult.value = { sessions: [{ session_id: "s1", state: "active", preview: "hi" }] };
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: /connect/i }));
+    const list = await screen.findByRole("list", { name: "session list" });
+    fireEvent.click(await within(list).findByText(/s1/));
+    expect(await screen.findByText("hello world")).toBeInTheDocument();
+    expect(screen.getByText("in=10 out=5")).toBeInTheDocument();
+    expect(screen.queryByText("boom")).not.toBeInTheDocument();
+  });
+  it("shows error nodes in the Trajectory tab only", async () => {
+    shared.historyResult.value = { events: WIRE_CORPUS, next_cursor: null };
+    shared.sessionListResult.value = { sessions: [{ session_id: "s1", state: "active", preview: "hi" }] };
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: /connect/i }));
+    const list = await screen.findByRole("list", { name: "session list" });
+    fireEvent.click(await within(list).findByText(/s1/));
+    await screen.findByText("hello world");
+    fireEvent.click(screen.getByRole("tab", { name: /trajectory/i }));
+    expect(await screen.findByText("boom")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /play/i })).toBeInTheDocument();
+  });
+  it("theme toggle cycles dark → light → system and persists agentj.theme-mode", () => {
+    localStorage.removeItem("agentj.theme-mode");
+    document.documentElement.removeAttribute("data-theme");
+    render(<App />);
+    expect(document.documentElement.dataset.theme).toBeUndefined();
+    fireEvent.click(screen.getByRole("button", { name: /toggle theme/i }));
+    expect(document.documentElement.dataset.theme).toBe("dark");
+    expect(localStorage.getItem("agentj.theme-mode")).toBe("dark");
+    fireEvent.click(screen.getByRole("button", { name: /toggle theme/i }));
+    expect(document.documentElement.dataset.theme).toBe("light");
+    expect(localStorage.getItem("agentj.theme-mode")).toBe("light");
+    fireEvent.click(screen.getByRole("button", { name: /toggle theme/i }));
+    expect(document.documentElement.dataset.theme).toBeUndefined();
+    expect(localStorage.getItem("agentj.theme-mode")).toBe("system");
+  });
+  it("shows the kernel/status model chip and feeds the meta row 模型 segment", async () => {
+    shared.historyResult.value = { events: WIRE_CORPUS, next_cursor: null };
+    shared.sessionListResult.value = { sessions: [{ session_id: "s1", state: "active", preview: "hi" }] };
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: /connect/i }));
+    const header = screen.getByRole("banner");
+    expect(await within(header).findByText("deepseek-chat")).toBeInTheDocument();
+    expect(within(header).getByLabelText("model")).toBeInTheDocument();
+    const list = await screen.findByRole("list", { name: "session list" });
+    fireEvent.click(await within(list).findByText(/s1/));
+    await screen.findByText("hello world");
+    expect(screen.getAllByText("deepseek-chat")).toHaveLength(2);
+  });
+  it("maps the connection state onto the status light (绿/橙 semantics)", async () => {
+    expect(connectionLight("connected", false)).toBe("connected");
+    expect(connectionLight("kernel unreachable on ws://x", true)).toBe("unreachable");
+    expect(connectionLight("connecting to kernel on ws://x…", false)).toBe("connecting");
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: /connect/i }));
+    await screen.findByText("connected");
+    const light = () => document.querySelector<HTMLElement>(".aj-status-light")!;
+    expect(light()).not.toBeNull();
+    expect(light().dataset.state).toBe("connected");
+  });
+  it("lights unreachable orange while the hint text stays untouched", async () => {
+    shared.shouldFail.value = true;
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: /connect/i }));
+    await screen.findByText(/agentj dashboard --port/i);
+    expect(document.querySelector<HTMLElement>(".aj-status-light")?.dataset.state).toBe("unreachable");
+  });
+  it("renders the version-mismatch banner with its semantic state", async () => {
+    shared.initVersion.value = "0.9.0";
+    render(<App />);
+    const banner = await waitFor(() => screen.getByRole("alert"), { timeout: 3000 });
+    expect(banner.textContent).toMatch(/expected 0\.12\.1, got 0\.9\.0/i);
+    expect(banner.className).toContain("aj-banner");
+    expect(banner.getAttribute("data-state")).toBe("mismatch");
+  });
+  it("drawer toggle controls the rail and App.css declares the responsive rules", async () => {
+    const css = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), "App.css"), "utf8",
+    );
+    expect(css).toContain(".aj-drawer-toggle");
+    expect(css).toContain("@media (max-width: 899px)");
+    expect(css).toContain("@media (max-width: 479px)");
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: /connect/i }));
+    const toggle = screen.getByRole("button", { name: /toggle sessions/i });
+    const app = () => document.querySelector<HTMLElement>(".aj-app")!;
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(app().dataset.drawer).toBe("closed");
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(app().dataset.drawer).toBe("open");
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(app().dataset.drawer).toBe("closed");
   });
 });

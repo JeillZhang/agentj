@@ -90,13 +90,26 @@ export interface ServerInfo {
 export type ModuleState = "unloaded" | "initializing" | "ready" | "stopping" | "stopped" | "failed";
 
 export interface KernelStatusResult {
+  /**
+   * Config model.default_model, e.g. "deepseek-chat". Absent when no config. @since 0.12.0
+   */
+  default_model?: string | null;
   modules: ModuleInfo[];
+  /**
+   * Provider list from config (name → base_url); models reserved, empty. @since 0.12.0
+   */
+  providers?: ProviderInfo[] | null;
   version: string;
   [k: string]: unknown;
 }
 export interface ModuleInfo {
   id: string;
   state: ModuleState;
+  [k: string]: unknown;
+}
+export interface ProviderInfo {
+  id: string;
+  models: string[];
   [k: string]: unknown;
 }
 
@@ -196,11 +209,33 @@ export type ProgressValue =
       kind: "tool_result";
       tool_call_id: string;
       [k: string]: unknown;
+    }
+  | {
+      kind: "usage";
+      usage: UsageInfo;
+      [k: string]: unknown;
+    }
+  | {
+      decision: PermissionDecision;
+      kind: "permission";
+      request_id: string;
+      session_id?: string | null;
+      tool: string;
+      [k: string]: unknown;
     };
+/**
+ * Decision value in `PermissionRespondParams`. `Unknown` tolerates forward
+ * values (serde(other)); schema lists only the known values.
+ */
 
 export interface ProgressParams {
   token: ProgressToken;
   value: ProgressValue;
+  [k: string]: unknown;
+}
+export interface UsageInfo {
+  completion_tokens: number;
+  prompt_tokens: number;
   [k: string]: unknown;
 }
 
@@ -212,6 +247,10 @@ export interface ProgressParams {
  * `$/progress` payload, discriminated by `kind` (design 决策 #3).
  * An unknown `kind` is ignorable by consumers (per `$/`-prefix convention,
  * design 决策 #5) — consumer-side behavior documented in the spec, deferred to v0.1.
+ */
+/**
+ * Decision value in `PermissionRespondParams`. `Unknown` tolerates forward
+ * values (serde(other)); schema lists only the known values.
  */
 
 
@@ -252,8 +291,117 @@ export type ResponseMessage =
 
 
 
+/**
+ * Page of a session trajectory. @since 0.12.0
+ */
+export interface SessionHistoryParams {
+  cursor?: number | null;
+  limit?: number | null;
+  session_id: string;
+  [k: string]: unknown;
+}
+
+/**
+ * Kind payload of a trajectory event, discriminated by `value.kind`.
+ * Forward-compat by the standard rule: consumers ignore unknown kinds, and the
+ * store replay skips unparseable lines defensively (see T7) — no serde(other)
+ * needed on a tagged enum with payloads, matching ProgressValue's policy.
+ */
+export type TrajectoryValue =
+  | {
+      content: string;
+      kind: "user";
+      [k: string]: unknown;
+    }
+  | {
+      content: string;
+      kind: "thinking";
+      [k: string]: unknown;
+    }
+  | {
+      kind: "tool_call";
+      tool_call: ToolCall;
+      [k: string]: unknown;
+    }
+  | {
+      content: string;
+      kind: "tool_result";
+      tool_call_id: string;
+      [k: string]: unknown;
+    }
+  | {
+      decision: PermissionDecision;
+      kind: "permission";
+      request_id: string;
+      tool: string;
+      [k: string]: unknown;
+    }
+  | {
+      kind: "usage";
+      usage: UsageInfo;
+      [k: string]: unknown;
+    }
+  | {
+      kind: "error";
+      message: string;
+      [k: string]: unknown;
+    };
+/**
+ * Decision value in `PermissionRespondParams`. `Unknown` tolerates forward
+ * values (serde(other)); schema lists only the known values.
+ */
+
+/**
+ * @since 0.12.0
+ */
+export interface SessionHistoryResult {
+  events: TrajectoryEvent[];
+  next_cursor?: number | null;
+  [k: string]: unknown;
+}
+export interface TrajectoryEvent {
+  /**
+   * Monotonic per-session sequence number; page cursor = last seen seq + 1.
+   */
+  seq: number;
+  session_id: string;
+  /**
+   * Unix epoch **milliseconds**.
+   */
+  ts: number;
+  value: TrajectoryValue;
+  [k: string]: unknown;
+}
+
 export interface SessionIdParams {
   session_id: string;
+  [k: string]: unknown;
+}
+
+/**
+ * @since 0.12.0
+ */
+export interface SessionListParams {
+  [k: string]: unknown;
+}
+
+export type SessionStatus = "active" | "archived" | "deleted";
+
+/**
+ * @since 0.12.0
+ */
+export interface SessionListResult {
+  sessions: SessionSummary[];
+  [k: string]: unknown;
+}
+/**
+ * One row of `session/list`. @since 0.12.0
+ */
+export interface SessionSummary {
+  preview?: string | null;
+  session_id: string;
+  state: SessionStatus;
+  updated_at: number;
   [k: string]: unknown;
 }
 
@@ -280,13 +428,7 @@ export interface SessionRunResult {
   usage?: UsageInfo | null;
   [k: string]: unknown;
 }
-export interface UsageInfo {
-  completion_tokens: number;
-  prompt_tokens: number;
-  [k: string]: unknown;
-}
 
-export type SessionStatus = "active" | "archived" | "deleted";
 
 
 export interface SessionStatusResult {
@@ -307,6 +449,11 @@ export interface SessionSubscribeParams {
   session_id: string;
   [k: string]: unknown;
 }
+
+
+/**
+ * One row of `session/list`. @since 0.12.0
+ */
 
 
 export interface ToolDefinition {
