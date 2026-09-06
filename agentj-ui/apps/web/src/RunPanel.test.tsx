@@ -47,6 +47,33 @@ describe("reduceRunFeed", () => {
     } as ProgressFrame);
     expect((out[1] as { state: string }).state).toBe("denied");
   });
+  it("allow_always permission keeps the tool running (returns unchanged, like allow)", () => {
+    const feed = [user("go"), tool("c1", "bash")];
+    const out = reduceRunFeed(feed, {
+      kind: "permission",
+      request_id: "r1",
+      tool: "bash",
+      decision: "allow_always",
+    } as ProgressFrame);
+    expect(out).toEqual(feed);
+    expect((out[1] as { state: string }).state).toBe("running");
+  });
+  it("a tool_result after allow_always still settles the tool to ok (not swallowed)", () => {
+    const approved = reduceRunFeed([user("go"), tool("c1", "bash")], {
+      kind: "permission",
+      request_id: "r1",
+      tool: "bash",
+      decision: "allow_always",
+    } as ProgressFrame);
+    const out = reduceRunFeed(approved, {
+      kind: "tool_result",
+      call_id: "c1",
+      content: "auth.rs\n",
+    } as ProgressFrame);
+    const t = out[1] as { state: string; output: string };
+    expect(t.state).toBe("ok");
+    expect(t.output).toBe("auth.rs\n");
+  });
   it("an error-prefixed tool_result settles the card as failed, not ok", () => {
     const out = reduceRunFeed([user("go"), tool("c1", "bash")], {
       kind: "tool_result",

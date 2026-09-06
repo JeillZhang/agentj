@@ -40,7 +40,7 @@ export function reduceRunFeed(entries: RunEntry[], frame: ProgressFrame): RunEnt
       return settle(entries[j] as Extract<RunEntry, { kind: "tool" }>, j);
     }
     case "permission": {
-      if (frame.decision === "allow") return entries;
+      if (frame.decision !== "deny") return entries;
       const j = entries.findLastIndex(
         (e) => e.kind === "tool" && e.state === "running" && e.name === frame.tool,
       );
