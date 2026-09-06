@@ -1,4 +1,4 @@
-/* T4 — Cardized SessionPanel */
+.aj-session-panel { display: flex; flex-direction: column; gap: var(--aj-space-3); }
 .aj-session-row {
   padding: 10px 12px;
   border-radius: 8px;
@@ -79,9 +79,11 @@
 }
 .aj-session-actions {
   display: flex;
-  gap: 8px;
-  margin-bottom: 8px;
+  gap: var(--aj-space-2);
 }
+.aj-field { display: flex; flex-direction: column; gap: 4px; }
+.aj-field .aj-input { min-height: 40px; }
+.aj-session-row--stale { opacity: 0.6; }
 .aj-empty {
   color: var(--aj-textMuted);
   font-size: 13px;

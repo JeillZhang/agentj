@@ -380,36 +380,37 @@ export default function SessionPanel({
   }, [listRows, query]);
 
   return (
-    <section aria-label="sessions">
+    <section aria-label="sessions" className="aj-session-panel">
       <div className="aj-session-actions">
-        <button type="button" onClick={newSession} disabled={busy}>
+        <button type="button" className="aj-button" onClick={newSession} disabled={busy}>
           New session
         </button>
-        <button type="button" onClick={clearHistory} disabled={busy} aria-label="clear history">
+        <button type="button" className="aj-button--ghost" onClick={clearHistory} disabled={busy} aria-label="clear history">
           Clear
         </button>
       </div>
-      <div>
-        <label htmlFor="aj-session-id">session id</label>
+      <div className="aj-field">
+        <label htmlFor="aj-session-id" className="aj-label">session id</label>
         <input
           id="aj-session-id"
+          className="aj-input"
           value={input}
           onChange={(e) => setInput(e.target.value)}
           placeholder="session id"
         />
-        <button type="button" onClick={() => continueSession()} disabled={busy}>
+        <button type="button" className="aj-button aj-button--ghost" onClick={() => continueSession()} disabled={busy}>
           Continue
         </button>
       </div>
       {error && (
-        <div role="alert">
+        <div role="alert" className="aj-error">
           <p>{error}</p>
-          <button type="button" onClick={newSession}>
+          <button type="button" className="aj-button--ghost" onClick={newSession}>
             New
           </button>
         </div>
       )}
-      {activeSessionId && <p>active: {activeSessionId}</p>}
+      {activeSessionId && <p className="aj-chip aj-chip--model" aria-label="active session">active: {activeSessionId}</p>}
       <div className="aj-session-search-wrap">
         <Search size={16} aria-hidden="true" />
         <input
@@ -425,10 +426,10 @@ export default function SessionPanel({
           <h3 className="aj-session-section">
             <Star size={16} aria-hidden="true" /> Favorites
           </h3>
-          <ul aria-label="favorites">
+          <ul aria-label="favorites" className="aj-session-list">
             {favorites.map((id) => (
               <li key={id}>
-                <button type="button" onClick={() => continueSession(id)}>
+                <button type="button" className={`aj-session-row${stale.has(id) ? " aj-session-row--stale" : ""}`} onClick={() => continueSession(id)}>
                   {stale.has(id) ? `${id} (stale)` : id}
                 </button>
               </li>
