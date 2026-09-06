@@ -34,10 +34,12 @@ fn registry_lists_all_v01_methods() {
         "permission/respond",
         "session/subscribe",
         "session/unsubscribe",
+        "session/list",
+        "session/history",
     ] {
         assert!(names.contains(&expected), "missing method {expected}");
     }
-    assert_eq!(methods.len(), 16, "unexpected method count");
+    assert_eq!(methods.len(), 18, "unexpected method count");
 }
 
 #[test]
