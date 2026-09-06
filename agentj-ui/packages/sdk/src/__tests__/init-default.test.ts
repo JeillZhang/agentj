@@ -24,13 +24,13 @@ class CaptureTransport implements RpcTransport {
 }
 
 describe("B-001 RpcClient.initialize default", () => {
-  it("defaults protocol_version to PROTOCOL_VERSION (0.11.1)", async () => {
+  it("defaults protocol_version to PROTOCOL_VERSION (0.12.0)", async () => {
     const transport = new CaptureTransport();
     const client = new RpcClient(transport);
     await client.initialize();
     expect(transport.lastMethod).toBe("initialize");
     expect(transport.lastParams?.protocol_version).toBe(PROTOCOL_VERSION);
-    expect(PROTOCOL_VERSION).toBe("0.11.1");
+    expect(PROTOCOL_VERSION).toBe("0.12.0");
   });
 
   it("allows explicit override still works", async () => {
