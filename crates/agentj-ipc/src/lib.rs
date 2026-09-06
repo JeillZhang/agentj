@@ -673,10 +673,18 @@ impl IpcServer {
                 })
             })
             .collect();
-        Ok(serde_json::json!({
+        let (default_model, providers) = kernel_model_info(self.kernel.ctx().as_ref());
+        let mut body = serde_json::json!({
             "version": env!("CARGO_PKG_VERSION"),
             "modules": modules,
-        }))
+        });
+        if let Some(model) = default_model {
+            body["default_model"] = serde_json::json!(model);
+        }
+        if let Some(ps) = providers {
+            body["providers"] = serde_json::to_value(ps).expect("serializable");
+        }
+        Ok(body)
     }
 
     /// `permission/respond`: deliver the client's decision to a pending approval.
@@ -962,6 +970,22 @@ impl IpcServer {
         }
         Ok(())
     }
+}
+
+fn kernel_model_info(
+    ctx: Option<&agentj_core::module::KernelContext>,
+) -> (Option<String>, Option<Vec<agentj_protocol::streaming::ProviderInfo>>) {
+    let Some(ctx) = ctx else { return (None, None) };
+    let cfg = ctx.config();
+    let default_model = cfg.get_str("model.default_model").filter(|s| !s.is_empty());
+    let names: Vec<String> = cfg.providers().into_iter().map(|(id, _)| id).collect();
+    let providers = (!names.is_empty()).then(|| {
+        names
+            .into_iter()
+            .map(|id| agentj_protocol::streaming::ProviderInfo { id, models: vec![] })
+            .collect()
+    });
+    (default_model, providers)
 }
 
 /// Stdio transport — implements `Connection` for stdin/stdout NDJSON (design 决策 #2).
@@ -2765,5 +2789,62 @@ mod tests {
         assert_ne!(ws, TransportKind::Tcp);
         assert_ne!(ws, TransportKind::Stdio);
         assert_ne!(ws, TransportKind::UnixSocket);
+    }
+
+    #[derive(Debug)]
+    struct CfgEmpty;
+    impl agentj_core::module::ConfigProvider for CfgEmpty {
+        fn get_str(&self, _k: &str) -> Option<String> {
+            None
+        }
+        fn get_int(&self, _k: &str) -> Option<i64> {
+            None
+        }
+        fn providers(&self) -> Vec<(String, String)> {
+            vec![]
+        }
+    }
+    #[derive(Debug)]
+    struct CfgModel;
+    impl agentj_core::module::ConfigProvider for CfgModel {
+        fn get_str(&self, k: &str) -> Option<String> {
+            (k == "model.default_model").then(|| "deepseek-chat".into())
+        }
+        fn get_int(&self, _k: &str) -> Option<i64> {
+            None
+        }
+        fn providers(&self) -> Vec<(String, String)> {
+            vec![("mock".into(), "http://localhost:11434".into())]
+        }
+    }
+
+    #[test]
+    fn kernel_model_info_empty_when_no_context_or_config() {
+        let (dm, ps) = kernel_model_info(None);
+        assert!(dm.is_none());
+        assert!(ps.is_none());
+        let (dm2, ps2) = kernel_model_info(Some(&agentj_core::module::KernelContext {
+            session: stub_session(),
+            tools: Arc::new(agentj_core::module::ToolRegistry::new()),
+            providers: Arc::new(agentj_core::module::ProviderRegistry::new()),
+            config: Arc::new(CfgEmpty),
+        }));
+        assert!(dm2.is_none());
+        assert!(ps2.is_none());
+    }
+
+    #[test]
+    fn kernel_model_info_surfaces_config_values() {
+        let (default_model, providers) = kernel_model_info(Some(&agentj_core::module::KernelContext {
+            session: stub_session(),
+            tools: Arc::new(agentj_core::module::ToolRegistry::new()),
+            providers: Arc::new(agentj_core::module::ProviderRegistry::new()),
+            config: Arc::new(CfgModel),
+        }));
+        assert_eq!(default_model.as_deref(), Some("deepseek-chat"));
+        let ps = providers.expect("providers present when config lists any");
+        assert_eq!(ps.len(), 1);
+        assert_eq!(ps[0].id, "mock");
+        assert!(ps[0].models.is_empty(), "models is reserved and stays empty");
     }
 }
