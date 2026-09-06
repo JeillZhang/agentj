@@ -4,7 +4,8 @@ AI 编码代理工具（Rust）——Linux 内核式「内核调度 + 可插拔�
 内核通过统一的 JSON-RPC 2.0 协议（stdio / TCP / WebSocket）对外暴露能力；
 CLI、TUI、Web、Desktop 均通过 `agentj-ui` 协议消费者接入，任意语言可开发前端。
 
-> 当前版本：**v0.11.1**——agentj-ui 三端统一前端（acceptance fixes 9 bugs + patch bump）
+> 当前版本：**v0.12.0**——agentj-ui Visual 2.0（DeepSeek-blue rebrand：共享语义 tokens、
+> trajectory/history 表面、Web/TUI/Desktop 视觉重设计）
 > （Web / TUI / Desktop + SDK，16 crate + npm workspaces monorepo，
 > 共享 `packages/sdk` + `packages/protocol`，后端零改造）
 
@@ -76,7 +77,7 @@ agentj-ui/                 # 前端 monorepo（npm workspaces，frontend stays i
       src/
         client.ts          # RpcClient
         router.ts          # ResponseRouter + RpcTransport
-        config.ts          # PROTOCOL_VERSION="0.11.0" + resolveWsUrl
+        config.ts          # PROTOCOL_VERSION="0.12.0" + resolveWsUrl
         methods.ts         # METHODS 常量（由 methods.json 生成）
         transports/
           websocket.ts     # WebSocketTransport（浏览器）
@@ -92,7 +93,7 @@ docs/superpowers/          # 设计文档 + 实现计划（中文）
 ```
 
 > 前端不拆独立仓：`agentj-ui` 保留在 `crates/` 同级 monorepo 内，
-> 与 Rust workspace 共享版本 `0.11.0`（单一 `PROTOCOL_VERSION` 来源 `sdk/config.ts`）。
+> 与 Rust workspace 共享版本 `0.12.0`（单一 `PROTOCOL_VERSION` 来源 `sdk/config.ts`）。
 
 ## Usage
 
@@ -184,7 +185,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo bench -p agentj-model       # 模型流式基准
 cargo run -p agentj-protocol --bin gen_schemas   # 重新生成 schemas/*.json
 cargo test -p agentj-protocol -- drift          # 漂移门禁（33 schemas 无漂移）
-./scripts/check-version.sh        # 版本一致性：Cargo.toml + sdk/config.ts + desktop 均为 0.11.0
+./scripts/check-version.sh        # 版本一致性：Cargo.toml + sdk/config.ts + desktop 均为 0.12.0
 
 # 前端 monorepo（npm workspaces，根为 agentj-ui/）
 npm --prefix agentj-ui install                           # 安装（agentj-ui workspaces）
