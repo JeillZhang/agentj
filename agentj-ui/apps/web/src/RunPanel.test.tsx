@@ -163,7 +163,7 @@ describe("ConversationFeed rendering", () => {
     expect(document.querySelector("strong")?.textContent).toBe("bold");
     expect(document.querySelector("table")).not.toBeNull();
   });
-  it("marks the pending tool row with △ while its dialog is open", () => {
+  it("marks the pending tool row with lucide icons while its dialog is open", () => {
     const entries = [
       user("go"),
       tool("c1", "bash"),
@@ -171,20 +171,26 @@ describe("ConversationFeed rendering", () => {
     ] as RunEntry[];
     const { container } = render(<ConversationFeed entries={entries} pendingTool="write" />);
     const [bashRow, writeRow] = container.querySelectorAll<HTMLElement>(".aj-tool-status");
-    expect(bashRow.textContent).toBe("│");
     expect(bashRow.dataset.state).toBe("running");
-    expect(writeRow.textContent).toBe("△");
+    expect(bashRow.querySelector("svg[aria-hidden='true']")).not.toBeNull();
     expect(writeRow.dataset.state).toBe("pending");
+    expect(writeRow.querySelector("svg[aria-hidden='true']")).not.toBeNull();
+    const dots = container.querySelectorAll<HTMLElement>(".aj-tool-dot");
+    expect(dots.length).toBe(2);
+    expect(dots[0].dataset.state).toBe("running");
+    expect(dots[1].dataset.state).toBe("pending");
   });
-  it("renders a failed tool card with the ✗ glyph and its error output", () => {
+  it("renders a failed tool card with the lucide X and its error output", () => {
     const entries = [
       user("go"),
       { kind: "tool", id: "c1", name: "bash", args: null, state: "failed", output: "Error: boom" },
     ] as RunEntry[];
     const { container } = render(<ConversationFeed entries={entries} />);
     const status = container.querySelector<HTMLElement>(".aj-tool-status")!;
-    expect(status.textContent).toBe("✗");
     expect(status.dataset.state).toBe("failed");
+    expect(status.querySelector("svg[aria-hidden='true']")).not.toBeNull();
+    const dot = container.querySelector<HTMLElement>(".aj-tool-dot")!;
+    expect(dot.dataset.state).toBe("failed");
     const card = screen.getByRole("region", { name: /bash/ });
     expect(card.textContent).toContain("Error: boom");
     expect(screen.getByRole("button", { name: /expand/i })).toBeInTheDocument();

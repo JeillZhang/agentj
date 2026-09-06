@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { Check, Clock, Minus, Send, X } from "lucide-react";
 import { METHODS, parseProgress, RpcClient } from "@agentj/sdk";
 import type { ProgressFrame } from "@agentj/sdk";
 
@@ -79,9 +80,9 @@ type Props = {
 };
 
 export function toolGlyph(entry: Extract<RunEntry, { kind: "tool" }>, pending: boolean) {
-  if (entry.state === "ok") return "✓";
-  if (entry.state === "denied" || entry.state === "failed") return "✗";
-  return pending ? "△" : "│";
+  if (entry.state === "ok") return <Check size={16} aria-hidden="true" />;
+  if (entry.state === "denied" || entry.state === "failed") return <X size={16} aria-hidden="true" />;
+  return pending ? <Clock size={16} aria-hidden="true" /> : <Minus size={16} aria-hidden="true" />;
 }
 
 export function ToolCard({
@@ -98,6 +99,7 @@ export function ToolCard({
   const state = pending ? "pending" : entry.state;
   return (
     <section className="aj-tool-card" aria-label={entry.name}>
+      <span className="aj-tool-dot" data-state={state} aria-hidden="true" />
       <span className="aj-tool-status" data-state={state}>{toolGlyph(entry, pending)}</span>
       <span className="aj-tool-name">{entry.name}</span>
       {entry.output !== undefined && (
@@ -140,7 +142,7 @@ export function ConversationFeed({
         switch (entry.kind) {
           case "user":
             return (
-              <div key={i} className="aj-bubble-user">{entry.text}</div>
+              <div key={i} className="aj-bubble-user aj-bubble-user--right">{entry.text}</div>
             );
           case "ai":
             return (
@@ -190,6 +192,7 @@ export default function RunPanel({
   const [elapsedMs, setElapsedMs] = useState<number | undefined>(undefined);
   const [draft, setDraft] = useState("");
   const busy = useRef(false);
+  const [isBusy, setIsBusy] = useState(false);
   useEffect(() => {
     if (initialEntries.length > 0) setEntries(initialEntries);
   }, [initialEntries]);
@@ -214,6 +217,7 @@ export default function RunPanel({
   async function submit(text: string) {
     if (!activeSessionId || busy.current || text.trim() === "" || !client) return;
     busy.current = true;
+    setIsBusy(true);
     setElapsedMs(undefined);
     const startedAt = performance.now();
     setEntries((prev) => [...prev, { kind: "user", text }]);
@@ -231,6 +235,7 @@ export default function RunPanel({
     } finally {
       setElapsedMs(performance.now() - startedAt);
       busy.current = false;
+      setIsBusy(false);
     }
     const pt = usage?.usage?.prompt_tokens;
     const ct = usage?.usage?.completion_tokens;
@@ -251,34 +256,41 @@ export default function RunPanel({
         model={model}
         elapsedMs={elapsedMs}
       />
-      <div className="aj-composer">
+      <div className="aj-composer-card">
         <label htmlFor="aj-prompt" className="aj-visually-hidden">prompt</label>
         <textarea
           id="aj-prompt"
           className="aj-input"
           value={draft}
           placeholder={activeSessionId ? "继续追问…" : "先新建或选择一个会话"}
-          disabled={!activeSessionId || busy.current}
+          disabled={!activeSessionId || isBusy}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
+              if (busy.current) return;
               submit(draft);
               setDraft("");
             }
           }}
         />
-            <button
-              type="button"
-              className="aj-button"
-              disabled={!activeSessionId || busy.current}
-              onClick={() => {
-                submit(draft);
-                setDraft("");
-              }}
-            >
-          Send
-        </button>
+        <div className="aj-composer__toolbar">
+          <span className="aj-chip">Plan</span>
+          {isBusy && <span className="aj-pending" aria-hidden="true" />}
+          <button
+            type="button"
+            className="aj-button aj-button--send"
+            aria-label="send"
+            disabled={!activeSessionId || isBusy}
+            onClick={() => {
+              if (busy.current) return;
+              submit(draft);
+              setDraft("");
+            }}
+          >
+            <Send size={16} aria-hidden="true" />
+          </button>
+        </div>
       </div>
     </section>
   );

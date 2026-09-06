@@ -258,6 +258,9 @@ export function Trajectory({ events }: { events: RawEvent[] }) {
               {k}
             </button>
           ))}
+          {NODE_KINDS.length > 5 && (
+            <span className="aj-chip aj-chip--overflow" aria-label={`+${NODE_KINDS.length - 5} more`}>+{NODE_KINDS.length - 5}</span>
+          )}
         </div>
         <button
           type="button"
@@ -272,7 +275,7 @@ export function Trajectory({ events }: { events: RawEvent[] }) {
         </button>
       </div>
       {shown.length === 0 ? (
-        <p className="aj-empty">No trajectory events yet — continue a session or start a new run.</p>
+        <p className="aj-empty">Select a session or no trajectory yet — start a run</p>
       ) : (
         <ol className="aj-traj" aria-label="trajectory steps">
           {shown.map((n, idx) => (
@@ -281,6 +284,7 @@ export function Trajectory({ events }: { events: RawEvent[] }) {
               className={current?.seq === n.seq && playing ? "aj-traj-step aj-traj-step--cur" : "aj-traj-step"}
               aria-label={`step ${idx + 1} of ${shown.length}`}
             >
+              <span className="aj-traj-dot" aria-hidden="true" />
               <span className="aj-traj-seq">{n.seq}</span>
               <TrajNodeView node={n} />
             </li>
@@ -299,9 +303,9 @@ export function TrajNodeView({ node }: { node: TrajNode }) {
       : node.kind === "thinking"
         ? node.text
         : node.kind === "tool"
-          ? `${node.name} ${node.state === "ok" ? "✓" : "│"}`
+          ? `${node.name} ${node.state === "ok" ? "ok" : "running"}`
           : node.kind === "approval"
-            ? `${node.tool} ${node.decision === "allow" ? "✓" : "✗"}`
+            ? `${node.tool} ${node.decision}`
             : node.kind === "usage"
               ? `in=${node.usage.prompt_tokens} out=${node.usage.completion_tokens}`
               : node.message;

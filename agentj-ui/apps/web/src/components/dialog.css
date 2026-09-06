@@ -1,0 +1,49 @@
+[role="dialog"][aria-label="permission request"] {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, .32);
+  z-index: var(--aj-z-dialog);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  backdrop-filter: blur(2px);
+  padding: 16px;
+}
+[role="dialog"] {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, .32);
+  z-index: var(--aj-z-dialog);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  backdrop-filter: blur(2px);
+  padding: 16px;
+}
+.aj-dialog-card {
+  max-width: 560px;
+  width: 100%;
+  box-shadow: var(--aj-shadowRaised);
+  border-radius: 16px;
+  background: var(--aj-panel);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-height: 90vh;
+  overflow: auto;
+}
+.aj-popover[role="dialog"] {
+  position: absolute;
+  inset: auto;
+  top: 100%;
+  right: 0;
+  background: var(--aj-panel);
+  backdrop-filter: none;
+  display: block;
+  padding: 8px;
+  border-radius: var(--aj-radius-ctl);
+  box-shadow: var(--aj-shadowSoft);
+  z-index: var(--aj-z-dialog);
+  width: max-content;
+}

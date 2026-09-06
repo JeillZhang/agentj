@@ -8,6 +8,7 @@ import {
   resolveWsUrl,
 } from "@agentj/sdk";
 import type { NotificationHandler } from "@agentj/sdk";
+import { MoreHorizontal, Moon, Sun, Monitor, Menu } from "lucide-react";
 import ApprovalDialog from "./ApprovalDialog";
 import type { ApprovalRequest } from "./ApprovalDialog";
 import ConnectionBar from "./ConnectionBar";
@@ -15,6 +16,7 @@ import RunPanel from "./RunPanel";
 import SessionPanel from "./SessionPanel";
 import { Trajectory, historyToConversation } from "./Trajectory";
 import type { RawEvent } from "./Trajectory";
+import heroImg from "./assets/hero.png";
 
 const rawWsEnv = import.meta.env.VITE_AGENTJ_WS_URL;
 const envWsUrl = typeof rawWsEnv === "string" ? rawWsEnv : undefined;
@@ -197,6 +199,7 @@ export default function App() {
   const { pending, approvalError, respond, close } = useApproval(sharedClient, activeSessionId);
   const [theme, setTheme] = useState<ThemeMode>(storedThemeMode() ?? "system");
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [moreOpen, setMoreOpen] = useState(false);
   const [tab, setTab] = useState<"conversation" | "trajectory">("conversation");
   const [historyEvents, setHistoryEvents] = useState<RawEvent[] | null>(null);
   const [historySession, setHistorySession] = useState<string | null>(null);
@@ -257,35 +260,74 @@ export default function App() {
   return (
     <div className="aj-app" data-drawer={drawerOpen ? "open" : "closed"}>
       <header className="aj-topbar" role="banner">
-        <h1>agentj</h1>
-        <ConnectionBar
-          onConnect={(host, port, token) => {
-            const p = port ? Number(port) : undefined;
-            const next = resolveWsUrl({
-              envUrl: envWsUrl,
-              host: host || undefined,
-              port: p,
-              token: token || undefined,
-            });
-            setWsUrl(next);
-            setDrawerOpen(false);
-          }}
-        />
-        <p className="aj-statusline">
-          <span className="aj-status-light" data-state={connState} aria-hidden="true" />
-          {status}
-        </p>
-        {modelName !== null && (
-          <span className="aj-chip aj-chip--model" aria-label="model">{modelName}</span>
-        )}
-        <ul className="aj-chips" aria-label="modules">
-          {modules.map((m) => (
-            <li key={m.id} className="aj-chip" data-state={m.state}>{m.id}: {m.state}</li>
-          ))}
-        </ul>
-        <button type="button" aria-label="toggle sessions" className="aj-button aj-drawer-toggle" aria-expanded={drawerOpen} aria-controls="aj-session-rail" onClick={() => setDrawerOpen((o) => !o)}>☰</button>
-        <button type="button" aria-label="toggle theme" className="aj-button--ghost" onClick={() => setTheme((t) => THEME_CYCLE[t])}>{theme === "dark" ? "☾" : theme === "light" ? "☀" : "◐"}</button>
+        <div className="aj-topbar__brand">
+          <h1>agentj</h1>
+          <p className="aj-statusline">
+            <span className="aj-status-light" data-state={connState} aria-hidden="true" />
+            <span className="aj-status-text">{status}</span>
+          </p>
+        </div>
+        <div className="aj-topbar__center">
+          <ConnectionBar
+            onConnect={(host, port, token) => {
+              const p = port ? Number(port) : undefined;
+              const next = resolveWsUrl({
+                envUrl: envWsUrl,
+                host: host || undefined,
+                port: p,
+                token: token || undefined,
+              });
+              setWsUrl(next);
+              setDrawerOpen(false);
+            }}
+          />
+        </div>
+        <div className="aj-topbar__actions">
+          {modelName !== null && (
+            <span className="aj-chip aj-chip--model" aria-label="model">{modelName}</span>
+          )}
+          <div className="aj-popover-wrap">
+            <button
+              type="button"
+              aria-label="more"
+              className="aj-popover-trigger"
+              aria-expanded={moreOpen}
+              aria-haspopup="true"
+              onClick={() => setMoreOpen((o) => !o)}
+            >
+              <MoreHorizontal size={16} aria-hidden="true" />
+            </button>
+            {moreOpen && (
+              <div className="aj-popover" role="dialog" aria-label="modules">
+                <ul className="aj-chips" aria-label="modules">
+                  {modules.length === 0 ? (
+                    <li className="aj-chip">no modules</li>
+                  ) : (
+                    modules.map((m) => (
+                      <li key={m.id} className="aj-chip" data-state={m.state}>
+                        {m.id}: {m.state}
+                      </li>
+                    ))
+                  )}
+                </ul>
+              </div>
+            )}
+          </div>
+          <button type="button" aria-label="toggle sessions" className="aj-button aj-drawer-toggle" aria-expanded={drawerOpen} aria-controls="aj-session-rail" onClick={() => setDrawerOpen((o) => !o)}><Menu size={16} aria-hidden="true" /></button>
+          <button type="button" aria-label="toggle theme" className="aj-button--ghost" onClick={() => setTheme((t) => THEME_CYCLE[t])}>
+            {theme === "dark" ? <Moon size={16} aria-hidden="true" /> : theme === "light" ? <Sun size={16} aria-hidden="true" /> : <Monitor size={16} aria-hidden="true" />}
+          </button>
+        </div>
       </header>
+      {drawerOpen && (
+        <div
+          data-testid="scrim"
+          className="aj-scrim"
+          role="presentation"
+          aria-hidden="true"
+          onClick={() => setDrawerOpen(false)}
+        />
+      )}
       {banner && <p role="alert" className="aj-banner" data-state="mismatch">{banner}</p>}
       {unreachable && (
         <p>{`agentj dashboard --port ${new URL(resolveWsUrl({ envUrl: envWsUrl })).port || new URL(resolveWsUrl({})).port}`}</p>
@@ -301,7 +343,22 @@ export default function App() {
           </div>
           {tab === "conversation" ? (
             activeSessionId === null ? (
-              <p className="aj-empty">Select a session to view its conversation, or start a new run.</p>
+              <section className="aj-hero" aria-label="hero empty">
+                <img src={heroImg} alt="hero" width={120} height={120} />
+                <h2>Where to next?</h2>
+                <p>Select a session or start a new run</p>
+                <button
+                  type="button"
+                  className="aj-button aj-hero-trigger"
+                  onClick={() => {
+                    const btn = document.querySelector<HTMLButtonElement>(".aj-session-actions button");
+                    if (btn) btn.click();
+                    else window.dispatchEvent(new CustomEvent("agentj:new-session"));
+                  }}
+                >
+                  New session
+                </button>
+              </section>
             ) : (
               <>
                 {(historyEvents === null || historySession !== activeSessionId) && <p className="aj-empty">Loading history…</p>}

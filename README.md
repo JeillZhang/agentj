@@ -4,10 +4,10 @@ AI 编码代理工具（Rust）——Linux 内核式「内核调度 + 可插拔�
 内核通过统一的 JSON-RPC 2.0 协议（stdio / TCP / WebSocket）对外暴露能力；
 CLI、TUI、Web、Desktop 均通过 `agentj-ui` 协议消费者接入，任意语言可开发前端。
 
-> 当前版本：**v0.12.1**——agentj-ui Visual 2.0（DeepSeek-blue rebrand：共享语义 tokens、
-> trajectory/history 表面、Web/TUI/Desktop 视觉重设计）
-> （Web / TUI / Desktop + SDK，16 crate + npm workspaces monorepo，
-> 共享 `packages/sdk` + `packages/protocol`，后端零改造）
+> 当前版本：**v0.12.2**——agentj-ui Visual 2.1 refine（DeepSeek-blue #4176E6/#679EFE
+>  + tokens 19 keys + Web polished：shell 居中列 + 悬浮胶囊 composer + 卡片化会话/连接 + 轨迹 timeline + hero 空状态）
+> （Web / TUI / Desktop + SDK + tokens，16 crate + npm workspaces monorepo，
+> 共享 `packages/sdk` + `packages/protocol` + `packages/tokens`，后端零改造）
 
 ## Features
 
@@ -48,6 +48,8 @@ CLI、TUI、Web、Desktop 均通过 `agentj-ui` 协议消费者接入，任意�
   流式渲染、审批模态、模型只读展示、主题切换、usage 结算、优雅退出）
 - [x] **agentj-ui Desktop**：`apps/desktop`（Tauri v2 壳，套 `apps/web` 产物，
   输出 deb / AppImage / dmg / msi 四件套，check-artifacts.sh 校验）
+- [x] **Visual 2.1 refine（v0.12.2）**：`packages/tokens` 扩展至 19 keys（shadowSoft/shadowRaised/radiusXl/textCaption + spacing/font/z/motion/icon vars）
+  + Web 精细化：App Shell 居中列 + 抽屉 scrim / 悬浮胶囊 Composer（22px + shadow + sticky）/ 卡片化 ConnectionBar 与 SessionPanel / 气泡与 timeline 工具卡 / Trajectory timeline / Hero 空状态与 dashed trigger / Dialog 固定遮罩 + lucide 替换 emoji
 
 ## Project Structure
 
@@ -77,13 +79,14 @@ agentj-ui/                 # 前端 monorepo（npm workspaces，frontend stays i
       src/
         client.ts          # RpcClient
         router.ts          # ResponseRouter + RpcTransport
-        config.ts          # PROTOCOL_VERSION="0.12.1" + resolveWsUrl
+        config.ts          # VERSION="0.12.2" + PROTOCOL_VERSION="0.12.1" + resolveWsUrl
         methods.ts         # METHODS 常量（由 methods.json 生成）
         transports/
           websocket.ts     # WebSocketTransport（浏览器）
           tcp.ts           # TcpTransport（Node 直连预留）
+    tokens/                # 共享 tokens（palette.ts 19 keys + tokens.css/json/md 生成）
   apps/
-    web/                   # Web Dashboard（Vite + React + TS，消费 @agentj/sdk）
+    web/                   # Web Dashboard（Vite + React + TS，消费 @agentj/sdk + @agentj/tokens + lucide-react；components/*.css 模块化）
     tui/                   # TUI（Bun + @opentui/react，全功能）
     desktop/               # Tauri 壳（套 web/dist，输出安装包）
 models/                    # models/opencode-go.json
@@ -93,7 +96,7 @@ docs/superpowers/          # 设计文档 + 实现计划（中文）
 ```
 
 > 前端不拆独立仓：`agentj-ui` 保留在 `crates/` 同级 monorepo 内，
-> 与 Rust workspace 共享版本 `0.12.1`（单一 `PROTOCOL_VERSION` 来源 `sdk/config.ts`）。
+> 与 Rust workspace 共享版本 `0.12.2`（`VERSION` + 单一 `PROTOCOL_VERSION 0.12.1` 来源 `sdk/config.ts`）。
 
 ## Usage
 
@@ -185,7 +188,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo bench -p agentj-model       # 模型流式基准
 cargo run -p agentj-protocol --bin gen_schemas   # 重新生成 schemas/*.json
 cargo test -p agentj-protocol -- drift          # 漂移门禁（33 schemas 无漂移）
-./scripts/check-version.sh        # 版本一致性：Cargo.toml + sdk/config.ts + desktop 均为 0.12.1
+./scripts/check-version.sh        # 版本一致性：Cargo.toml + sdk/config.ts + desktop 均为 0.12.2（PROTOCOL_VERSION 0.12.1）
 
 # 前端 monorepo（npm workspaces，根为 agentj-ui/）
 npm --prefix agentj-ui install                           # 安装（agentj-ui workspaces）

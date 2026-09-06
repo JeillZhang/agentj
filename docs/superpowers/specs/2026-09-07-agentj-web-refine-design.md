@@ -151,3 +151,17 @@ textCaption: "#8A8F98" // light, dark "#8B8F98"
 
 - 交付物：`packages/tokens` 扩展 + `apps/web` 组件 CSS 拆分 + `lucide` 替换 + Hero/Composer/SessionPanel 视觉重做
 - 验收：`theme/ui-tokens` 门禁 + `vite build 278 modules` + 手动三主题三断点截图，`ui-ux-pro-max P1-P5` checklist 全绿
+
+## TODO 清单（0.12.2 完成）
+
+- [x] T0 tokens 19 keys + CSS vars（shadowSoft/shadowRaised/radiusXl/textCaption + spacing/font/z/motion/icon）
+- [x] T1 lucide-react + App.css 拆 components/* scaffold
+- [x] T2 App Shell 居中列 + 抽屉 scrim
+- [x] T3 ConnectionBar 卡片化 + 表单校验
+- [x] T4 SessionPanel 卡片化 + 搜索
+- [x] T5 悬浮胶囊 Composer（22px + shadow + sticky + Send 34px）
+- [x] T6 Conversation 气泡 + timeline 工具卡
+- [x] T7 Trajectory timeline + filter chips
+- [x] T8 Hero 空状态 + dashed workspaceTrigger
+- [x] T9 ApprovalDialog 固定遮罩 + shadowRaised + focus trap
+- [x] T10 版本 0.12.2 + 文档同步 + 全量门禁
