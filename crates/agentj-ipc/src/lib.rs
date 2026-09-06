@@ -419,6 +419,8 @@ impl IpcServer {
                 "session/subscribe" => self.dispatch_subscribe(&req, conn_id),
                 "session/unsubscribe" => self.dispatch_unsubscribe(&req, conn_id),
                 "kernel/status" => self.dispatch_kernel_status(),
+                "session/list" => self.dispatch_session_list(),
+                "session/history" => self.dispatch_session_history(&req),
                 "shutdown" => self.dispatch_shutdown(),
                 "permission/respond" => self.dispatch_permission_respond(&req, conn_id).await,
                 "$/cancelRequest" => self.dispatch_cancel_request(&req).await,
@@ -781,6 +783,59 @@ impl IpcServer {
             body["providers"] = serde_json::to_value(ps).expect("serializable");
         }
         Ok(body)
+    }
+
+    fn dispatch_session_list(&self) -> Result<Value, DispatchError> {
+        let entries = self
+            .session_store
+            .list()
+            .map_err(|e| DispatchError::internal(e.to_string()))?;
+        let sessions: Vec<Value> = entries
+            .iter()
+            .map(|e| {
+                let state = match e.status {
+                    agentj_core::module::SessionStatus::Active => "active",
+                    agentj_core::module::SessionStatus::Archived => "archived",
+                    agentj_core::module::SessionStatus::Deleted => "deleted",
+                };
+                let mut obj = serde_json::json!({
+                    "session_id": e.session_id,
+                    "updated_at": e.updated_at,
+                    "state": state,
+                });
+                if let Some(p) = &e.preview {
+                    obj["preview"] = serde_json::json!(p);
+                }
+                obj
+            })
+            .collect();
+        Ok(serde_json::json!({ "sessions": sessions }))
+    }
+
+    fn dispatch_session_history(&self, req: &JsonRpcRequest) -> Result<Value, DispatchError> {
+        let params = req
+            .params
+            .as_ref()
+            .ok_or_else(|| DispatchError::invalid_params("missing params"))?;
+        let sid = params["session_id"]
+            .as_str()
+            .ok_or_else(|| DispatchError::invalid_params("missing session_id"))?;
+        let limit = params["limit"]
+            .as_u64()
+            .unwrap_or(100)
+            .clamp(1, 500) as usize;
+        let cursor = params["cursor"].as_u64();
+        let (events, next) = match &self.trajectory_store {
+            Some(store) => store
+                .read_paged(&sid.to_string(), cursor, limit)
+                .map_err(|e| DispatchError::internal(e.to_string()))?,
+            None => (vec![], None),
+        };
+        let result = agentj_protocol::session::SessionHistoryResult {
+            events,
+            next_cursor: next,
+        };
+        Ok(serde_json::to_value(result).expect("serializable"))
     }
 
     /// `permission/respond`: deliver the client's decision to a pending approval.
@@ -3347,6 +3402,157 @@ mod tests {
             content.starts_with("Error:"),
             "executor denial flows into tool_result content (C9): {content}"
         );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn session_list_returns_file_backed_rows() {
+        let dir = temp_dir_traj("list");
+        let store = Arc::new(agentj_session::FileBackedStore::new(dir.as_path()).unwrap());
+        let session: Arc<dyn SessionStore> = store.clone();
+        let server = IpcServer::new(Kernel::new(), session);
+        let sid = store.create().unwrap();
+        store
+            .append(
+                &sid,
+                ChatMessage {
+                    role: Role::User,
+                    content: "x".repeat(150),
+                    tool_call_id: None,
+                    tool_calls: vec![],
+                },
+            )
+            .unwrap();
+        let raw = r#"{"jsonrpc":"2.0","id":4,"method":"session/list"}"#;
+        let resp = server.handle_request(raw).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        let row = &v["result"]["sessions"][0];
+        assert_eq!(row["session_id"].as_str(), Some(sid.as_str()));
+        assert_eq!(row["state"], "active");
+        assert!(row["updated_at"].is_u64());
+        assert_eq!(row["preview"].as_str().unwrap().len(), 120);
+        assert!(row["preview"].as_str().unwrap().starts_with("xxxxx"));
+        store.archive(&sid).unwrap();
+        let resp = server
+            .handle_request(r#"{"jsonrpc":"2.0","id":5,"method":"session/list"}"#)
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(v["result"]["sessions"][0]["state"], "archived");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn session_history_pages_recorded_events() {
+        let dir = temp_dir_traj("history");
+        let mut server = stub_bus_server_with_usage();
+        server.trajectory_store = Some(wired_store(&dir));
+        server
+            .handle_request(r#"{"jsonrpc":"2.0","id":2,"method":"session/run","params":{"session_id":"s1","content":"hi"}}"#)
+            .await
+            .unwrap();
+        let raw = r#"{"jsonrpc":"2.0","id":6,"method":"session/history","params":{"session_id":"s1","limit":2}}"#;
+        let resp = server.handle_request(raw).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        let page1 = &v["result"];
+        assert_eq!(page1["events"].as_array().unwrap().len(), 2);
+        assert_eq!(page1["events"][0]["seq"], 1);
+        assert_eq!(page1["events"][0]["value"]["kind"], "user");
+        assert_eq!(page1["events"][1]["value"]["kind"], "thinking");
+        assert_eq!(page1["next_cursor"], 3);
+        let raw2 = r#"{"jsonrpc":"2.0","id":7,"method":"session/history","params":{"session_id":"s1","cursor":3,"limit":2}}"#;
+        let resp2 = server.handle_request(raw2).await.unwrap();
+        let v2: serde_json::Value = serde_json::from_str(&resp2).unwrap();
+        assert_eq!(v2["result"]["events"][0]["value"]["kind"], "usage");
+        assert!(v2["result"].get("next_cursor").is_none(), "no next page");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn session_history_unknown_sid_and_no_store_return_empty() {
+        let dir = temp_dir_traj("none");
+        let server = stub_bus_server_with_usage();
+        let raw = r#"{"jsonrpc":"2.0","id":8,"method":"session/history","params":{"session_id":"nope"}}"#;
+        let resp = server.handle_request(raw).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert!(v["error"].is_null(), "unknown sid is not an error: {resp}");
+        assert_eq!(v["result"]["events"], serde_json::json!([]));
+        assert!(v["result"].get("next_cursor").is_none());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn session_list_mirrors_store_list_order() {
+        let dir = temp_dir_traj("order");
+        let store = Arc::new(agentj_session::FileBackedStore::new(dir.as_path()).unwrap());
+        let session: Arc<dyn SessionStore> = store.clone();
+        let server = IpcServer::new(Kernel::new(), session);
+        let a = store.create().unwrap();
+        store
+            .append(
+                &a,
+                ChatMessage {
+                    role: Role::User,
+                    content: "first".into(),
+                    tool_call_id: None,
+                    tool_calls: vec![],
+                },
+            )
+            .unwrap();
+        let b = store.create().unwrap();
+        store
+            .append(
+                &b,
+                ChatMessage {
+                    role: Role::User,
+                    content: "second".into(),
+                    tool_call_id: None,
+                    tool_calls: vec![],
+                },
+            )
+            .unwrap();
+        store.archive(&b).unwrap();
+        let resp = server
+            .handle_request(r#"{"jsonrpc":"2.0","id":9,"method":"session/list"}"#)
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        let rows = v["result"]["sessions"].as_array().expect("sessions array");
+        assert_eq!(rows.len(), 2, "both sessions listed: {resp}");
+        let entries = store.list().unwrap();
+        for (i, e) in entries.iter().enumerate() {
+            assert_eq!(rows[i]["session_id"].as_str(), Some(e.session_id.as_str()));
+            let want_state = format!("{:?}", e.status).to_lowercase();
+            assert_eq!(rows[i]["state"].as_str(), Some(want_state.as_str()));
+            assert_eq!(rows[i]["updated_at"].as_u64(), Some(e.updated_at));
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn session_history_clamps_limit_into_range() {
+        let dir = temp_dir_traj("clamp");
+        let mut server = stub_bus_server_with_usage();
+        server.trajectory_store = Some(wired_store(&dir));
+        server
+            .handle_request(r#"{"jsonrpc":"2.0","id":2,"method":"session/run","params":{"session_id":"s1","content":"hi"}}"#)
+            .await
+            .unwrap();
+        let resp = server
+            .handle_request(r#"{"jsonrpc":"2.0","id":10,"method":"session/history","params":{"session_id":"s1","limit":0}}"#)
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(v["result"]["events"].as_array().unwrap().len(), 1);
+        assert_eq!(v["result"]["events"][0]["seq"], 1);
+        assert_eq!(v["result"]["next_cursor"], 2, "window full -> cursor advances");
+        let resp = server
+            .handle_request(r#"{"jsonrpc":"2.0","id":11,"method":"session/history","params":{"session_id":"s1","limit":9999}}"#)
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(v["result"]["events"].as_array().unwrap().len(), 3);
+        assert!(v["result"].get("next_cursor").is_none(), "nothing left behind");
         std::fs::remove_dir_all(&dir).ok();
     }
 }
