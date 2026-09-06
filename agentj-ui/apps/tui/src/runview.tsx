@@ -1,7 +1,9 @@
 import { useEffect, useState, useRef } from "react";
 import { METHODS } from "@agentj/sdk";
 import type { RpcClient } from "@agentj/sdk";
+import type { ProgressFrame } from "@agentj/sdk";
 import type { ScrollBoxRenderable } from "@opentui/core";
+import { useTheme, type ThemePalette } from "./theme.tsx";
 
 export type RunViewProps = {
   frames: string[];
@@ -62,15 +64,15 @@ export function useRunFrames(client: RpcClient | null): string[] {
   return frames;
 }
 
-function useAutoScroll(frames: string[], ref: React.RefObject<ScrollBoxRenderable | null>): void {
+function useAutoScroll(items: { length: number }, ref: React.RefObject<ScrollBoxRenderable | null>): void {
   useEffect(() => {
     const target = ref.current;
     if (!target) return;
     try {
-      const max = Math.max(0, frames.length * 2);
+      const max = Math.max(0, items.length * 2);
       target.scrollY = max;
     } catch {}
-  }, [frames, ref]);
+  }, [items, ref]);
 }
 
 export function RunView(props: RunViewProps): React.ReactNode {
@@ -100,6 +102,121 @@ export function RunViewWithUsage(props: RunViewWithUsageProps): React.ReactNode 
         ))}
       </scrollbox>
       <text>{formatUsage(usage)}</text>
+    </box>
+  );
+}
+
+export type TranscriptRow =
+  | { key: number; kind: "text"; text: string }
+  | { key: number; kind: "user"; text: string }
+  | { key: number; kind: "tool"; text: string; toolId: string; state: "running" | "ok" | "error" }
+  | { key: number; kind: "approval"; text: string }
+  | { key: number; kind: "usage"; text: string; usage: RunUsage };
+
+export function nextKey(rows: TranscriptRow[]): number {
+  return rows.length > 0 ? rows[rows.length - 1].key + 1 : 1;
+}
+
+export function rowsFromFrame(rows: TranscriptRow[], frame: ProgressFrame): TranscriptRow[] {
+  const next = rows.slice();
+  const key = nextKey(rows);
+  switch (frame.kind) {
+    case "text":
+      next.push({ key, kind: "text", text: frame.text });
+      break;
+    case "tool_call": {
+      next.push({ key, kind: "tool", text: frame.name, toolId: frame.id, state: "running" });
+      break;
+    }
+    case "tool_result": {
+      const content = frame.content;
+      const failed = content.startsWith("Error:");
+      const idx = next.findLastIndex(
+        (r) => r.kind === "tool" && r.toolId === frame.call_id && r.state === "running",
+      );
+      if (idx === -1) {
+        next.push({
+          key,
+          kind: "tool",
+          text: content.slice(0, 120),
+          toolId: frame.call_id,
+          state: failed ? "error" : "ok",
+        });
+      } else {
+        const row = next[idx];
+        if (row.kind === "tool") {
+          next[idx] = {
+            ...row,
+            state: failed ? "error" : "ok",
+            text: failed ? content.slice(0, 120) : row.text,
+          };
+        }
+      }
+      break;
+    }
+    case "usage":
+      next.push({ key, kind: "usage", text: formatUsage(frame.usage), usage: frame.usage });
+      break;
+    case "permission":
+      next.push({ key, kind: "approval", text: `${frame.decision} ${frame.tool}` });
+      break;
+    case "unknown":
+      next.push({
+        key,
+        kind: "text",
+        text:
+          typeof frame.raw === "string"
+            ? frame.raw.slice(0, 200)
+            : JSON.stringify(frame.raw).slice(0, 200),
+      });
+      break;
+  }
+  return next;
+}
+
+export function rowGlyph(row: TranscriptRow): string | null {
+  if (row.kind === "approval") return "△";
+  if (row.kind === "tool") return row.state === "ok" ? "✓" : row.state === "error" ? "✗" : "│";
+  return null;
+}
+
+function rowColor(row: TranscriptRow, palette: ThemePalette): string {
+  switch (row.kind) {
+    case "user":
+      return palette.accent;
+    case "tool":
+      return row.state === "error"
+        ? palette.error
+        : row.state === "running"
+          ? palette.textMuted
+          : palette.text;
+    case "approval":
+      return palette.warning;
+    case "usage":
+      return palette.textMuted;
+    default:
+      return palette.text;
+  }
+}
+
+export function RunTranscript(props: { rows: TranscriptRow[] }): React.ReactNode {
+  const { palette } = useTheme();
+  const { rows } = props;
+  const scrollRef = useRef<ScrollBoxRenderable>(null);
+  useAutoScroll(rows, scrollRef);
+  return (
+    <box flexDirection="column" flexGrow={1} padding={1}>
+      <scrollbox ref={scrollRef} flexGrow={1} style={{ flexGrow: 1 }}>
+        {rows.map((r) => {
+          const glyph = rowGlyph(r);
+          return (
+            <text key={r.key} style={{ fg: rowColor(r, palette) }}>
+              {glyph ? `${glyph} ` : ""}
+              {r.text}
+            </text>
+          );
+        })}
+      </scrollbox>
     </box>
   );
 }
