@@ -187,8 +187,9 @@ impl TcpIpcServer {
                             crate::ws::serve_http(stream, router).await;
                         } else {
                             if let Ok(conn) = TcpConnection::new(stream) {
-                                let _ =
-                                    shared.serve_connection(Box::new(conn), token.as_deref()).await;
+                                let _ = Arc::clone(&shared)
+                                    .serve_connection(Box::new(conn), token.as_deref())
+                                    .await;
                             }
                             active.fetch_sub(1, Ordering::SeqCst);
                             if active.load(Ordering::SeqCst) == 0 {

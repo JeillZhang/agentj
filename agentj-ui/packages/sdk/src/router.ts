@@ -64,9 +64,8 @@ export class ResponseRouter {
         continue;
       }
       if (msg.id === undefined || msg.id === null) {
-        // Notification (BUG-005 fix): dispatch, never drop.
         if (msg.method && this.notificationHandler) {
-          this.notificationHandler(msg.method, msg.params);
+          try { this.notificationHandler(msg.method, msg.params); } catch {}
         }
         continue;
       }

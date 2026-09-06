@@ -65,7 +65,87 @@ function persistStale(ids: Set<string>): void {
   localStorage.setItem(STALE_KEY, JSON.stringify([...ids]));
 }
 
-async function runNewSession(
+async function runNewSessionWithClient(
+  client: RpcClient,
+  setFavorites: (u: (p: string[]) => string[]) => void,
+  setError: (e: string | null) => void,
+  setBusy: (b: boolean) => void,
+  setInput: (v: string) => void,
+  onActiveChange: (id: string | null) => void,
+): Promise<void> {
+  setBusy(true);
+  setError(null);
+  try {
+    const res = (await client.request(METHODS.sessionNew, {})) as {
+      session_id: string;
+    };
+    const id = res.session_id;
+    setFavorites((prev) => {
+      if (prev.includes(id)) return prev;
+      const next = [...prev, id];
+      persistFavorites(next);
+      return next;
+    });
+    onActiveChange(id);
+    setInput(id);
+  } catch (e) {
+    setError(e instanceof Error ? e.message : String(e));
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function runContinueWithClient(
+  client: RpcClient,
+  rawId: string,
+  favorites: string[],
+  setFavorites: (u: (p: string[]) => string[]) => void,
+  setStale: (u: (p: Set<string>) => Set<string>) => void,
+  setError: (e: string | null) => void,
+  setBusy: (b: boolean) => void,
+  setInput: (v: string) => void,
+  onActiveChange: (id: string | null) => void,
+): Promise<void> {
+  const id = rawId.trim();
+  if (!id) return;
+  setBusy(true);
+  setError(null);
+  try {
+    await client.request(METHODS.sessionStatus, { session_id: id });
+    await client.request(METHODS.sessionSubscribe, { session_id: id });
+    setFavorites((prev) => {
+      if (prev.includes(id)) return prev;
+      const next = [...prev, id];
+      persistFavorites(next);
+      return next;
+    });
+    setStale((prev) => {
+      if (!prev.has(id)) return prev;
+      const next = new Set(prev);
+      next.delete(id);
+      persistStale(next);
+      return next;
+    });
+    onActiveChange(id);
+    setInput(id);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    setError(msg);
+    if (favorites.includes(id)) {
+      setStale((prev) => {
+        if (prev.has(id)) return prev;
+        const next = new Set(prev);
+        next.add(id);
+        persistStale(next);
+        return next;
+      });
+    }
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function runNewSessionFallback(
   wsUrl: string,
   setFavorites: (u: (p: string[]) => string[]) => void,
   setError: (e: string | null) => void,
@@ -98,7 +178,7 @@ async function runNewSession(
   }
 }
 
-async function runContinue(
+async function runContinueFallback(
   wsUrl: string,
   rawId: string,
   favorites: string[],
@@ -153,6 +233,7 @@ async function runContinue(
 
 function usePanelState(
   wsUrl: string,
+  client: RpcClient | null,
   onActiveChange: (id: string | null) => void,
 ) {
   const [input, setInput] = useState("");
@@ -167,54 +248,68 @@ function usePanelState(
   }, []);
 
   const newSession = useCallback(() => {
-    return runNewSession(
-      wsUrl,
-      setFavorites,
-      setError,
-      setBusy,
-      setInput,
-      onActiveChange,
-    );
-  }, [wsUrl, onActiveChange]);
+    if (client) {
+      return runNewSessionWithClient(client, setFavorites, setError, setBusy, setInput, onActiveChange);
+    }
+    return runNewSessionFallback(wsUrl, setFavorites, setError, setBusy, setInput, onActiveChange);
+  }, [wsUrl, client, onActiveChange]);
 
   const continueSession = useCallback(
     (targetId?: string) => {
-      return runContinue(
-        wsUrl,
-        targetId ?? input,
-        favorites,
-        setFavorites,
-        setStale,
-        setError,
-        setBusy,
-        setInput,
-        onActiveChange,
-      );
+      if (client) {
+        return runContinueWithClient(client, targetId ?? input, favorites, setFavorites, setStale, setError, setBusy, setInput, onActiveChange);
+      }
+      return runContinueFallback(wsUrl, targetId ?? input, favorites, setFavorites, setStale, setError, setBusy, setInput, onActiveChange);
     },
-    [wsUrl, input, favorites, onActiveChange],
+    [wsUrl, client, input, favorites, onActiveChange],
   );
 
-  return { input, setInput, favorites, stale, error, busy, newSession, continueSession };
+  const clearHistory = useCallback(() => {
+    try {
+      localStorage.removeItem(FAVORITES_KEY);
+      localStorage.removeItem(STALE_KEY);
+    } catch {}
+    setFavorites([]);
+    setStale(new Set());
+    setInput("");
+    setError(null);
+    onActiveChange(null);
+  }, [onActiveChange]);
+
+  return { input, setInput, favorites, stale, error, busy, newSession, continueSession, clearHistory };
 }
 
 type Props = {
   wsUrl: string;
+  client?: RpcClient | null;
   activeSessionId: string | null;
   onActiveChange: (id: string | null) => void;
 };
 
 export default function SessionPanel({
   wsUrl,
+  client: sharedClient = null,
   activeSessionId,
   onActiveChange,
 }: Props) {
-  const { input, setInput, favorites, stale, error, busy, newSession, continueSession } =
-    usePanelState(wsUrl, onActiveChange);
+  const { input, setInput, favorites, stale, error, busy, newSession, continueSession, clearHistory: clearState } =
+    usePanelState(wsUrl, sharedClient, onActiveChange);
   const [listRows, setListRows] = useState<ListRow[]>([]);
+  const clearHistory = useCallback(() => {
+    clearState();
+    setListRows([]);
+  }, [clearState]);
   useEffect(() => {
     let cancelled = false;
     void (async () => {
       try {
+        if (sharedClient) {
+          const res = (await sharedClient.request(METHODS.sessionList, {})) as {
+            sessions?: Array<{ session_id?: string; id?: string; state?: string; preview?: string | null }>;
+          } | null;
+          if (!cancelled) setListRows(rowsFromList(res?.sessions ?? []));
+          return;
+        }
         const { transport, client } = openOpClient(wsUrl);
         try {
           const res = (await client.request(METHODS.sessionList, {})) as {
@@ -234,13 +329,18 @@ export default function SessionPanel({
     return () => {
       cancelled = true;
     };
-  }, [wsUrl]);
+  }, [wsUrl, sharedClient]);
 
   return (
     <section aria-label="sessions">
-      <button type="button" onClick={newSession} disabled={busy}>
-        New session
-      </button>
+      <div style={{ display: "flex", gap: 8 }}>
+        <button type="button" onClick={newSession} disabled={busy}>
+          New session
+        </button>
+        <button type="button" onClick={clearHistory} disabled={busy} aria-label="clear history">
+          Clear
+        </button>
+      </div>
       <div>
         <label htmlFor="aj-session-id">session id</label>
         <input
