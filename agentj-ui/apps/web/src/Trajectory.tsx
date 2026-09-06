@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { Pause, Play } from "lucide-react";
 import type { RunEntry } from "./RunPanel.tsx";
 
 export type RawEvent = {
@@ -271,7 +272,15 @@ export function Trajectory({ events }: { events: RawEvent[] }) {
             setPlaying(!playing);
           }}
         >
-          {playing ? "⏸ pause" : "▶ play"}
+          {playing ? (
+            <>
+              <Pause size={16} aria-hidden="true" /> pause
+            </>
+          ) : (
+            <>
+              <Play size={16} aria-hidden="true" /> play
+            </>
+          )}
         </button>
       </div>
       {shown.length === 0 ? (
