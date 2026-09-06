@@ -1,5 +1,6 @@
 //! Unified Connection abstraction (design 决策 #1/#2) — transport-agnostic serve.
 pub mod tcp;
+pub mod trajectory;
 pub mod ws;
 
 use agentj_core::error::{IpcError, KernelError, ModuleError};
@@ -282,6 +283,8 @@ pub struct IpcServer {
     token: std::sync::Mutex<Option<String>>,
     /// Optional PermissionModule: `permission/respond` and `$/cancelRequest` dispatch into it.
     pub permission_module: Option<Arc<PermissionModule>>,
+    /// Optional TrajectoryStore: run/respond recording + session/history reads.
+    pub trajectory_store: Option<Arc<trajectory::TrajectoryStore>>,
 }
 
 /// RAII guard releasing the per-session run mutex (决策 #7): acquired at
@@ -311,6 +314,7 @@ impl IpcServer {
             registry: Arc::new(std::sync::RwLock::new(ConnectionRegistry::new())),
             token: std::sync::Mutex::new(None),
             permission_module: None,
+            trajectory_store: None,
         }
     }
 
