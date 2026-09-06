@@ -1,0 +1,88 @@
+.aj-composer-card {
+  max-width: var(--aj-composer-max);
+  margin: 0 auto;
+  border-radius: var(--aj-radiusXl); /* 22px */
+  background: var(--aj-panel);
+  box-shadow: var(--aj-shadowSoft), 0 0 0 1px var(--aj-border);
+  position: sticky;
+  bottom: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 14px;
+  width: 100%;
+  z-index: 2;
+}
+
+.aj-composer-card .aj-input {
+  border: 0;
+  background: transparent;
+  min-height: 44px;
+  flex: 1;
+  resize: none;
+  border-radius: var(--aj-radius-ctl);
+  color: var(--aj-text);
+  font: inherit;
+  padding: 8px 10px;
+  outline: none;
+  width: 100%;
+}
+
+.aj-composer-card .aj-input:focus-visible {
+  outline: none;
+}
+
+.aj-composer-card .aj-input:disabled {
+  opacity: 0.6;
+}
+
+.aj-composer__toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+.aj-composer__toolbar .aj-chip {
+  transform: translateY(-2px);
+}
+
+.aj-button--send {
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+  background: var(--aj-accent);
+  color: var(--aj-accentOnAccent);
+  border: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transform: translateY(-2px);
+  flex-shrink: 0;
+  padding: 0;
+}
+
+.aj-button--send svg {
+  width: var(--aj-icon-sm);
+  height: var(--aj-icon-sm);
+}
+
+.aj-button--send:disabled {
+  opacity: .4;
+  cursor: default;
+}
+
+.aj-pending {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--aj-accent);
+  animation: aj-pending 1s ease-in-out infinite alternate;
+  display: inline-block;
+}
+
+@keyframes aj-pending {
+  from { opacity: .3; }
+  to { opacity: 1; }
+}

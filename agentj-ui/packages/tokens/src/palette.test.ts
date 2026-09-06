@@ -13,11 +13,33 @@ describe("@agentj/tokens palette", () => {
     const expected = [
       "bg","sidebar","panel","raised","text","textMuted","accent","accentOnAccent",
       "userBubble","border","codeBg","inlineCodeBg","success","error","warning",
+      "shadowSoft","shadowRaised","radiusXl","textCaption",
     ];
     expect(SEMANTIC_KEYS).toEqual(expected);
     for (const mode of ["light", "dark"] as ThemeName[]) {
       expect(Object.keys(palettes[mode]).sort()).toEqual([...expected].sort());
     }
+  });
+  it("contains shadowSoft/shadowRaised/radiusXl/textCaption with correct values", () => {
+    expect(SEMANTIC_KEYS).toContain("shadowSoft");
+    expect(SEMANTIC_KEYS).toContain("shadowRaised");
+    expect(SEMANTIC_KEYS).toContain("radiusXl");
+    expect(SEMANTIC_KEYS).toContain("textCaption");
+    expect(palettes.light.shadowSoft).toMatch(/rgba/);
+    expect(palettes.dark.textCaption).toMatch(/^#/);
+    expect(css).toContain("--aj-shadowSoft");
+    expect(css).toContain("--aj-radiusXl");
+    expect(css).toContain("--aj-textCaption");
+    const parsed = JSON.parse(json);
+    expect(parsed.light.radiusXl).toBe("22px");
+  });
+  it("index.css defines spacing/font/layout/motion/icon vars", () => {
+    const idx = readFileSync(join(root, "../../apps/web/src/index.css"), "utf8");
+    expect(idx).toContain("--aj-space-3: 12px");
+    expect(idx).toContain("--aj-content-max: 960px");
+    expect(idx).toContain("--aj-z-dialog: 100");
+    expect(idx).toContain("--aj-line-height: 1.6");
+    expect(idx).toContain("--aj-icon-md");
   });
   it("holds the spec-bound hex values (D2/D8 table)", () => {
     expect(palettes.light.accent).toBe("#4176E6");

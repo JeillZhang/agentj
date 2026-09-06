@@ -19,3 +19,7 @@ Single source: `agentj-ui/packages/tokens/src/palette.ts`. CSS: `tokens.css` (We
 | success | #22C55E | #22C55E |
 | error | #EC1313 | #F25A5A |
 | warning | #F59E0B | #F59E0B |
+| shadowSoft | 0 8px 24px rgba(0,0,0,.08) | 0 8px 24px rgba(0,0,0,.08) |
+| shadowRaised | 0 12px 32px rgba(0,0,0,.12) | 0 12px 32px rgba(0,0,0,.12) |
+| radiusXl | 22px | 22px |
+| textCaption | #8A8F98 | #8B8F98 |

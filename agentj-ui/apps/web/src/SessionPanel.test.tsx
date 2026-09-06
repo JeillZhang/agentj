@@ -81,7 +81,7 @@ describe("SessionPanel session list", () => {
   });
   it("typed continue never re-fetches session/list", async () => {
     renderPanel();
-    fireEvent.change(await screen.findByPlaceholderText(/session/i), { target: { value: "s9" } });
+    fireEvent.change(await screen.findByPlaceholderText(/session id/i), { target: { value: "s9" } });
     fireEvent.click(screen.getByRole("button", { name: /^continue$/i }));
     await waitFor(() => {
       expect(calls.filter((c) => c.method === METHODS.sessionList)).toHaveLength(1);

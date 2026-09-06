@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Clock, Search, Star } from "lucide-react";
 import {
   METHODS,
   ResponseRouter,
@@ -6,10 +7,20 @@ import {
   WebSocketTransport,
 } from "@agentj/sdk";
 
-export type ListRow = { id: string; state: string; preview?: string };
+export type ListRow = { id: string; state: string; preview?: string; updatedAt?: string | number | null };
 const PREVIEW_MAX = 120;
 export function rowsFromList(
-  sessions: Array<{ session_id?: string; id?: string; state?: string; preview?: string | null }>,
+  sessions: Array<{
+    session_id?: string;
+    id?: string;
+    state?: string;
+    preview?: string | null;
+    updated_at?: string | number | null;
+    updatedAt?: string | number | null;
+    created_at?: string | number | null;
+    createdAt?: string | number | null;
+    timestamp?: string | number | null;
+  }>,
 ): ListRow[] {
   return (sessions ?? []).map((s) => {
     const preview = s.preview;
@@ -22,8 +33,38 @@ export function rowsFromList(
           : preview.length > PREVIEW_MAX
             ? `${preview.slice(0, PREVIEW_MAX - 1)}…`
             : preview,
+      updatedAt: (s.updated_at ?? s.updatedAt ?? s.created_at ?? s.createdAt ?? s.timestamp ?? null) as
+        | string
+        | number
+        | null
+        | undefined,
     };
   });
+}
+
+function formatRelative(ts?: string | number | null): string {
+  if (ts == null || ts === "") return "just now";
+  const ms = typeof ts === "string" ? Date.parse(ts) : Number(ts);
+  if (Number.isNaN(ms)) return "just now";
+  // if numeric seconds vs ms heuristic
+  let t = ms;
+  if (typeof ts === "number" && ts < 1e12) t = ts * 1000;
+  if (typeof ts === "string" && /^\d+$/.test(ts)) {
+    const n = Number(ts);
+    t = n < 1e12 ? n * 1000 : n;
+  }
+  const diff = Date.now() - t;
+  if (diff < 0) return "just now";
+  const sec = Math.floor(diff / 1000);
+  if (sec < 60) return "just now";
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr}h ago`;
+  const days = Math.floor(hr / 24);
+  if (days < 7) return `${days}d ago`;
+  const d = new Date(t);
+  return d.toLocaleDateString();
 }
 
 function openOpClient(wsUrl: string) {
@@ -295,6 +336,7 @@ export default function SessionPanel({
   const { input, setInput, favorites, stale, error, busy, newSession, continueSession, clearHistory: clearState } =
     usePanelState(wsUrl, sharedClient, onActiveChange);
   const [listRows, setListRows] = useState<ListRow[]>([]);
+  const [query, setQuery] = useState("");
   const clearHistory = useCallback(() => {
     clearState();
     setListRows([]);
@@ -305,7 +347,7 @@ export default function SessionPanel({
       try {
         if (sharedClient) {
           const res = (await sharedClient.request(METHODS.sessionList, {})) as {
-            sessions?: Array<{ session_id?: string; id?: string; state?: string; preview?: string | null }>;
+            sessions?: Array<{ session_id?: string; id?: string; state?: string; preview?: string | null; updated_at?: string | number | null }>;
           } | null;
           if (!cancelled) setListRows(rowsFromList(res?.sessions ?? []));
           return;
@@ -313,7 +355,7 @@ export default function SessionPanel({
         const { transport, client } = openOpClient(wsUrl);
         try {
           const res = (await client.request(METHODS.sessionList, {})) as {
-            sessions?: Array<{ session_id?: string; id?: string; state?: string; preview?: string | null }>;
+            sessions?: Array<{ session_id?: string; id?: string; state?: string; preview?: string | null; updated_at?: string | number | null }>;
           } | null;
           if (!cancelled) setListRows(rowsFromList(res?.sessions ?? []));
         } finally {
@@ -331,9 +373,15 @@ export default function SessionPanel({
     };
   }, [wsUrl, sharedClient]);
 
+  const filteredRows = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return listRows;
+    return listRows.filter((r) => r.id.toLowerCase().includes(q) || (r.preview ?? "").toLowerCase().includes(q));
+  }, [listRows, query]);
+
   return (
     <section aria-label="sessions">
-      <div style={{ display: "flex", gap: 8 }}>
+      <div className="aj-session-actions">
         <button type="button" onClick={newSession} disabled={busy}>
           New session
         </button>
@@ -362,29 +410,55 @@ export default function SessionPanel({
         </div>
       )}
       {activeSessionId && <p>active: {activeSessionId}</p>}
+      <div className="aj-session-search-wrap">
+        <Search size={16} aria-hidden="true" />
+        <input
+          className="aj-session-search"
+          placeholder="Search sessions"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          aria-label="Search sessions"
+        />
+      </div>
       {favorites.length > 0 && (
-        <ul aria-label="favorites">
-          {favorites.map((id) => (
-            <li key={id}>
-              <button type="button" onClick={() => continueSession(id)}>
-                {stale.has(id) ? `${id} (stale)` : id}
+        <>
+          <h3 className="aj-session-section">
+            <Star size={16} aria-hidden="true" /> Favorites
+          </h3>
+          <ul aria-label="favorites">
+            {favorites.map((id) => (
+              <li key={id}>
+                <button type="button" onClick={() => continueSession(id)}>
+                  {stale.has(id) ? `${id} (stale)` : id}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+      <h3 className="aj-session-section">
+        <Clock size={16} aria-hidden="true" /> Recent sessions
+      </h3>
+      {filteredRows.length === 0 ? (
+        <p className="aj-empty">{query ? `No results for "${query}"` : "No sessions yet — start a new one"}</p>
+      ) : (
+        <ul aria-label="session list" className="aj-session-list">
+          {filteredRows.map((r) => (
+            <li key={r.id}>
+              <button
+                type="button"
+                className={`aj-session-row${r.id === activeSessionId ? " aj-session-row--active" : ""}`}
+                onClick={() => continueSession(r.id)}
+              >
+                <span className="aj-session-state" data-state={r.state} />
+                <span className="aj-session-id">{r.id}</span>
+                {r.preview !== undefined && <span className="aj-session-preview">{r.preview}</span>}
+                <span className="aj-session-time">{formatRelative(r.updatedAt)}</span>
               </button>
             </li>
           ))}
         </ul>
       )}
-      <h3>Recent sessions</h3>
-      <ul aria-label="session list" className="aj-session-list">
-        {listRows.map((r) => (
-          <li key={r.id}>
-            <button type="button" className="aj-session-row" onClick={() => continueSession(r.id)}>
-              <span className="aj-session-state" data-state={r.state} />
-              <span className="aj-session-id">{r.id}</span>
-              {r.preview !== undefined && <span className="aj-session-preview">{r.preview}</span>}
-            </button>
-          </li>
-        ))}
-      </ul>
     </section>
   );
 }
