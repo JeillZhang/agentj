@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Plug, Link, Key } from "lucide-react";
+import { Plug, Link, Key, Eye, EyeOff } from "lucide-react";
 
 type Props = {
   onConnect: (host: string, port: string, token: string) => void;
@@ -9,29 +9,21 @@ export default function ConnectionBar({ onConnect }: Props) {
   const [host, setHost] = useState("");
   const [port, setPort] = useState("");
   const [token, setToken] = useState("");
+  const [showToken, setShowToken] = useState(false);
   const [hostError, setHostError] = useState<string | null>(null);
-  const [portError, setPortError] = useState<string | null>(null);
 
   function validate(): boolean {
-    let hasError = false;
     if (!host.trim()) {
       setHostError("host required");
-      hasError = true;
-    } else {
-      setHostError(null);
+      return false;
     }
-    if (!port.trim()) {
-      setPortError("port required");
-      hasError = true;
-    } else {
-      setPortError(null);
-    }
-    return !hasError;
+    setHostError(null);
+    return true;
   }
 
   function handleConnect() {
     if (!validate()) return;
-    onConnect(host, port, token);
+    onConnect(host, port.trim() || "4096", token);
   }
 
   return (
@@ -68,7 +60,7 @@ export default function ConnectionBar({ onConnect }: Props) {
             </p>
           ) : (
             <p id="aj-host-helper" className="aj-helper">
-              e.g. 127.0.0.1
+              required
             </p>
           )}
         </div>
@@ -81,41 +73,40 @@ export default function ConnectionBar({ onConnect }: Props) {
             id="aj-port"
             className="aj-input"
             value={port}
-            onChange={(e) => {
-              setPort(e.target.value);
-              if (portError && e.target.value.trim()) setPortError(null);
-            }}
-            onBlur={() => {
-              if (!port.trim()) setPortError("port required");
-              else setPortError(null);
-            }}
+            onChange={(e) => setPort(e.target.value)}
             placeholder="4096"
-            aria-describedby={portError ? "port-error" : "aj-port-helper"}
-            aria-invalid={portError ? true : undefined}
+            aria-describedby="aj-port-helper"
           />
-          {portError ? (
-            <p id="port-error" role="alert" className="aj-error">
-              {portError}
-            </p>
-          ) : (
-            <p id="aj-port-helper" className="aj-helper">
-              e.g. 4096
-            </p>
-          )}
+          <p id="aj-port-helper" className="aj-helper">
+            optional
+          </p>
         </div>
         <div className="aj-field">
           <label htmlFor="aj-token" className="aj-label">
             <Key aria-hidden="true" size={16} />
             Token
           </label>
-          <input
-            id="aj-token"
-            className="aj-input"
-            value={token}
-            onChange={(e) => setToken(e.target.value)}
-            placeholder="token"
-            aria-describedby="aj-token-helper"
-          />
+          <div className="aj-input-wrap">
+            <input
+              id="aj-token"
+              className="aj-input"
+              type={showToken ? "text" : "password"}
+              value={token}
+              onChange={(e) => setToken(e.target.value)}
+              placeholder="token"
+              aria-describedby="aj-token-helper"
+              autoComplete="off"
+            />
+            <button
+              type="button"
+              className="aj-input-addon"
+              aria-label={showToken ? "hide password" : "show password"}
+              aria-pressed={showToken}
+              onClick={() => setShowToken((v) => !v)}
+            >
+              {showToken ? <Eye size={16} aria-hidden="true" /> : <EyeOff size={16} aria-hidden="true" />}
+            </button>
+          </div>
           <p id="aj-token-helper" className="aj-helper">
             optional, leave empty if none
           </p>

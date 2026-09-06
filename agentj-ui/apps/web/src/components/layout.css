@@ -57,9 +57,10 @@
 .aj-topbar__center {
   display: flex;
   align-items: center;
-  justify-content: flex-start;
+  justify-content: center;
   min-width: 0;
   gap: var(--aj-space-2);
+  flex: 1;
 }
 
 .aj-topbar__actions {
@@ -115,9 +116,12 @@
   overflow-y: auto;
   flex-shrink: 0;
   border-right: 0.5px solid var(--aj-border);
-  padding: 10px;
-  background: var(--aj-panel);
+  padding: 12px;
+  background: var(--aj-sidebar);
   z-index: 10;
+  display: flex;
+  flex-direction: column;
+  gap: var(--aj-space-3);
 }
 
 .aj-main {
