@@ -13,7 +13,7 @@ export type ApprovalRequest = {
 type Props = {
   request: ApprovalRequest | null;
   error?: string | null;
-  onRespond: (decision: string, allowAlways: boolean) => Promise<void> | void;
+  onRespond: (decision: string) => Promise<void> | void;
   onClose: () => void;
 };
 
@@ -81,13 +81,17 @@ export default function ApprovalDialog({ request, error, onRespond, onClose }: P
           );
         })}
         <div>
-          <button type="button" className="aj-button--ghost" onClick={() => void onRespond("deny", false)}>
+          <button type="button" className="aj-button--ghost" onClick={() => void onRespond("deny")}>
             Deny
           </button>
-          <button type="button" className="aj-button" onClick={() => void onRespond("allow", allowAlways)}>
+          <button
+            type="button"
+            className="aj-button"
+            onClick={() => void onRespond(allowAlways ? "allow_always" : "allow")}
+          >
             Allow
           </button>
-          <button type="button" className="aj-button" onClick={() => void onRespond("allow", true)}>
+          <button type="button" className="aj-button" onClick={() => void onRespond("allow_always")}>
             Allow All
           </button>
           {error && (

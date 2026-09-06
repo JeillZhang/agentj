@@ -50,17 +50,17 @@ describe("ApprovalDialog", () => {
     const cb = screen.getByRole("checkbox");
     fireEvent.click(cb);
     fireEvent.click(screen.getByRole("button", { name: /^allow$/i }));
-    expect(onRespond).toHaveBeenCalledWith("allow", true);
+    expect(onRespond).toHaveBeenCalledWith("allow_always");
     fireEvent.click(screen.getByRole("button", { name: /allow all/i }));
-    expect(onRespond).toHaveBeenLastCalledWith("allow", true);
+    expect(onRespond).toHaveBeenLastCalledWith("allow_always");
   });
-  it("Deny always sends allowAlways false", () => {
+  it("Deny always sends decision deny", () => {
     const onRespond = vi.fn();
     render(<ApprovalDialog request={req} onRespond={onRespond} onClose={() => {}} />);
     const cb = screen.getByRole("checkbox");
     fireEvent.click(cb);
     fireEvent.click(screen.getByRole("button", { name: /^deny$/i }));
-    expect(onRespond).toHaveBeenCalledWith("deny", false);
+    expect(onRespond).toHaveBeenCalledWith("deny");
   });
   it("keeps the literal session scope line", () => {
     render(<ApprovalDialog request={req} onRespond={() => {}} onClose={() => {}} />);

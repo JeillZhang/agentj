@@ -66,7 +66,7 @@ describe("PermissionDialog", () => {
     act(() => setup.renderer.destroy());
   });
 
-  test("allow-all responds with allow_always true via tab+enter", async () => {
+  test("allow-all responds with decision allow_always via tab+enter", async () => {
     const onRespond = mock(() => {});
     const setup = await testRender(
       <PermissionDialog tool="bash" args="rm -rf /tmp/x" onRespond={onRespond} />,
@@ -97,7 +97,7 @@ describe("PermissionDialog", () => {
     await act(async () => {
       await setup.waitFor(() => onRespond.mock.calls.length > 0).catch(() => {});
     });
-    expect(onRespond).toHaveBeenCalledWith({ decision: "allow", allow_always: true });
+    expect(onRespond).toHaveBeenCalledWith({ decision: "allow_always" });
     act(() => setup.renderer.destroy());
   });
 
@@ -239,7 +239,7 @@ describe("Permission notification wiring", () => {
     act(() => setup.renderer.destroy());
   });
 
-  test("permission flow via App wiring sends allow_always payload", async () => {
+  test("permission flow via App wiring sends allow_always decision", async () => {
     const calls: Array<Record<string, unknown>> = [];
     const handlers: Array<(m: string, p: unknown) => void> = [];
     const fakeClient = {
@@ -313,8 +313,8 @@ describe("Permission notification wiring", () => {
       await setup.waitFor(() => calls.length > 0).catch(() => {});
     });
     expect(calls[0].request_id).toBe("req-9");
-    expect(calls[0].decision).toBe("allow");
-    expect(calls[0].allow_always).toBe(true);
+    expect(calls[0].decision).toBe("allow_always");
+    expect(calls[0].allow_always).toBeUndefined();
     act(() => setup.renderer.destroy());
   });
 });

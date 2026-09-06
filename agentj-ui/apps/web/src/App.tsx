@@ -125,12 +125,12 @@ function useApproval(wsUrl: string, activeSessionId: string | null) {
     });
     return () => { clientRef.current = null; transport.close(); };
   }, [wsUrl]);
-  const respond = useCallback(async (decision: string, allowAlways: boolean) => {
+  const respond = useCallback(async (decision: string) => {
     const req = pending;
     const client = clientRef.current;
     if (!req || !client) return;
     try {
-      await client.request(METHODS.permissionRespond, { request_id: req.request_id, decision, allow_always: allowAlways });
+      await client.request(METHODS.permissionRespond, { request_id: req.request_id, decision });
       setPending(null);
       setApprovalError(null);
     } catch (e) { setApprovalError(e instanceof Error ? e.message : String(e)); }

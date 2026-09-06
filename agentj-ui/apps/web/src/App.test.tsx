@@ -364,7 +364,7 @@ describe("App with mocked SDK transport", () => {
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
-  it("AllowAll sends permission/respond with allow_always true and closes", async () => {
+  it("AllowAll sends permission/respond with decision allow_always and closes", async () => {
     shared.newSessionId.value = "s1";
     render(<App />);
     fireEvent.click(screen.getByRole("button", { name: /new session/i }));
@@ -385,8 +385,7 @@ describe("App with mocked SDK transport", () => {
     await waitFor(() => expect(shared.requests.value).toContain("permission/respond"));
     expect(shared.lastPermissionParams.value).toEqual({
       request_id: "r1",
-      decision: "allow",
-      allow_always: true,
+      decision: "allow_always",
     });
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
   });
