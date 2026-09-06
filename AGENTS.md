@@ -1,6 +1,6 @@
 # AGENTS.md
 
-> Updated 2026-09-06 — v0.12.0 agentj-ui Visual 2.0 rebrand (DeepSeek-blue #4176E6/#679EFE
+> Updated 2026-09-06 — v0.12.1 agentj-ui Visual 2.0 rebrand (DeepSeek-blue #4176E6/#679EFE
 >  + shared tokens + trajectory/history + Web/TUI/Desktop redesign — dev complete, awaiting acceptance)
 > (16 crates + agentj-ui monorepo：Web / TUI / Desktop + SDK，
 > npm workspaces `apps/*`+`packages/*`，共享 SDK + protocol，
@@ -49,7 +49,7 @@ Desktop：Tauri v2 壳套 `apps/web` 产物，四件套 deb/AppImage/dmg/msi，
 - `npm --prefix agentj-ui run build --workspace=@agentj/web` — Web 构建（`tsc -b && vite build`）
 - `bun --cwd agentj-ui/apps/tui test` — TUI 单测（含 mock WS e2e）
 - `./agentj-ui/apps/desktop/check-artifacts.sh linux` — Desktop 产物校验
-- `./scripts/check-version.sh` — 版本一致性（Cargo + sdk/config + desktop 均为 0.12.0）
+- `./scripts/check-version.sh` — 版本一致性（Cargo + sdk/config + desktop 均为 0.12.1）
 
 ### CI Pipelines (GitHub Actions)
 
@@ -99,7 +99,7 @@ Desktop：Tauri v2 壳套 `apps/web` 产物，四件套 deb/AppImage/dmg/msi，
   为 drift 门禁后第一门）。
 - `agentj-ui/packages/sdk`：共享 SDK（`src/client.ts` RpcClient +
   `src/router.ts` ResponseRouter/RpcTransport + `src/config.ts`
-  `PROTOCOL_VERSION="0.12.0"` + `resolveWsUrl` + `src/methods.ts` METHODS
+  `PROTOCOL_VERSION="0.12.1"` + `resolveWsUrl` + `src/methods.ts` METHODS
   + `transports/websocket.ts` WebSocketTransport
   + `transports/tcp.ts` TcpTransport；被 Web/TUI/Desktop 同源消费）。
 - `agentj-ui/apps/web`：Web 前端（Vite + React 19，消费 `@agentj/sdk`；
@@ -108,9 +108,9 @@ Desktop：Tauri v2 壳套 `apps/web` 产物，四件套 deb/AppImage/dmg/msi，
   connection/session/composer/runview/permission/palette/models/
   completion/theme/usage + mock WS e2e；`testRender` 快照）。
 - `agentj-ui/apps/desktop`：Desktop 壳（Tauri v2，`frontendDist` →
-  `../../web/dist`，与 workspace 版本同源 `0.12.0`，四件套打包）。
+  `../../web/dist`，与 workspace 版本同源 `0.12.1`，四件套打包）。
 - `agentj-ui/` 根：`package.json` workspaces `["apps/*","packages/*"]`
-  （frontend stays in-repo，前端不拆独立仓，与 Rust 共享 0.12.0）。
+  （frontend stays in-repo，前端不拆独立仓，与 Rust 共享 0.12.1）。
 - **守护内核（v0.4 已实现）**：统一 Connection 抽象 + `serve --port`
   常驻多客户端 + `run --attach` + `dashboard`（见 daemon-kernel 设计文档）。
 

@@ -3,7 +3,7 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
 
 const shared = vi.hoisted(() => ({
-  initVersion: { value: "0.12.0" },
+  initVersion: { value: "0.12.1" },
   shouldFail: { value: false },
 }));
 
@@ -54,14 +54,14 @@ vi.mock("@agentj/sdk", () => {
       permissionRequest: "$/permissionRequest",
       permissionRespond: "permission/respond",
     },
-    PROTOCOL_VERSION: "0.12.0",
+    PROTOCOL_VERSION: "0.12.1",
   };
 });
 
 describe("B-007 repro: hint port reflects VITE_AGENTJ_WS_URL", () => {
   beforeEach(() => {
     shared.shouldFail.value = false;
-    shared.initVersion.value = "0.12.0";
+    shared.initVersion.value = "0.12.1";
     localStorage.clear();
     vi.unstubAllEnvs();
     vi.resetModules();

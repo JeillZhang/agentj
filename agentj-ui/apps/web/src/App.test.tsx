@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 
 const shared = vi.hoisted(() => ({
   lastWsUrl: { value: "" },
-  initVersion: { value: "0.12.0" },
+  initVersion: { value: "0.12.1" },
   shouldFail: { value: false },
   newSessionId: { value: "s9" },
   statusShouldFail: { value: false },
@@ -163,7 +163,7 @@ vi.mock("@agentj/sdk", () => {
       permissionRequest: "$/permissionRequest",
       permissionRespond: "permission/respond",
     },
-    PROTOCOL_VERSION: "0.12.0",
+    PROTOCOL_VERSION: "0.12.1",
   };
 });
 
@@ -184,7 +184,7 @@ const WIRE_CORPUS = [
 describe("App with mocked SDK transport", () => {
   beforeEach(() => {
     shared.lastWsUrl.value = "";
-    shared.initVersion.value = "0.12.0";
+    shared.initVersion.value = "0.12.1";
     shared.shouldFail.value = false;
     shared.newSessionId.value = "s9";
     shared.statusShouldFail.value = false;
@@ -227,11 +227,11 @@ describe("App with mocked SDK transport", () => {
     );
   });
 
-  it("shows version mismatch banner expected 0.12.0 got 0.9.0", async () => {
+  it("shows version mismatch banner expected 0.12.1 got 0.9.0", async () => {
     shared.initVersion.value = "0.9.0";
     render(<App />);
     expect(
-      await screen.findByText(/expected 0\.12\.0, got 0\.9\.0/i),
+      await screen.findByText(/expected 0\.12\.1, got 0\.9\.0/i),
     ).toBeInTheDocument();
   });
 
@@ -472,7 +472,7 @@ describe("Trajectory replay", () => {
 
 describe("App shell + history rebuild", () => {
   beforeEach(() => {
-    shared.initVersion.value = "0.12.0";
+    shared.initVersion.value = "0.12.1";
     shared.shouldFail.value = false;
     shared.historyResult.value = { events: [] as Array<Record<string, unknown>>, next_cursor: null as number | null };
     shared.sessionListResult.value = { sessions: [] as Array<Record<string, unknown>> };
@@ -553,7 +553,7 @@ describe("App shell + history rebuild", () => {
     shared.initVersion.value = "0.9.0";
     render(<App />);
     const banner = await waitFor(() => screen.getByRole("alert"), { timeout: 3000 });
-    expect(banner.textContent).toMatch(/expected 0\.12\.0, got 0\.9\.0/i);
+    expect(banner.textContent).toMatch(/expected 0\.12\.1, got 0\.9\.0/i);
     expect(banner.className).toContain("aj-banner");
     expect(banner.getAttribute("data-state")).toBe("mismatch");
   });
