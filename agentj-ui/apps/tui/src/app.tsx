@@ -1,0 +1,395 @@
+import { createCliRenderer } from "@opentui/core";
+import { createRoot, useKeyboard, useRenderer } from "@opentui/react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import type { Dispatch, MutableRefObject, SetStateAction } from "react";
+import { METHODS, ResponseRouter, RpcClient, WebSocketTransport } from "@agentj/sdk";
+import type { TransportStatus } from "@agentj/sdk";
+import { resolveWsUrl } from "@agentj/sdk";
+import { restoreTerminal, setupGracefulShutdown } from "./connection.ts";
+import {
+  SessionList,
+  addToHistory,
+  loadSessionHistory,
+  saveSessionHistory,
+  useSession,
+} from "./session.tsx";
+import { PermissionDialog, usePermissionState } from "./permission.tsx";
+import { Palette } from "./palette.tsx";
+import { ModelSelector, useModelConfig } from "./models.tsx";
+import { ThemeProvider, useTheme } from "./theme.tsx";
+export interface TransportHandle {
+  onStatusChange?: (s: TransportStatus) => void;
+  close(): void;
+  lastError?: string;
+}
+
+export type AppProps = {
+  url?: string;
+  createTransport?: (url: string, router: ResponseRouter) => TransportHandle;
+  backoffBaseMs?: number;
+};
+
+export function getBackoffDelay(attempt: number, baseMs = 1000): number {
+  return Math.min(baseMs * Math.pow(2, attempt), 30000);
+}
+
+function isAuthError(msg: string): boolean {
+  const low = msg.toLowerCase();
+  return (
+    msg.includes("403") ||
+    low.includes("notauthorized") ||
+    low.includes("auth") ||
+    low.includes("forbidden")
+  );
+}
+
+function useCtrlCExit(): void {
+  const renderer = useRenderer();
+  useEffect(() => setupGracefulShutdown(restoreTerminal), []);
+  useKeyboard((key) => {
+    const isCtrlC = key.ctrl && (key.name === "c" || key.name === "C");
+    if (isCtrlC) {
+      try {
+        restoreTerminal();
+      } catch {}
+      try {
+        renderer?.destroy?.();
+      } catch {}
+      process.exit(0);
+    }
+  });
+}
+
+function buildTransport(
+  url: string | undefined,
+  createTransport: AppProps["createTransport"],
+  router: ResponseRouter,
+): TransportHandle {
+  const wsUrl = url ?? resolveWsUrl({});
+  if (createTransport) return createTransport(wsUrl, router);
+  return new WebSocketTransport(wsUrl, router) as unknown as TransportHandle;
+}
+
+function bindClient(
+  transport: TransportHandle,
+  router: ResponseRouter,
+  ref: MutableRefObject<RpcClient | null>,
+): void {
+  try {
+    const t = transport as unknown as { send: (l: string) => Promise<string> };
+    if (typeof t.send === "function") ref.current = new RpcClient(t, router);
+  } catch {}
+}
+
+function attachStatus(
+  transport: TransportHandle,
+  setAuthError: (e: string | null) => void,
+  setStatus: (s: TransportStatus) => void,
+): void {
+  const prev = transport.onStatusChange;
+  transport.onStatusChange = (s: TransportStatus) => {
+    if (s === "closed" && transport.lastError && isAuthError(transport.lastError)) {
+      setAuthError(transport.lastError);
+    }
+    if (s === "open") setAuthError(null);
+    setStatus(s);
+    prev?.(s);
+  };
+  if (transport.lastError && isAuthError(transport.lastError)) {
+    setAuthError(transport.lastError);
+    setStatus("closed");
+  }
+}
+
+function useTransportLifecycle(
+  url: string | undefined,
+  createTransport: AppProps["createTransport"],
+  attempt: number,
+  authError: string | null,
+  setStatus: (s: TransportStatus) => void,
+  setAuthError: (e: string | null) => void,
+  transportRef: MutableRefObject<TransportHandle | null>,
+  timerRef: MutableRefObject<number | null>,
+  backoffBaseMs: number,
+  routerRef: MutableRefObject<ResponseRouter | null>,
+  clientRef: MutableRefObject<RpcClient | null>,
+): void {
+  useEffect(() => {
+    if (authError) return;
+    const router = new ResponseRouter();
+    routerRef.current = router;
+    let transport: TransportHandle;
+    try {
+      transport = buildTransport(url, createTransport, router);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (isAuthError(msg)) setAuthError(msg);
+      setStatus("closed");
+      return;
+    }
+    transportRef.current = transport;
+    bindClient(transport, router, clientRef);
+    attachStatus(transport, setAuthError, setStatus);
+    return () => {
+      try {
+        transport.close();
+      } catch {}
+      clearTimeout(timerRef.current as unknown as number);
+    };
+  }, [
+    attempt,
+    authError,
+    backoffBaseMs,
+    createTransport,
+    url,
+    setAuthError,
+    setStatus,
+    timerRef,
+    transportRef,
+    routerRef,
+    clientRef,
+  ]);
+}
+
+function useBackoffTimer(
+  status: TransportStatus,
+  authError: string | null,
+  attempt: number,
+  setAttempt: Dispatch<SetStateAction<number>>,
+  timerRef: MutableRefObject<number | null>,
+  backoffBaseMs: number,
+): void {
+  useEffect(() => {
+    if (status === "closed" && !authError) {
+      const delay = getBackoffDelay(attempt, backoffBaseMs);
+      timerRef.current = setTimeout(
+        () => setAttempt((a) => a + 1),
+        delay,
+      ) as unknown as number;
+      return () => {
+        clearTimeout(timerRef.current as unknown as number);
+      };
+    }
+    if (status === "open" && attempt !== 0) setAttempt(0);
+  }, [status, authError, attempt, backoffBaseMs, setAttempt, timerRef]);
+}
+
+function useConnection(
+  url: string | undefined,
+  createTransport: AppProps["createTransport"],
+  backoffBaseMs: number,
+): {
+  status: TransportStatus;
+  authError: string | null;
+  client: RpcClient | null;
+} {
+  const [status, setStatus] = useState<TransportStatus>("connecting");
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
+  const transportRef = useRef<TransportHandle | null>(null);
+  const timerRef = useRef<number | null>(null);
+  const routerRef = useRef<ResponseRouter | null>(null);
+  const clientRef = useRef<RpcClient | null>(null);
+  const [client, setClient] = useState<RpcClient | null>(null);
+  useTransportLifecycle(
+    url,
+    createTransport,
+    attempt,
+    authError,
+    setStatus,
+    setAuthError,
+    transportRef,
+    timerRef,
+    backoffBaseMs,
+    routerRef,
+    clientRef,
+  );
+  useBackoffTimer(status, authError, attempt, setAttempt, timerRef, backoffBaseMs);
+  useEffect(() => {
+    if (status === "open" && clientRef.current) setClient(clientRef.current);
+    if (status !== "open") setClient(null);
+  }, [status]);
+  useEffect(() => {
+    return () => {
+      clearTimeout(timerRef.current as unknown as number);
+      try {
+        transportRef.current?.close();
+      } catch {}
+    };
+  }, []);
+  return { status, authError, client };
+}
+
+export type SessionState = {
+  history: string[];
+  setHistory: Dispatch<SetStateAction<string[]>>;
+  activeId: string | null;
+  setActiveId: Dispatch<SetStateAction<string | null>>;
+  info: string | null;
+  setInfo: Dispatch<SetStateAction<string | null>>;
+  err: string | null;
+  setErr: Dispatch<SetStateAction<string | null>>;
+};
+
+function useSessionState(): SessionState {
+  const [history, setHistory] = useState<string[]>(() => loadSessionHistory());
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const [info, setInfo] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  return { history, setHistory, activeId, setActiveId, info, setInfo, err, setErr };
+}
+
+function useAppHandlers(client: RpcClient | null, st: SessionState) {
+  const { createNew, continueSession } = useSession(client);
+  const handleSelect = useCallback(
+    async (id: string) => {
+      st.setErr(null);
+      try {
+        await continueSession(id);
+        st.setActiveId(id);
+        st.setInfo(`status: ${id}`);
+        st.setHistory((prev) => {
+          const next = addToHistory(prev, id);
+          saveSessionHistory(next);
+          return next;
+        });
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        st.setErr(msg);
+      }
+    },
+    [continueSession, st],
+  );
+  const handleNew = useCallback(async () => {
+    st.setErr(null);
+    try {
+      const id = await createNew();
+      st.setActiveId(id);
+      st.setInfo(`status: ${id}`);
+      st.setHistory((prev) => {
+        const next = addToHistory(prev, id);
+        saveSessionHistory(next);
+        return next;
+      });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      st.setErr(msg);
+    }
+  }, [createNew, st]);
+  return { handleSelect, handleNew };
+}
+
+function getStatusLine(authError: string | null, status: TransportStatus): string {
+  if (authError) return `auth error: ${authError}`;
+  if (status === "open") return "connected";
+  if (status === "closed") return "kernel unreachable";
+  return "connecting...";
+}
+function usePaletteControl(onThemeToggle?: () => void) {
+  const [paletteQuery, setPaletteQuery] = useState<string | null>(null);
+  const [modelOpen, setModelOpen] = useState(false);
+  const handleSelect = useCallback(
+    (cmd: string) => {
+      if (cmd === "models") setModelOpen(true);
+      if (cmd === "themes") onThemeToggle?.();
+      setPaletteQuery(null);
+    },
+    [onThemeToggle],
+  );
+  const handleClose = useCallback(() => setPaletteQuery(null), []);
+  const handleModelClose = useCallback(() => setModelOpen(false), []);
+  useKeyboard((key) => {
+    if (modelOpen) {
+      const name = (key.name ?? "").toLowerCase();
+      if (name === "escape") setModelOpen(false);
+      return;
+    }
+    if (paletteQuery !== null) {
+      const name = (key.name ?? "").toLowerCase();
+      if (name === "escape") {
+        setPaletteQuery(null);
+        return;
+      }
+      if (name === "return" || name === "enter" || name === "up" || name === "down") return;
+      if (name === "backspace") {
+        setPaletteQuery((prev) => {
+          if (!prev) return null;
+          const next = prev.slice(0, -1);
+          return next.length === 0 ? null : next;
+        });
+        return;
+      }
+      const seq = key.sequence ?? "";
+      if (seq.length === 1 && !key.ctrl && !key.meta) {
+        setPaletteQuery((prev) => (prev ?? "") + seq);
+      }
+      return;
+    }
+    const seq = key.sequence ?? "";
+    if (seq === "/") setPaletteQuery("/");
+  });
+  return { paletteQuery, modelOpen, handleSelect, handleClose, handleModelClose };
+}
+
+function AppInner({ url, createTransport, backoffBaseMs = 1000 }: AppProps) {
+  useCtrlCExit();
+  const { status, authError, client } = useConnection(url, createTransport, backoffBaseMs);
+  const st = useSessionState();
+  const { handleSelect, handleNew } = useAppHandlers(client, st);
+  const { pending: permReq, respond: handlePermRespond, clear: clearPerm } = usePermissionState(client);
+  const { toggle: toggleTheme } = useTheme();
+  const palette = usePaletteControl(toggleTheme);
+  const statusLine = getStatusLine(authError, status);
+  const modelConfig = useModelConfig(client);
+  return (
+    <box flexDirection="column" padding={1}>
+      <text>{statusLine}</text>
+      {status === "connecting" && !authError ? <text>Connecting to kernel...</text> : null}
+      {authError ? <text>Authentication failed (403)</text> : null}
+      {permReq ? (
+        <PermissionDialog
+          tool={permReq.tool}
+          args={permReq.args}
+          sessionId={permReq.session_id ?? permReq.sessionId ?? null}
+          requestId={permReq.request_id}
+          onRespond={handlePermRespond}
+          onClose={clearPerm}
+        />
+      ) : null}
+      {palette.modelOpen ? (
+        <ModelSelector default_model={modelConfig.default_model} providers={modelConfig.providers} />
+      ) : null}
+      {palette.paletteQuery !== null && !palette.modelOpen ? (
+        <Palette
+          query={palette.paletteQuery}
+          onSelect={palette.handleSelect}
+          onClose={palette.handleClose}
+        />
+      ) : null}
+      {status === "open" && st.activeId === null && !permReq && !palette.modelOpen && palette.paletteQuery === null ? (
+        <SessionList history={st.history} onSelect={handleSelect} onNew={handleNew} activeId={st.activeId} />
+      ) : null}
+      {status === "open" && st.activeId !== null ? (
+        <box flexDirection="column">
+          <text>session: {st.activeId}</text>
+          <text>targets {st.activeId}</text>
+          {st.info ? <text>{st.info}</text> : null}
+        </box>
+      ) : null}
+      {st.err ? <text>{st.err}</text> : null}
+    </box>
+  );
+}
+
+export function App(props: AppProps) {
+  return (
+    <ThemeProvider>
+      <AppInner {...props} />
+    </ThemeProvider>
+  );
+}
+
+if (import.meta.main) {
+  const renderer = await createCliRenderer({ exitOnCtrlC: false });
+  createRoot(renderer).render(<App />);
+}
