@@ -14,6 +14,25 @@ use async_trait::async_trait;
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct PermissionRequestId(pub String);
 
+impl std::ops::Deref for PermissionRequestId {
+    type Target = str;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl AsRef<str> for PermissionRequestId {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::borrow::Borrow<str> for PermissionRequestId {
+    fn borrow(&self) -> &str {
+        &self.0
+    }
+}
+
 /// Decision result of a permission check.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PermissionDecision {

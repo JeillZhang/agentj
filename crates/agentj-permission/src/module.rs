@@ -59,6 +59,12 @@ struct PendingRequest {
     session_id: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingView {
+    pub tool: String,
+    pub session_id: String,
+}
+
 /// Notification sink for Ask requests (set once at startup by the IPC layer).
 type Notifier = Arc<dyn Fn(&PermissionRequestParams, &str) + Send + Sync>;
 
@@ -100,6 +106,15 @@ impl PermissionModule {
             .unwrap()
             .get(request_id)
             .map(|req| req.session_id.clone())
+    }
+
+    pub fn view(&self, request_id: &str) -> Option<PendingView> {
+        let pending = self.pending.lock().unwrap();
+        let key = PermissionRequestId(request_id.to_string());
+        pending.get(&key).map(|entry| PendingView {
+            tool: entry.tool.clone(),
+            session_id: entry.session_id.clone(),
+        })
     }
 
     /// Deliver the client's decision to a pending request. `AllowAlways`
@@ -1037,5 +1052,30 @@ mod tests {
         };
         module.check(&ctx);
         assert_eq!(seen.lock().unwrap().as_deref(), Some("s-9"));
+    }
+
+    #[test]
+    fn view_peeks_without_consuming() {
+        let module = PermissionModule::new(HashMap::new(), Duration::from_secs(1));
+        let ctx = PermissionContext {
+            session_id: "s-1".into(),
+            tool: "bash".into(),
+            source: ToolSource::Builtin,
+            args: serde_json::json!({"command": "ls"}),
+            workspace_root: PathBuf::from("/ws"),
+        };
+        if let PermissionDecision::Ask { request_id } = module.check(&ctx) {
+            let view = module.view(&request_id).expect("pending entry is visible");
+            assert_eq!(view.tool, "bash");
+            assert_eq!(view.session_id, "s-1");
+            assert!(
+                module.respond(&request_id, ApprovalDecision::Allow),
+                "a view peek must not consume the entry"
+            );
+            assert_eq!(module.view(&request_id), None, "respond consumed the entry");
+            assert_eq!(module.view("nope"), None);
+        } else {
+            panic!("expected Ask");
+        }
     }
 }

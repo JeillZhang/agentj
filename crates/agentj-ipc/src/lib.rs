@@ -706,9 +706,7 @@ impl IpcServer {
                         };
                         let frame = build_progress_frame(
                             &progress_token,
-                            &agentj_protocol::streaming::ProgressValue::Usage {
-                                usage: info.clone(),
-                            },
+                            &agentj_protocol::streaming::ProgressValue::Usage { usage: info },
                         );
                         if let Ok(reg) = self.registry.read() {
                             reg.broadcast_to_session(&sid.to_string(), &frame);
@@ -802,7 +800,9 @@ impl IpcServer {
             .permission_module
             .clone()
             .ok_or_else(|| DispatchError::invalid_request("no permission module"))?;
-        let rid = agentj_core::permission::PermissionRequestId(params.request_id);
+        let request_id = params.request_id.clone();
+        let wire_decision = params.decision.clone();
+        let rid = agentj_core::permission::PermissionRequestId(request_id.clone());
         let sid = module.session_of(&rid).ok_or_else(|| {
             DispatchError::invalid_request(format!("unknown permission request: {}", rid.0))
         })?;
@@ -829,11 +829,38 @@ impl IpcServer {
                 return Err(DispatchError::invalid_request("unknown decision"));
             }
         };
+        let view = self
+            .permission_module
+            .as_ref()
+            .and_then(|m| m.view(&request_id));
         if !module.respond(&rid, decision) {
             return Err(DispatchError::invalid_request(format!(
                 "unknown permission request: {}",
                 rid.0
             )));
+        }
+        if let Some(view) = view {
+            let sid_clone = view.session_id.clone();
+            let frame = build_progress_frame(
+                &Value::Null,
+                &agentj_protocol::streaming::ProgressValue::Permission {
+                    request_id: request_id.clone(),
+                    tool: view.tool.clone(),
+                    decision: wire_decision.clone(),
+                    session_id: Some(sid_clone.clone()),
+                },
+            );
+            if let Ok(reg) = self.registry.read() {
+                reg.broadcast_to_session(&sid_clone, &frame);
+            }
+            self.record_trajectory(
+                &sid_clone,
+                agentj_protocol::trajectory::TrajectoryValue::Permission {
+                    request_id,
+                    tool: view.tool,
+                    decision: wire_decision,
+                },
+            );
         }
         Ok(serde_json::json!({}))
     }
@@ -3213,6 +3240,113 @@ mod tests {
                 "extra tool_result must be cancelled deny: {content}"
             );
         }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn respond_allow_records_permission_node_between_call_and_result() {
+        let dir = temp_dir_traj("settle");
+        let (mut server, module) = blocking_run_server();
+        server.trajectory_store = Some(wired_store(&dir));
+        server
+            .registry
+            .write()
+            .unwrap()
+            .set_session_owner(&"s1".to_string(), "stdio");
+        let server = Arc::new(server);
+        let (ask_tx, mut ask_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        module.set_notifier(Arc::new(move |p: &agentj_protocol::permission::PermissionRequestParams, _sid: &str| {
+            let _ = ask_tx.send(p.request_id.clone());
+        }));
+        let run = tokio::spawn({
+            let s = Arc::clone(&server);
+            async move {
+                s.handle_request(r#"{"jsonrpc":"2.0","id":2,"method":"session/run","params":{"session_id":"s1","content":"run it"}}"#)
+                    .await
+                    .unwrap()
+            }
+        });
+        let rid = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if let Ok(r) = ask_rx.try_recv() {
+                    return r;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the run's bash execution must register an Ask");
+        let respond = format!(
+            r#"{{"jsonrpc":"2.0","id":3,"method":"permission/respond","params":{{"request_id":"{rid}","decision":"allow"}}}}"#
+        );
+        let resp = server.handle_request(&respond).await.unwrap();
+        assert!(resp.contains("\"result\""), "owner respond accepted: {resp}");
+        let resp = run.await.unwrap();
+        assert!(resp.contains("\"result\""), "run completed: {resp}");
+        let events = read_traj_events(&dir, "s1");
+        assert_eq!(traj_kinds(&events), vec!["user", "tool_call", "permission", "tool_result"]);
+        let agentj_protocol::trajectory::TrajectoryValue::Permission { request_id, tool, decision } = &events[2].value else {
+            panic!("permission node at index 2: {events:?}")
+        };
+        assert_eq!(request_id, &rid);
+        assert_eq!(tool, "bash");
+        assert_eq!(*decision, agentj_protocol::permission::PermissionDecision::Allow);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn respond_deny_records_deny_and_run_still_completes() {
+        let dir = temp_dir_traj("deny");
+        let (mut server, module) = blocking_run_server();
+        server.trajectory_store = Some(wired_store(&dir));
+        server
+            .registry
+            .write()
+            .unwrap()
+            .set_session_owner(&"s1".to_string(), "stdio");
+        let server = Arc::new(server);
+        let (ask_tx, mut ask_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        module.set_notifier(Arc::new(move |p: &agentj_protocol::permission::PermissionRequestParams, _sid: &str| {
+            let _ = ask_tx.send(p.request_id.clone());
+        }));
+        let run = tokio::spawn({
+            let s = Arc::clone(&server);
+            async move {
+                s.handle_request(r#"{"jsonrpc":"2.0","id":2,"method":"session/run","params":{"session_id":"s1","content":"run it"}}"#)
+                    .await
+                    .unwrap()
+            }
+        });
+        let rid = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if let Ok(r) = ask_rx.try_recv() {
+                    return r;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the run's bash execution must register an Ask");
+        let respond = format!(
+            r#"{{"jsonrpc":"2.0","id":3,"method":"permission/respond","params":{{"request_id":"{rid}","decision":"deny"}}}}"#
+        );
+        let resp = server.handle_request(&respond).await.unwrap();
+        assert!(resp.contains("\"result\""), "owner respond accepted: {resp}");
+        let resp = run.await.unwrap();
+        assert!(resp.contains("\"result\""), "denied tool is a content error, not a run error: {resp}");
+        let events = read_traj_events(&dir, "s1");
+        assert_eq!(traj_kinds(&events), vec!["user", "tool_call", "permission", "tool_result"]);
+        let agentj_protocol::trajectory::TrajectoryValue::Permission { decision, .. } = &events[2].value else {
+            panic!("permission node at index 2: {events:?}")
+        };
+        assert_eq!(*decision, agentj_protocol::permission::PermissionDecision::Deny);
+        let agentj_protocol::trajectory::TrajectoryValue::ToolResult { content, .. } = &events[3].value else {
+            panic!("tool_result at index 3: {events:?}")
+        };
+        assert!(
+            content.starts_with("Error:"),
+            "executor denial flows into tool_result content (C9): {content}"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 }
