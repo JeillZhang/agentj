@@ -218,6 +218,21 @@ describe("App with mocked SDK transport", () => {
     );
   });
 
+  it("composer status popover reflects real modules and connection state from kernel/status", async () => {
+    shared.newSessionId.value = "s1";
+    render(<App />);
+    fireEvent.click(screen.getAllByRole("button", { name: /new session/i })[0]);
+    await waitFor(() => expect(screen.getByText(/active: s1/i)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("connected")).toBeInTheDocument());
+    const composerStatus = screen.getByRole("button", { name: /^status$/i });
+    fireEvent.click(composerStatus);
+    const dialog = screen.getByRole("dialog", { name: "status" });
+    expect(dialog).toBeInTheDocument();
+    expect(await within(dialog).findByText("test-mod: running")).toBeInTheDocument();
+    expect(within(dialog).queryByText("no modules")).not.toBeInTheDocument();
+    expect(dialog.querySelector(".aj-status-light")?.getAttribute("data-state")).toBe("connected");
+  });
+
   it("applies token to wsUrl via connection bar", async () => {
     render(<App />);
     const hostInput = screen.getByLabelText(/^host$/i);

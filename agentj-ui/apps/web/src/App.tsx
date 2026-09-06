@@ -400,7 +400,7 @@ export default function App() {
             ) : (
               <>
                 {(historyEvents === null || historySession !== activeSessionId) && <p className="aj-empty">Loading history…</p>}
-                <RunPanel client={sharedClient} key={activeSessionId} activeSessionId={activeSessionId} initialEntries={historyEvents && historySession === activeSessionId ? historyToConversation(historyEvents) : []} pendingTool={pending?.tool} model={modelName ?? undefined} />
+                <RunPanel client={sharedClient} key={activeSessionId} activeSessionId={activeSessionId} initialEntries={historyEvents && historySession === activeSessionId ? historyToConversation(historyEvents) : []} pendingTool={pending?.tool} model={modelName ?? undefined} modules={modules} status={status} unreachable={unreachable} />
               </>
             )
           ) : activeSessionId && historySession === activeSessionId && historyEvents ? (
