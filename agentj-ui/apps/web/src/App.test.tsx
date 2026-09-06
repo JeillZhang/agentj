@@ -96,6 +96,49 @@ vi.mock("@agentj/sdk", () => {
         return o?.token ? `${base}?token=${o.token}` : base;
       },
     ),
+    // T14: real parser coverage lives in @agentj/sdk progress.test.ts (T12); this
+    // double mirrors T12's translation table for the standard frame kinds so the
+    // web flows exercise the same shapes. DRIFT WARNING: keep in step with T12.
+    parseProgress: (params: unknown) => {
+      if (typeof (params as { text?: unknown })?.text === "string") {
+        return { kind: "text", text: (params as { text: string }).text };
+      }
+      const v = (params as { value?: unknown })?.value as
+        | Record<string, unknown>
+        | undefined;
+      if (!v || typeof v["kind"] !== "string") return { kind: "unknown", raw: params };
+      const kind = v["kind"] as string;
+      if (kind === "text") {
+        return typeof v["delta"] === "string"
+          ? { kind: "text", text: v["delta"] }
+          : { kind: "unknown", raw: params };
+      }
+      if (kind === "tool_call") {
+        const tc = v["tool_call"] as Record<string, unknown> | undefined;
+        return tc && typeof tc["id"] === "string" && typeof tc["name"] === "string"
+          ? { kind: "tool_call", id: tc["id"], name: tc["name"], arguments: tc["arguments"] ?? null }
+          : { kind: "unknown", raw: params };
+      }
+      if (kind === "tool_result") {
+        return typeof v["content"] === "string" && typeof v["tool_call_id"] === "string"
+          ? { kind: "tool_result", call_id: v["tool_call_id"], content: v["content"] }
+          : { kind: "unknown", raw: params };
+      }
+      if (kind === "usage") {
+        const u = v["usage"] as { prompt_tokens?: unknown; completion_tokens?: unknown } | undefined;
+        return u && typeof u.prompt_tokens === "number" && typeof u.completion_tokens === "number"
+          ? { kind: "usage", usage: { prompt_tokens: u.prompt_tokens, completion_tokens: u.completion_tokens } }
+          : { kind: "unknown", raw: params };
+      }
+      if (kind === "permission") {
+        return typeof v["request_id"] === "string" && typeof v["tool"] === "string"
+          && typeof v["decision"] === "string"
+          ? { kind: "permission", request_id: v["request_id"] as string, tool: v["tool"] as string,
+              decision: v["decision"] as string }
+          : { kind: "unknown", raw: params };
+      }
+      return { kind: "unknown", raw: params };
+    },
     METHODS: {
       kernelStatus: "kernel/status",
       initialize: "initialize",

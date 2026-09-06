@@ -14,7 +14,9 @@
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "@agentj/sdk": "*",
-    "@agentj/tokens": "*"
+    "@agentj/tokens": "*",
+    "react-markdown": "^10.0.0",
+    "remark-gfm": "^4.0.0"
   },
   "devDependencies": {
     "@testing-library/jest-dom": "^6.9.1",
