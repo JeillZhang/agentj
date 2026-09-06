@@ -4,7 +4,7 @@ import { render, screen, waitFor, fireEvent, act } from "@testing-library/react"
 
 const shared = vi.hoisted(() => ({
   lastWsUrl: { value: "" },
-  initVersion: { value: "0.11.0" },
+  initVersion: { value: "0.12.0" },
   shouldFail: { value: false },
   newSessionId: { value: "s9" },
   statusShouldFail: { value: false },
@@ -16,6 +16,7 @@ const shared = vi.hoisted(() => ({
   lastPermissionParams: { value: null as Record<string, unknown> | null },
   permShouldFail: { value: false },
   permError: { value: "stale" },
+  sessionListResult: { value: { sessions: [] as Array<Record<string, unknown>> } },
 }));
 
 vi.mock("@agentj/sdk", () => {
@@ -65,6 +66,7 @@ vi.mock("@agentj/sdk", () => {
         return {};
       }
       if (shared.shouldFail.value) throw new Error("unreachable");
+      if (method === "session/list") return shared.sessionListResult.value;
       if (method === "kernel/status") {
         return { modules: [{ id: "test-mod", state: "running" }] };
       }
@@ -146,11 +148,12 @@ vi.mock("@agentj/sdk", () => {
       sessionStatus: "session/status",
       sessionSubscribe: "session/subscribe",
       sessionRun: "session/run",
+      sessionList: "session/list",
       progress: "$/progress",
       permissionRequest: "$/permissionRequest",
       permissionRespond: "permission/respond",
     },
-    PROTOCOL_VERSION: "0.11.0",
+    PROTOCOL_VERSION: "0.12.0",
   };
 });
 
@@ -159,7 +162,7 @@ import App from "./App";
 describe("App with mocked SDK transport", () => {
   beforeEach(() => {
     shared.lastWsUrl.value = "";
-    shared.initVersion.value = "0.11.0";
+    shared.initVersion.value = "0.12.0";
     shared.shouldFail.value = false;
     shared.newSessionId.value = "s9";
     shared.statusShouldFail.value = false;
@@ -198,11 +201,11 @@ describe("App with mocked SDK transport", () => {
     );
   });
 
-  it("shows version mismatch banner expected 0.11.0 got 0.9.0", async () => {
+  it("shows version mismatch banner expected 0.12.0 got 0.9.0", async () => {
     shared.initVersion.value = "0.9.0";
     render(<App />);
     expect(
-      await screen.findByText(/expected 0\.11\.0, got 0\.9\.0/i),
+      await screen.findByText(/expected 0\.12\.0, got 0\.9\.0/i),
     ).toBeInTheDocument();
   });
 
