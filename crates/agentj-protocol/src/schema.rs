@@ -12,8 +12,9 @@ use crate::permission::{
     PermissionDecision, PermissionRequestParams, PermissionRespondParams, PermissionRespondResult,
 };
 use crate::session::{
-    SessionIdParams, SessionNewResult, SessionRunParams, SessionRunResult, SessionStatusResult,
-    SessionSubscribeParams, UsageInfo,
+    SessionHistoryParams, SessionHistoryResult, SessionIdParams, SessionListParams,
+    SessionListResult, SessionNewResult, SessionRunParams, SessionRunResult, SessionStatusResult,
+    SessionSubscribeParams, SessionSummary, UsageInfo,
 };
 use crate::streaming::{
     CancelParams, KernelStatusResult, ModuleInfo, ProgressParams, ProgressValue,
@@ -57,6 +58,17 @@ pub fn generate_schemas() -> BTreeMap<String, Schema> {
     m.insert(
         "SessionSubscribeParams".into(),
         schema_for!(SessionSubscribeParams),
+    );
+    m.insert("SessionSummary".into(), schema_for!(SessionSummary));
+    m.insert("SessionListParams".into(), schema_for!(SessionListParams));
+    m.insert("SessionListResult".into(), schema_for!(SessionListResult));
+    m.insert(
+        "SessionHistoryParams".into(),
+        schema_for!(SessionHistoryParams),
+    );
+    m.insert(
+        "SessionHistoryResult".into(),
+        schema_for!(SessionHistoryResult),
     );
     m.insert("ProgressParams".into(), schema_for!(ProgressParams));
     m.insert("ProgressValue".into(), schema_for!(ProgressValue));
