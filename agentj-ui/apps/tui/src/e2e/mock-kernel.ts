@@ -244,7 +244,7 @@ export async function driveRun(
   const sidRaw = (newRes as unknown as { session_id?: string }).session_id ?? "sess-1";
   const sid = typeof sidRaw === "string" ? sidRaw : "sess-1";
   events.push("run");
-  const runRes = request("session/run", { session_id: sid, prompt });
+  const runRes = request("session/run", { session_id: sid, content: prompt });
   const timeout = setTimeout(() => done.resolve(), 3000);
   await done.promise;
   clearTimeout(timeout);

@@ -164,7 +164,7 @@ describe("App connection screen", () => {
     });
     expect(requests.find((r) => r.method === METHODS.sessionRun)?.params).toEqual({
       session_id: "s1",
-      prompt: "hi",
+      content: "hi",
     });
     await act(async () => {
       await setup.waitFor(() => setup.captureCharFrame().includes("hi"));

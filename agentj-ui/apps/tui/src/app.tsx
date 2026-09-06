@@ -363,7 +363,7 @@ function AppInner({ url, createTransport, backoffBaseMs = 1000 }: AppProps) {
       st.setErr(null);
       setTranscriptRows((prev) => [...prev, { key: nextKey(prev), kind: "user", text }]);
       try {
-        await client.request(METHODS.sessionRun, { session_id: sid, prompt: text });
+        await client.request(METHODS.sessionRun, { session_id: sid, content: text });
       } catch (e) {
         st.setErr(e instanceof Error ? e.message : String(e));
       }
