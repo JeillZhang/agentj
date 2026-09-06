@@ -4,6 +4,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::base::Id;
+use crate::permission::PermissionDecision;
+use crate::session::UsageInfo;
 use crate::types::{ModuleState, SessionId, ToolCall};
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -28,6 +30,19 @@ pub enum ProgressValue {
         tool_call_id: String,
         content: String,
     },
+    /// Token-usage settlement emitted once per run at Done (design D1 结算行). @since 0.12.0
+    Usage {
+        usage: UsageInfo,
+    },
+    /// Decision settlement for a pending $/permissionRequest (design D1 轨迹/卡片结算).
+    /// session_id is optional-additive so multi-session clients route the settle.
+    Permission {
+        request_id: String,
+        tool: String,
+        decision: PermissionDecision,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        session_id: Option<SessionId>, // @since 0.12.0
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -40,9 +55,21 @@ pub struct CancelParams {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ProviderInfo {
+    pub id: String,
+    pub models: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct KernelStatusResult {
     pub version: String,
     pub modules: Vec<ModuleInfo>,
+    /// Config model.default_model, e.g. "deepseek-chat". Absent when no config. @since 0.12.0
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_model: Option<String>,
+    /// Provider list from config (name → base_url); models reserved, empty. @since 0.12.0
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub providers: Option<Vec<ProviderInfo>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -55,6 +82,8 @@ pub struct ModuleInfo {
 mod tests {
     use super::*;
     use crate::base::Id;
+    use crate::permission::PermissionDecision;
+    use crate::session::UsageInfo;
     use crate::types::{ModuleState, ToolCall};
 
     #[test]
@@ -125,6 +154,8 @@ mod tests {
                 id: "m1".into(),
                 state: ModuleState::Ready,
             }],
+            default_model: None,
+            providers: None,
         };
         let json = serde_json::to_value(&r).unwrap();
         assert_eq!(json["version"], "0.1.0");
@@ -136,5 +167,95 @@ mod tests {
         let s = schemars::schema_for!(ProgressValue);
         let json = serde_json::to_value(&s).unwrap();
         assert!(json.get("anyOf").is_some() || json.get("oneOf").is_some());
+    }
+
+    #[test]
+    fn progress_value_usage_kind() {
+        let v = ProgressValue::Usage {
+            usage: UsageInfo {
+                prompt_tokens: 10,
+                completion_tokens: 5,
+            },
+        };
+        let json = serde_json::to_value(&v).unwrap();
+        assert_eq!(json["kind"], "usage");
+        assert_eq!(json["usage"]["prompt_tokens"], 10);
+        assert_eq!(json["usage"]["completion_tokens"], 5);
+        let back: ProgressValue = serde_json::from_value(json).unwrap();
+        assert!(matches!(back, ProgressValue::Usage { usage } if usage.prompt_tokens == 10));
+    }
+
+    #[test]
+    fn progress_value_permission_kind_with_session() {
+        let v = ProgressValue::Permission {
+            request_id: "r1".into(),
+            tool: "bash".into(),
+            decision: PermissionDecision::AllowAlways,
+            session_id: Some("s-1".into()),
+        };
+        let json = serde_json::to_value(&v).unwrap();
+        assert_eq!(json["kind"], "permission");
+        assert_eq!(json["request_id"], "r1");
+        assert_eq!(json["tool"], "bash");
+        assert_eq!(json["decision"], "allow_always");
+        assert_eq!(json["session_id"], "s-1");
+    }
+
+    #[test]
+    fn progress_value_permission_kind_omits_session_when_none() {
+        let v = ProgressValue::Permission {
+            request_id: "r1".into(),
+            tool: "bash".into(),
+            decision: PermissionDecision::Deny,
+            session_id: None,
+        };
+        let json = serde_json::to_value(&v).unwrap();
+        assert!(json.get("session_id").is_none());
+    }
+
+    #[test]
+    fn progress_value_permission_unknown_decision_tolerated() {
+        // Forward-compat: a future decision string must not break parsing.
+        let json = serde_json::json!({"kind": "permission", "request_id": "r1", "tool": "bash",
+                                      "decision": "maybe_later"});
+        let v: ProgressValue = serde_json::from_value(json).unwrap();
+        match v {
+            ProgressValue::Permission {
+                decision: PermissionDecision::Unknown,
+                ..
+            } => {}
+            other => panic!("expected Unknown decision, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn kernel_status_result_optional_model_fields() {
+        let with = KernelStatusResult {
+            version: "0.11.1".into(),
+            modules: vec![],
+            default_model: Some("deepseek-chat".into()),
+            providers: Some(vec![ProviderInfo {
+                id: "deepseek-chat".into(),
+                models: vec![],
+            }]),
+        };
+        let json = serde_json::to_value(&with).unwrap();
+        assert_eq!(json["default_model"], "deepseek-chat");
+        assert_eq!(json["providers"][0]["id"], "deepseek-chat");
+        assert_eq!(json["providers"][0]["models"].as_array().unwrap().len(), 0);
+
+        let without = KernelStatusResult {
+            version: "0.11.1".into(),
+            modules: vec![],
+            default_model: None,
+            providers: None,
+        };
+        let json = serde_json::to_value(&without).unwrap();
+        assert!(json.get("default_model").is_none());
+        assert!(json.get("providers").is_none());
+        // Legacy wire payload (no new keys) parses with None.
+        let legacy: KernelStatusResult =
+            serde_json::from_str(r#"{"version":"0.11.1","modules":[]}"#).unwrap();
+        assert!(legacy.default_model.is_none() && legacy.providers.is_none());
     }
 }
