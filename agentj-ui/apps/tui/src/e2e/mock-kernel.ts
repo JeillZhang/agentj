@@ -82,7 +82,7 @@ function handlePermissionRespond(ws: WebSocket, id: number | undefined): void {
       JSON.stringify({
         jsonrpc: "2.0",
         method: "$/progress",
-        params: { session_id: "sess-1", text: "done", done: true, usage: { input_tokens: 10, output_tokens: 5 } },
+        params: { session_id: "sess-1", text: "done", done: true, usage: { prompt_tokens: 10, completion_tokens: 5 } },
       }),
     );
   }, 20);
