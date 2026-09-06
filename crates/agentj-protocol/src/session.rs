@@ -128,12 +128,20 @@ mod tests {
 
     #[test]
     fn session_history_params_optional_cursor_limit() {
-        let p = SessionHistoryParams { session_id: "s1".into(), cursor: None, limit: None };
+        let p = SessionHistoryParams {
+            session_id: "s1".into(),
+            cursor: None,
+            limit: None,
+        };
         let json = serde_json::to_value(&p).unwrap();
         assert!(json.get("cursor").is_none() && json.get("limit").is_none());
         let back: SessionHistoryParams = serde_json::from_str(r#"{"session_id":"s1"}"#).unwrap();
         assert!(back.cursor.is_none() && back.limit.is_none());
-        let with = SessionHistoryParams { session_id: "s1".into(), cursor: Some(4), limit: Some(50) };
+        let with = SessionHistoryParams {
+            session_id: "s1".into(),
+            cursor: Some(4),
+            limit: Some(50),
+        };
         let json = serde_json::to_value(&with).unwrap();
         assert_eq!(json["cursor"], 4);
         assert_eq!(json["limit"], 50);
@@ -142,15 +150,26 @@ mod tests {
     #[test]
     fn session_history_result_events_and_next_cursor() {
         let ev = TrajectoryEvent {
-            session_id: "s1".into(), seq: 0, ts: 1, value: TrajectoryValue::User { content: "hi".into() },
+            session_id: "s1".into(),
+            seq: 0,
+            ts: 1,
+            value: TrajectoryValue::User {
+                content: "hi".into(),
+            },
         };
-        let done = SessionHistoryResult { events: vec![ev], next_cursor: None };
+        let done = SessionHistoryResult {
+            events: vec![ev],
+            next_cursor: None,
+        };
         let json = serde_json::to_value(&done).unwrap();
         assert_eq!(json["events"][0]["session_id"], "s1");
         assert_eq!(json["events"][0]["value"]["kind"], "user");
         assert_eq!(json["events"][0]["seq"], 0);
         assert!(json.get("next_cursor").is_none());
-        let more = SessionHistoryResult { events: vec![], next_cursor: Some(9) };
+        let more = SessionHistoryResult {
+            events: vec![],
+            next_cursor: Some(9),
+        };
         let json = serde_json::to_value(&more).unwrap();
         assert_eq!(json["next_cursor"], 9);
     }

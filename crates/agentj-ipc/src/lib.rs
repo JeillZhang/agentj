@@ -655,12 +655,11 @@ impl IpcServer {
                 }
                 AgentEvent::ToolCall(tc) => {
                     self.flush_thinking(&mut pending_thinking, sid);
-                    let wire: agentj_protocol::types::ToolCall =
-                        agentj_protocol::types::ToolCall {
-                            id: tc.id.clone(),
-                            name: tc.name.clone(),
-                            arguments: tc.arguments.clone(),
-                        };
+                    let wire: agentj_protocol::types::ToolCall = agentj_protocol::types::ToolCall {
+                        id: tc.id.clone(),
+                        name: tc.name.clone(),
+                        arguments: tc.arguments.clone(),
+                    };
                     let frame = build_progress_frame(
                         &progress_token,
                         &agentj_protocol::streaming::ProgressValue::ToolCall {
@@ -672,9 +671,7 @@ impl IpcServer {
                     }
                     self.record_trajectory(
                         sid,
-                        agentj_protocol::trajectory::TrajectoryValue::ToolCall {
-                            tool_call: wire,
-                        },
+                        agentj_protocol::trajectory::TrajectoryValue::ToolCall { tool_call: wire },
                     );
                 }
                 AgentEvent::ToolResult { call_id, result } => {
@@ -737,9 +734,7 @@ impl IpcServer {
                     self.flush_thinking(&mut pending_thinking, sid);
                     self.record_trajectory(
                         sid,
-                        agentj_protocol::trajectory::TrajectoryValue::Error {
-                            message: e.clone(),
-                        },
+                        agentj_protocol::trajectory::TrajectoryValue::Error { message: e.clone() },
                     );
                     return Err(DispatchError::internal(e));
                 }
@@ -820,10 +815,7 @@ impl IpcServer {
         let sid = params["session_id"]
             .as_str()
             .ok_or_else(|| DispatchError::invalid_params("missing session_id"))?;
-        let limit = params["limit"]
-            .as_u64()
-            .unwrap_or(100)
-            .clamp(1, 500) as usize;
+        let limit = params["limit"].as_u64().unwrap_or(100).clamp(1, 500) as usize;
         let cursor = params["cursor"].as_u64();
         let (events, next) = match &self.trajectory_store {
             Some(store) => store
@@ -1166,7 +1158,10 @@ fn build_progress_frame(
 
 fn kernel_model_info(
     ctx: Option<&agentj_core::module::KernelContext>,
-) -> (Option<String>, Option<Vec<agentj_protocol::streaming::ProviderInfo>>) {
+) -> (
+    Option<String>,
+    Option<Vec<agentj_protocol::streaming::ProviderInfo>>,
+) {
     let Some(ctx) = ctx else { return (None, None) };
     let cfg = ctx.config();
     let default_model = cfg.get_str("model.default_model").filter(|s| !s.is_empty());
@@ -3027,17 +3022,21 @@ mod tests {
 
     #[test]
     fn kernel_model_info_surfaces_config_values() {
-        let (default_model, providers) = kernel_model_info(Some(&agentj_core::module::KernelContext {
-            session: stub_session(),
-            tools: Arc::new(agentj_core::module::ToolRegistry::new()),
-            providers: Arc::new(agentj_core::module::ProviderRegistry::new()),
-            config: Arc::new(CfgModel),
-        }));
+        let (default_model, providers) =
+            kernel_model_info(Some(&agentj_core::module::KernelContext {
+                session: stub_session(),
+                tools: Arc::new(agentj_core::module::ToolRegistry::new()),
+                providers: Arc::new(agentj_core::module::ProviderRegistry::new()),
+                config: Arc::new(CfgModel),
+            }));
         assert_eq!(default_model.as_deref(), Some("deepseek-chat"));
         let ps = providers.expect("providers present when config lists any");
         assert_eq!(ps.len(), 1);
         assert_eq!(ps[0].id, "mock");
-        assert!(ps[0].models.is_empty(), "models is reserved and stays empty");
+        assert!(
+            ps[0].models.is_empty(),
+            "models is reserved and stays empty"
+        );
     }
 
     fn temp_dir_traj(tag: &str) -> std::path::PathBuf {
@@ -3048,10 +3047,17 @@ mod tests {
     }
 
     fn wired_store(dir: &std::path::Path) -> Arc<crate::trajectory::TrajectoryStore> {
-        Arc::new(crate::trajectory::TrajectoryStore::new(dir.to_path_buf(), None, None))
+        Arc::new(crate::trajectory::TrajectoryStore::new(
+            dir.to_path_buf(),
+            None,
+            None,
+        ))
     }
 
-    fn read_traj_events(dir: &std::path::Path, sid: &str) -> Vec<agentj_protocol::trajectory::TrajectoryEvent> {
+    fn read_traj_events(
+        dir: &std::path::Path,
+        sid: &str,
+    ) -> Vec<agentj_protocol::trajectory::TrajectoryEvent> {
         let path = dir.join(format!("{sid}.trajectory"));
         if !path.exists() {
             return vec![];
@@ -3129,11 +3135,13 @@ mod tests {
         assert_eq!(events[0].seq, 1);
         assert_eq!(events[1].seq, 2);
         assert_eq!(events[2].seq, 3);
-        let agentj_protocol::trajectory::TrajectoryValue::User { content } = &events[0].value else {
+        let agentj_protocol::trajectory::TrajectoryValue::User { content } = &events[0].value
+        else {
             panic!()
         };
         assert_eq!(content, "hi");
-        let agentj_protocol::trajectory::TrajectoryValue::Thinking { content } = &events[1].value else {
+        let agentj_protocol::trajectory::TrajectoryValue::Thinking { content } = &events[1].value
+        else {
             panic!()
         };
         assert_eq!(content, "hello");
@@ -3156,8 +3164,13 @@ mod tests {
             .unwrap();
         assert!(resp.contains("\"result\""), "{resp}");
         let events = read_traj_events(&dir, "s1");
-        assert_eq!(traj_kinds(&events), vec!["user", "thinking"], "exactly two nodes");
-        let agentj_protocol::trajectory::TrajectoryValue::Thinking { content } = &events[1].value else {
+        assert_eq!(
+            traj_kinds(&events),
+            vec!["user", "thinking"],
+            "exactly two nodes"
+        );
+        let agentj_protocol::trajectory::TrajectoryValue::Thinking { content } = &events[1].value
+        else {
             panic!("expected one merged thinking node, got {events:?}")
         };
         assert_eq!(content, "hello", "both deltas concatenated into ONE node");
@@ -3168,11 +3181,13 @@ mod tests {
     async fn run_records_tool_call_and_tool_result_nodes() {
         let dir = temp_dir_traj("tools");
         let mut server = scripted_run_server(vec![
-            Ok(agentj_core::types::ModelEvent::ToolCall(agentj_core::types::ToolCall {
-                id: "call_1".into(),
-                name: "bash".into(),
-                arguments: serde_json::json!({"command": "curl x"}),
-            })),
+            Ok(agentj_core::types::ModelEvent::ToolCall(
+                agentj_core::types::ToolCall {
+                    id: "call_1".into(),
+                    name: "bash".into(),
+                    arguments: serde_json::json!({"command": "curl x"}),
+                },
+            )),
             Ok(agentj_core::types::ModelEvent::Done),
         ]);
         server.trajectory_store = Some(wired_store(&dir));
@@ -3182,15 +3197,21 @@ mod tests {
             .unwrap();
         assert!(resp.contains("\"result\""), "{resp}");
         let events = read_traj_events(&dir, "s1");
-        assert_eq!(traj_kinds(&events), vec!["user", "tool_call", "tool_result"]);
-        let agentj_protocol::trajectory::TrajectoryValue::ToolCall { tool_call } = &events[1].value else {
+        assert_eq!(
+            traj_kinds(&events),
+            vec!["user", "tool_call", "tool_result"]
+        );
+        let agentj_protocol::trajectory::TrajectoryValue::ToolCall { tool_call } = &events[1].value
+        else {
             panic!("tool_call node at index 1: {events:?}")
         };
         assert_eq!(tool_call.id, "call_1");
         assert_eq!(tool_call.name, "bash");
         assert_eq!(tool_call.arguments["command"], "curl x");
-        let agentj_protocol::trajectory::TrajectoryValue::ToolResult { tool_call_id, content } =
-            &events[2].value
+        let agentj_protocol::trajectory::TrajectoryValue::ToolResult {
+            tool_call_id,
+            content,
+        } = &events[2].value
         else {
             panic!("tool_result node at index 2: {events:?}")
         };
@@ -3214,17 +3235,25 @@ mod tests {
             .handle_request(r#"{"jsonrpc":"2.0","id":2,"method":"session/run","params":{"session_id":"s1","content":"hi"}}"#)
             .await
             .unwrap();
-        assert!(resp.contains("-32603"), "internal error, not cancel: {resp}");
+        assert!(
+            resp.contains("-32603"),
+            "internal error, not cancel: {resp}"
+        );
         let events = read_traj_events(&dir, "s1");
         assert_eq!(traj_kinds(&events), vec!["user", "thinking", "error"]);
-        let agentj_protocol::trajectory::TrajectoryValue::Thinking { content } = &events[1].value else {
+        let agentj_protocol::trajectory::TrajectoryValue::Thinking { content } = &events[1].value
+        else {
             panic!()
         };
         assert_eq!(content, "x");
-        let agentj_protocol::trajectory::TrajectoryValue::Error { message } = &events[2].value else {
+        let agentj_protocol::trajectory::TrajectoryValue::Error { message } = &events[2].value
+        else {
             panic!()
         };
-        assert!(message.contains("boom"), "error node carries the failure: {message}");
+        assert!(
+            message.contains("boom"),
+            "error node carries the failure: {message}"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -3247,7 +3276,9 @@ mod tests {
                     .unwrap()
             }
         });
-        wait_for_pending_run(&server, "s1").await.expect("run must be in-flight");
+        wait_for_pending_run(&server, "s1")
+            .await
+            .expect("run must be in-flight");
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         let _ = server
             .handle_request(r#"{"jsonrpc":"2.0","method":"$/cancelRequest","params":{"id":5,"session_id":"s1"}}"#)
@@ -3280,8 +3311,7 @@ mod tests {
         // but never error/usage.
         let kinds = traj_kinds(&events);
         assert!(
-            kinds == vec!["user", "tool_call"]
-                || kinds == vec!["user", "tool_call", "tool_result"],
+            kinds == vec!["user", "tool_call"] || kinds == vec!["user", "tool_call", "tool_result"],
             "tool_call was emitted at request-send (pre-Ask); the cancel discards pending thinking and records NO error/usage/permission tail: {events:?}"
         );
         if kinds.len() == 3 {
@@ -3310,9 +3340,11 @@ mod tests {
             .set_session_owner(&"s1".to_string(), "stdio");
         let server = Arc::new(server);
         let (ask_tx, mut ask_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-        module.set_notifier(Arc::new(move |p: &agentj_protocol::permission::PermissionRequestParams, _sid: &str| {
-            let _ = ask_tx.send(p.request_id.clone());
-        }));
+        module.set_notifier(Arc::new(
+            move |p: &agentj_protocol::permission::PermissionRequestParams, _sid: &str| {
+                let _ = ask_tx.send(p.request_id.clone());
+            },
+        ));
         let run = tokio::spawn({
             let s = Arc::clone(&server);
             async move {
@@ -3335,17 +3367,31 @@ mod tests {
             r#"{{"jsonrpc":"2.0","id":3,"method":"permission/respond","params":{{"request_id":"{rid}","decision":"allow"}}}}"#
         );
         let resp = server.handle_request(&respond).await.unwrap();
-        assert!(resp.contains("\"result\""), "owner respond accepted: {resp}");
+        assert!(
+            resp.contains("\"result\""),
+            "owner respond accepted: {resp}"
+        );
         let resp = run.await.unwrap();
         assert!(resp.contains("\"result\""), "run completed: {resp}");
         let events = read_traj_events(&dir, "s1");
-        assert_eq!(traj_kinds(&events), vec!["user", "tool_call", "permission", "tool_result"]);
-        let agentj_protocol::trajectory::TrajectoryValue::Permission { request_id, tool, decision } = &events[2].value else {
+        assert_eq!(
+            traj_kinds(&events),
+            vec!["user", "tool_call", "permission", "tool_result"]
+        );
+        let agentj_protocol::trajectory::TrajectoryValue::Permission {
+            request_id,
+            tool,
+            decision,
+        } = &events[2].value
+        else {
             panic!("permission node at index 2: {events:?}")
         };
         assert_eq!(request_id, &rid);
         assert_eq!(tool, "bash");
-        assert_eq!(*decision, agentj_protocol::permission::PermissionDecision::Allow);
+        assert_eq!(
+            *decision,
+            agentj_protocol::permission::PermissionDecision::Allow
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -3361,9 +3407,11 @@ mod tests {
             .set_session_owner(&"s1".to_string(), "stdio");
         let server = Arc::new(server);
         let (ask_tx, mut ask_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-        module.set_notifier(Arc::new(move |p: &agentj_protocol::permission::PermissionRequestParams, _sid: &str| {
-            let _ = ask_tx.send(p.request_id.clone());
-        }));
+        module.set_notifier(Arc::new(
+            move |p: &agentj_protocol::permission::PermissionRequestParams, _sid: &str| {
+                let _ = ask_tx.send(p.request_id.clone());
+            },
+        ));
         let run = tokio::spawn({
             let s = Arc::clone(&server);
             async move {
@@ -3386,16 +3434,32 @@ mod tests {
             r#"{{"jsonrpc":"2.0","id":3,"method":"permission/respond","params":{{"request_id":"{rid}","decision":"deny"}}}}"#
         );
         let resp = server.handle_request(&respond).await.unwrap();
-        assert!(resp.contains("\"result\""), "owner respond accepted: {resp}");
+        assert!(
+            resp.contains("\"result\""),
+            "owner respond accepted: {resp}"
+        );
         let resp = run.await.unwrap();
-        assert!(resp.contains("\"result\""), "denied tool is a content error, not a run error: {resp}");
+        assert!(
+            resp.contains("\"result\""),
+            "denied tool is a content error, not a run error: {resp}"
+        );
         let events = read_traj_events(&dir, "s1");
-        assert_eq!(traj_kinds(&events), vec!["user", "tool_call", "permission", "tool_result"]);
-        let agentj_protocol::trajectory::TrajectoryValue::Permission { decision, .. } = &events[2].value else {
+        assert_eq!(
+            traj_kinds(&events),
+            vec!["user", "tool_call", "permission", "tool_result"]
+        );
+        let agentj_protocol::trajectory::TrajectoryValue::Permission { decision, .. } =
+            &events[2].value
+        else {
             panic!("permission node at index 2: {events:?}")
         };
-        assert_eq!(*decision, agentj_protocol::permission::PermissionDecision::Deny);
-        let agentj_protocol::trajectory::TrajectoryValue::ToolResult { content, .. } = &events[3].value else {
+        assert_eq!(
+            *decision,
+            agentj_protocol::permission::PermissionDecision::Deny
+        );
+        let agentj_protocol::trajectory::TrajectoryValue::ToolResult { content, .. } =
+            &events[3].value
+        else {
             panic!("tool_result at index 3: {events:?}")
         };
         assert!(
@@ -3472,7 +3536,8 @@ mod tests {
     async fn session_history_unknown_sid_and_no_store_return_empty() {
         let dir = temp_dir_traj("none");
         let server = stub_bus_server_with_usage();
-        let raw = r#"{"jsonrpc":"2.0","id":8,"method":"session/history","params":{"session_id":"nope"}}"#;
+        let raw =
+            r#"{"jsonrpc":"2.0","id":8,"method":"session/history","params":{"session_id":"nope"}}"#;
         let resp = server.handle_request(raw).await.unwrap();
         let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
         assert!(v["error"].is_null(), "unknown sid is not an error: {resp}");
@@ -3545,14 +3610,20 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
         assert_eq!(v["result"]["events"].as_array().unwrap().len(), 1);
         assert_eq!(v["result"]["events"][0]["seq"], 1);
-        assert_eq!(v["result"]["next_cursor"], 2, "window full -> cursor advances");
+        assert_eq!(
+            v["result"]["next_cursor"], 2,
+            "window full -> cursor advances"
+        );
         let resp = server
             .handle_request(r#"{"jsonrpc":"2.0","id":11,"method":"session/history","params":{"session_id":"s1","limit":9999}}"#)
             .await
             .unwrap();
         let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
         assert_eq!(v["result"]["events"].as_array().unwrap().len(), 3);
-        assert!(v["result"].get("next_cursor").is_none(), "nothing left behind");
+        assert!(
+            v["result"].get("next_cursor").is_none(),
+            "nothing left behind"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 }

@@ -229,10 +229,20 @@ mod tests {
         let store = TrajectoryStore::new(dir.clone(), None, None);
         let sid: SessionId = "s-1".into();
         store
-            .record(&sid, TrajectoryValue::User { content: "hi".into() })
+            .record(
+                &sid,
+                TrajectoryValue::User {
+                    content: "hi".into(),
+                },
+            )
             .unwrap();
         store
-            .record(&sid, TrajectoryValue::Thinking { content: "plan".into() })
+            .record(
+                &sid,
+                TrajectoryValue::Thinking {
+                    content: "plan".into(),
+                },
+            )
             .unwrap();
         store
             .record(
@@ -262,7 +272,12 @@ mod tests {
         let sid: SessionId = "s-1".into();
         for i in 1..=5 {
             store
-                .record(&sid, TrajectoryValue::User { content: format!("m{i}") })
+                .record(
+                    &sid,
+                    TrajectoryValue::User {
+                        content: format!("m{i}"),
+                    },
+                )
                 .unwrap();
         }
         let events = read_all(&dir, "s-1");
@@ -282,15 +297,30 @@ mod tests {
         {
             let store = TrajectoryStore::new(dir.clone(), None, None);
             store
-                .record(&sid, TrajectoryValue::User { content: "a".into() })
+                .record(
+                    &sid,
+                    TrajectoryValue::User {
+                        content: "a".into(),
+                    },
+                )
                 .unwrap();
             store
-                .record(&sid, TrajectoryValue::User { content: "b".into() })
+                .record(
+                    &sid,
+                    TrajectoryValue::User {
+                        content: "b".into(),
+                    },
+                )
                 .unwrap();
         }
         let store2 = TrajectoryStore::new(dir.clone(), None, None);
         store2
-            .record(&sid, TrajectoryValue::User { content: "c".into() })
+            .record(
+                &sid,
+                TrajectoryValue::User {
+                    content: "c".into(),
+                },
+            )
             .unwrap();
         let events = read_all(&dir, "s-1");
         assert_eq!(
@@ -307,7 +337,12 @@ mod tests {
         let sid: SessionId = "s-1".into();
         for i in 1..=5 {
             store
-                .record(&sid, TrajectoryValue::User { content: format!("m{i}") })
+                .record(
+                    &sid,
+                    TrajectoryValue::User {
+                        content: format!("m{i}"),
+                    },
+                )
                 .unwrap();
         }
         let (page, next) = store.read_paged(&sid, None, 3).unwrap();
@@ -317,10 +352,7 @@ mod tests {
         );
         assert_eq!(next, Some(4), "more events follow the limit window");
         let (page2, next2) = store.read_paged(&sid, next, 10).unwrap();
-        assert_eq!(
-            page2.iter().map(|e| e.seq).collect::<Vec<_>>(),
-            vec![4, 5]
-        );
+        assert_eq!(page2.iter().map(|e| e.seq).collect::<Vec<_>>(), vec![4, 5]);
         assert_eq!(next2, None);
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -331,13 +363,26 @@ mod tests {
         let store = TrajectoryStore::new(dir.clone(), None, None);
         let sid: SessionId = "s-1".into();
         store
-            .record(&sid, TrajectoryValue::User { content: "a".into() })
+            .record(
+                &sid,
+                TrajectoryValue::User {
+                    content: "a".into(),
+                },
+            )
             .unwrap();
         store
-            .record(&sid, TrajectoryValue::User { content: "b".into() })
+            .record(
+                &sid,
+                TrajectoryValue::User {
+                    content: "b".into(),
+                },
+            )
             .unwrap();
         let path = dir.join("s-1.trajectory");
-        let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
         use std::io::Write;
         writeln!(f, "{{ not json").unwrap();
         drop(f);
