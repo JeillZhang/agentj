@@ -189,6 +189,9 @@ export default function RunPanel({
   const [elapsedMs, setElapsedMs] = useState<number | undefined>(undefined);
   const [draft, setDraft] = useState("");
   const busy = useRef(false);
+  useEffect(() => {
+    if (initialEntries.length > 0) setEntries(initialEntries);
+  }, [initialEntries]);
 
   async function submit(text: string) {
     if (!activeSessionId || busy.current || text.trim() === "") return;
