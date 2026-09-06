@@ -107,26 +107,26 @@ agentj run "explain this codebase"
 agentj run --attach tcp://127.0.0.1:4096 "hi"
 
 # Web 前端（开发）
-npm install --prefix agentj-ui
-npm run dev --workspace=@agentj/web        # Vite dev，VITE_AGENTJ_WS_URL 可配
-npm run build --workspace=@agentj/web      # tsc -b && vite build
-npm test --workspace=@agentj/web
+npm --prefix agentj-ui install
+npm --prefix agentj-ui run dev --workspace=@agentj/web        # Vite dev，VITE_AGENTJ_WS_URL 可配
+npm --prefix agentj-ui run build --workspace=@agentj/web      # tsc -b && vite build
+npm --prefix agentj-ui test --workspace=@agentj/web
 
 # TUI 前端（Bun + OpenTUI）
-cd agentj-ui/apps/tui && bun install
-bun run dev                                # 直连 dashboard --port / serve --port
-bun test                                   # @opentui/react testRender + mock WS e2e
+bun --cwd agentj-ui/apps/tui install
+bun --cwd agentj-ui/apps/tui run dev                                # 直连 dashboard --port / serve --port
+bun --cwd agentj-ui/apps/tui test                                   # @opentui/react testRender + mock WS e2e
 
 # Desktop 安装包（Tauri，需 Rust 工具链）
-npm run build --workspace=@agentj/web      # 先产出 frontendDist
-npm run build --workspace=@agentj/desktop  # tauri build → target/release/bundle/
+npm --prefix agentj-ui run build --workspace=@agentj/web      # 先产出 frontendDist
+npm --prefix agentj-ui run build --workspace=@agentj/desktop  # tauri build → target/release/bundle/
 ./agentj-ui/apps/desktop/check-artifacts.sh linux   # 校验 deb + AppImage
 
 # SDK / Protocol
-npm run generate --workspace=@agentj/protocol  # schemas → types.d.ts
-npm run build --workspace=@agentj/protocol     # tsc --noEmit
-npm run generate --workspace=@agentj/sdk       # methods.json → METHODS
-npm test --workspace=@agentj/sdk
+npm --prefix agentj-ui run generate --workspace=@agentj/protocol  # schemas → types.d.ts
+npm --prefix agentj-ui run build --workspace=@agentj/protocol     # tsc --noEmit
+npm --prefix agentj-ui run generate --workspace=@agentj/sdk       # methods.json → METHODS
+npm --prefix agentj-ui test --workspace=@agentj/sdk
 ```
 
 配置示例 `config.toml`：
@@ -186,12 +186,12 @@ cargo run -p agentj-protocol --bin gen_schemas   # 重新生成 schemas/*.json
 cargo test -p agentj-protocol -- drift          # 漂移门禁（33 schemas 无漂移）
 ./scripts/check-version.sh        # 版本一致性：Cargo.toml + sdk/config.ts + desktop 均为 0.11.0
 
-# 前端 monorepo（npm workspaces）
-npm install                           # 根安装（agentj-ui workspaces）
-npm run generate --workspace=@agentj/protocol   # 生成 protocol types
-npm test --workspace=@agentj/sdk                # SDK 单测
-npm test --workspace=@agentj/web                # Web 单测 + 构建
-npm run build --workspace=@agentj/web
-bun test --prefix agentj-ui/apps/tui           # TUI 单测（含 mock WS e2e）
+# 前端 monorepo（npm workspaces，根为 agentj-ui/）
+npm --prefix agentj-ui install                           # 安装（agentj-ui workspaces）
+npm --prefix agentj-ui run generate --workspace=@agentj/protocol   # 生成 protocol types
+npm --prefix agentj-ui test --workspace=@agentj/sdk                # SDK 单测
+npm --prefix agentj-ui test --workspace=@agentj/web                # Web 单测 + 构建
+npm --prefix agentj-ui run build --workspace=@agentj/web
+bun --cwd agentj-ui/apps/tui test           # TUI 单测（含 mock WS e2e）
 ./agentj-ui/apps/desktop/check-artifacts.sh linux  # Desktop 产物校验
 ```
