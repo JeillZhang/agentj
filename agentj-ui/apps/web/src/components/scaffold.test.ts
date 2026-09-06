@@ -29,6 +29,35 @@ describe("T1 scaffold", () => {
   });
 });
 
+describe("BUG-004 desktop breakpoint keeps compact layout gap", () => {
+  function readLayoutCss(): string {
+    const webRoot = join(dirname(fileURLToPath(import.meta.url)), "../..");
+    const cands = [
+      join(webRoot, "src/components/layout.css"),
+      join(process.cwd(), "src/components/layout.css"),
+      join(process.cwd(), "apps/web/src/components/layout.css"),
+      join(process.cwd(), "agentj-ui/apps/web/src/components/layout.css"),
+    ];
+    for (const p of cands) if (existsSync(p)) return readFileSync(p, "utf8");
+    return readFileSync(cands[0]!, "utf8");
+  }
+  it("base .aj-layout gap resolves to compact --aj-gap", () => {
+    const css = readLayoutCss();
+    expect(css).toMatch(/\.aj-layout\s*\{[^}]*gap:\s*var\(--aj-gap\)/);
+  });
+  it("@media (min-width: 1024px) must not widen .aj-layout gap to 16px", () => {
+    const css = readLayoutCss();
+    const mediaBlocks = [
+      ...css.matchAll(/@media\s*\(min-width:\s*1024px\)\s*\{([\s\S]*?)\}/g),
+    ].map((m) => m[1]);
+    expect(mediaBlocks.length).toBeGreaterThan(0);
+    for (const block of mediaBlocks) {
+      if (!/\.aj-layout/.test(block)) continue;
+      expect(block).not.toContain("var(--aj-space-4)");
+    }
+  });
+});
+
 describe("T0 scaffold density and hairline", () => {
   function readIndexCss(): string {
     const webRoot = join(dirname(fileURLToPath(import.meta.url)), "../..");

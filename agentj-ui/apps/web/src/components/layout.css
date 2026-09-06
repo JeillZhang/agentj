@@ -200,7 +200,7 @@
   .aj-main { gap: 12px; }
 }
 @media (min-width: 1024px) {
-  .aj-layout { gap: var(--aj-space-4); }
+  .aj-layout { gap: var(--aj-gap); }
 }
 
 /* Ensure drawer toggle visibility helper (also defined in App.css) */
