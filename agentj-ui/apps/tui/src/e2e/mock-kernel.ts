@@ -54,10 +54,10 @@ function reply(ws: WebSocket, id: number | undefined, result: unknown): void {
 
 function handleInitialize(ws: WebSocket, id: number | undefined): void {
   reply(ws, id, {
-    protocol_version: "0.11.0",
+    protocol_version: "0.12.0",
     connection_id: "c1",
     capabilities: { multi_client: true },
-    server_info: { name: "mock", version: "0.11.0" },
+    server_info: { name: "mock", version: "0.12.0" },
   });
 }
 
@@ -75,14 +75,14 @@ function handlePermissionRespond(ws: WebSocket, id: number | undefined): void {
       JSON.stringify({
         jsonrpc: "2.0",
         method: "$/progress",
-        params: { session_id: "sess-1", text: "final chunk" },
+        params: { session_id: "sess-1", token: 2, value: { kind: "text", delta: "final chunk" } },
       }),
     );
     ws.send(
       JSON.stringify({
         jsonrpc: "2.0",
         method: "$/progress",
-        params: { session_id: "sess-1", text: "done", done: true, usage: { prompt_tokens: 10, completion_tokens: 5 } },
+        params: { session_id: "sess-1", token: 3, value: { kind: "usage", usage: { prompt_tokens: 10, completion_tokens: 5 } } },
       }),
     );
   }, 20);
@@ -125,7 +125,7 @@ function scheduleRunFlow(ws: WebSocket, sid: string): void {
       JSON.stringify({
         jsonrpc: "2.0",
         method: "$/progress",
-        params: { session_id: sid, text: "hello progress" },
+        params: { session_id: sid, token: 1, value: { kind: "text", delta: "hello progress" } },
       }),
     );
   }, 15);
@@ -167,7 +167,7 @@ function attachHandlers(
   pending: PendingMap,
   events: string[],
   done: DoneHandle,
-  opts: { approve?: string },
+  opts: { approve?: string; onFrame?: (params: Record<string, unknown>) => void },
   getNextId: () => number,
 ): void {
   ws.on("message", (data: Buffer) => {
@@ -185,8 +185,9 @@ function attachHandlers(
     }
     if (msg.method === "$/progress") {
       if (!events.includes("progress")) events.push("progress");
-      const p = msg.params as Record<string, unknown> | undefined;
-      if (p && ("usage" in p || p["done"] === true)) {
+      const p = (msg.params ?? {}) as { value?: { kind?: string } };
+      opts.onFrame?.(msg.params as Record<string, unknown>);
+      if (p.value?.kind === "usage") {
         if (!events.includes("done")) events.push("done");
         done.resolve();
       }
@@ -227,7 +228,7 @@ function createRequester(ws: WebSocket, pending: PendingMap, nextRef: { id: numb
 export async function driveRun(
   url: string,
   prompt: string,
-  opts: { approve?: string } = {},
+  opts: { approve?: string; onFrame?: (params: Record<string, unknown>) => void } = {},
 ): Promise<string[]> {
   const events: string[] = [];
   const ws = await openWs(url);
@@ -236,7 +237,7 @@ export async function driveRun(
   const nextRef = { id: 1 };
   attachHandlers(ws, pending, events, done, opts, () => nextRef.id++);
   const request = createRequester(ws, pending, nextRef);
-  await request("initialize", { protocol_version: "0.11.0" });
+  await request("initialize", { protocol_version: "0.12.0" });
   const newRes = (await request("session/new", {})) as {
     result?: { session_id?: string };
   };
