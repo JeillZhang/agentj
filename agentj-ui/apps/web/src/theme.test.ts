@@ -72,3 +72,16 @@ describe("web theme layer", () => {
     expect(appCss).toContain("--aj-accentOnAccent");
   });
 });
+
+describe("T0 sidebar width and density vars", () => {
+  it("defines --aj-sidebar-width and --aj-gap and shadow and bg-diff", () => {
+    expect(indexCss).toMatch(/--aj-sidebar-width:\s*256px/);
+    expect(indexCss).toMatch(/--aj-gap:\s*12px/);
+    expect(indexCss).toMatch(/--aj-shadow-soft-sm:\s*0 4px 16px rgba\(0,0,0,\.06\)/);
+    expect(indexCss).toMatch(/--aj-sidebar-bg-diff:\s*color-mix/);
+  });
+  it("density vars present", () => {
+    expect(indexCss).toMatch(/--aj-gap/);
+    expect(indexCss).toMatch(/--aj-shadow-soft-sm/);
+  });
+});

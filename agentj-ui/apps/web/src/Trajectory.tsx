@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Pause, Play } from "lucide-react";
 import type { RunEntry } from "./RunPanel.tsx";
+import { getProjectForSession, loadProjects } from "./projectStore.ts";
 
 export type RawEvent = {
   session_id: string;
@@ -9,12 +10,12 @@ export type RawEvent = {
   value: Record<string, unknown>;
 };
 export type TrajNode =
-  | { kind: "user"; seq: number; ts?: number; text: string }
-  | { kind: "thinking"; seq: number; ts?: number; text: string }
-  | { kind: "tool"; seq: number; ts?: number; id: string; name: string; args: unknown; state: "running" | "ok"; output?: string }
-  | { kind: "approval"; seq: number; ts?: number; tool: string; decision: string }
-  | { kind: "usage"; seq: number; ts?: number; usage: { prompt_tokens: number; completion_tokens: number } }
-  | { kind: "error"; seq: number; ts?: number; message: string };
+  | { kind: "user"; seq: number; ts?: number; text: string; sessionId: string }
+  | { kind: "thinking"; seq: number; ts?: number; text: string; sessionId: string }
+  | { kind: "tool"; seq: number; ts?: number; id: string; name: string; args: unknown; state: "running" | "ok"; output?: string; sessionId: string }
+  | { kind: "approval"; seq: number; ts?: number; tool: string; decision: string; sessionId: string }
+  | { kind: "usage"; seq: number; ts?: number; usage: { prompt_tokens: number; completion_tokens: number }; sessionId: string }
+  | { kind: "error"; seq: number; ts?: number; message: string; sessionId: string };
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return v !== null && typeof v === "object";
@@ -33,10 +34,10 @@ export function historyToEntries(events: RawEvent[]): TrajNode[] {
     const v = ev.value;
     switch (v.kind) {
       case "user":
-        out.push({ kind: "user", seq: ev.seq, ts: ev.ts, text: typeof v.content === "string" ? v.content : "" });
+        out.push({ kind: "user", seq: ev.seq, ts: ev.ts, text: typeof v.content === "string" ? v.content : "", sessionId: ev.session_id });
         break;
       case "thinking":
-        out.push({ kind: "thinking", seq: ev.seq, ts: ev.ts, text: typeof v.content === "string" ? v.content : "" });
+        out.push({ kind: "thinking", seq: ev.seq, ts: ev.ts, text: typeof v.content === "string" ? v.content : "", sessionId: ev.session_id });
         break;
       case "tool_call": {
         const tc = v.tool_call;
@@ -52,6 +53,7 @@ export function historyToEntries(events: RawEvent[]): TrajNode[] {
           args: isRecord(tc) ? tc.arguments ?? null : null,
           state: output === undefined ? "running" : "ok",
           ...(output === undefined ? {} : { output }),
+          sessionId: ev.session_id,
         });
         break;
       }
@@ -66,6 +68,7 @@ export function historyToEntries(events: RawEvent[]): TrajNode[] {
           args: null,
           state: "ok",
           output: typeof v.content === "string" ? v.content : "",
+          sessionId: ev.session_id,
         });
         break;
       }
@@ -76,6 +79,7 @@ export function historyToEntries(events: RawEvent[]): TrajNode[] {
           ts: ev.ts,
           tool: typeof v.tool === "string" ? v.tool : "",
           decision: typeof v.decision === "string" ? v.decision : "",
+          sessionId: ev.session_id,
         });
         break;
       case "usage": {
@@ -90,11 +94,12 @@ export function historyToEntries(events: RawEvent[]): TrajNode[] {
                 completion_tokens: typeof u.completion_tokens === "number" ? u.completion_tokens : 0,
               }
             : { prompt_tokens: 0, completion_tokens: 0 },
+          sessionId: ev.session_id,
         });
         break;
       }
       case "error":
-        out.push({ kind: "error", seq: ev.seq, ts: ev.ts, message: typeof v.message === "string" ? v.message : "" });
+        out.push({ kind: "error", seq: ev.seq, ts: ev.ts, message: typeof v.message === "string" ? v.message : "", sessionId: ev.session_id });
         break;
     }
   }
@@ -188,9 +193,10 @@ export function historyToConversation(events: RawEvent[]): RunEntry[] {
   return entries;
 }
 
-export function filterNodes(nodes: TrajNode[], query: string, kinds: string[]): TrajNode[] {
+export function filterNodes(nodes: TrajNode[], query: string, kinds: string[], selectedProject?: string | null): TrajNode[] {
   const q = query.trim().toLowerCase();
   return nodes.filter((n) => {
+    if (selectedProject && getProjectForSession((n as TrajNode & { sessionId?: string }).sessionId ?? "") !== selectedProject) return false;
     if (kinds.length > 0 && !kinds.includes(n.kind)) return false;
     if (q === "") return true;
     const text =
@@ -213,9 +219,17 @@ export function Trajectory({ events }: { events: RawEvent[] }) {
   const nodes = useMemo(() => filterNodes(historyToEntries(events), "", []), [events]);
   const [query, setQuery] = useState("");
   const [kinds, setKinds] = useState<string[]>([]);
+  const [selectedProject, setSelectedProject] = useState<string | null>(null);
   const [playing, setPlaying] = useState(false);
   const [step, setStep] = useState(0);
-  const shown = useMemo(() => filterNodes(nodes, query, kinds), [nodes, query, kinds]);
+  const projectIds = useMemo(() => [...new Set(events.map((e) => getProjectForSession(e.session_id)))], [events]);
+  const projects = useMemo(() => {
+    const all = loadProjects();
+    return projectIds
+      .map((id) => all.find((p) => p.id === id) ?? ({ id, name: id, createdAt: 0 } as { id: string; name: string; createdAt: number }))
+      .filter(Boolean) as { id: string; name: string; createdAt: number }[];
+  }, [projectIds]);
+  const shown = useMemo(() => filterNodes(nodes, query, kinds, selectedProject), [nodes, query, kinds, selectedProject]);
   const playingRef = useRef(playing);
   playingRef.current = playing;
 
@@ -254,7 +268,10 @@ export function Trajectory({ events }: { events: RawEvent[] }) {
               key={k}
               type="button"
               className={kinds.includes(k) ? "aj-chip aj-chip--on" : "aj-chip"}
-              onClick={() => setKinds((ks) => (ks.includes(k) ? ks.filter((x) => x !== k) : [...ks, k]))}
+              onClick={() => {
+                setKinds((ks) => (ks.includes(k) ? ks.filter((x) => x !== k) : [...ks, k]));
+                setStep(0);
+              }}
             >
               {k}
             </button>
@@ -263,6 +280,23 @@ export function Trajectory({ events }: { events: RawEvent[] }) {
             <span className="aj-chip aj-chip--overflow" aria-label={`+${NODE_KINDS.length - 5} more`}>+{NODE_KINDS.length - 5}</span>
           )}
         </div>
+        {projects.length > 0 && (
+          <div className="aj-chips" role="group" aria-label="project filters">
+            {projects.map((p) => (
+              <button
+                key={p.id}
+                type="button"
+                className={selectedProject === p.id ? "aj-chip aj-chip--on" : "aj-chip"}
+                onClick={() => {
+                  setSelectedProject((prev) => (prev === p.id ? null : p.id));
+                  setStep(0);
+                }}
+              >
+                {p.name}
+              </button>
+            ))}
+          </div>
+        )}
         <button
           type="button"
           className="aj-button--ghost"

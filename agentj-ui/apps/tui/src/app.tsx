@@ -1,6 +1,6 @@
 import { createCliRenderer } from "@opentui/core";
 import { createRoot, useKeyboard, useRenderer } from "@opentui/react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Dispatch, MutableRefObject, SetStateAction } from "react";
 import { METHODS, ResponseRouter, RpcClient, WebSocketTransport, parseProgress } from "@agentj/sdk";
 import type { NotificationHandler, ProgressFrame, TransportStatus } from "@agentj/sdk";
@@ -20,6 +20,8 @@ import { PermissionDialog, usePermissionState } from "./permission.tsx";
 import { Palette } from "./palette.tsx";
 import { ModelSelector, useModelConfig } from "./models.tsx";
 import { ThemeProvider, useTheme } from "./theme.tsx";
+import Sidebar, { SIDEBAR_WIDTH, loadCollapsed, loadProjects, saveCollapsed } from "./sidebar.tsx";
+import type { Project } from "./sidebar.tsx";
 export interface TransportHandle {
   onStatusChange?: (s: TransportStatus) => void;
   close(): void;
@@ -372,6 +374,71 @@ function AppInner({ url, createTransport, backoffBaseMs = 1000 }: AppProps) {
   );
   const statusColor =
     authError !== null ? palette.error : status === "open" ? palette.success : palette.warning;
+  const [projects] = useState<Project[]>(() => loadProjects());
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>(() => loadCollapsed());
+  const sidebarSessions = useMemo(() => st.history.map((id) => ({ id, preview: id })), [st.history]);
+  const sidebarEntries = useMemo(() => {
+    const entries: Array<{ kind: "project"; id: string } | { kind: "session"; id: string; projectId: string }> = [];
+    if (projects.length === 0) {
+      for (const s of sidebarSessions) entries.push({ kind: "session", id: s.id, projectId: "default" });
+      return entries;
+    }
+    for (const p of projects) {
+      entries.push({ kind: "project", id: p.id });
+      if (!collapsed[p.id]) {
+        const rows = sidebarSessions.filter((s) => {
+          const pid = (s as { projectId?: string }).projectId;
+          if (pid) return pid === p.id;
+          return p.id === projects[0].id;
+        });
+        for (const r of rows) entries.push({ kind: "session", id: r.id, projectId: p.id });
+      }
+    }
+    return entries;
+  }, [projects, collapsed, sidebarSessions]);
+  const [sidebarIdx, setSidebarIdx] = useState(0);
+  useEffect(() => {
+    if (sidebarIdx >= sidebarEntries.length && sidebarEntries.length > 0) setSidebarIdx(sidebarEntries.length - 1);
+    if (sidebarEntries.length === 0) setSidebarIdx(0);
+  }, [sidebarEntries, sidebarIdx]);
+  const handleToggle = useCallback(
+    (id: string) => {
+      setCollapsed((prev) => {
+        const next = { ...prev, [id]: !prev[id] };
+        saveCollapsed(next);
+        return next;
+      });
+    },
+    [],
+  );
+  useKeyboard((key) => {
+    if (paletteCtrl.paletteQuery !== null || paletteCtrl.modelOpen || permReq) return;
+    const name = (key.name ?? "").toLowerCase();
+    const seq = key.sequence ?? "";
+    if (name === "j" || name === "down" || seq === "\u001B[B") {
+      setSidebarIdx((v) => Math.min(sidebarEntries.length - 1, v + 1));
+      return;
+    }
+    if (name === "k" || name === "up" || seq === "\u001B[A") {
+      setSidebarIdx((v) => Math.max(0, v - 1));
+      return;
+    }
+    if (name === "h" || name === "l") {
+      const cur = sidebarEntries[sidebarIdx];
+      if (cur && cur.kind === "project") handleToggle(cur.id);
+      return;
+    }
+    if (name === "return" || name === "enter" || seq === "\r" || seq === "\n") {
+      const cur = sidebarEntries[sidebarIdx];
+      if (!cur) return;
+      if (cur.kind === "session") void handleSelect(cur.id);
+      else if (cur.kind === "project") handleToggle(cur.id);
+      return;
+    }
+    if (name === "n") {
+      void handleNew();
+    }
+  });
   return (
     <box flexDirection="column" padding={1}>
       <text style={{ fg: statusColor }}>{statusLine}</text>
@@ -397,19 +464,32 @@ function AppInner({ url, createTransport, backoffBaseMs = 1000 }: AppProps) {
           onClose={paletteCtrl.handleClose}
         />
       ) : null}
-      {status === "open" && st.activeId === null && !permReq && !paletteCtrl.modelOpen && paletteCtrl.paletteQuery === null ? (
-        <SessionList history={st.history} onSelect={handleSelect} onNew={handleNew} activeId={st.activeId} />
-      ) : null}
-      {status === "open" && st.activeId !== null ? (
-        <box flexDirection="column" flexGrow={1}>
-          <text style={{ fg: palette.textMuted }}>session: {st.activeId}</text>
-          {st.info ? <text style={{ fg: palette.textMuted }}>{st.info}</text> : null}
-          <RunTranscript rows={transcriptRows} />
-          {!permReq && !paletteCtrl.modelOpen && paletteCtrl.paletteQuery === null ? (
-            <Composer onSubmit={handleSubmit} placeholder="send a message" />
+      <box flexDirection="row" flexGrow={1}>
+        <Sidebar
+          projects={projects}
+          sessions={sidebarSessions}
+          activeId={st.activeId}
+          collapsed={collapsed}
+          onToggle={handleToggle}
+          onSelect={handleSelect}
+          width={SIDEBAR_WIDTH}
+        />
+        <box flexDirection="column" flexGrow={1} paddingLeft={1}>
+          {status === "open" && st.activeId === null && !permReq && !paletteCtrl.modelOpen && paletteCtrl.paletteQuery === null ? (
+            <SessionList history={st.history} onSelect={handleSelect} onNew={handleNew} activeId={st.activeId} />
+          ) : null}
+          {status === "open" && st.activeId !== null ? (
+            <box flexDirection="column" flexGrow={1}>
+              <text style={{ fg: palette.textMuted }}>session: {st.activeId}</text>
+              {st.info ? <text style={{ fg: palette.textMuted }}>{st.info}</text> : null}
+              <RunTranscript rows={transcriptRows} />
+              {!permReq && !paletteCtrl.modelOpen && paletteCtrl.paletteQuery === null ? (
+                <Composer onSubmit={handleSubmit} placeholder="send a message" />
+              ) : null}
+            </box>
           ) : null}
         </box>
-      ) : null}
+      </box>
       {st.err ? <text style={{ fg: palette.error }}>{st.err}</text> : null}
     </box>
   );

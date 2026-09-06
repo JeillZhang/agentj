@@ -1,8 +1,16 @@
 import "@testing-library/jest-dom/vitest";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
-import { ConversationFeed, failRun, fmtDuration, reduceRunFeed, type RunEntry } from "./RunPanel.tsx";
+import RunPanel, { ConversationFeed, failRun, fmtDuration, reduceRunFeed, type RunEntry } from "./RunPanel.tsx";
+import UnifiedSidebar from "./components/UnifiedSidebar";
 import type { ProgressFrame } from "@agentj/sdk";
+
+beforeEach(() => localStorage.clear());
+
+const noopClient = {
+  setNotificationHandler: () => {},
+  removeNotificationHandler: () => {},
+} as unknown as Parameters<typeof RunPanel>[0]["client"];
 
 const user = (text: string): RunEntry => ({ kind: "user", text });
 const ai = (text: string): RunEntry => ({ kind: "ai", text });
@@ -216,5 +224,72 @@ describe("ConversationFeed rendering", () => {
     expect(card.textContent).not.toContain("line 7");
     fireEvent.click(screen.getByRole("button", { name: /expand/i }));
     expect(card.textContent).toContain("line 7");
+  });
+});
+
+describe("RunPanel composer status popover wiring", () => {
+  it("renders the real modules passed as props instead of the no-modules default", () => {
+    render(
+      <RunPanel
+        client={noopClient}
+        activeSessionId="s1"
+        modules={[{ id: "mcp-filesystem", state: "running" }]}
+        status="connected"
+        unreachable={false}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /status/i }));
+    expect(screen.getByRole("dialog", { name: "status" })).toBeInTheDocument();
+    expect(screen.getByText("mcp-filesystem: running")).toBeInTheDocument();
+    expect(screen.queryByText("no modules")).not.toBeInTheDocument();
+  });
+
+  it("shows connected status text and a connected light when unreachable is false", () => {
+    render(
+      <RunPanel
+        client={noopClient}
+        activeSessionId="s1"
+        modules={[]}
+        status="connected"
+        unreachable={false}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /status/i }));
+    const dialog = screen.getByRole("dialog", { name: "status" });
+    expect(dialog.querySelector(".aj-status-light")?.getAttribute("data-state")).toBe("connected");
+    expect(screen.getByText("connected")).toBeInTheDocument();
+    expect(screen.getByText("no modules")).toBeInTheDocument();
+  });
+
+  it("turns the status light unreachable and shows kernel unreachable status when unreachable is true", () => {
+    render(
+      <RunPanel
+        client={noopClient}
+        activeSessionId="s1"
+        modules={[]}
+        status="kernel unreachable on ws://x"
+        unreachable={true}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /status/i }));
+    const dialog = screen.getByRole("dialog", { name: "status" });
+    expect(dialog.querySelector(".aj-status-light")?.getAttribute("data-state")).toBe("unreachable");
+    expect(screen.getByText("kernel unreachable on ws://x")).toBeInTheDocument();
+  });
+});
+
+describe("RunPanel project picker → UnifiedSidebar sync", () => {
+  it("shows a project created via the composer picker in the already-mounted sidebar immediately", () => {
+    render(
+      <>
+        <UnifiedSidebar wsUrl="ws://x" client={null} activeSessionId="s1" onActiveChange={() => {}} />
+        <RunPanel client={noopClient} activeSessionId="s1" />
+      </>,
+    );
+    expect(screen.getByRole("button", { name: /Inbox folder/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /New Project folder/ })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /project picker/i }));
+    fireEvent.click(screen.getByText("New Project"));
+    expect(screen.getByRole("button", { name: /New Project folder/ })).toBeInTheDocument();
   });
 });
