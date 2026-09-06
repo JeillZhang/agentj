@@ -1,7 +1,36 @@
+import { useEffect, useState } from "react";
+import { METHODS } from "@agentj/sdk";
+import type { RpcClient } from "@agentj/sdk";
+
 export type ModelListInput = {
   default_model: string;
   providers: string[];
 };
+
+export const MODEL_CONFIG: ModelListInput = {
+  default_model: "deepseek-chat",
+  providers: ["deepseek-chat", "opencode-go/kimi-k3"],
+};
+
+export function useModelConfig(client: RpcClient | null): ModelListInput {
+  const [cfg, setCfg] = useState<ModelListInput>(MODEL_CONFIG);
+  useEffect(() => {
+    if (!client) return;
+    client
+      .request(METHODS.kernelStatus)
+      .then((r) => {
+        const data = r as unknown as Record<string, unknown>;
+        const dm = data?.["default_model"];
+        const prov = data?.["providers"];
+        if (typeof dm === "string" && dm.length > 0) {
+          const providers = Array.isArray(prov) && prov.length > 0 ? (prov as string[]) : MODEL_CONFIG.providers;
+          setCfg({ default_model: dm, providers });
+        }
+      })
+      .catch(() => {});
+  }, [client]);
+  return cfg;
+}
 
 export function renderModelList(input: ModelListInput): string {
   const { default_model, providers } = input;

@@ -15,7 +15,7 @@ import {
 } from "./session.tsx";
 import { PermissionDialog, usePermissionState } from "./permission.tsx";
 import { Palette } from "./palette.tsx";
-import { ModelSelector } from "./models.tsx";
+import { ModelSelector, useModelConfig } from "./models.tsx";
 import { ThemeProvider, useTheme } from "./theme.tsx";
 export interface TransportHandle {
   onStatusChange?: (s: TransportStatus) => void;
@@ -340,6 +340,7 @@ function AppInner({ url, createTransport, backoffBaseMs = 1000 }: AppProps) {
   const { toggle: toggleTheme } = useTheme();
   const palette = usePaletteControl(toggleTheme);
   const statusLine = getStatusLine(authError, status);
+  const modelConfig = useModelConfig(client);
   return (
     <box flexDirection="column" padding={1}>
       <text>{statusLine}</text>
@@ -356,7 +357,7 @@ function AppInner({ url, createTransport, backoffBaseMs = 1000 }: AppProps) {
         />
       ) : null}
       {palette.modelOpen ? (
-        <ModelSelector default_model="deepseek-chat" providers={["deepseek-chat", "opencode-go/kimi-k3"]} />
+        <ModelSelector default_model={modelConfig.default_model} providers={modelConfig.providers} />
       ) : null}
       {palette.paletteQuery !== null && !palette.modelOpen ? (
         <Palette
