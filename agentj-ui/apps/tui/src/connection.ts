@@ -14,6 +14,17 @@ export type CreateTransport = (url: string, router: ResponseRouter) => Transport
 export function getBackoffDelay(attempt: number, baseMs = 1000): number {
   return Math.min(baseMs * Math.pow(2, attempt), 30000);
 }
+
+function isAuthError(msg: string): boolean {
+  const low = msg.toLowerCase();
+  return (
+    msg.includes("403") ||
+    msg.includes("-32806") ||
+    low.includes("notauthorized") ||
+    low.includes("auth") ||
+    low.includes("forbidden")
+  );
+}
 export function restoreTerminal(): void {
   try {
     const stdin = process.stdin as unknown as NodeJS.ReadStream;
@@ -119,6 +130,10 @@ export class ConnectionManager {
     }
     if (s === "closed") {
       this.onStatusChange?.(s);
+      const err = this.transport?.lastError ?? "";
+      if (err && isAuthError(err)) {
+        return;
+      }
       this.scheduleReconnect();
     } else {
       this.onStatusChange?.(s);
