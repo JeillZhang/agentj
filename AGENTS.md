@@ -38,15 +38,15 @@ Desktop：Tauri v2 壳套 `apps/web` 产物，四件套 deb/AppImage/dmg/msi，
 - `cargo bench -p agentj-model` — 模型流式基准（criterion）
 - `cargo run -p agentj-protocol --bin gen_schemas` — 重新生成 `schemas/*.json`
 - `cargo test -p agentj-protocol -- drift` — 漂移门禁（33 schemas 无漂移）
-- `npm run generate --workspace=@agentj/protocol` — 生成 protocol 类型
+- `npm --prefix agentj-ui run generate --workspace=@agentj/protocol` — 生成 protocol 类型
   （`schemas/*.json` → `agentj-ui/packages/protocol/types.d.ts`）
-- `npm run build --workspace=@agentj/protocol` — `tsc --noEmit` 校验
-- `npm test --workspace=@agentj/sdk` — SDK 单测（client/router/transports/config）
-- `npm run generate --workspace=@agentj/sdk` — 生成 `METHODS` 常量
+- `npm --prefix agentj-ui run build --workspace=@agentj/protocol` — `tsc --noEmit` 校验
+- `npm --prefix agentj-ui test --workspace=@agentj/sdk` — SDK 单测（client/router/transports/config）
+- `npm --prefix agentj-ui run generate --workspace=@agentj/sdk` — 生成 `METHODS` 常量
   （`protocol/methods.json` → `agentj-ui/packages/sdk/src/methods.ts`）
-- `npm test --workspace=@agentj/web` — Web 单测（vitest）
-- `npm run build --workspace=@agentj/web` — Web 构建（`tsc -b && vite build`）
-- `bun test --prefix agentj-ui/apps/tui` — TUI 单测（含 mock WS e2e）
+- `npm --prefix agentj-ui test --workspace=@agentj/web` — Web 单测（vitest）
+- `npm --prefix agentj-ui run build --workspace=@agentj/web` — Web 构建（`tsc -b && vite build`）
+- `bun --cwd agentj-ui/apps/tui test` — TUI 单测（含 mock WS e2e）
 - `./agentj-ui/apps/desktop/check-artifacts.sh linux` — Desktop 产物校验
 - `./scripts/check-version.sh` — 版本一致性（Cargo + sdk/config + desktop 均为 0.11.0）
 
