@@ -251,13 +251,13 @@ sequenceDiagram
 
 ## TODO 清单（plan 阶段逐期勾选）
 
-- [ ] T0 tokens 增量（`--aj-sidebar-width 256px + --aj-gap 12px + --aj-shadow-soft-sm + sidebar bg diff`，`SEMANTIC_KEYS` 保持 19）
-- [ ] T1 UnifiedSidebar 壳（`256px + Threads header + 搜索 + Filter/Sort/View + Add Project + footer Settings/Help`，`layout.css → sidebar.css` 拆分）
-- [ ] T2 Project 本地模型（`agentj.projects / projectMap / collapsed / currentProject`，`session/new` 归属，`session/list` 分组渲染）
-- [ ] T3 App Shell 瘦身（`Topbar` 精简 + `status popover` 简化版 + `Main gap 12 + centered clamp`）
-- [ ] T4 Composer 增强（`Project picker + 模型 chip + 状态入口`，`composer.css` 头部增量）
-- [ ] T5 Conversation/Trajectory 密度收紧（`gap 8 + padding 6`，Trajectory 按 Project 筛选）
-- [ ] T6 TUI 文本版统一侧栏（`32char + Threads + 折叠 + 底栏`，`projects.json` 持久化）
-- [ ] T7 Desktop 版本同步（`0.13.0 tauri.conf/src-tauri/Cargo + check-desktop-ui`）
-- [ ] T8 全量门禁与文档同步（`cargo test/clippy/drift + web/tui build + version.sh + AGENTS.md/README.md/summary`）
+- [x] T0 tokens 增量（`--aj-sidebar-width 256px + --aj-gap 12px + --aj-shadow-soft-sm + sidebar bg diff`，`SEMANTIC_KEYS` 保持 19）
+- [x] T1 UnifiedSidebar 壳（`256px + Threads header + 搜索 + Filter/Sort/View + Add Project + footer Settings/Help`，`layout.css → sidebar.css` 拆分）
+- [x] T2 Project 本地模型（`agentj.projects / projectMap / collapsed / currentProject`，`session/new` 归属，`session/list` 分组渲染）
+- [x] T3 App Shell 瘦身（`Topbar` 精简 + `status popover` 简化版 + `Main gap 12 + centered clamp`）
+- [x] T4 Composer 增强（`Project picker + 模型 chip + 状态入口`，`composer.css` 头部增量）
+- [x] T5 Conversation/Trajectory 密度收紧（`gap 8 + padding 6`，Trajectory 按 Project 筛选）
+- [x] T6 TUI 文本版统一侧栏（`32char + Threads + 折叠 + 底栏`，`projects.json` 持久化）
+- [x] T7 Desktop 版本同步（`0.13.0 tauri.conf/src-tauri/Cargo + check-desktop-ui`）
+- [x] T8 全量门禁与文档同步（`cargo test/clippy/drift + web/tui build + version.sh + AGENTS.md/README.md/summary`）
 
