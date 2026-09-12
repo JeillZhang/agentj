@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Check, Clock, Minus, Send, X } from "lucide-react";
+import { Check, ChevronDown, Clock, Folder, Minus, MoreHorizontal, Send, X } from "lucide-react";
 import { METHODS, parseProgress, RpcClient } from "@agentj/sdk";
 import type { ProgressFrame } from "@agentj/sdk";
+import { createProject, loadCurrentProject, loadProjects, setCurrentProject } from "./projectStore";
 
 export type RunEntry =
   | { kind: "user"; text: string }
@@ -77,6 +78,9 @@ type Props = {
   model?: string;
   elapsedMs?: number;
   wsUrl?: string;
+  modules?: { id: string; state: string }[];
+  status?: string;
+  unreachable?: boolean;
 };
 
 export function toolGlyph(entry: Extract<RunEntry, { kind: "tool" }>, pending: boolean) {
@@ -181,18 +185,78 @@ export function ConversationFeed({
   );
 }
 
+const MOCK_FILES = [
+  "src/index.css",
+  "src/App.tsx",
+  "src/RunPanel.tsx",
+  "src/components/composer.css",
+  "src/projectStore.ts",
+  "src/main.tsx",
+  "README.md",
+  "agentj-ui/apps/web/package.json",
+];
+
+const SLASH_COMMANDS = ["/help", "/clear", "/new", "/model"];
+
+function getAtPrefix(value: string): string | null {
+  const m = value.match(/@([^\s]*)$/);
+  if (m) return m[1];
+  // also handle @ in middle before cursor end - last @
+  const idx = value.lastIndexOf("@");
+  if (idx === -1) return null;
+  const after = value.slice(idx + 1);
+  if (after.includes(" ")) return null;
+  // if @ is followed by file chars, treat as trigger
+  // trigger if @ present and no space after it till end (or with slash)
+  if (value.slice(idx).match(/^@[^\s]*$/)) return after;
+  return null;
+}
+
 export default function RunPanel({
   client,
   activeSessionId,
   initialEntries = [],
   pendingTool,
   model,
+  modules = [],
+  status = "connected",
+  unreachable = false,
 }: Props) {
   const [entries, setEntries] = useState<RunEntry[]>(initialEntries);
   const [elapsedMs, setElapsedMs] = useState<number | undefined>(undefined);
   const [draft, setDraft] = useState("");
   const busy = useRef(false);
   const [isBusy, setIsBusy] = useState(false);
+
+  // composer header state
+  const [projects, setProjects] = useState(() => {
+    try { return loadProjects(); } catch { return [{ id: "default", name: "Inbox", createdAt: 0 }]; }
+  });
+  const [currentId, setCurrentId] = useState(() => {
+    try { return loadCurrentProject(); } catch { return "default"; }
+  });
+  const currentProjectName = projects.find((p) => p.id === currentId)?.name ?? "Inbox";
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [pickerIndex, setPickerIndex] = useState(0);
+  const [statusOpen, setStatusOpen] = useState(false);
+  const [atFilter, setAtFilter] = useState<string | null>(null);
+  const [atIndex, setAtIndex] = useState(0);
+  const [slashOpen, setSlashOpen] = useState(false);
+  const [slashIndex, setSlashIndex] = useState(0);
+
+  const pickerRef = useRef<HTMLDivElement | null>(null);
+  const atOpen = atFilter !== null;
+
+  const filteredFiles = atFilter !== null
+    ? MOCK_FILES.filter((f) => f.toLowerCase().includes(atFilter.toLowerCase())).slice(0, 8)
+    : [];
+
+  const filteredSlash = SLASH_COMMANDS;
+
+  useEffect(() => {
+    try { setProjects(loadProjects()); } catch {}
+  }, [pickerOpen]);
+
   useEffect(() => {
     if (initialEntries.length > 0) setEntries(initialEntries);
   }, [initialEntries]);
@@ -213,6 +277,56 @@ export default function RunPanel({
       client.removeNotificationHandler?.(handler);
     };
   }, [client]);
+
+  // close on outside click
+  useEffect(() => {
+    if (!pickerOpen && !statusOpen) return;
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as HTMLElement;
+      if (pickerOpen && pickerRef.current && !pickerRef.current.contains(t)) {
+        setPickerOpen(false);
+      }
+      if (statusOpen && !t.closest(".aj-composer__status-wrap")) {
+        setStatusOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [pickerOpen, statusOpen]);
+
+  function handleDraftChange(v: string) {
+    setDraft(v);
+    const pref = getAtPrefix(v);
+    if (pref !== null) {
+      setAtFilter(pref);
+      setAtIndex(0);
+      setSlashOpen(false);
+    } else {
+      setAtFilter(null);
+    }
+    if (v.startsWith("/")) {
+      setSlashOpen(true);
+      setSlashIndex(0);
+      if (pref === null) setAtFilter(null);
+    } else {
+      setSlashOpen(false);
+    }
+  }
+
+  function insertAtFile(file: string) {
+    const idx = draft.lastIndexOf("@");
+    if (idx === -1) return;
+    const next = draft.slice(0, idx) + "@" + file + " ";
+    setDraft(next);
+    setAtFilter(null);
+    setSlashOpen(false);
+  }
+
+  function insertSlash(cmd: string) {
+    setDraft(cmd + " ");
+    setSlashOpen(false);
+    setAtFilter(null);
+  }
 
   async function submit(text: string) {
     if (!activeSessionId || busy.current || text.trim() === "" || !client) return;
@@ -248,6 +362,8 @@ export default function RunPanel({
     }
   }
 
+  const connState = unreachable ? "unreachable" : status.startsWith("connected") ? "connected" : "connecting";
+
   return (
     <section aria-label="run" className="aj-card">
       <ConversationFeed
@@ -257,23 +373,243 @@ export default function RunPanel({
         elapsedMs={elapsedMs}
       />
       <div className="aj-composer-card">
-        <label htmlFor="aj-prompt" className="aj-visually-hidden">prompt</label>
-        <textarea
-          id="aj-prompt"
-          className="aj-input"
-          value={draft}
-          placeholder={activeSessionId ? "继续追问…" : "先新建或选择一个会话"}
-          disabled={!activeSessionId || isBusy}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              if (busy.current) return;
-              submit(draft);
-              setDraft("");
-            }
-          }}
-        />
+        <div className="aj-composer__header">
+          <div className="aj-composer__picker-wrap" ref={pickerRef}>
+            <button
+              type="button"
+              aria-label="project picker"
+              aria-expanded={pickerOpen}
+              aria-haspopup="listbox"
+              className="aj-composer__project-btn"
+              onClick={() => {
+                setPickerOpen((o) => !o);
+                setPickerIndex(0);
+                try { setProjects(loadProjects()); } catch {}
+              }}
+              onKeyDown={(e) => {
+                if (!pickerOpen && (e.key === "ArrowDown" || e.key === "Enter" || e.key === " ")) {
+                  e.preventDefault();
+                  setPickerOpen(true);
+                  setPickerIndex(0);
+                  return;
+                }
+                if (!pickerOpen) return;
+                const count = projects.length + 1;
+                if (e.key === "ArrowDown") {
+                  e.preventDefault();
+                  setPickerIndex((i) => (i + 1) % count);
+                } else if (e.key === "ArrowUp") {
+                  e.preventDefault();
+                  setPickerIndex((i) => (i - 1 + count) % count);
+                } else if (e.key === "Enter") {
+                  e.preventDefault();
+                  if (pickerIndex < projects.length) {
+                    const p = projects[pickerIndex];
+                    setCurrentProject(p.id);
+                    setCurrentId(p.id);
+                  } else {
+                    const created = createProject("New Project");
+                    setCurrentProject(created.id);
+                    setCurrentId(created.id);
+                    setProjects(loadProjects());
+                  }
+                  setPickerOpen(false);
+                } else if (e.key === "Escape") {
+                  e.preventDefault();
+                  setPickerOpen(false);
+                }
+              }}
+            >
+              <Folder size={16} aria-hidden="true" />
+              <span>{currentProjectName}</span>
+              <ChevronDown size={16} aria-hidden="true" />
+            </button>
+            {pickerOpen && (
+              <ul role="listbox" className="aj-composer__picker-list" aria-label="project list">
+                {projects.map((p, idx) => (
+                  <li
+                    key={p.id}
+                    role="option"
+                    aria-selected={pickerIndex === idx}
+                    data-focused={pickerIndex === idx ? "true" : undefined}
+                    tabIndex={-1}
+                    className="aj-composer__picker-option"
+                    onClick={() => {
+                      setCurrentProject(p.id);
+                      setCurrentId(p.id);
+                      setPickerOpen(false);
+                    }}
+                    onMouseEnter={() => setPickerIndex(idx)}
+                  >
+                    {p.name}
+                  </li>
+                ))}
+                <li
+                  role="option"
+                  aria-selected={pickerIndex === projects.length}
+                  data-focused={pickerIndex === projects.length ? "true" : undefined}
+                  tabIndex={-1}
+                  className="aj-composer__picker-option aj-composer__picker-option--new"
+                  onClick={() => {
+                    const created = createProject("New Project");
+                    setCurrentProject(created.id);
+                    setCurrentId(created.id);
+                    setProjects(loadProjects());
+                    setPickerOpen(false);
+                  }}
+                  onMouseEnter={() => setPickerIndex(projects.length)}
+                >
+                  New Project
+                </li>
+              </ul>
+            )}
+          </div>
+          {model !== undefined && model !== null && model !== "" && (
+            <span className="aj-chip aj-chip--model">{model}</span>
+          )}
+          <div className="aj-composer__status-wrap">
+            <button
+              type="button"
+              aria-label="status"
+              aria-expanded={statusOpen}
+              aria-haspopup="dialog"
+              className="aj-popover-trigger"
+              onClick={() => setStatusOpen((o) => !o)}
+            >
+              <MoreHorizontal size={16} aria-hidden="true" />
+            </button>
+            {statusOpen && (
+              <div className="aj-popover" role="dialog" aria-label="status">
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                  <span className="aj-status-light" data-state={connState} aria-hidden="true" />
+                  <span style={{ fontSize: 12, color: "var(--aj-textMuted)" }}>{status}</span>
+                </div>
+                <ul className="aj-chips" aria-label="status">
+                  {modules.length === 0 ? (
+                    <li className="aj-chip">no modules</li>
+                  ) : (
+                    modules.map((m) => (
+                      <li key={m.id} className="aj-chip" data-state={m.state}>
+                        {m.id}: {m.state}
+                      </li>
+                    ))
+                  )}
+                </ul>
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div style={{ position: "relative" }}>
+          <label htmlFor="aj-prompt" className="aj-visually-hidden">prompt</label>
+          <textarea
+            id="aj-prompt"
+            className="aj-input"
+            value={draft}
+            placeholder={activeSessionId ? "继续追问…" : "先新建或选择一个会话"}
+            disabled={!activeSessionId || isBusy}
+            onChange={(e) => handleDraftChange(e.target.value)}
+            onKeyDown={(e) => {
+              // @ completion nav
+              if (atOpen && filteredFiles.length > 0) {
+                if (e.key === "ArrowDown") {
+                  e.preventDefault();
+                  setAtIndex((i) => (i + 1) % filteredFiles.length);
+                  return;
+                }
+                if (e.key === "ArrowUp") {
+                  e.preventDefault();
+                  setAtIndex((i) => (i - 1 + filteredFiles.length) % filteredFiles.length);
+                  return;
+                }
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  insertAtFile(filteredFiles[atIndex]);
+                  return;
+                }
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  setAtFilter(null);
+                  return;
+                }
+              }
+              if (slashOpen) {
+                if (e.key === "ArrowDown") {
+                  e.preventDefault();
+                  setSlashIndex((i) => (i + 1) % filteredSlash.length);
+                  return;
+                }
+                if (e.key === "ArrowUp") {
+                  e.preventDefault();
+                  setSlashIndex((i) => (i - 1 + filteredSlash.length) % filteredSlash.length);
+                  return;
+                }
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  insertSlash(filteredSlash[slashIndex]);
+                  return;
+                }
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  setSlashOpen(false);
+                  return;
+                }
+              }
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                if (busy.current) return;
+                submit(draft);
+                setDraft("");
+                setAtFilter(null);
+                setSlashOpen(false);
+              }
+            }}
+          />
+          {atOpen && (
+            <ul role="listbox" aria-label="file completion" className="aj-composer__at-list">
+              {filteredFiles.length === 0 ? (
+                <li role="option" aria-selected={false} className="aj-composer__at-option">No matches</li>
+              ) : (
+                filteredFiles.map((f, idx) => (
+                  <li
+                    key={f}
+                    role="option"
+                    aria-selected={idx === atIndex}
+                    data-focused={idx === atIndex ? "true" : undefined}
+                    className="aj-composer__at-option"
+                    onMouseEnter={() => setAtIndex(idx)}
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      insertAtFile(f);
+                    }}
+                  >
+                    {f}
+                  </li>
+                ))
+              )}
+            </ul>
+          )}
+          {slashOpen && !atOpen && (
+            <ul role="listbox" aria-label="slash commands" className="aj-composer__at-list">
+              {filteredSlash.map((c, idx) => (
+                <li
+                  key={c}
+                  role="option"
+                  aria-selected={idx === slashIndex}
+                  data-focused={idx === slashIndex ? "true" : undefined}
+                  className="aj-composer__at-option"
+                  onMouseEnter={() => setSlashIndex(idx)}
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    insertSlash(c);
+                  }}
+                >
+                  {c}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
         <div className="aj-composer__toolbar">
           <span className="aj-chip">Plan</span>
           {isBusy && <span className="aj-pending" aria-hidden="true" />}
@@ -286,6 +622,8 @@ export default function RunPanel({
               if (busy.current) return;
               submit(draft);
               setDraft("");
+              setAtFilter(null);
+              setSlashOpen(false);
             }}
           >
             <Send size={16} aria-hidden="true" />

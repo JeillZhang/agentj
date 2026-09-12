@@ -11,7 +11,18 @@
   gap: 8px;
   padding: 12px 16px;
   width: 100%;
+  min-height: 120px;
   z-index: 2;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .aj-composer-card,
+  .aj-composer-card *,
+  .aj-composer-card *::before,
+  .aj-composer-card *::after {
+    transition: none !important;
+    animation: none !important;
+  }
 }
 
 .aj-composer-card .aj-input {
@@ -34,6 +45,96 @@
 
 .aj-composer-card .aj-input:disabled {
   opacity: 0.6;
+}
+
+.aj-composer__header {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: 8px;
+  border-bottom: 0.5px solid var(--aj-border);
+}
+
+.aj-composer__picker-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.aj-composer__project-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: var(--aj-radius-ctl);
+  border: 0.5px solid var(--aj-border);
+  background: var(--aj-panel);
+  color: var(--aj-text);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.aj-composer__project-btn:hover {
+  background: var(--aj-raised);
+  border-color: var(--aj-border);
+}
+
+.aj-composer__picker-list,
+.aj-composer__at-list {
+  position: absolute;
+  left: 0;
+  top: calc(100% + 8px);
+  min-width: 180px;
+  max-width: 280px;
+  background: var(--aj-panel);
+  border: 0.5px solid var(--aj-border);
+  border-radius: var(--aj-radius-card);
+  box-shadow: var(--aj-shadowRaised);
+  padding: 6px;
+  margin: 0;
+  list-style: none;
+  z-index: 20;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.aj-composer__at-list {
+  bottom: calc(100% + 8px);
+  top: auto;
+  min-width: 220px;
+}
+
+.aj-composer__picker-option,
+.aj-composer__at-option {
+  padding: 7px 10px;
+  border-radius: var(--aj-radius-ctl);
+  font-size: 13px;
+  color: var(--aj-text);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.aj-composer__picker-option[data-focused="true"],
+.aj-composer__at-option[data-focused="true"],
+.aj-composer__picker-option:hover,
+.aj-composer__at-option:hover {
+  background: var(--aj-raised);
+}
+
+.aj-composer__picker-option--new {
+  border-top: 0.5px solid var(--aj-border);
+  margin-top: 4px;
+  padding-top: 8px;
+  color: var(--aj-accent);
+}
+
+.aj-composer__status-wrap {
+  position: relative;
+  display: inline-flex;
 }
 
 .aj-composer__toolbar {

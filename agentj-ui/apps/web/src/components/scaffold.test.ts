@@ -28,3 +28,84 @@ describe("T1 scaffold", () => {
     expect(main).toContain("components/layout.css");
   });
 });
+
+describe("BUG-004 desktop breakpoint keeps compact layout gap", () => {
+  function readLayoutCss(): string {
+    const webRoot = join(dirname(fileURLToPath(import.meta.url)), "../..");
+    const cands = [
+      join(webRoot, "src/components/layout.css"),
+      join(process.cwd(), "src/components/layout.css"),
+      join(process.cwd(), "apps/web/src/components/layout.css"),
+      join(process.cwd(), "agentj-ui/apps/web/src/components/layout.css"),
+    ];
+    for (const p of cands) if (existsSync(p)) return readFileSync(p, "utf8");
+    return readFileSync(cands[0]!, "utf8");
+  }
+  it("base .aj-layout gap resolves to compact --aj-gap", () => {
+    const css = readLayoutCss();
+    expect(css).toMatch(/\.aj-layout\s*\{[^}]*gap:\s*var\(--aj-gap\)/);
+  });
+  it("@media (min-width: 1024px) must not widen .aj-layout gap to 16px", () => {
+    const css = readLayoutCss();
+    const mediaBlocks = [
+      ...css.matchAll(/@media\s*\(min-width:\s*1024px\)\s*\{([\s\S]*?)\}/g),
+    ].map((m) => m[1]);
+    expect(mediaBlocks.length).toBeGreaterThan(0);
+    for (const block of mediaBlocks) {
+      if (!/\.aj-layout/.test(block)) continue;
+      expect(block).not.toContain("var(--aj-space-4)");
+    }
+  });
+});
+
+describe("T0 scaffold density and hairline", () => {
+  function readIndexCss(): string {
+    const webRoot = join(dirname(fileURLToPath(import.meta.url)), "../..");
+    const cands = [
+      join(webRoot, "src/index.css"),
+      join(process.cwd(), "src/index.css"),
+      join(process.cwd(), "apps/web/src/index.css"),
+      join(process.cwd(), "agentj-ui/apps/web/src/index.css"),
+    ];
+    for (const p of cands) if (existsSync(p)) return readFileSync(p, "utf8");
+    return readFileSync(cands[0]!, "utf8");
+  }
+  it("css variables --aj-shadow-soft-sm and --aj-sidebar-bg-diff present", () => {
+    const css = readIndexCss();
+    expect(css).toMatch(/--aj-shadow-soft-sm:\s*0 4px 16px rgba\(0,0,0,\.06\)/);
+    expect(css).toMatch(/--aj-sidebar-bg-diff:\s*color-mix/);
+  });
+  it("density vars present", () => {
+    const css = readIndexCss();
+    expect(css).toMatch(/--aj-gap/);
+    expect(css).toMatch(/--aj-shadow-soft-sm/);
+  });
+  it("palette unchanged and hairline uses 0.5px box-shadow", () => {
+    const webRoot = join(dirname(fileURLToPath(import.meta.url)), "../..");
+    const paletteCandidates = [
+      join(webRoot, "../../packages/tokens/src/palette.ts"),
+      join(process.cwd(), "packages/tokens/src/palette.ts"),
+      join(process.cwd(), "agentj-ui/packages/tokens/src/palette.ts"),
+      "/homeext/workspace/01.dev/agentj/agentj-ui/packages/tokens/src/palette.ts",
+    ];
+    let palette = "";
+    for (const p of paletteCandidates) if (existsSync(p)) { palette = readFileSync(p, "utf8"); break; }
+    if (!palette) palette = readFileSync(paletteCandidates[0]!, "utf8");
+    expect(palette).toMatch(/SEMANTIC_KEYS/);
+    const keysMatch = palette.match(/SEMANTIC_KEYS\s*=\s*\[/s);
+    expect(keysMatch).not.toBeNull();
+    const count = (palette.match(/"bg"|"sidebar"|"panel"|"raised"|"text"|"textMuted"|"accent"|"accentOnAccent"|"userBubble"|"border"|"codeBg"|"inlineCodeBg"|"success"|"error"|"warning"|"shadowSoft"|"shadowRaised"|"radiusXl"|"textCaption"/g) ?? []).length;
+    expect(count).toBe(19);
+    const compDir = join(webRoot, "src/components");
+    const sidebarCandidates = [
+      join(compDir, "sidebar.css"),
+      join(compDir, "layout.css"),
+    ];
+    let sidebarCss = "";
+    for (const p of sidebarCandidates) if (existsSync(p)) { sidebarCss = readFileSync(p, "utf8"); if (/0\.5px/.test(sidebarCss)) break; }
+    expect(sidebarCss).toMatch(/0\.5px/);
+    if (/box-shadow/.test(sidebarCss)) {
+      expect(sidebarCss).toMatch(/0\.5px/);
+    }
+  });
+});
