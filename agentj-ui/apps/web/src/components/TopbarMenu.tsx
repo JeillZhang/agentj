@@ -2,11 +2,10 @@
 // Hosts sidebar features migrated to the topbar: connect/continue dialogs,
 // favorites, sort/filter prefs, demo-data switch, settings/help.
 import { useCallback, useEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
-import { X } from "lucide-react";
 import ConnectionBar from "../ConnectionBar";
 import { isDemoEnabled, setDemoEnabled, subscribeDemo } from "../demoData";
 import { loadFavorites } from "../layoutStore";
+import ModalDialog from "./ModalDialog";
 import "./topbarmenu.css";
 
 type Props = {
@@ -244,87 +243,41 @@ export default function TopbarMenu({
         </div>
       )}
 
-      {dialog === "connect" &&
-        createPortal(
-          <div
-            role="dialog"
-            aria-label="连接设置"
-            aria-modal="true"
-            className="aj-dialog"
-            onMouseDown={(e) => {
-              if (e.target === e.currentTarget) setDialog(null);
+      {dialog === "connect" && (
+        <ModalDialog title="连接设置" onClose={() => setDialog(null)}>
+          <ConnectionBar
+            onConnect={(host, port, token) => {
+              onConnect(host, port, token);
+              setDialog(null);
             }}
-          >
-            <div className="aj-dialog-card">
-              <div className="aj-dialog__head">
-                <h2 className="aj-dialog__title">连接设置</h2>
-                <button
-                  type="button"
-                  aria-label="close"
-                  className="aj-icon-btn"
-                  onClick={() => setDialog(null)}
-                >
-                  <X size={16} aria-hidden="true" />
-                </button>
-              </div>
-              <ConnectionBar
-                onConnect={(host, port, token) => {
-                  onConnect(host, port, token);
-                  setDialog(null);
-                }}
-              />
-            </div>
-          </div>,
-          document.body,
-        )}
+          />
+        </ModalDialog>
+      )}
 
-      {dialog === "continue" &&
-        createPortal(
-          <div
-            role="dialog"
-            aria-label="继续会话"
-            aria-modal="true"
-            className="aj-dialog"
-            onMouseDown={(e) => {
-              if (e.target === e.currentTarget) setDialog(null);
-            }}
-          >
-            <div className="aj-dialog-card">
-              <div className="aj-dialog__head">
-                <h2 className="aj-dialog__title">继续会话</h2>
-                <button
-                  type="button"
-                  aria-label="close"
-                  className="aj-icon-btn"
-                  onClick={() => setDialog(null)}
-                >
-                  <X size={16} aria-hidden="true" />
-                </button>
-              </div>
-              <div className="aj-field">
-                <label htmlFor="aj-continue-id" className="aj-label">
-                  session id
-                </label>
-                <input
-                  id="aj-continue-id"
-                  className="aj-input"
-                  value={continueId}
-                  onChange={(e) => setContinueId(e.target.value)}
-                  placeholder="session id"
-                />
-              </div>
-              <div className="aj-dialog__actions">
-                <button type="button" className="aj-button--ghost" onClick={() => setDialog(null)}>
-                  取消
-                </button>
-                <button type="button" className="aj-button" onClick={submitContinue}>
-                  继续
-                </button>
-              </div>
-            </div>
-          </div>,
-          document.body,
-        )}
+      {dialog === "continue" && (
+        <ModalDialog title="继续会话" onClose={() => setDialog(null)}>
+          <div className="aj-field">
+            <label htmlFor="aj-continue-id" className="aj-label">
+              session id
+            </label>
+            <input
+              id="aj-continue-id"
+              className="aj-input"
+              value={continueId}
+              onChange={(e) => setContinueId(e.target.value)}
+              placeholder="session id"
+            />
+          </div>
+          <div className="aj-dialog__actions">
+            <button type="button" className="aj-button--ghost" onClick={() => setDialog(null)}>
+              取消
+            </button>
+            <button type="button" className="aj-button" onClick={submitContinue}>
+              继续
+            </button>
+          </div>
+        </ModalDialog>
+      )}
     </div>
   );
 }

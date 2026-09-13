@@ -22,6 +22,7 @@ import { loadFavorites, loadLayout, saveLayout, toggleFavorite } from "../layout
 import { DEMO_FILE_TREE, isDemoEnabled, subscribeDemo } from "../demoData";
 import SidebarTabs from "./SidebarTabs";
 import FileTree from "./FileTree";
+import ModalDialog from "./ModalDialog";
 import "./sidebar.css";
 import "./session.css";
 
@@ -156,6 +157,8 @@ export default function UnifiedSidebar({ wsUrl, client, activeSessionId, onActiv
   });
   const [visibleCounts, setVisibleCounts] = useState<Record<string, number>>({});
   const [flatVisible, setFlatVisible] = useState(VIRTUAL_PAGE);
+  const [addOpen, setAddOpen] = useState(false);
+  const [addName, setAddName] = useState("");
 
   useEffect(() => subscribeDemo(setDemo), []);
 
@@ -188,23 +191,6 @@ export default function UnifiedSidebar({ wsUrl, client, activeSessionId, onActiv
     };
     window.addEventListener("agentj:sidebar-prefs", onPrefs as EventListener);
     return () => window.removeEventListener("agentj:sidebar-prefs", onPrefs as EventListener);
-  }, []);
-
-  useEffect(() => {
-    const onAdd = () => {
-      const name = window.prompt("Project name");
-      if (name == null) return;
-      const t = name.trim();
-      if (!t) return;
-      try {
-        const p = createProject(t);
-        setProjects(loadProjects());
-        setCurrentProject(p.id);
-        setCurrentProjectId(p.id);
-      } catch {}
-    };
-    window.addEventListener("agentj:add-project", onAdd as EventListener);
-    return () => window.removeEventListener("agentj:add-project", onAdd as EventListener);
   }, []);
 
   const handleNewSession = useCallback(
@@ -381,8 +367,23 @@ export default function UnifiedSidebar({ wsUrl, client, activeSessionId, onActiv
   );
 
   const onAddProject = () => {
-    window.dispatchEvent(new CustomEvent("agentj:add-project"));
+    setAddName("");
+    setAddOpen(true);
   };
+
+  const submitAddProject = useCallback(() => {
+    const t = addName.trim();
+    if (!t) return;
+    try {
+      const p = createProject(t);
+      setProjects(loadProjects());
+      setCurrentProject(p.id);
+      setCurrentProjectId(p.id);
+      setAddOpen(false);
+    } catch {
+      setAddOpen(true);
+    }
+  }, [addName]);
 
   const showMore = useCallback((projectId: string) => {
     setVisibleCounts((prev) => ({ ...prev, [projectId]: (prev[projectId] ?? VIRTUAL_PAGE) + VIRTUAL_PAGE }));
@@ -611,6 +612,31 @@ export default function UnifiedSidebar({ wsUrl, client, activeSessionId, onActiv
           + 添加项目
         </button>
       </div>
+      {addOpen && (
+        <ModalDialog title="添加项目" onClose={() => setAddOpen(false)}>
+          <div className="aj-field">
+            <label htmlFor="aj-add-project" className="aj-label">
+              项目名称
+            </label>
+            <input
+              id="aj-add-project"
+              className="aj-input"
+              autoFocus
+              value={addName}
+              onChange={(e) => setAddName(e.target.value)}
+              placeholder="项目名称"
+            />
+          </div>
+          <div className="aj-dialog__actions">
+            <button type="button" className="aj-button--ghost" onClick={() => setAddOpen(false)}>
+              取消
+            </button>
+            <button type="button" className="aj-button" disabled={!addName.trim()} onClick={submitAddProject}>
+              添加
+            </button>
+          </div>
+        </ModalDialog>
+      )}
     </section>
   );
 }
