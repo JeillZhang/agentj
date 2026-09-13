@@ -821,6 +821,8 @@ impl IpcServer {
                     );
                     return Err(DispatchError::internal(e));
                 }
+                // T23: broadcast $/progress + record trajectory — temporary no-op to keep the workspace compiling.
+                AgentEvent::Todo { .. } | AgentEvent::FileChange(_) => {}
             }
         }
         let mut result = serde_json::json!({ "content": text, "tool_calls": tc_list });
