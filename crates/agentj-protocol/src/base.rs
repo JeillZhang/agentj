@@ -80,6 +80,7 @@ pub mod error_codes {
     pub const INVALID_VERSION: i32 = -32804;
     pub const SESSION_BUSY: i32 = -32805; // same session already running (design 错误处理)
     pub const NOT_AUTHORIZED: i32 = -32806; // non-owner permission/respond or $/cancelRequest
+    pub const PATH_NOT_ALLOWED: i32 = -32807; // sandbox: path outside session project_root
 }
 
 #[cfg(test)]
@@ -166,6 +167,7 @@ mod tests {
         assert_eq!(error_codes::INVALID_VERSION, -32804);
         assert_eq!(error_codes::SESSION_BUSY, -32805); // new
         assert_eq!(error_codes::NOT_AUTHORIZED, -32806); // new
+        assert_eq!(error_codes::PATH_NOT_ALLOWED, -32807); // new
     }
 
     #[test]
