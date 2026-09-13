@@ -1,5 +1,6 @@
 import "@testing-library/jest-dom/vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
+import { expect, test, vi } from "vitest";
 import SidebarTabs from "./SidebarTabs";
 test("segmented states and change events", () => {
   const onChange = vi.fn();
