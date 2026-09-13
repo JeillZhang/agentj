@@ -35,3 +35,35 @@ test("connect dialog hosts ConnectionBar and roundtrips", () => {
   fireEvent.click(within(dialog).getAllByRole("button").at(-1)!); // Connect submit
   expect(onConnect).toHaveBeenCalled();
 });
+
+test("connect dialog is portaled to document.body", () => {
+  render(<TopbarMenu connectionLabel="未连接" onConnect={() => {}} onContinue={() => {}} />);
+  fireEvent.click(screen.getByRole("button", { name: "更多" }));
+  fireEvent.click(screen.getByText("连接设置…"));
+  const dialog = screen.getByLabelText("连接设置");
+  // Portal escapes the topbar containing block (backdrop-filter creates one).
+  expect(dialog.parentElement).toBe(document.body);
+});
+
+test("connect dialog closes on backdrop mousedown but stays open on card mousedown", () => {
+  render(<TopbarMenu connectionLabel="未连接" onConnect={() => {}} onContinue={() => {}} />);
+
+  fireEvent.click(screen.getByRole("button", { name: "更多" }));
+  fireEvent.click(screen.getByText("连接设置…"));
+  fireEvent.mouseDown(screen.getByLabelText("连接设置"));
+  expect(screen.queryByLabelText("连接设置")).not.toBeInTheDocument();
+
+  fireEvent.click(screen.getByRole("button", { name: "更多" }));
+  fireEvent.click(screen.getByText("连接设置…"));
+  const reopened = screen.getByLabelText("连接设置");
+  fireEvent.mouseDown(reopened.querySelector(".aj-dialog-card")!);
+  expect(screen.getByLabelText("连接设置")).toBeInTheDocument();
+});
+
+test("continue dialog is portaled to document.body", () => {
+  render(<TopbarMenu connectionLabel="未连接" onConnect={() => {}} onContinue={() => {}} />);
+  fireEvent.click(screen.getByRole("button", { name: "更多" }));
+  fireEvent.click(screen.getByText("继续会话…"));
+  const dialog = screen.getByLabelText("继续会话");
+  expect(dialog.parentElement).toBe(document.body);
+});
