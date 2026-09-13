@@ -65,10 +65,16 @@ impl KernelModule for ToolExecutorModule {
         } = msg
         {
             let ctx = self.ctx.clone();
-            let workspace_root = self.workspace_root.clone();
             let reply = reply.clone();
             let tool_call = tool_call.clone();
             let session_id = session_id.clone();
+            // Session-level path base (design #3 ③): permission context carries the
+            // resolved root; T7's execute_async rebases args with it. Missing session
+            // or unset root falls back to the process CWD captured at construction.
+            let workspace_root = ctx
+                .session
+                .project_root(&session_id)
+                .unwrap_or_else(|| self.workspace_root.clone());
             tokio::spawn(async move {
                 let source = ctx
                     .tools
@@ -153,10 +159,29 @@ mod tests {
         }
     }
 
-    struct MockSession;
+    struct RecordingChecker {
+        roots: Arc<std::sync::Mutex<Vec<PathBuf>>>,
+    }
+    #[async_trait]
+    impl PermissionChecker for RecordingChecker {
+        fn check(&self, ctx: &PcContext) -> PermissionDecision {
+            self.roots.lock().unwrap().push(ctx.workspace_root.clone());
+            PermissionDecision::Allow
+        }
+        async fn await_approval(&self, _rid: &PermissionRequestId) -> PermissionDecision {
+            PermissionDecision::Allow
+        }
+    }
+
+    struct MockSession {
+        root: Option<PathBuf>,
+    }
     impl crate::module::SessionStore for MockSession {
         fn create(&self) -> Result<crate::types::SessionId, crate::error::ModuleError> {
             Ok("s1".into())
+        }
+        fn project_root(&self, _s: &crate::types::SessionId) -> Option<PathBuf> {
+            self.root.clone()
         }
         fn append(
             &self,
@@ -193,11 +218,18 @@ mod tests {
     }
 
     fn executor_ctx(checker: Arc<dyn PermissionChecker>) -> KernelContext {
+        executor_ctx_with_store(checker, Arc::new(MockSession { root: None }))
+    }
+
+    fn executor_ctx_with_store(
+        checker: Arc<dyn PermissionChecker>,
+        session: Arc<dyn crate::module::SessionStore>,
+    ) -> KernelContext {
         let tools = ToolRegistry::new();
         tools.register(Arc::new(DummyTool));
         tools.set_permission_checker(checker);
         KernelContext {
-            session: Arc::new(MockSession),
+            session,
             tools: Arc::new(tools),
             providers: Arc::new(ProviderRegistry::new()),
             config: Arc::new(MockConfig),
@@ -319,6 +351,57 @@ mod tests {
                 .expect("reply must arrive")
                 .expect("sender dropped");
         assert!(matches!(reply, Err(ToolError::PermissionDenied { .. })));
+        kernel.sender().send(KernelMessage::Shutdown).unwrap();
+        handle.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn executor_uses_session_project_root() {
+        let mut kernel = Kernel::new();
+        let roots = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let checker = Arc::new(RecordingChecker {
+            roots: Arc::clone(&roots),
+        });
+        let session = Arc::new(MockSession {
+            root: Some(PathBuf::from("/tmp/proj")),
+        });
+        let ctx = executor_ctx_with_store(checker, session);
+        let mut register =
+            crate::module::ModuleRegister::new(Arc::clone(&ctx.tools), Arc::clone(&ctx.providers));
+        kernel
+            .register_module(
+                Box::new(ToolExecutorModule::new(ctx.clone())),
+                &ctx,
+                &mut register,
+            )
+            .unwrap();
+        let handle = kernel.start();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        kernel
+            .sender()
+            .send(KernelMessage::ToolCallRequest {
+                session_id: "s1".into(),
+                tool_call: ToolCall {
+                    id: "c1".into(),
+                    name: "dummy".into(),
+                    arguments: serde_json::json!({"path": "src/main.rs"}),
+                },
+                target: "tool_executor".into(),
+                reply: Arc::new(std::sync::Mutex::new(Some(tx))),
+            })
+            .unwrap();
+        let reply: Result<ToolExecutionOutcome, ToolError> =
+            tokio::time::timeout(std::time::Duration::from_secs(2), rx)
+                .await
+                .expect("reply must arrive")
+                .expect("sender dropped");
+        assert_eq!(reply.unwrap().result["done"], true);
+        let seen = roots.lock().unwrap().clone();
+        assert_eq!(
+            seen,
+            vec![PathBuf::from("/tmp/proj")],
+            "permission context must use the session project_root"
+        );
         kernel.sender().send(KernelMessage::Shutdown).unwrap();
         handle.await.unwrap().unwrap();
     }
