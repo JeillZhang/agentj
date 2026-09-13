@@ -41,6 +41,12 @@ test("ask collapsed and favorites toggle", () => {
   toggleFavorite("b");
   expect(loadFavorites()).toEqual(["b"]);
 });
+test("rightCollapsed persists 1/0 wire format", () => {
+  saveLayout({ rightCollapsed: true });
+  expect(localStorage.getItem("agentj.layout.rightCollapsed")).toBe("1");
+  saveLayout({ rightCollapsed: false });
+  expect(localStorage.getItem("agentj.layout.rightCollapsed")).toBe("0");
+});
 test("storage events re-read with clamping", () => {
   const seen: { leftWidth: number }[] = [];
   const unsub = subscribeLayout((s) => seen.push(s as { leftWidth: number }));

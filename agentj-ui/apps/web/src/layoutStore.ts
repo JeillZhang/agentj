@@ -129,7 +129,7 @@ export function saveLayout(patch: Partial<LayoutState>): void {
   writeRaw(LAYOUT_KEYS.leftWidth, String(next.leftWidth));
   writeRaw(LAYOUT_KEYS.rightWidth, String(next.rightWidth));
   writeRaw(LAYOUT_KEYS.leftTab, next.leftTab);
-  writeRaw(LAYOUT_KEYS.rightCollapsed, String(next.rightCollapsed));
+  writeRaw(LAYOUT_KEYS.rightCollapsed, next.rightCollapsed ? "1" : "0");
   notifyLayoutUpdated();
 }
 
