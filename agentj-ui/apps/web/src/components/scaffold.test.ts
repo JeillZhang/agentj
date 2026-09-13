@@ -21,11 +21,15 @@ describe("T1 scaffold", () => {
       "trajectory.css",
       "hero.css",
       "dialog.css",
+      "split.css",
+      "rightpanel.css",
+      "filetree.css",
     ]) {
       expect(existsSync(join(compDir, f)), f).toBe(true);
     }
     const main = readFileSync(join(webRoot, "src/main.tsx"), "utf8");
     expect(main).toContain("components/layout.css");
+    expect(main).toContain("components/split.css");
   });
 });
 
