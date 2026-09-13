@@ -11,7 +11,7 @@ use agentj_permission::{ApprovalDecision, PermissionModule};
 use agentj_protocol::base::error_codes;
 use agentj_protocol::lifecycle::InitializeParams;
 use agentj_protocol::permission::{PermissionRequestParams, PermissionRespondParams};
-use agentj_protocol::session::{SessionIdParams, SessionSubscribeParams};
+use agentj_protocol::session::{SessionIdParams, SessionNewParams, SessionSubscribeParams};
 use agentj_protocol::streaming::CancelParams;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -232,14 +232,21 @@ struct JsonRpcResponse {
 struct JsonRpcError {
     code: i32,
     message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    data: Option<Value>,
 }
 
 /// Method-dispatch failure carrying the JSON-RPC 2.0 standard error code
 /// (design 决策 #4). `handle_request` echoes the request `id` alongside this
-/// code so every error path round-trips the correlation id.
+/// code so every error path round-trips the correlation id. `data` carries
+/// parameterized error details (`error.data`, design 决策 #5) and stays off
+/// the wire when None.
+#[derive(Debug, Serialize)]
 struct DispatchError {
     code: i32,
     message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    data: Option<Value>,
 }
 
 impl DispatchError {
@@ -247,24 +254,42 @@ impl DispatchError {
         Self {
             code: -32602,
             message: msg.into(),
+            data: None,
+        }
+    }
+    fn invalid_params_with_data(msg: impl Into<String>, data: Value) -> Self {
+        Self {
+            code: -32602,
+            message: msg.into(),
+            data: Some(data),
         }
     }
     fn invalid_request(msg: impl Into<String>) -> Self {
         Self {
             code: -32600,
             message: msg.into(),
+            data: None,
         }
     }
     fn method_not_found(method: &str) -> Self {
         Self {
             code: -32601,
             message: format!("method not found: {method}"),
+            data: None,
         }
     }
     fn internal(msg: impl Into<String>) -> Self {
         Self {
             code: -32603,
             message: msg.into(),
+            data: None,
+        }
+    }
+    fn internal_with_data(msg: impl Into<String>, data: Value) -> Self {
+        Self {
+            code: -32603,
+            message: msg.into(),
+            data: Some(data),
         }
     }
 }
@@ -403,6 +428,7 @@ impl IpcServer {
                     error: Some(JsonRpcError {
                         code: -32700,
                         message: format!("Parse error: {e}"),
+                        data: None,
                     }),
                 };
                 return Ok(serde_json::to_string(&err_resp)?);
@@ -414,7 +440,7 @@ impl IpcServer {
         } else {
             match req.method.as_str() {
                 "initialize" => self.dispatch_initialize(&req, conn_id),
-                "session/new" => self.dispatch_session_new(conn_id),
+                "session/new" => self.dispatch_session_new(&req, conn_id),
                 "session/run" => self.dispatch_session_run(&req, conn_id).await,
                 "session/subscribe" => self.dispatch_subscribe(&req, conn_id),
                 "session/unsubscribe" => self.dispatch_unsubscribe(&req, conn_id),
@@ -442,6 +468,7 @@ impl IpcServer {
                 error: Some(JsonRpcError {
                     code: e.code,
                     message: e.message,
+                    data: e.data,
                 }),
             },
         };
@@ -476,6 +503,7 @@ impl IpcServer {
             return Some(DispatchError {
                 code: error_codes::NOT_AUTHORIZED,
                 message: "NotAuthorized".into(),
+                data: None,
             });
         }
         None
@@ -496,6 +524,7 @@ impl IpcServer {
             return Err(DispatchError {
                 code: error_codes::NOT_AUTHORIZED,
                 message: "NotAuthorized".into(),
+                data: None,
             });
         }
         // Successful auth: the connection may now issue business methods on a
@@ -546,15 +575,67 @@ impl IpcServer {
         Ok(serde_json::json!({}))
     }
 
-    fn dispatch_session_new(&self, conn_id: &str) -> Result<Value, DispatchError> {
+    fn dispatch_session_new(
+        &self,
+        req: &JsonRpcRequest,
+        conn_id: &str,
+    ) -> Result<Value, DispatchError> {
+        let project_root = Self::resolve_project_root(req.params.as_ref())?;
         let sid = self
             .session_store
             .create()
             .map_err(|e| DispatchError::internal(e.to_string()))?;
+        if let Some(root) = project_root
+            && let Err(e) = self.session_store.set_project_root(&sid, root)
+        {
+            let _ = self.session_store.delete(&sid);
+            return Err(DispatchError::internal_with_data(
+                e.to_string(),
+                serde_json::json!({ "session_id": sid, "reason": "project_root_persist_failed" }),
+            ));
+        }
         if let Ok(mut reg) = self.registry.write() {
             reg.set_session_owner(&sid, conn_id);
         }
         Ok(serde_json::json!({ "session_id": sid }))
+    }
+
+    /// Validate `session/new {project_root}` (design item 6): absent params keep
+    /// the legacy session (no root); when present the root must be an absolute
+    /// existing directory, returned canonicalized.
+    fn resolve_project_root(
+        params: Option<&Value>,
+    ) -> Result<Option<std::path::PathBuf>, DispatchError> {
+        let Some(raw) = params else {
+            return Ok(None);
+        };
+        let parsed: SessionNewParams = serde_json::from_value(raw.clone()).map_err(|_| {
+            let bad = raw.get("project_root").unwrap_or(&Value::Null);
+            Self::invalid_project_root(bad)
+        })?;
+        let Some(root) = parsed.project_root else {
+            return Ok(None);
+        };
+        let path = std::path::PathBuf::from(&root);
+        if !path.is_absolute() {
+            return Err(Self::invalid_project_root(&Value::String(root)));
+        }
+        let canonical = path
+            .canonicalize()
+            .map_err(|_| Self::invalid_project_root(&Value::String(root.clone())))?;
+        if !canonical.is_dir() {
+            return Err(Self::invalid_project_root(&Value::String(root)));
+        }
+        Ok(Some(canonical))
+    }
+
+    /// `-32602` + `error.data {path, reason}` for an invalid `session/new`
+    /// `project_root` (design item 7).
+    fn invalid_project_root(path: &Value) -> DispatchError {
+        DispatchError::invalid_params_with_data(
+            "invalid project_root: must be an absolute existing directory",
+            serde_json::json!({ "path": path, "reason": "invalid_project_root" }),
+        )
     }
 
     fn record_trajectory(&self, sid: &str, value: agentj_protocol::trajectory::TrajectoryValue) {
@@ -601,6 +682,7 @@ impl IpcServer {
             return Err(DispatchError {
                 code: error_codes::SESSION_BUSY,
                 message: "SessionBusy".into(),
+                data: None,
             });
         }
         let _run_guard = RunGuard {
@@ -729,6 +811,7 @@ impl IpcServer {
                         return Err(DispatchError {
                             code: -32800,
                             message: "RequestCancelled".into(),
+                            data: None,
                         });
                     }
                     self.flush_thinking(&mut pending_thinking, sid);
@@ -864,6 +947,7 @@ impl IpcServer {
             return Err(DispatchError {
                 code: error_codes::NOT_AUTHORIZED,
                 message: "NotAuthorized".into(),
+                data: None,
             });
         }
         let decision = match params.decision {
@@ -2022,6 +2106,119 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
         assert!(v["result"]["session_id"].is_string());
         assert!(!v["result"]["session_id"].as_str().unwrap().is_empty());
+    }
+
+    /// Temp tree for `session/new` project_root tests (mirrors `temp_dir_traj`).
+    fn temp_dir_root(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("aj-ipc-root-{tag}-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// T20: `session/new {project_root}` stores the canonicalized directory on
+    /// the created session (design item 6).
+    #[tokio::test]
+    async fn session_new_with_project_root_persists_it() {
+        let store = stub_session();
+        let server = IpcServer::new(Kernel::new(), store.clone());
+        let dir = temp_dir_root("persist");
+        let canonical = dir.canonicalize().unwrap();
+        let raw = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "session/new",
+            "params": { "project_root": dir.to_str().unwrap() },
+        })
+        .to_string();
+        let resp = server.handle_request(&raw).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert!(
+            v["error"].is_null(),
+            "valid project_root must not error: {resp}"
+        );
+        let sid = v["result"]["session_id"].as_str().unwrap().to_string();
+        assert_eq!(store.project_root(&sid), Some(canonical));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// T20: a relative `project_root` is rejected with -32602 carrying
+    /// `error.data {path, reason}`; no session is created (validate before create).
+    #[tokio::test]
+    async fn session_new_rejects_relative_root_with_32602() {
+        let dir = temp_dir_root("reject");
+        let store = Arc::new(agentj_session::FileBackedStore::new(dir.as_path()).unwrap());
+        let server = IpcServer::new(Kernel::new(), store.clone());
+        let raw = r#"{"jsonrpc":"2.0","id":2,"method":"session/new","params":{"project_root":"rel/path"}}"#;
+        let resp = server.handle_request(raw).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(v["error"]["code"], -32602, "must be invalid params: {resp}");
+        assert_eq!(v["error"]["data"]["reason"], "invalid_project_root");
+        assert_eq!(v["error"]["data"]["path"], "rel/path");
+        assert!(v["result"].is_null(), "no result on error: {resp}");
+        assert_eq!(
+            std::fs::read_dir(&dir).unwrap().count(),
+            0,
+            "invalid project_root must not create a session"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// T20 AC guard: a missing path and a regular file are also rejected with
+    /// -32602 + `error.data {path, reason}`.
+    #[tokio::test]
+    async fn session_new_rejects_missing_and_file_root_with_32602() {
+        let server = IpcServer::new(Kernel::new(), stub_session());
+        let dir = temp_dir_root("badshape");
+        let missing = dir.join("missing");
+        let file = dir.join("not-a-dir.txt");
+        std::fs::write(&file, "x").unwrap();
+        for bad in [missing.as_path(), file.as_path()] {
+            let raw = serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "session/new",
+                "params": { "project_root": bad.to_str().unwrap() },
+            })
+            .to_string();
+            let resp = server.handle_request(&raw).await.unwrap();
+            let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+            assert_eq!(v["error"]["code"], -32602, "must be invalid params: {resp}");
+            assert_eq!(v["error"]["data"]["reason"], "invalid_project_root");
+            assert_eq!(v["error"]["data"]["path"], bad.to_str().unwrap());
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// T20: the optional `data` key is omitted from the wire when None (additive
+    /// discipline), and carried when a parameterized error sets it.
+    #[test]
+    fn error_object_omits_data_when_none() {
+        let resp = JsonRpcResponse {
+            jsonrpc: "2.0".into(),
+            id: serde_json::json!(9),
+            result: None,
+            error: Some(JsonRpcError {
+                code: -32602,
+                message: "bad params".into(),
+                data: None,
+            }),
+        };
+        let v = serde_json::to_value(&resp).unwrap();
+        assert!(
+            v["error"].get("data").is_none(),
+            "data key must be omitted when None: {v}"
+        );
+        assert_eq!(v["error"]["code"], -32602);
+        assert_eq!(v["error"]["message"], "bad params");
+
+        let err = DispatchError::invalid_params_with_data(
+            "bad root",
+            serde_json::json!({ "path": "/x", "reason": "invalid_project_root" }),
+        );
+        let v = serde_json::to_value(&err).unwrap();
+        assert_eq!(v["code"], -32602);
+        assert_eq!(v["data"]["reason"], "invalid_project_root");
     }
 
     #[tokio::test]
