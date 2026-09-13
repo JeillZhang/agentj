@@ -6,7 +6,7 @@ use tokio::sync::mpsc;
 
 use crate::error::ModuleError;
 use crate::kernel::KernelSender;
-use crate::module::{ContextPipeline, KernelContext, KernelMessage};
+use crate::module::{ContextPipeline, KernelContext, KernelMessage, ToolExecutionOutcome};
 use crate::types::{
     AgentEvent, ChatMessage, ModelEvent, ModelOptions, ModuleId, SessionId, TokenUsage, ToolCall,
 };
@@ -270,10 +270,13 @@ impl TurnRunner {
                 }
                 let tool_result = tokio::select! {
                     r = &mut tool_rx => match r {
-                        Ok(Ok(val)) => val
-                            .as_str()
-                            .map(String::from)
-                            .unwrap_or_else(|| val.to_string()),
+                        Ok(Ok(outcome)) => {
+                            let ToolExecutionOutcome { result, .. } = outcome;
+                            result
+                                .as_str()
+                                .map(String::from)
+                                .unwrap_or_else(|| result.to_string())
+                        }
                         Ok(Err(e)) => format!("Error: {e}"),
                         Err(_) => {
                             if reply
@@ -332,7 +335,7 @@ mod tests {
     use crate::error::{ModelError, ModuleError};
     use crate::module::{
         ConfigProvider, KernelModule, Module, ModuleMetadata, ModuleRegister, ProviderRegistry,
-        SessionStore, ToolRegistry,
+        SessionStore, ToolExecutionOutcome, ToolRegistry,
     };
     use crate::types::{ChatMessage, Role, ToolDefinition};
     use async_trait::async_trait;
@@ -470,7 +473,10 @@ mod tests {
                 let reply = reply.clone();
                 let mut guard = reply.lock().unwrap();
                 if let Some(tx) = guard.take() {
-                    let _ = tx.send(Ok(serde_json::json!({"result": "ok"})));
+                    let _ = tx.send(Ok(ToolExecutionOutcome {
+                        result: serde_json::json!({"result": "ok"}),
+                        artifacts: vec![],
+                    }));
                 }
             }
             Ok(crate::module::KernelResponse::Handled)

@@ -117,7 +117,7 @@ mod tests {
     use crate::kernel::Kernel;
     use crate::module::{
         ConfigProvider, KernelMessage, KernelModule, ModelProvider, Module, ModuleMetadata,
-        ModuleRegister, ProviderRegistry, SessionStore, ToolRegistry,
+        ModuleRegister, ProviderRegistry, SessionStore, ToolExecutionOutcome, ToolRegistry,
     };
     use crate::types::{ChatMessage, ModelEvent, ModelOptions, Role, ToolCall, ToolDefinition};
     use async_trait::async_trait;
@@ -258,7 +258,10 @@ mod tests {
                 let reply = reply.clone();
                 let mut guard = reply.lock().unwrap();
                 if let Some(tx) = guard.take() {
-                    let _ = tx.send(Ok(serde_json::json!({"result": "ok"})));
+                    let _ = tx.send(Ok(ToolExecutionOutcome {
+                        result: serde_json::json!({"result": "ok"}),
+                        artifacts: vec![],
+                    }));
                 }
             }
             Ok(crate::module::KernelResponse::Handled)
@@ -420,7 +423,10 @@ mod tests {
                 let reply = reply.clone();
                 let mut guard = reply.lock().unwrap();
                 if let Some(tx) = guard.take() {
-                    let _ = tx.send(Ok(serde_json::json!("ok")));
+                    let _ = tx.send(Ok(ToolExecutionOutcome {
+                        result: serde_json::json!("ok"),
+                        artifacts: vec![],
+                    }));
                 }
             }
             Ok(crate::module::KernelResponse::Handled)

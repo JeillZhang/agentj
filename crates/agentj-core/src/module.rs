@@ -1,3 +1,4 @@
+use crate::artifacts::TurnArtifact;
 use crate::error::{ModelError, ModuleError, ToolError};
 use crate::resolver::ServiceRegistry;
 use crate::types::*;
@@ -644,10 +645,19 @@ impl KernelContext {
 
 // ---- Kernel Message ----
 
+/// Structured tool execution result: the tool's JSON output plus any artifacts
+/// (file changes, todo snapshots) it produced. Artifacts are only ever present
+/// on `Ok` — failures stay plain `ToolError`. @since 0.15.0
+#[derive(Debug, Clone, PartialEq)]
+pub struct ToolExecutionOutcome {
+    pub result: serde_json::Value,
+    pub artifacts: Vec<TurnArtifact>,
+}
+
 /// Oneshot result channel for ToolCallRequest — mirrors ServiceCallReply.
 pub type ToolCallReply = Arc<
     std::sync::Mutex<
-        Option<tokio::sync::oneshot::Sender<Result<serde_json::Value, crate::error::ToolError>>>,
+        Option<tokio::sync::oneshot::Sender<Result<ToolExecutionOutcome, crate::error::ToolError>>>,
     >,
 >;
 

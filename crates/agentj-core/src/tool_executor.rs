@@ -1,7 +1,7 @@
 use crate::error::ModuleError;
 use crate::module::{
     KernelContext, KernelMessage, KernelModule, KernelResponse, Module, ModuleMetadata,
-    ModuleRegister, ToolSource,
+    ModuleRegister, ToolExecutionOutcome, ToolSource,
 };
 use crate::permission::PermissionContext;
 use crate::types::ModuleId;
@@ -84,7 +84,11 @@ impl KernelModule for ToolExecutorModule {
                 let result = ctx
                     .tools
                     .execute_async(&tool_call.name, tool_call.arguments.clone(), &perm_ctx)
-                    .await;
+                    .await
+                    .map(|result| ToolExecutionOutcome {
+                        result,
+                        artifacts: vec![],
+                    });
                 if let Some(tx) = reply.lock().unwrap().take() {
                     let _ = tx.send(result);
                 }
@@ -99,7 +103,7 @@ mod tests {
     use super::*;
     use crate::error::ToolError;
     use crate::kernel::Kernel;
-    use crate::module::{Module, ProviderRegistry, Tool, ToolRegistry};
+    use crate::module::{Module, ProviderRegistry, Tool, ToolExecutionOutcome, ToolRegistry};
     use crate::permission::{
         PermissionChecker, PermissionContext as PcContext, PermissionDecision, PermissionRequestId,
     };
@@ -228,12 +232,55 @@ mod tests {
                 reply: Arc::new(std::sync::Mutex::new(Some(tx))),
             })
             .unwrap();
-        let reply: Result<serde_json::Value, ToolError> =
+        let reply: Result<ToolExecutionOutcome, ToolError> =
             tokio::time::timeout(std::time::Duration::from_secs(2), rx)
                 .await
                 .expect("reply must arrive")
                 .expect("sender dropped");
-        assert_eq!(reply.unwrap()["done"], true);
+        assert_eq!(reply.unwrap().result["done"], true);
+        kernel.sender().send(KernelMessage::Shutdown).unwrap();
+        handle.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn tool_executor_replies_with_outcome() {
+        let mut kernel = Kernel::new();
+        let ctx = executor_ctx(Arc::new(AllowAll));
+        let mut register =
+            crate::module::ModuleRegister::new(Arc::clone(&ctx.tools), Arc::clone(&ctx.providers));
+        kernel
+            .register_module(
+                Box::new(ToolExecutorModule::new(ctx.clone())),
+                &ctx,
+                &mut register,
+            )
+            .unwrap();
+        let handle = kernel.start();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        kernel
+            .sender()
+            .send(KernelMessage::ToolCallRequest {
+                session_id: "s1".into(),
+                tool_call: ToolCall {
+                    id: "c1".into(),
+                    name: "dummy".into(),
+                    arguments: serde_json::json!({}),
+                },
+                target: "tool_executor".into(),
+                reply: Arc::new(std::sync::Mutex::new(Some(tx))),
+            })
+            .unwrap();
+        let reply: Result<ToolExecutionOutcome, ToolError> =
+            tokio::time::timeout(std::time::Duration::from_secs(2), rx)
+                .await
+                .expect("reply must arrive")
+                .expect("sender dropped");
+        let outcome = reply.expect("successful tool call must reply Ok");
+        assert_eq!(outcome.result, serde_json::json!({"done": true}));
+        assert!(
+            outcome.artifacts.is_empty(),
+            "artifacts stay empty until T13/T14/T16"
+        );
         kernel.sender().send(KernelMessage::Shutdown).unwrap();
         handle.await.unwrap().unwrap();
     }
@@ -266,7 +313,7 @@ mod tests {
                 reply: Arc::new(std::sync::Mutex::new(Some(tx))),
             })
             .unwrap();
-        let reply: Result<serde_json::Value, ToolError> =
+        let reply: Result<ToolExecutionOutcome, ToolError> =
             tokio::time::timeout(std::time::Duration::from_secs(2), rx)
                 .await
                 .expect("reply must arrive")
