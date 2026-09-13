@@ -6,6 +6,7 @@ use futures::stream::BoxStream;
 use parking_lot::RwLock;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 // ---- Traits ----
@@ -478,6 +479,16 @@ pub trait SessionStore: Send + Sync {
     fn get(&self, session: &SessionId) -> Result<Vec<ChatMessage>, ModuleError>;
     fn estimate_tokens(&self, session: &SessionId) -> Result<usize, ModuleError>;
 
+    /// Session-level path base for tools; default returns None (unset). @since 0.13.0
+    fn project_root(&self, _session: &SessionId) -> Option<PathBuf> {
+        None
+    }
+
+    /// Store the session-level path base; default is a no-op. @since 0.13.0
+    fn set_project_root(&self, _session: &SessionId, _root: PathBuf) -> Result<(), ModuleError> {
+        Ok(())
+    }
+
     // v0.1 contract-first: default impls keep existing stores compiling;
     // real archive/delete semantics land in T17 (agentj-session).
     fn status(&self, _session: &SessionId) -> Result<SessionStatus, ModuleError> {
@@ -504,6 +515,7 @@ pub trait SessionStore: Send + Sync {
             messages,
             created_at: now,
             updated_at: now,
+            project_root: None,
         })
     }
 
@@ -854,6 +866,19 @@ mod tests {
         assert_eq!(store.status(&"s1".into()).unwrap(), SessionStatus::Active);
         assert!(store.archive(&"s1".into()).is_err());
         assert!(store.delete(&"s1".into()).is_err());
+    }
+
+    #[test]
+    fn default_store_project_root_is_none() {
+        let store = ContractOnlyStore;
+        let sid: SessionId = "s1".into();
+        assert_eq!(store.project_root(&sid), None);
+        assert!(
+            store
+                .set_project_root(&sid, std::path::PathBuf::from("/tmp/p"))
+                .is_ok()
+        );
+        assert_eq!(store.project_root(&sid), None);
     }
 
     // ---- T6: permission-gated tool execution ----

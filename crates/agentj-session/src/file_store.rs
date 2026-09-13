@@ -125,6 +125,7 @@ impl FileBackedStore {
             messages,
             created_at,
             updated_at: now,
+            project_root: None,
         };
         let raw = serde_json::to_vec(&snap).map_err(|e| persistence_err(e.to_string()))?;
         let tmp = self
@@ -227,6 +228,7 @@ impl SessionStore for FileBackedStore {
             messages,
             created_at: lock_guard(&self.created).get(sid).copied().unwrap_or(now),
             updated_at: lock_guard(&self.updated).get(sid).copied().unwrap_or(now),
+            project_root: None,
         })
     }
 
@@ -376,6 +378,7 @@ mod tests {
             messages: vec![],
             created_at: 0,
             updated_at: 0,
+            project_root: None,
         };
         assert!(matches!(
             store.restore(&snap),

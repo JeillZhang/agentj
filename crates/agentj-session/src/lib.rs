@@ -161,6 +161,7 @@ impl SessionStore for InMemoryStore {
             messages,
             created_at: now,
             updated_at: now,
+            project_root: None,
         })
     }
 

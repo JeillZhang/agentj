@@ -159,6 +159,9 @@ pub struct SessionSnapshot {
     pub messages: Vec<ChatMessage>,
     pub created_at: u64, // epoch seconds (InMemory: best-effort current time)
     pub updated_at: u64,
+    /// Session-level path base for tools; absent in legacy persisted data. @since 0.13.0
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_root: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -224,6 +227,44 @@ mod tests {
         let e = AgentEvent::Delta("x".into());
         let e2 = e.clone();
         assert!(matches!(e2, AgentEvent::Delta(t) if t == "x"));
+    }
+
+    // ---- T5: SessionSnapshot.project_root (design decision #3) ----
+
+    #[test]
+    fn snapshot_without_root_deserializes_none() {
+        let raw =
+            r#"{"session_id":"s","status":"Active","messages":[],"created_at":1,"updated_at":2}"#;
+        let snap: SessionSnapshot = serde_json::from_str(raw).unwrap();
+        assert_eq!(snap.project_root, None);
+    }
+
+    #[test]
+    fn snapshot_with_project_root_serializes_field() {
+        let snap = SessionSnapshot {
+            session_id: "s".into(),
+            status: SessionStatus::Active,
+            messages: vec![],
+            created_at: 1,
+            updated_at: 2,
+            project_root: Some("/tmp/p".into()),
+        };
+        let json = serde_json::to_value(&snap).unwrap();
+        assert_eq!(json["project_root"], serde_json::json!("/tmp/p"));
+    }
+
+    #[test]
+    fn snapshot_without_project_root_omits_field() {
+        let snap = SessionSnapshot {
+            session_id: "s".into(),
+            status: SessionStatus::Active,
+            messages: vec![],
+            created_at: 1,
+            updated_at: 2,
+            project_root: None,
+        };
+        let json = serde_json::to_value(&snap).unwrap();
+        assert!(json.get("project_root").is_none());
     }
 
     #[test]
