@@ -25,7 +25,7 @@ import heroImg from "./assets/hero.png";
 import { loadCurrentProject, setCurrentProject } from "./projectStore";
 import { loadLayout, saveLayout, subscribeLayout } from "./layoutStore";
 import { isDemoEnabled, subscribeDemo, DEMO_TODOS, DEMO_CHANGES } from "./demoData";
-import { applyProgressChanges } from "./changes";
+import { applyFileChange, changesFromHistory } from "./changes";
 import type { FileChangeRow } from "./changes";
 import { EMPTY_TODO_STATE, applyTodoFrame, todosFromHistory } from "./todoState";
 
@@ -220,7 +220,7 @@ export default function App() {
   });
   const [demo, setDemo] = useState(() => isDemoEnabled());
   const [rightCollapsed, setRightCollapsed] = useState(() => loadLayout().rightCollapsed);
-  const [derivedChanges, setDerivedChanges] = useState<FileChangeRow[]>([]);
+  const [fileChanges, setFileChanges] = useState<FileChangeRow[]>([]);
   const [todos, setTodos] = useState(EMPTY_TODO_STATE);
 
   const activeSessionRef = useRef<string | null>(activeSessionId);
@@ -231,17 +231,18 @@ export default function App() {
   useEffect(() => subscribeLayout((state) => setRightCollapsed(state.rightCollapsed)), []);
 
   useEffect(() => {
-    setDerivedChanges([]);
+    setFileChanges([]);
     setTodos(EMPTY_TODO_STATE);
   }, [activeSessionId]);
 
-  // second notification handler (useSharedKernel owns the first): derive write rows
+  // second notification handler (useSharedKernel owns the first): apply file_change frames
   useEffect(() => {
     if (!sharedClient) return;
     const handler: NotificationHandler = (method, params) => {
       if (method !== METHODS.progress) return;
       const frame = parseProgress(params);
-      setDerivedChanges((prev) => applyProgressChanges(prev, frame));
+      if (frame.kind === "file_change" && frame.session_id !== activeSessionRef.current) return;
+      setFileChanges((prev) => applyFileChange(prev, frame));
     };
     sharedClient.setNotificationHandler(handler);
     return () => { sharedClient.removeNotificationHandler?.(handler); };
@@ -326,7 +327,12 @@ export default function App() {
           if (typeof next !== "number" || next <= cursor) break;
           cursor = next;
         }
-        if (!cancelled) { setHistoryEvents(all); setHistorySession(activeSessionId); setTodos(todosFromHistory(all)); }
+        if (!cancelled) {
+          setHistoryEvents(all);
+          setHistorySession(activeSessionId);
+          setTodos(todosFromHistory(all));
+          setFileChanges(changesFromHistory(all));
+        }
       } catch (err) {
         console.debug("history", err);
         if (!cancelled) setHistoryEvents([]);
@@ -439,7 +445,7 @@ export default function App() {
         right={
           <RightPanel collapsed={rightCollapsed} onToggle={() => handleRightCollapsedChange(!rightCollapsed)}>
             <TodoPanel items={demo ? DEMO_TODOS : todos.items} />
-            <ChangeList changes={demo ? DEMO_CHANGES : derivedChanges} />
+            <ChangeList changes={demo ? DEMO_CHANGES : fileChanges} />
           </RightPanel>
         }
         rightCollapsed={rightCollapsed}
