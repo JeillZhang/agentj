@@ -36,7 +36,7 @@
   gap: 6px;
   padding: 6px 8px;
   border: 1px solid var(--aj-border);
-  border-radius: var(--aj-radius-ctl);
+  border-radius: var(--aj-radiusCtl);
   background: var(--aj-raised);
   margin-bottom: 8px;
 }
