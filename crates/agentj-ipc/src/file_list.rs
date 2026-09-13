@@ -62,9 +62,27 @@ pub fn list(
     if !metadata.is_dir() {
         return Err(FileListError::NotADirectory);
     }
+    let prefix = requested_prefix(&root, requested, &target);
     let mut walk = Walk::new(root, depth);
-    walk.run(&target, &label)?;
+    walk.run(&target, &label, &prefix)?;
     Ok(walk.finish())
+}
+
+/// Root-relative prefix of the requested directory (`""` for the root itself),
+/// so subdirectory listing entries keep paths relative to the project root.
+fn requested_prefix(root: &Path, requested: &str, target: &Path) -> String {
+    if requested.is_empty() {
+        return String::new();
+    }
+    let relative = if Path::new(requested).is_absolute() {
+        target.strip_prefix(root).ok().map(Path::to_path_buf)
+    } else {
+        lexical_join(root, Path::new(requested))
+            .and_then(|joined| joined.strip_prefix(root).ok().map(Path::to_path_buf))
+    };
+    relative
+        .map(|rel| rel.to_string_lossy().into_owned())
+        .unwrap_or_default()
 }
 
 /// Resolve the requested path against `root`: lexical normalization rejects
@@ -169,12 +187,12 @@ impl Walk {
 
     /// Enumerate `target`; an unreadable target fails the request, while an
     /// unreadable nested directory is skipped with a debug log.
-    fn run(&mut self, target: &Path, label: &str) -> Result<(), FileListError> {
+    fn run(&mut self, target: &Path, label: &str, prefix: &str) -> Result<(), FileListError> {
         let children = read_sorted(target).map_err(|e| FileListError::Io {
             path: label.to_string(),
             reason: e.to_string(),
         })?;
-        self.process(target, "", &children, self.max_depth);
+        self.process(target, prefix, &children, self.max_depth);
         while let Some((dir, prefix, remaining)) = self.queue.pop_front() {
             if self.truncated {
                 break;
@@ -402,6 +420,31 @@ mod tests {
             paths(&list(&root, None, Some(3)).unwrap()),
             ["a", "a/b", "a/b/c.txt"]
         );
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn subdirectory_paths_stay_root_relative() {
+        let root = temp_dir("subdir-prefix");
+        fs::create_dir_all(root.join("src/nested")).unwrap();
+        fs::write(root.join("src/main.rs"), "x").unwrap();
+        assert_eq!(
+            paths(&list(&root, Some("src"), Some(2)).unwrap()),
+            ["src/nested", "src/main.rs"],
+            "subdirectory entries keep the root-relative prefix"
+        );
+        assert_eq!(
+            paths(&list(&root, None, None).unwrap()),
+            ["src"],
+            "the parent listing returns the directory itself"
+        );
+        for variant in ["./src", "src/"] {
+            assert_eq!(
+                paths(&list(&root, Some(variant), Some(1)).unwrap()),
+                ["src/nested", "src/main.rs"],
+                "prefix normalization for {variant}"
+            );
+        }
         fs::remove_dir_all(&root).ok();
     }
 

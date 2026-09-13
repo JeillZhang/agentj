@@ -4036,43 +4036,49 @@ mod tests {
         std::fs::remove_dir_all(&outside).ok();
     }
 
+    /// Run a git command in `root`, panicking on any failure (git is available
+    /// wherever the `git_sample` suite runs).
+    fn git_run(root: &std::path::Path, args: &[&str]) {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .output();
+        match out {
+            Ok(o) if o.status.success() => {}
+            Ok(o) => panic!(
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&o.stderr)
+            ),
+            Err(e) => panic!("git unavailable: {e}"),
+        }
+    }
+
     /// AC: a git repo with modified / untracked / deleted files maps to M/A/D.
     /// The deleted entry stays on disk via `git rm --cached` + `.gitignore`,
     /// otherwise it would not be reachable through a directory listing.
     #[tokio::test]
     async fn dispatch_file_list_reports_git_statuses() {
         let root = temp_dir_filelist("git");
-        let git = |args: &[&str]| {
-            let out = std::process::Command::new("git")
-                .arg("-C")
-                .arg(&root)
-                .args(args)
-                .output();
-            match out {
-                Ok(o) if o.status.success() => {}
-                Ok(o) => panic!(
-                    "git {args:?} failed: {}",
-                    String::from_utf8_lossy(&o.stderr)
-                ),
-                Err(e) => panic!("git unavailable: {e}"),
-            }
-        };
-        git(&["init", "-q"]);
+        git_run(&root, &["init", "-q"]);
         std::fs::write(root.join("m.txt"), "1\n").unwrap();
         std::fs::write(root.join("d.txt"), "1\n").unwrap();
-        git(&["add", "m.txt", "d.txt"]);
-        git(&[
-            "-c",
-            "user.name=AgentJ",
-            "-c",
-            "user.email=agentj@example.com",
-            "commit",
-            "-qm",
-            "init",
-        ]);
+        git_run(&root, &["add", "m.txt", "d.txt"]);
+        git_run(
+            &root,
+            &[
+                "-c",
+                "user.name=AgentJ",
+                "-c",
+                "user.email=agentj@example.com",
+                "commit",
+                "-qm",
+                "init",
+            ],
+        );
         std::fs::write(root.join("m.txt"), "1\n2\n").unwrap();
         std::fs::write(root.join("a.txt"), "new\n").unwrap();
-        git(&["rm", "--cached", "-q", "d.txt"]);
+        git_run(&root, &["rm", "--cached", "-q", "d.txt"]);
         std::fs::write(root.join(".gitignore"), "d.txt\n").unwrap();
         let (server, sid) = file_list_server(&root);
         let v = file_list_call(&server, &sid, None, None).await;
@@ -4089,6 +4095,44 @@ mod tests {
         assert_eq!(entry("m.txt")["git_status"], "M", "modified: {v}");
         assert_eq!(entry("a.txt")["git_status"], "A", "untracked: {v}");
         assert_eq!(entry("d.txt")["git_status"], "D", "staged delete: {v}");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Subdirectory listings keep entry paths root-relative so the git lookup
+    /// (snapshot keys are root-relative) still reports M/A/D.
+    #[tokio::test]
+    async fn dispatch_file_list_subdirectory_git_status_is_root_relative() {
+        let root = temp_dir_filelist("git-sub");
+        git_run(&root, &["init", "-q"]);
+        std::fs::create_dir(root.join("src")).unwrap();
+        std::fs::write(root.join("src/m.txt"), "1\n").unwrap();
+        git_run(&root, &["add", "src/m.txt"]);
+        git_run(
+            &root,
+            &[
+                "-c",
+                "user.name=AgentJ",
+                "-c",
+                "user.email=agentj@example.com",
+                "commit",
+                "-qm",
+                "init",
+            ],
+        );
+        std::fs::write(root.join("src/m.txt"), "1\n2\n").unwrap();
+        let (server, sid) = file_list_server(&root);
+        let v = file_list_call(&server, &sid, Some("src"), None).await;
+        assert!(v["error"].is_null(), "call must succeed: {v}");
+        let entries = v["result"]["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), 1, "one file under src: {v}");
+        assert_eq!(
+            entries[0]["path"], "src/m.txt",
+            "entry path must stay root-relative: {v}"
+        );
+        assert_eq!(
+            entries[0]["git_status"], "M",
+            "root-relative git lookup must hit: {v}"
+        );
         std::fs::remove_dir_all(&root).ok();
     }
 
