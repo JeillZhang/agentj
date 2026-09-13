@@ -1,4 +1,5 @@
 //! Unified Connection abstraction (design 决策 #1/#2) — transport-agnostic serve.
+pub mod file_list;
 pub mod tcp;
 pub mod trajectory;
 pub mod ws;
@@ -9,6 +10,7 @@ use agentj_core::module::{KernelMessage, SessionStore};
 use agentj_core::types::{AgentEvent, SessionId};
 use agentj_permission::{ApprovalDecision, PermissionModule};
 use agentj_protocol::base::error_codes;
+use agentj_protocol::file::{FileKind, FileListParams, FileListResult};
 use agentj_protocol::lifecycle::InitializeParams;
 use agentj_protocol::permission::{PermissionRequestParams, PermissionRespondParams};
 use agentj_protocol::session::{SessionIdParams, SessionNewParams, SessionSubscribeParams};
@@ -17,6 +19,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::io::Write;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -447,6 +450,7 @@ impl IpcServer {
                 "kernel/status" => self.dispatch_kernel_status(),
                 "session/list" => self.dispatch_session_list(),
                 "session/history" => self.dispatch_session_history(&req),
+                "file/list" => self.dispatch_file_list(&req).await,
                 "shutdown" => self.dispatch_shutdown(),
                 "permission/respond" => self.dispatch_permission_respond(&req, conn_id).await,
                 "$/cancelRequest" => self.dispatch_cancel_request(&req).await,
@@ -915,6 +919,35 @@ impl IpcServer {
         Ok(serde_json::to_value(result).expect("serializable"))
     }
 
+    /// `file/list` (design contract item 1): sandboxed enumeration relative to
+    /// the session `project_root`, with git porcelain statuses per file entry.
+    async fn dispatch_file_list(&self, req: &JsonRpcRequest) -> Result<Value, DispatchError> {
+        let params: FileListParams = serde_json::from_value(
+            req.params
+                .clone()
+                .ok_or_else(|| DispatchError::invalid_params("missing params"))?,
+        )
+        .map_err(|e| DispatchError::invalid_params(format!("invalid file/list params: {e}")))?;
+        if self.session_store.status(&params.session_id).is_err() {
+            return Err(DispatchError {
+                code: error_codes::SESSION_NOT_FOUND,
+                message: "SessionNotFound".into(),
+                data: None,
+            });
+        }
+        let root = match self.session_store.project_root(&params.session_id) {
+            Some(root) => root,
+            None => std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+        };
+        match file_list::list(&root, params.path.as_deref(), params.depth) {
+            Ok(result) => {
+                let result = attach_git_statuses(result, &root).await;
+                Ok(serde_json::to_value(result).expect("serializable"))
+            }
+            Err(e) => Err(map_file_list_error(e, &params.path)),
+        }
+    }
+
     /// `permission/respond`: deliver the client's decision to a pending approval.
     /// An unknown request_id is an error (-32600), never silent success.
     async fn dispatch_permission_respond(
@@ -1255,6 +1288,63 @@ fn build_progress_frame(
         "params": { "token": token.clone(), "value": serde_json::to_value(value).expect("serializable") },
     })
     .to_string()
+}
+
+/// Attach `git_status` to file entries from one snapshot of `root`; a non-git
+/// root or git failure degrades to all-null (design error handling).
+async fn attach_git_statuses(result: FileListResult, root: &std::path::Path) -> FileListResult {
+    let snapshot = agentj_core::git_sample::sample(root).await;
+    if snapshot.is_none() {
+        tracing::debug!(root = %root.display(), "file/list: git sample unavailable");
+    }
+    let entries = result
+        .entries
+        .into_iter()
+        .map(|mut entry| {
+            if entry.kind == FileKind::File {
+                entry.git_status = snapshot
+                    .as_ref()
+                    .and_then(|s| file_list::git_statuses(s, &entry.path))
+                    .and_then(|(x, y)| file_list::map_git_status(x, y));
+            }
+            entry
+        })
+        .collect();
+    FileListResult {
+        entries,
+        truncated: result.truncated,
+    }
+}
+
+/// Map a `file/list` failure onto its JSON-RPC code + `error.data` shape
+/// (design error handling).
+fn map_file_list_error(
+    error: file_list::FileListError,
+    requested: &Option<String>,
+) -> DispatchError {
+    match error {
+        file_list::FileListError::NotFound => DispatchError::invalid_params_with_data(
+            "file/list: path not found",
+            serde_json::json!({ "path": requested, "reason": "not_found" }),
+        ),
+        file_list::FileListError::NotADirectory => DispatchError::invalid_params_with_data(
+            "file/list: path is not a directory",
+            serde_json::json!({ "path": requested, "reason": "not_a_directory" }),
+        ),
+        file_list::FileListError::InvalidDepth => DispatchError::invalid_params_with_data(
+            "file/list: depth must be within 1..=8",
+            serde_json::json!({ "reason": "invalid_depth" }),
+        ),
+        file_list::FileListError::OutsideRoot { path } => DispatchError {
+            code: error_codes::PATH_NOT_ALLOWED,
+            message: "PathNotAllowed".into(),
+            data: Some(serde_json::json!({ "path": path, "reason": "outside_project_root" })),
+        },
+        file_list::FileListError::Io { path, reason } => DispatchError::internal_with_data(
+            "file/list: io error",
+            serde_json::json!({ "path": path, "reason": reason }),
+        ),
+    }
 }
 
 fn kernel_model_info(
@@ -3839,5 +3929,194 @@ mod tests {
             "nothing left behind"
         );
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Temp project root for the T21 `file/list` dispatch tests (std-only).
+    fn temp_dir_filelist(tag: &str) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("aj-ipc-filedisp-{tag}-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// One isolated session whose `project_root` is `root`.
+    fn file_list_server(root: &std::path::Path) -> (IpcServer, String) {
+        let store: Arc<InMemoryStore> = Arc::new(InMemoryStore::new());
+        let sid = store.create().unwrap();
+        store
+            .set_project_root(&sid, root.canonicalize().unwrap())
+            .unwrap();
+        let session: Arc<dyn SessionStore> = store;
+        (IpcServer::new(Kernel::new(), session), sid)
+    }
+
+    /// Dispatch one `file/list` request and return the parsed JSON-RPC response.
+    async fn file_list_call(
+        server: &IpcServer,
+        sid: &str,
+        path: Option<&str>,
+        depth: Option<u32>,
+    ) -> serde_json::Value {
+        let mut params = serde_json::json!({ "session_id": sid });
+        if let Some(p) = path {
+            params["path"] = serde_json::json!(p);
+        }
+        if let Some(d) = depth {
+            params["depth"] = serde_json::json!(d);
+        }
+        let raw = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 21,
+            "method": "file/list",
+            "params": params,
+        })
+        .to_string();
+        let resp = server.handle_request(&raw).await.unwrap();
+        serde_json::from_str(&resp).unwrap()
+    }
+
+    #[tokio::test]
+    async fn dispatch_file_list_lists_root_sorted_excluding_git() {
+        let root = temp_dir_filelist("root");
+        std::fs::create_dir(root.join("src")).unwrap();
+        std::fs::create_dir(root.join(".git")).unwrap();
+        std::fs::write(root.join("a.rs"), "hi").unwrap();
+        let (server, sid) = file_list_server(&root);
+        let v = file_list_call(&server, &sid, None, None).await;
+        assert!(v["error"].is_null(), "valid call must succeed: {v}");
+        let entries = v["result"]["entries"].as_array().unwrap();
+        let names: Vec<&str> = entries
+            .iter()
+            .map(|e| e["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, ["src", "a.rs"], "dirs first, .git excluded");
+        assert_eq!(entries[0]["kind"], "dir");
+        assert_eq!(entries[1]["kind"], "file");
+        assert_eq!(entries[1]["size"], 2);
+        assert_eq!(v["result"]["truncated"], false);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[tokio::test]
+    async fn dispatch_file_list_maps_errors_to_codes_and_data() {
+        let root = temp_dir_filelist("errors");
+        std::fs::write(root.join("file.txt"), "x").unwrap();
+        let outside = temp_dir_filelist("errors-outside");
+        let (server, sid) = file_list_server(&root);
+
+        let v = file_list_call(&server, &sid, Some("../x"), None).await;
+        assert_eq!(v["error"]["code"], -32807, "dotdot escape: {v}");
+        assert_eq!(v["error"]["data"]["path"], "../x");
+        assert_eq!(v["error"]["data"]["reason"], "outside_project_root");
+
+        let abs = outside.to_string_lossy().into_owned();
+        let v = file_list_call(&server, &sid, Some(&abs), None).await;
+        assert_eq!(v["error"]["code"], -32807, "absolute escape: {v}");
+        assert_eq!(v["error"]["data"]["path"], abs);
+
+        let v = file_list_call(&server, &sid, Some("file.txt"), None).await;
+        assert_eq!(v["error"]["code"], -32602, "file path: {v}");
+        assert_eq!(v["error"]["data"]["path"], "file.txt");
+        assert_eq!(v["error"]["data"]["reason"], "not_a_directory");
+
+        let v = file_list_call(&server, &sid, Some("nope"), None).await;
+        assert_eq!(v["error"]["code"], -32602, "missing path: {v}");
+        assert_eq!(v["error"]["data"]["path"], "nope");
+        assert_eq!(v["error"]["data"]["reason"], "not_found");
+
+        let v = file_list_call(&server, &sid, None, Some(9)).await;
+        assert_eq!(v["error"]["code"], -32602, "depth 9: {v}");
+        assert_eq!(v["error"]["data"]["reason"], "invalid_depth");
+
+        let v = file_list_call(&server, "missing-session", None, None).await;
+        assert_eq!(v["error"]["code"], -32802, "unknown session: {v}");
+
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::remove_dir_all(&outside).ok();
+    }
+
+    /// AC: a git repo with modified / untracked / deleted files maps to M/A/D.
+    /// The deleted entry stays on disk via `git rm --cached` + `.gitignore`,
+    /// otherwise it would not be reachable through a directory listing.
+    #[tokio::test]
+    async fn dispatch_file_list_reports_git_statuses() {
+        let root = temp_dir_filelist("git");
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(args)
+                .output();
+            match out {
+                Ok(o) if o.status.success() => {}
+                Ok(o) => panic!(
+                    "git {args:?} failed: {}",
+                    String::from_utf8_lossy(&o.stderr)
+                ),
+                Err(e) => panic!("git unavailable: {e}"),
+            }
+        };
+        git(&["init", "-q"]);
+        std::fs::write(root.join("m.txt"), "1\n").unwrap();
+        std::fs::write(root.join("d.txt"), "1\n").unwrap();
+        git(&["add", "m.txt", "d.txt"]);
+        git(&[
+            "-c",
+            "user.name=AgentJ",
+            "-c",
+            "user.email=agentj@example.com",
+            "commit",
+            "-qm",
+            "init",
+        ]);
+        std::fs::write(root.join("m.txt"), "1\n2\n").unwrap();
+        std::fs::write(root.join("a.txt"), "new\n").unwrap();
+        git(&["rm", "--cached", "-q", "d.txt"]);
+        std::fs::write(root.join(".gitignore"), "d.txt\n").unwrap();
+        let (server, sid) = file_list_server(&root);
+        let v = file_list_call(&server, &sid, None, None).await;
+        assert!(v["error"].is_null(), "call must succeed: {v}");
+        let entry = |name: &str| -> serde_json::Value {
+            v["result"]["entries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|e| e["name"] == name)
+                .cloned()
+                .unwrap_or(serde_json::Value::Null)
+        };
+        assert_eq!(entry("m.txt")["git_status"], "M", "modified: {v}");
+        assert_eq!(entry("a.txt")["git_status"], "A", "untracked: {v}");
+        assert_eq!(entry("d.txt")["git_status"], "D", "staged delete: {v}");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn dispatch_file_list_unreadable_directory_is_internal_error() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = temp_dir_filelist("unreadable");
+        let locked = root.join("locked");
+        std::fs::create_dir(&locked).unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::read_dir(&locked).is_ok() {
+            // Privileged runner: permission bits are not enforced → unexercisable here.
+            std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+            std::fs::remove_dir_all(&root).ok();
+            return;
+        }
+        let (server, sid) = file_list_server(&root);
+        let v = file_list_call(&server, &sid, Some("locked"), None).await;
+        assert_eq!(v["error"]["code"], -32603, "unreadable dir: {v}");
+        assert_eq!(v["error"]["data"]["path"], "locked");
+        assert!(
+            v["error"]["data"]["reason"]
+                .as_str()
+                .is_some_and(|r| !r.is_empty()),
+            "io reason must be carried: {v}"
+        );
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::remove_dir_all(&root).ok();
     }
 }
