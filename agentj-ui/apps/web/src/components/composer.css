@@ -132,6 +132,11 @@
   color: var(--aj-accent);
 }
 
+.sel[aria-expanded="true"] {
+  background: var(--aj-raised);
+  color: var(--aj-text);
+}
+
 .aj-button--send {
   width: 34px;
   height: 34px;
