@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
+use crate::artifacts::{FileChangeArtifact, TodoSnapshot};
 use crate::module::SessionStatus;
 
 pub type ModuleId = String;
@@ -113,6 +114,11 @@ pub enum AgentEvent {
         call_id: String,
         result: String,
     },
+    Todo {
+        revision: u64,
+        snapshot: TodoSnapshot,
+    },
+    FileChange(FileChangeArtifact),
     Done {
         final_response: String,
         tool_calls: Vec<ToolCall>,
@@ -227,6 +233,25 @@ mod tests {
         let e = AgentEvent::Delta("x".into());
         let e2 = e.clone();
         assert!(matches!(e2, AgentEvent::Delta(t) if t == "x"));
+    }
+
+    #[test]
+    fn todo_and_file_change_events_are_constructible() {
+        let snapshot = TodoSnapshot { items: vec![] };
+        let todo = AgentEvent::Todo {
+            revision: 3,
+            snapshot: snapshot.clone(),
+        };
+        assert!(matches!(
+            todo,
+            AgentEvent::Todo {
+                revision: 3,
+                snapshot: s,
+            } if s == snapshot
+        ));
+        let change = crate::artifacts::write_change("f.txt", None, "x", Some("c1"));
+        let event = AgentEvent::FileChange(change.clone());
+        assert!(matches!(event, AgentEvent::FileChange(c) if c == change));
     }
 
     // ---- T5: SessionSnapshot.project_root (design decision #3) ----
