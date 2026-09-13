@@ -4,7 +4,8 @@
 .aj-right {
   width: var(--aj-right-w, var(--aj-rightWidth));
   min-width: 0;
-  flex-shrink: 0;
+  flex: 1 1 auto;
+  min-height: 0;
   background: var(--aj-sidebar);
   border-left: 0.5px solid var(--aj-border);
   display: flex;
@@ -84,15 +85,36 @@
 }
 
 .sec-head {
-  font-size: 11px;
+  font-size: 14px;
   font-weight: 600;
-  letter-spacing: 0.06em;
-  color: var(--aj-textCaption);
-  text-transform: uppercase;
-  margin-bottom: 8px;
+  color: var(--aj-text);
+  letter-spacing: normal;
+  text-transform: none;
+  font-family: inherit;
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 8px;
+  padding: 0;
+  border: 0;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+  margin-bottom: 8px;
+  width: 100%;
+}
+
+.sec-head:hover {
+  background: var(--aj-raised);
+}
+
+.sec-head .count {
+  margin-left: auto;
+}
+
+.sec-chev {
+  font-size: 10px;
+  color: var(--aj-textCaption);
+  line-height: 1;
 }
 
 .count {

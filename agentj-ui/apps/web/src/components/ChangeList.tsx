@@ -61,43 +61,53 @@ function DiffPanel({ row }: { row: FileChangeRow }) {
 }
 
 export default function ChangeList({ changes }: ChangeListProps) {
+  const [open, setOpen] = useState(true);
   const [expandedPath, setExpandedPath] = useState<string | null>(null);
 
   return (
     <div className="right-section">
-      <div className="sec-head">
+      <button
+        type="button"
+        className="sec-head"
+        aria-expanded={open}
+        aria-controls="change-section-body"
+        onClick={() => setOpen((prev) => !prev)}
+      >
         <span>文件变更</span>
         <span className="count">{changes.length}</span>
-      </div>
-      {changes.length === 0 ? (
-        <p className="aj-empty">待协议支持</p>
-      ) : (
-        <div className="file-changes">
-          {changes.map((row) => {
-            if (row.diff === null) {
+        <span className="sec-chev" aria-hidden="true">{open ? "▾" : "▸"}</span>
+      </button>
+      <div id="change-section-body" className="sec-body">
+        {changes.length === 0 ? (
+          <p className="aj-empty">待协议支持</p>
+        ) : open && (
+          <div className="file-changes">
+            {changes.map((row) => {
+              if (row.diff === null) {
+                return (
+                  <div className="fc" key={row.path}>
+                    <RowMeta row={row} />
+                  </div>
+                );
+              }
+              const isOpen = expandedPath === row.path;
               return (
-                <div className="fc" key={row.path}>
-                  <RowMeta row={row} />
+                <div key={row.path}>
+                  <button
+                    type="button"
+                    className="fc"
+                    aria-expanded={isOpen}
+                    onClick={() => setExpandedPath(isOpen ? null : row.path)}
+                  >
+                    <RowMeta row={row} />
+                  </button>
+                  {isOpen && <DiffPanel row={row} />}
                 </div>
               );
-            }
-            const isOpen = expandedPath === row.path;
-            return (
-              <div key={row.path}>
-                <button
-                  type="button"
-                  className="fc"
-                  aria-expanded={isOpen}
-                  onClick={() => setExpandedPath(isOpen ? null : row.path)}
-                >
-                  <RowMeta row={row} />
-                </button>
-                {isOpen && <DiffPanel row={row} />}
-              </div>
-            );
-          })}
-        </div>
-      )}
+            })}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
