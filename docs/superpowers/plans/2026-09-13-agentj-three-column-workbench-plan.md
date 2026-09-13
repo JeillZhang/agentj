@@ -1143,7 +1143,7 @@
   impl_code: |
     // UnifiedSidebar.tsx rewrite (keep: project groups, session/list fetch, collapse, paging, unreachable, search)
     // - Props: { wsUrl; client; activeSessionId; onActiveChange; unreachable?; onConnect? /* deprecated, unused until T23 */ }
-    // - favorites: import { loadFavorites, toggleFavorite } from "../../layoutStore" (remove the local loadFavorites/persistFavorites helpers)
+    // - favorites: import { loadFavorites, toggleFavorite } from "../layoutStore" (remove the local loadFavorites/persistFavorites helpers)
     // - tab state: useState<"sessions"|"files">(() => loadLayout().leftTab) so the persisted tab is restored on mount (记忆)
     // - top: <SidebarTabs tab={tab} onChange={(t) => { saveLayout({leftTab:t}); setTab(t); }} />
     // - 会话 panel: search input aria-label "搜索会话"; <button className="btn-primary">+ 新建会话</button>;
