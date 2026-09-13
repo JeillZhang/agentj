@@ -131,3 +131,76 @@
   border-top: 0.5px solid var(--aj-border);
   margin-top: 4px;
 }
+
+/* ComposerOptions toolbar — anchored `.comp-tools` is the popover positioning context. */
+.comp-tools {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  position: relative;
+}
+
+.sel {
+  height: 26px;
+  padding: 0 9px;
+  border-radius: 999px;
+  background: var(--aj-panel);
+  border: 0.5px solid var(--aj-border);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--aj-textMuted);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.sel .g {
+  font-size: 12px;
+  color: var(--aj-textMuted);
+}
+
+.sel .cv {
+  font-size: 9px;
+  color: var(--aj-textCaption);
+}
+
+.sel.on {
+  background: var(--aj-raised);
+  color: var(--aj-text);
+  border-color: var(--aj-border);
+}
+
+.spacer {
+  flex: 1;
+}
+
+.pop-model,
+.pop-agent {
+  width: 288px;
+}
+
+.pop-ent {
+  width: 264px;
+}
+
+.pop-item.hl,
+.pop-row.hl {
+  outline: 1px solid var(--aj-accent);
+  outline-offset: -1px;
+}
+
+input.slider {
+  display: block;
+  width: calc(100% - 20px);
+  background: transparent;
+  accent-color: var(--aj-accent);
+}
+
+@media (max-width: 1023px) {
+  .pop {
+    left: 8px;
+    right: 8px;
+    width: auto;
+  }
+}
