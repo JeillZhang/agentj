@@ -76,8 +76,10 @@ describe("T0 scaffold density and hairline", () => {
     expect(css).toMatch(/--aj-sidebar-bg-diff:\s*color-mix/);
   });
   it("density vars present", () => {
+    const webRoot = join(dirname(fileURLToPath(import.meta.url)), "../..");
+    const tokens = readFileSync(join(webRoot, "../../packages/tokens/tokens.css"), "utf8");
+    expect(tokens).toContain("--aj-gap:12px");
     const css = readIndexCss();
-    expect(css).toMatch(/--aj-gap/);
     expect(css).toMatch(/--aj-shadow-soft-sm/);
   });
   it("palette unchanged and hairline uses 0.5px box-shadow", () => {

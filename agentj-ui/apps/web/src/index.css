@@ -4,8 +4,6 @@
 
 :root {
   color-scheme: light;
-  --aj-radius-card: 10px;
-  --aj-radius-ctl: 6px;
   --aj-motion: 0.2s;
   --aj-ease: cubic-bezier(0.4,0,0.2,1);
   --aj-font: system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
@@ -31,7 +29,6 @@
   --aj-icon-md: 20px;
   --aj-icon-lg: 24px;
   --aj-sidebar-width: 256px;
-  --aj-gap: 12px;
   --aj-shadow-soft-sm: 0 4px 16px rgba(0,0,0,.06);
   --aj-sidebar-bg-diff: color-mix(in srgb, var(--aj-sidebar) 98%, transparent);
 }
