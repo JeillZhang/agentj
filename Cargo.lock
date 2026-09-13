@@ -78,6 +78,7 @@ dependencies = [
  "agentj-model",
  "agentj-permission",
  "agentj-protocol",
+ "agentj-question",
  "agentj-session",
  "async-trait",
  "axum",
