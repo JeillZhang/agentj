@@ -4,7 +4,7 @@
 > 当前功能：**协议扩展（v0.15.0）—— `file/list` + `$/progress` todo/file_change + `$/askQuestion` / `question/respond`（三栏工作台真实数据源）**
 > ——设计文档 `docs/superpowers/specs/2026-09-13-agentj-protocol-extension-design.md`
 > + 实现计划 `.superpowers/sdd/2026-09-13-agentj-protocol-extension-plan/`
-> （T0-T42 全部完成并提交，分支 `feature/agentj-protocol-extension`；工作区 0.14.6 → 0.15.0，
+> （T0-T42 全部完成并提交，验收 v0.15.1 通过，分支 `feature/agentj-protocol-extension`；工作区 0.14.6 → 0.15.1，
 > PROTOCOL_VERSION 0.12.1 → 0.13.0，16 → 17 crates，21 方法 / 51 schemas）
 
 ## v0.15.0: Protocol Extension ✅ (本次完成)
@@ -31,6 +31,14 @@
 9. `./scripts/check-version.sh` — ✅ `version-ok`（Cargo 0.15.0 + sdk VERSION 0.15.0 + PROTOCOL_VERSION 0.13.0 + methods.json 0.13.0 + desktop 0.15.0）。
 10. `node agentj-ui/apps/desktop/check-desktop-ui.mjs` — ✅ `desktop-ui-ok`。
 
+## 验收（v0.15.1）✅
+
+- 🐛 **BUG-005**（high，修复提交 `89eca44`）：`serve --port` / `dashboard`（TCP+WS）装配路径未接线 `trajectory_store` → `session/history` 回放为空、前端传输无轨迹（stdio 录 8 事件、TCP 0 条）；已按 stdio 同源接线并新增 `e2e_serve` 回归测试。
+- 🐛 **BUG-006**（medium，修复提交 `b5f6d67`）：`initialize.protocol_version` 误用 `CARGO_PKG_VERSION`（0.15.0）而非协议版本 0.13.0 → Web banner 不一致；新增 `agentj-protocol::PROTOCOL_VERSION` 常量（单一事实来源）+ `initialize` 改用该常量 + `check-version.sh` 门禁 + 回归测试。
+- ✅ 回归 2/2 verified：BUG-005（TCP/WS/stdio/dashboard 轨迹 8 事件含 todo+file_change）与 BUG-006（protocol_version 0.13.0、server_info 产品版本）均通过，spot check 绿，无新 bug。
+- ✅ 修复后门禁全绿（10 gates：cargo fmt / 549 Rust tests / clippy 零警告 / drift / sdk 37 / web 219 / web build / tui 71 / check-version / desktop-ui）。
+- ✅ 版本 bump 0.15.0 → 0.15.1（Cargo workspace + Cargo.lock + SDK `VERSION` + Desktop 三件套 + `check-version.sh`；`PROTOCOL_VERSION` 保持 0.13.0）。
+
 ## 遗留问题 / 已知限制
 
 - **T7 遗留 → final review 已修复（2026-09-14）**：glob 重定基会让 `find -name` 对 `*.rs` 等模式静默返回空（回归），已改为 **glob pattern 不再改写**、`GlobTool`/`GrepTool` 以会话根为 cwd 执行（新增回归测试）；含 `/` 的 glob 模式仍不支持（`find -name` basename 语义），见设计文档「实现已知限制（v0.15.0）」。
@@ -44,4 +52,4 @@
 ## 下一步
 
 - push 分支 `feature/agentj-protocol-extension` + 创建 PR（用户负责合并）。
-- 合并后打 `v0.15.0` tag 并清理 acceptance 产物与临时文件。
+- 合并后打 `v0.15.1` tag 并清理 acceptance 产物与临时文件。
