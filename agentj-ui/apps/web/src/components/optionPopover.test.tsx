@@ -1,3 +1,4 @@
+import { expect, test, vi } from "vitest";
 import { render, fireEvent } from "@testing-library/react";
 import OptionPopover from "./OptionPopover";
 test("esc and outside close", () => {
