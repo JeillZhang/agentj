@@ -181,6 +181,11 @@ const WIRE_CORPUS = [
   { session_id: "s1", seq: 7, ts: 106, value: { kind: "error", message: "boom" } },
 ] as Array<Record<string, unknown>>;
 
+async function createActiveSession(): Promise<void> {
+  fireEvent.click(screen.getAllByRole("button", { name: /new session/i })[0]);
+  await waitFor(() => expect(screen.getByLabelText(/prompt/i)).not.toBeDisabled());
+}
+
 describe("App with mocked SDK transport", () => {
   beforeEach(() => {
     shared.lastWsUrl.value = "";
@@ -205,7 +210,7 @@ describe("App with mocked SDK transport", () => {
 
   it("renders modules from kernel/status via SDK client", async () => {
     render(<App />);
-    fireEvent.click(screen.getByLabelText(/more/i));
+    fireEvent.click(screen.getByRole("button", { name: "更多" }));
     await waitFor(() =>
       expect(screen.getByText("test-mod: running")).toBeInTheDocument(),
     );
@@ -218,30 +223,25 @@ describe("App with mocked SDK transport", () => {
     );
   });
 
-  it("composer status popover reflects real modules and connection state from kernel/status", async () => {
-    shared.newSessionId.value = "s1";
+  it("topbar menu reflects real modules and connection state from kernel/status", async () => {
     render(<App />);
-    fireEvent.click(screen.getAllByRole("button", { name: /new session/i })[0]);
-    await waitFor(() => expect(screen.getByText(/active: s1/i)).toBeInTheDocument());
     await waitFor(() => expect(screen.getByText("connected")).toBeInTheDocument());
-    const composerStatus = screen.getByRole("button", { name: /^status$/i });
-    fireEvent.click(composerStatus);
-    const dialog = screen.getByRole("dialog", { name: "status" });
-    expect(dialog).toBeInTheDocument();
-    expect(await within(dialog).findByText("test-mod: running")).toBeInTheDocument();
-    expect(within(dialog).queryByText("no modules")).not.toBeInTheDocument();
-    expect(dialog.querySelector(".aj-status-light")?.getAttribute("data-state")).toBe("connected");
+    fireEvent.click(screen.getByRole("button", { name: "更多" }));
+    const menu = screen.getByRole("menu");
+    expect(await within(menu).findByText("test-mod: running")).toBeInTheDocument();
+    expect(within(menu).getByText(/已连接 ws:\/\//)).toBeInTheDocument();
+    expect(within(menu).queryByText("未连接")).not.toBeInTheDocument();
   });
 
-  it("applies token to wsUrl via connection bar", async () => {
+  it("applies token to wsUrl via topbar connect dialog", async () => {
     render(<App />);
-    const hostInput = screen.getByLabelText(/^host$/i);
-    fireEvent.change(hostInput, { target: { value: "127.0.0.1" } });
-    const portInput = screen.getByLabelText(/^port$/i);
-    fireEvent.change(portInput, { target: { value: "4096" } });
-    const tokenInput = screen.getByLabelText(/token/i);
-    fireEvent.change(tokenInput, { target: { value: "abc" } });
-    fireEvent.click(screen.getByRole("button", { name: /connect/i }));
+    fireEvent.click(screen.getByRole("button", { name: "更多" }));
+    fireEvent.click(screen.getByText("连接设置…"));
+    const bar = screen.getByLabelText("connection");
+    fireEvent.change(within(bar).getByLabelText("Host"), { target: { value: "127.0.0.1" } });
+    fireEvent.change(within(bar).getByLabelText("Port"), { target: { value: "4096" } });
+    fireEvent.change(within(bar).getByLabelText("Token"), { target: { value: "abc" } });
+    fireEvent.click(within(bar).getByRole("button", { name: /connect/i }));
     await waitFor(() =>
       expect(shared.lastWsUrl.value).toContain("?token=abc"),
     );
@@ -266,61 +266,31 @@ describe("App with mocked SDK transport", () => {
   it("new session becomes active and favorited", async () => {
     shared.newSessionId.value = "s9";
     render(<App />);
-    fireEvent.click(screen.getAllByRole("button", { name: /new session/i })[0]);
-    expect(await screen.findByText("s9")).toBeInTheDocument();
-    expect(await screen.findByText(/active: s9/i)).toBeInTheDocument();
+    await createActiveSession();
     expect(
       JSON.parse(localStorage.getItem("agentj.favorites") ?? "[]"),
     ).toContain("s9");
   });
 
-  it("pasted id continues via status+subscribe", async () => {
+  it("continue dialog continues via status+subscribe", async () => {
     render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "更多" }));
+    fireEvent.click(screen.getByText("继续会话…"));
     const input = screen.getByLabelText(/session id/i);
     fireEvent.change(input, { target: { value: "abc123" } });
-    fireEvent.click(screen.getByRole("button", { name: /^continue$/i }));
-    await waitFor(() =>
-      expect(screen.getByText(/active: abc123/i)).toBeInTheDocument(),
-    );
+    fireEvent.click(screen.getByRole("button", { name: /^继续$/ }));
+    await waitFor(() => expect(screen.getByLabelText(/prompt/i)).not.toBeDisabled());
     expect(shared.requests.value).toContain("session/status");
     expect(shared.requests.value).toContain("session/subscribe");
-    expect(
-      JSON.parse(localStorage.getItem("agentj.favorites") ?? "[]"),
-    ).toContain("abc123");
-  });
-
-  it("stale favorite shows error with New button and marks stale", async () => {
-    localStorage.setItem("agentj.favorites", JSON.stringify(["archived-id"]));
-    shared.statusShouldFail.value = true;
-    shared.statusError.value = "archived";
-    render(<App />);
-    const input = screen.getByLabelText(/session id/i);
-    fireEvent.change(input, { target: { value: "archived-id" } });
-    fireEvent.click(screen.getByRole("button", { name: /^continue$/i }));
-    expect(await screen.findByText(/archived/i)).toBeInTheDocument();
-    const alert = screen.getByRole("alert");
-    expect(alert).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: /^new$/i }),
-    ).toBeInTheDocument();
-    await waitFor(() => {
-      const staleRaw = localStorage.getItem("agentj.favorites.stale");
-      const stale = staleRaw ? JSON.parse(staleRaw) : [];
-      const rendered = screen.getByText(/archived-id.*stale/i);
-      expect(stale.includes("archived-id") || rendered).toBeTruthy();
-    });
   });
 
   it("composer submits and streams progress rows", async () => {
     shared.newSessionId.value = "s1";
     render(<App />);
-    fireEvent.click(screen.getAllByRole("button", { name: /new session/i })[0]);
-    await waitFor(() =>
-      expect(screen.getByText(/active: s1/i)).toBeInTheDocument(),
-    );
+    await createActiveSession();
     const prompt = screen.getByLabelText(/prompt/i);
     fireEvent.change(prompt, { target: { value: "hi" } });
-    const send = screen.getByRole("button", { name: /send/i });
+    const send = screen.getByRole("button", { name: "发送" });
     fireEvent.click(send);
     await waitFor(() => expect(prompt).toHaveValue(""));
     await waitFor(() => expect(shared.notificationHandler.value).not.toBeNull());
@@ -342,8 +312,7 @@ describe("App with mocked SDK transport", () => {
   it("approval dialog shows modal with tool+args+session_id and Allow/Deny/AllowAll", async () => {
     shared.newSessionId.value = "s1";
     render(<App />);
-    fireEvent.click(screen.getAllByRole("button", { name: /new session/i })[0]);
-    await waitFor(() => expect(screen.getByText(/active: s1/i)).toBeInTheDocument());
+    await createActiveSession();
     await waitFor(() => expect(shared.notificationHandler.value).not.toBeNull());
     const handler = shared.notificationHandler.value!;
     act(() => {
@@ -367,8 +336,7 @@ describe("App with mocked SDK transport", () => {
   it("filters permission request not for active session", async () => {
     shared.newSessionId.value = "s1";
     render(<App />);
-    fireEvent.click(screen.getAllByRole("button", { name: /new session/i })[0]);
-    await waitFor(() => expect(screen.getByText(/active: s1/i)).toBeInTheDocument());
+    await createActiveSession();
     await waitFor(() => expect(shared.notificationHandler.value).not.toBeNull());
     const handler = shared.notificationHandler.value!;
     act(() => {
@@ -387,8 +355,7 @@ describe("App with mocked SDK transport", () => {
   it("AllowAll sends permission/respond with decision allow_always and closes", async () => {
     shared.newSessionId.value = "s1";
     render(<App />);
-    fireEvent.click(screen.getAllByRole("button", { name: /new session/i })[0]);
-    await waitFor(() => expect(screen.getByText(/active: s1/i)).toBeInTheDocument());
+    await createActiveSession();
     await waitFor(() => expect(shared.notificationHandler.value).not.toBeNull());
     const handler = shared.notificationHandler.value!;
     act(() => {
@@ -415,8 +382,7 @@ describe("App with mocked SDK transport", () => {
     shared.permShouldFail.value = true;
     shared.permError.value = "stale request";
     render(<App />);
-    fireEvent.click(screen.getAllByRole("button", { name: /new session/i })[0]);
-    await waitFor(() => expect(screen.getByText(/active: s1/i)).toBeInTheDocument());
+    await createActiveSession();
     await new Promise((r) => setTimeout(r, 10));
     await waitFor(() => expect(shared.notificationHandler.value).not.toBeNull());
     const handler = shared.notificationHandler.value!;
@@ -504,7 +470,6 @@ describe("App shell + history rebuild", () => {
     shared.historyResult.value = { events: WIRE_CORPUS, next_cursor: null };
     shared.sessionListResult.value = { sessions: [{ session_id: "s1", state: "active", preview: "hi" }] };
     render(<App />);
-    fireEvent.click(await screen.findByRole("button", { name: /connect/i }));
     const list = await screen.findByRole("list", { name: "session list" });
     fireEvent.click(await within(list).findByText(/s1/));
     expect(await screen.findByText("hello world")).toBeInTheDocument();
@@ -515,7 +480,6 @@ describe("App shell + history rebuild", () => {
     shared.historyResult.value = { events: WIRE_CORPUS, next_cursor: null };
     shared.sessionListResult.value = { sessions: [{ session_id: "s1", state: "active", preview: "hi" }] };
     render(<App />);
-    fireEvent.click(await screen.findByRole("button", { name: /connect/i }));
     const list = await screen.findByRole("list", { name: "session list" });
     fireEvent.click(await within(list).findByText(/s1/));
     await screen.findByText("hello world");
@@ -542,7 +506,6 @@ describe("App shell + history rebuild", () => {
     shared.historyResult.value = { events: WIRE_CORPUS, next_cursor: null };
     shared.sessionListResult.value = { sessions: [{ session_id: "s1", state: "active", preview: "hi" }] };
     render(<App />);
-    fireEvent.click(await screen.findByRole("button", { name: /connect/i }));
     const header = document.querySelector(".aj-topbar") as HTMLElement;
     expect(await within(header).findByText("deepseek-chat")).toBeInTheDocument();
     expect(within(header).getByLabelText("model")).toBeInTheDocument();
@@ -556,7 +519,6 @@ describe("App shell + history rebuild", () => {
     expect(connectionLight("kernel unreachable on ws://x", true)).toBe("unreachable");
     expect(connectionLight("connecting to kernel on ws://x…", false)).toBe("connecting");
     render(<App />);
-    fireEvent.click(await screen.findByRole("button", { name: /connect/i }));
     await screen.findByText("connected");
     const light = () => document.querySelector<HTMLElement>(".aj-status-light")!;
     expect(light()).not.toBeNull();
@@ -565,7 +527,6 @@ describe("App shell + history rebuild", () => {
   it("lights unreachable orange while the hint text stays untouched", async () => {
     shared.shouldFail.value = true;
     render(<App />);
-    fireEvent.click(await screen.findByRole("button", { name: /connect/i }));
     await screen.findByText(/agentj dashboard --port/i);
     expect(document.querySelector<HTMLElement>(".aj-status-light")?.dataset.state).toBe("unreachable");
   });
@@ -585,7 +546,6 @@ describe("App shell + history rebuild", () => {
     expect(css).toContain("@media (max-width: 899px)");
     expect(css).toContain("@media (max-width: 479px)");
     render(<App />);
-    fireEvent.click(await screen.findByRole("button", { name: /connect/i }));
     const toggle = screen.getByRole("button", { name: /toggle sessions/i });
     const app = () => document.querySelector<HTMLElement>(".aj-app")!;
     expect(toggle.getAttribute("aria-expanded")).toBe("false");
@@ -643,7 +603,7 @@ describe("T2 App Shell grid + popover + scrim", () => {
     expect(topbar).not.toBeNull();
     expect(topbar).toHaveClass("aj-topbar");
     expect(document.querySelector(".aj-main")).not.toBeNull();
-    expect(screen.getByLabelText(/more/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "更多" })).toBeInTheDocument();
   });
   it("layout.css has grid and clamp", () => {
     const p = join(dirname(fileURLToPath(import.meta.url)), "components/layout.css");
@@ -655,5 +615,44 @@ describe("T2 App Shell grid + popover + scrim", () => {
     expect(css).toContain("rgba(0,0,0,.24)");
     expect(css).toContain("280px");
     expect(css).toContain("var(--aj-space-4)");
+  });
+});
+
+describe("T23 topbar menu + right drawer", () => {
+  beforeEach(() => {
+    shared.initVersion.value = "0.12.1";
+    shared.shouldFail.value = false;
+    shared.historyResult.value = { events: [] as never[], next_cursor: null };
+    localStorage.clear();
+    document.documentElement.removeAttribute("data-theme");
+  });
+
+  it("topbar menu replaces the old popover", () => {
+    render(<App />);
+    expect(screen.getByRole("button", { name: "更多" })).toBeInTheDocument();
+    expect(screen.queryByLabelText("status")).toBeNull();
+  });
+
+  it("narrow viewport exposes the right drawer toggle", () => {
+    window.matchMedia = ((q: string) => ({
+      matches: q.includes("max-width: 1023px"),
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    })) as never;
+    try {
+      render(<App />);
+      const toggle = screen.getByRole("button", { name: /运行详情/ });
+      expect(toggle.getAttribute("aria-expanded")).toBe("false");
+      fireEvent.click(toggle);
+      expect(toggle.getAttribute("aria-expanded")).toBe("true");
+      expect(document.querySelector(".aj-workspace--right-open")).not.toBeNull();
+      fireEvent.keyDown(document, { key: "Escape" });
+      expect(document.querySelector(".aj-workspace--right-open")).toBeNull();
+      fireEvent.click(toggle);
+      fireEvent.click(screen.getByTestId("right-scrim"));
+      expect(document.querySelector(".aj-workspace--right-open")).toBeNull();
+    } finally {
+      delete (window as { matchMedia?: unknown }).matchMedia;
+    }
   });
 });

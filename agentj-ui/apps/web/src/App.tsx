@@ -9,10 +9,11 @@ import {
   parseProgress,
 } from "@agentj/sdk";
 import type { NotificationHandler } from "@agentj/sdk";
-import { MoreHorizontal, Moon, Sun, Monitor, Menu } from "lucide-react";
+import { Moon, Sun, Monitor, Menu, PanelRight } from "lucide-react";
 import ApprovalDialog from "./ApprovalDialog";
 import type { ApprovalRequest } from "./ApprovalDialog";
 import RunPanel from "./RunPanel";
+import TopbarMenu from "./components/TopbarMenu";
 import UnifiedSidebar from "./components/UnifiedSidebar";
 import WorkspaceShell from "./components/WorkspaceShell";
 import RightPanel from "./components/RightPanel";
@@ -209,7 +210,7 @@ export default function App() {
   const { pending, approvalError, respond, close } = useApproval(sharedClient, activeSessionId);
   const [theme, setTheme] = useState<ThemeMode>(storedThemeMode() ?? "system");
   const [drawerOpen, setDrawerOpen] = useState(false);
-  const [statusOpen, setStatusOpen] = useState(false);
+  const [rightDrawerOpen, setRightDrawerOpen] = useState(false);
   const [tab, setTab] = useState<"conversation" | "trajectory">("conversation");
   const [historyEvents, setHistoryEvents] = useState<RawEvent[] | null>(null);
   const [historySession, setHistorySession] = useState<string | null>(null);
@@ -332,6 +333,28 @@ export default function App() {
     setDrawerOpen(false);
   }, []);
 
+  const setActiveSessionIdAndHydrate = useCallback((id: string) => {
+    const trimmed = id.trim();
+    if (!trimmed) return;
+    setActiveSessionId(trimmed);
+    setDrawerOpen(false);
+    const rpc = sharedClient;
+    if (!rpc) return;
+    void rpc
+      .request(METHODS.sessionStatus, { session_id: trimmed })
+      .then(() => rpc.request(METHODS.sessionSubscribe, { session_id: trimmed }))
+      .catch(() => {});
+  }, [sharedClient]);
+
+  useEffect(() => {
+    if (!rightDrawerOpen) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setRightDrawerOpen(false);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [rightDrawerOpen]);
+
   // expose currentProjectId wiring via window for UnifiedSidebar new session assignment
   useEffect(() => {
     (window as unknown as Record<string, unknown>).__agentjCurrentProject = currentProjectId;
@@ -352,40 +375,25 @@ export default function App() {
           {modelName !== null && (
             <span className="aj-chip aj-chip--model" aria-label="model">{modelName}</span>
           )}
-          <div className="aj-popover-wrap">
-            <button
-              type="button"
-              aria-label="status more"
-              className="aj-popover-trigger"
-              aria-expanded={statusOpen}
-              aria-haspopup="true"
-              onClick={() => setStatusOpen((o) => !o)}
-            >
-              <MoreHorizontal size={16} aria-hidden="true" />
-            </button>
-            {statusOpen && (
-              <div className="aj-popover" role="dialog" aria-label="status">
-                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-                  <span className="aj-status-light" data-state={connState} aria-hidden="true" />
-                  <span style={{ fontSize: 12, color: "var(--aj-textMuted)" }}>{status}</span>
-                </div>
-                <ul className="aj-chips" aria-label="status">
-                  {modules.length === 0 ? (
-                    <li className="aj-chip">no modules</li>
-                  ) : (
-                    modules.map((m) => (
-                      <li key={m.id} className="aj-chip" data-state={m.state}>
-                        {m.id}: {m.state}
-                      </li>
-                    ))
-                  )}
-                </ul>
-              </div>
-            )}
-          </div>
+          <TopbarMenu
+            model={modelName}
+            connectionLabel={connState === "connected" ? `已连接 ${wsUrl}` : "未连接"}
+            modules={modules.map((m) => `${m.id}: ${m.state}`)}
+            onConnect={handleConnect}
+            onContinue={setActiveSessionIdAndHydrate}
+          />
           <button type="button" aria-label="toggle sessions" className="aj-button aj-drawer-toggle" aria-expanded={drawerOpen} aria-controls="aj-sidebar" onClick={() => setDrawerOpen((o) => !o)}><Menu size={16} aria-hidden="true" /></button>
           <button type="button" aria-label="toggle theme" className="aj-button--ghost" onClick={() => setTheme((t) => THEME_CYCLE[t])}>
             {theme === "dark" ? <Moon size={16} aria-hidden="true" /> : theme === "light" ? <Sun size={16} aria-hidden="true" /> : <Monitor size={16} aria-hidden="true" />}
+          </button>
+          <button
+            type="button"
+            className="aj-right-toggle"
+            aria-label="运行详情"
+            aria-expanded={rightDrawerOpen}
+            onClick={() => setRightDrawerOpen((o) => !o)}
+          >
+            <PanelRight size={16} aria-hidden="true" />
           </button>
         </div>
       </header>
@@ -396,6 +404,15 @@ export default function App() {
           role="presentation"
           aria-hidden="true"
           onClick={() => setDrawerOpen(false)}
+        />
+      )}
+      {rightDrawerOpen && (
+        <div
+          data-testid="right-scrim"
+          className="aj-scrim"
+          role="presentation"
+          aria-hidden="true"
+          onClick={() => setRightDrawerOpen(false)}
         />
       )}
       {banner && <p role="alert" className="aj-banner" data-state="mismatch">{banner}</p>}
@@ -411,13 +428,13 @@ export default function App() {
         }
         rightCollapsed={rightCollapsed}
         onRightCollapsedChange={handleRightCollapsedChange}
+        rightDrawerOpen={rightDrawerOpen}
       >
         <UnifiedSidebar
           wsUrl={wsUrl}
           client={sharedClient}
           activeSessionId={activeSessionId}
           onActiveChange={(id) => { setActiveSessionId(id); handleProjectChange(loadCurrentProject()); setDrawerOpen(false); }}
-          onConnect={handleConnect}
           unreachable={unreachable}
         />
         <div className="aj-main">

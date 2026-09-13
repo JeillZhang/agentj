@@ -137,8 +137,6 @@ type Props = {
   client: unknown;
   activeSessionId: string | null;
   onActiveChange: (id: string) => void;
-  /** @deprecated sidebar no longer owns connect UI; removed by the final App pass. */
-  onConnect?: (host: string, port: string, token: string) => void;
   unreachable?: boolean;
 };
 
