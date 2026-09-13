@@ -25,7 +25,7 @@
   - `./scripts/check-version.sh` (version-ok at 0.12.0 after the version task)
 - Version bump reminder: feature → minor → **0.11.1 → 0.12.0** (two adjacent tasks near the end — T23 bumps the crate/config core (`Cargo.toml`, SDK `PROTOCOL_VERSION`, `check-version.sh`), T24 syncs the desktop app files (`src-tauri/Cargo.toml`, `tauri.conf.json`, `package.json`); do NOT bump piecemeal).
 - After the final task, run the acceptance sweep: full Rust + TS + Bun suites, `npm --prefix agentj-ui run build --workspace=@agentj/web`, desktop artifact check if on a supported platform (`./agentj-ui/apps/desktop/check-artifacts.sh linux` may exit 1 without bundles — expected on dev boxes).
-- Doc sync at the end (AGENTS.md rule): update `AGENTS.md`/`README.md`/`.claude/summary/summary_and_next.md` and the design-spec TODO list, commit `docs: auto-sync AGENTS.md, README.md, summary after agentj-ui-visual v0.12.0`.
+- Doc sync at the end (AGENTS.md rule): update `AGENTS.md`/`README.md`/`.agents/summary/summary_and_next.md` and the design-spec TODO list, commit `docs: auto-sync AGENTS.md, README.md, summary after agentj-ui-visual v0.12.0`.
 
 ## Global Constraints
 
@@ -5370,7 +5370,7 @@ Completes the unified release T23 started: the Tauri shell's three manifests sti
 
 ### T25: Sync repo docs to the v0.12.0 code facts and flip the summary to this feature [P4] [Depends on T23, T24]
 
-Last task of the plan. T23/T24 moved every version literal to 0.12.0, which left three doc surfaces stale: (1) code-fact lines in `AGENTS.md` and `README.md` that print version strings (`scripts/check-version.sh` descriptions, the `config.ts` tree-art `PROTOCOL_VERSION="0.11.0"` lines, the "shares workspace version" notes — several of these were already stale since the 0.11.1 patch and are corrected here to the post-T23/T24 truth); (2) the release banners — AGENTS.md L3 and README.md L7 — which per repo rhythm the dev-end docs sync flips to the new feature version (precedent: the v0.11.0 dev-end sync; the acceptance phase later re-syncs them with fix/acceptance detail, per AGENTS.md Rules "auto-sync after phase"); (3) `.claude/summary/summary_and_next.md`, which per AGENTS.md Rules must retain ONLY the currently developing feature — the v0.11.1 acceptance record is replaced by this feature's progress record (the archive table is kept). NOT touched here: the design spec file (its TODO checklist is marked after acceptance, per the v0.11.1 precedent), AGENTS.md Project Status prose (historical capability record), and any acceptance-state claims. Red-first probe: grep for the stale literals and watch it exit non-zero before the edits.
+Last task of the plan. T23/T24 moved every version literal to 0.12.0, which left three doc surfaces stale: (1) code-fact lines in `AGENTS.md` and `README.md` that print version strings (`scripts/check-version.sh` descriptions, the `config.ts` tree-art `PROTOCOL_VERSION="0.11.0"` lines, the "shares workspace version" notes — several of these were already stale since the 0.11.1 patch and are corrected here to the post-T23/T24 truth); (2) the release banners — AGENTS.md L3 and README.md L7 — which per repo rhythm the dev-end docs sync flips to the new feature version (precedent: the v0.11.0 dev-end sync; the acceptance phase later re-syncs them with fix/acceptance detail, per AGENTS.md Rules "auto-sync after phase"); (3) `.agents/summary/summary_and_next.md`, which per AGENTS.md Rules must retain ONLY the currently developing feature — the v0.11.1 acceptance record is replaced by this feature's progress record (the archive table is kept). NOT touched here: the design spec file (its TODO checklist is marked after acceptance, per the v0.11.1 precedent), AGENTS.md Project Status prose (historical capability record), and any acceptance-state claims. Red-first probe: grep for the stale literals and watch it exit non-zero before the edits.
 
 ```yaml
 - id: T25
@@ -5378,7 +5378,7 @@ Last task of the plan. T23/T24 moved every version literal to 0.12.0, which left
   files:
     - AGENTS.md
     - README.md
-    - .claude/summary/summary_and_next.md
+    - .agents/summary/summary_and_next.md
   depends_on: [T23, T24]
   breaking: false
   ac:
@@ -5391,7 +5391,7 @@ Last task of the plan. T23/T24 moved every version literal to 0.12.0, which left
     - given: "scripts/check-version.sh and the whole-tree suites"
       when: "T25's verify runs"
       then: "check-version.sh prints version-ok and the npm workspace suites still pass (docs-only changes)"
-    - given: ".claude/summary/summary_and_next.md after the rewrite"
+    - given: ".agents/summary/summary_and_next.md after the rewrite"
       when: "it is read"
       then: "its header + current-feature section describe the Visual 2.0 v0.12.0 feature with the spec/plan paths and \"awaiting acceptance\" status, the archive table keeps all prior rows verbatim and gains the v0.12.0 row, and no v0.11.1 acceptance detail survives outside the archive"
     - given: "the git working tree at commit time"
@@ -5412,10 +5412,10 @@ Last task of the plan. T23/T24 moved every version literal to 0.12.0, which left
     ! grep -q '共享版本 `0.11.0`' README.md
     ! grep -q '当前版本：\*\*v0.11.1\*\*' README.md
     ! grep -q 'Updated 2026-09-06 — v0.11.1 released' AGENTS.md
-    ! grep -q 'v0.11.1 released (acceptance fixes' .claude/summary/summary_and_next.md
+    ! grep -q 'v0.11.1 released (acceptance fixes' .agents/summary/summary_and_next.md
     grep -q '均为 0.12.0' AGENTS.md README.md
     grep -q 'PROTOCOL_VERSION="0.12.0"' AGENTS.md README.md
-    grep -q 'v0.12.0' .claude/summary/summary_and_next.md
+    grep -q 'v0.12.0' .agents/summary/summary_and_next.md
     echo "docs-sync-ok"
   impl_code: |
     # 0. Pre-flight: `git status` + `git diff AGENTS.md README.md`. The working tree may
@@ -5446,7 +5446,7 @@ Last task of the plan. T23/T24 moved every version literal to 0.12.0, which left
     #         +    > 与 Rust workspace 共享版本 `0.12.0`（单一 `PROTOCOL_VERSION` 来源 `sdk/config.ts`）。
     #    L187:-    ./scripts/check-version.sh        # 版本一致性：Cargo.toml + sdk/config.ts + desktop 均为 0.11.0
     #         +    ./scripts/check-version.sh        # 版本一致性：Cargo.toml + sdk/config.ts + desktop 均为 0.12.0
-    # 3. .claude/summary/summary_and_next.md — REPLACE the whole file with the content
+    # 3. .agents/summary/summary_and_next.md — REPLACE the whole file with the content
     #    below (per AGENTS.md Rules: retain only the currently developing feature;
     #    replace, don't append — the archive table is preserved verbatim):
     #

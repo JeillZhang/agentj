@@ -722,7 +722,7 @@ verify:
 **Files:**
 - Modify: `AGENTS.md`
 - Modify: `README.md`
-- Modify: `.claude/summary/summary_and_next.md`
+- Modify: `.agents/summary/summary_and_next.md`
 
 ```yaml
 id: T6
@@ -730,7 +730,7 @@ title: "Sync AGENTS.md, README.md and summary after G2 completion"
 files:
   - AGENTS.md
   - README.md
-  - .claude/summary/summary_and_next.md
+  - .agents/summary/summary_and_next.md
 depends_on: [T3]
 breaking: false
 ac:

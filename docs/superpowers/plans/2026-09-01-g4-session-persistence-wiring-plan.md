@@ -31,7 +31,7 @@
 | `crates/agentj-config/src/lib.rs` | `[session] dir` config section | T4 |
 | `crates/agentj-config/src/merge.rs` | merge `[session] dir` | T4 |
 | `crates/agentj-cli/src/main.rs` | `resolve_session_dir` + switch to `FileBackedStore` | T5 |
-| `Cargo.toml` + `Cargo.lock` + `AGENTS.md`/`README.md`/`.claude/summary/summary_and_next.md` | version bump + doc sync | T6 |
+| `Cargo.toml` + `Cargo.lock` + `AGENTS.md`/`README.md`/`.agents/summary/summary_and_next.md` | version bump + doc sync | T6 |
 
 ---
 
@@ -550,7 +550,7 @@
 
 **Files:**
 - Modify: `Cargo.toml`, `Cargo.lock`
-- Modify: `AGENTS.md`, `README.md`, `.claude/summary/summary_and_next.md`
+- Modify: `AGENTS.md`, `README.md`, `.agents/summary/summary_and_next.md`
 
 **Interfaces:**
 - Consumes: all completed tasks
@@ -583,7 +583,7 @@
     #   (FileBackedStore as production session store, [session] dir config,
     #   trait-ified expiry, unique-tmp + dir-fsync).
     # README.md: update version tagline + Features/Usage for disk persistence.
-    # .claude/summary/summary_and_next.md: rewrite for G4 (per AGENTS.md rules).
+    # .agents/summary/summary_and_next.md: rewrite for G4 (per AGENTS.md rules).
   verify:
     - "cargo test --workspace"
     - "cargo clippy --workspace --all-targets -- -D warnings"

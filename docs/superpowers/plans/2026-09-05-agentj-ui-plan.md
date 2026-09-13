@@ -14,7 +14,7 @@
 - Protocol discipline: `protocol/methods.json` + `schemas/*.json` are read-only inputs. `cargo test -p agentj-protocol -- drift` stays green.
 - Design doc (Chinese, binding): `docs/superpowers/specs/2026-09-05-agentj-ui-design.md`. Decisions D1-D8 are binding.
 - Version bump: feature → minor, `0.10.0 → 0.11.0` (T17).
-- Doc sync: `README.md` / `AGENTS.md` / `.claude/summary/summary_and_next.md` committed together (T18).
+- Doc sync: `README.md` / `AGENTS.md` / `.agents/summary/summary_and_next.md` committed together (T18).
 - Plan tasks, ACs, and code in English; prose context may be Chinese.
 
 ## Known Temporary Inconsistencies (accepted, resolved by T18)
@@ -973,7 +973,7 @@
   files:
     - README.md
     - AGENTS.md
-    - .claude/summary/summary_and_next.md
+    - .agents/summary/summary_and_next.md
   depends_on: [T17]
   breaking: false
   ac:

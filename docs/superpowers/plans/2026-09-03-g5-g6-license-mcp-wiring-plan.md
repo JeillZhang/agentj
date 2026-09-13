@@ -1055,7 +1055,7 @@ git commit -m "chore: bump workspace version to 0.9.0"
 **Files:**
 - Modify: `AGENTS.md`
 - Modify: `README.md`
-- Modify: `.claude/summary/summary_and_next.md`
+- Modify: `.agents/summary/summary_and_next.md`
 
 **Interfaces:**
 - Consumes: G5/G6 completed state. Produces: docs describing v0.9.0.
@@ -1070,7 +1070,7 @@ git commit -m "chore: bump workspace version to 0.9.0"
 - [ ] **Step 2: Update README.md**
   - Version tagline → v0.9.0; Features checklist: add License gating + MCP config wiring items; config example: add `[license]` + `[[mcp.servers]]`; project structure notes.
 - [ ] **Step 3: Rewrite summary**
-  - `.claude/summary/summary_and_next.md`: replace G3 content with the G5/G6 phase — progress, decisions D1-D7, verification results, remaining issues, next steps (G7/G8 remain).
+  - `.agents/summary/summary_and_next.md`: replace G3 content with the G5/G6 phase — progress, decisions D1-D7, verification results, remaining issues, next steps (G7/G8 remain).
 - [ ] **Step 4: Verify**
 
 Run: `cargo test -p agentj-protocol -- drift && cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings && cargo fmt --all --check`
@@ -1079,7 +1079,7 @@ Expected: all green.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add AGENTS.md README.md .claude/summary/summary_and_next.md
+git add AGENTS.md README.md .agents/summary/summary_and_next.md
 git commit -m "docs: auto-sync AGENTS.md, README.md, summary after G5/G6 completion"
 ```
 

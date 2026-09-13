@@ -1582,7 +1582,7 @@
 **Files:**
 - Modify: `AGENTS.md`
 - Modify: `README.md`
-- Modify: `.claude/summary/summary_and_next.md`
+- Modify: `.agents/summary/summary_and_next.md`
 
 **Interfaces:**
 - Consumes: final architecture facts (kernel module list, KernelMessage variants, wiring)
@@ -1594,7 +1594,7 @@
   files:
     - AGENTS.md
     - README.md
-    - .claude/summary/summary_and_next.md
+    - .agents/summary/summary_and_next.md
   depends_on: [T11]
   breaking: false
   ac:
@@ -1617,10 +1617,10 @@
     #   bus-mediated scheduling notes (TurnRunner / ToolExecutorModule / AgentLoopModule /
     #   SubAgent ServiceCall; KernelMessage 4 variants).
     # README.md: update version tagline + Features checklist + architecture tree.
-    # .claude/summary/summary_and_next.md: rewrite current-feature section for the
+    # .agents/summary/summary_and_next.md: rewrite current-feature section for the
     #   completed kernel-scheduling refactor (progress, verification, remaining G2-G8).
   verify:
-    - "git diff --stat AGENTS.md README.md .claude/summary/summary_and_next.md"
+    - "git diff --stat AGENTS.md README.md .agents/summary/summary_and_next.md"
 ```
 
 ---
