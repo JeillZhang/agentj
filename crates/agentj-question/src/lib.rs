@@ -8,10 +8,14 @@
 //! owner-delivery notifier (`$/askQuestion`) and a settle hook (trajectory
 //! recording) fired at most once per question.
 //!
-//! `AskTool` (T19) is added to `tool.rs` by a downstream task.
+//! [`AskTool`] (T19) bridges the model's `ask` tool call into
+//! [`QuestionModule::ask_blocking`] and returns the terminal outcome to the
+//! model as JSON.
 pub mod module;
+pub mod tool;
 
 pub use module::{
     QuestionModule, QuestionNotifier, QuestionOutcome, QuestionSettlement, RespondError,
     RespondOutcome, SettleHook,
 };
+pub use tool::AskTool;
