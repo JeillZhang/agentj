@@ -3851,10 +3851,7 @@ mod tests {
         let run_raw = format!(
             r#"{{"jsonrpc":"2.0","id":3,"method":"session/run","params":{{"session_id":"{sid}","content":"hi"}}}}"#
         );
-        server
-            .handle_request_from(&run_raw, &a)
-            .await
-            .unwrap();
+        server.handle_request_from(&run_raw, &a).await.unwrap();
 
         let frames: Vec<serde_json::Value> = drain_sent(&server, &b)
             .iter()
@@ -3912,7 +3909,8 @@ mod tests {
             ],
             "each artifact is recorded exactly once, in stream order"
         );
-        let agentj_protocol::trajectory::TrajectoryValue::Todo { revision, items } = &events[3].value
+        let agentj_protocol::trajectory::TrajectoryValue::Todo { revision, items } =
+            &events[3].value
         else {
             panic!("todo node at index 3: {events:?}")
         };
