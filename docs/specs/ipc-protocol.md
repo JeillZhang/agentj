@@ -2,7 +2,7 @@
 
 > 本文档是 AgentJ 内核对外暴露的统一 UI 接口协议（IPC）的**人类可读权威规范**。
 > 机器可读工件（`schemas/*.json` 与 `protocol/methods.json`）是本规范的机器事实来源，见 [机器可读模型](#10-机器可读模型)。
-> 协议当前版本：`0.10.0`。
+> 协议当前版本：`0.13.0`。
 
 ## 1. 范围与一致性
 
@@ -10,7 +10,7 @@
 
 - **传输层**：每种传输各自的帧格式（stdio / TCP 使用 NDJSON，WebSocket 使用原生帧）。
 - **基础协议**：传输无关的 JSON-RPC 2.0 消息信封、错误对象与错误码。
-- **方法面**：v0.3 支持的 16 个方法（注册表 `protocol/methods.json` 收录 `session/subscribe` / `session/unsubscribe`，见 8.11 / 8.12）及其参数 / 结果结构。
+- **方法面**：本规范支持的 21 个方法（注册表 `protocol/methods.json` 收录全部方法，含 `session/subscribe` / `session/unsubscribe`（见 8.11 / 8.12）、`session/list`（8.18）、`session/history`（8.19）、`file/list`（8.20）、`$/askQuestion`（8.21）、`question/respond`（8.22））及其参数 / 结果结构。
 
 本文档适用于所有传输。任何传输都必须遵循基础协议与方法面的全部规则。
 
@@ -155,7 +155,8 @@ WebSocket 与 raw TCP 同端口共存，通过连接分类器按首字节区分 
 | `-32803` | SessionInactive | agentj | 对 archived / deleted 会话执行操作（映射 `SessionError::InactiveSession`） |
 | `-32804` | InvalidVersion | agentj | 协议版本不兼容（`initialize` 握手） |
 | `-32805` | SessionBusy | agentj | 同 session 已有活动 run 时再次 `session/run`（`@since 0.3.0`） |
-| `-32806` | NotAuthorized | agentj | 非 owner 连接的 `permission/respond` 或 `$/cancelRequest`；`--token` 不匹配（`@since 0.3.0`） |
+| `-32806` | NotAuthorized | agentj | 非 owner 连接的 `permission/respond`、`$/cancelRequest` 或 `question/respond`；`--token` 不匹配（`@since 0.3.0`） |
+| `-32807` | PathNotAllowed | agentj | `file/list` 沙箱越界：请求路径（经词法规范化 + canonicalize）落在会话 `project_root` 之外（`@since 0.13.0`，见 8.20） |
 
 错误码是**稳定的协议契约**，一旦发布不可更改含义。新增错误码 SHOULD 从 `-32800` 段向下或 `-32000 … -32099` 段内加性分配。
 
@@ -317,15 +318,19 @@ initialize（请求）→ initialized（通知）→ 会话阶段 → shutdown�
 
 ### 7.3 ProgressValue 判别
 
-`value` 是一个按 `kind` 字段判别的联合类型，v0.1 定义三个已知 `kind`：
+`value` 是一个按 `kind` 字段判别的联合类型，当前定义七个已知 `kind`（`text` / `tool_call` / `tool_result` 为 v0.1 既有，`usage` / `permission` `@since 0.12.0`，`todo` / `file_change` `@since 0.13.0`）：
 
 | kind | 必填字段 | 说明 |
 |------|----------|------|
 | `text` | `delta` | 文本 token 增量（`delta` 为 string，可累积拼接为完整增量） |
 | `tool_call` | `tool_call` | 模型请求调用工具；`tool_call` 为 `{ id, name, arguments }` |
 | `tool_result` | `tool_call_id`, `content` | 工具执行结果回流；`tool_call_id` 关联对应 `tool_call` |
+| `usage` | `usage` | 每轮 run 在 Done 时下发一次的 token 用量结算（`@since 0.12.0`）；`usage` 为 `{ prompt_tokens, completion_tokens }` |
+| `permission` | `request_id`, `tool`, `decision` | 待审批 `$/permissionRequest` 的裁决结算（`@since 0.12.0`）；`decision` 为 `PermissionDecision`，可选字段 `session_id`（多会话客户端据此归类） |
+| `todo` | `session_id`, `revision`, `items` | 全量 TODO 快照（`@since 0.13.0`，见 决策 #2）；`revision` 按会话单调递增，客户端丢弃比已见更旧的快照；`items` 为 `TodoItem[]` |
+| `file_change` | `session_id`, `change` | 工作区文件变更（`@since 0.13.0`）；`change` 为 `FileChange`（`path` / `op` / `additions` / `deletions` + 可选 `tool_call_id` / `diff` / `diff_truncated`） |
 
-三种已知值的完整结构见 `schemas/ProgressValue.json`。**未知 `kind` 可忽略**：依据 `$/` 前缀约定，消费方对不认识的 `kind` MUST 忽略该通知而不失败，服务端未来新增 `kind` 属加性变更（`@since` 注解）。
+七种已知值的完整结构见 `schemas/ProgressValue.json`（嵌套类型 `UsageInfo` / `TodoItem` / `FileChange` 亦各有独立 schema）。**未知 `kind` 可忽略**：依据 `$/` 前缀约定，消费方对不认识的 `kind` MUST 忽略该通知而不失败，服务端未来新增 `kind` 属加性变更（`@since` 注解）。
 
 ### 7.4 流式数据流
 
@@ -360,7 +365,7 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 
 ### 8.1 方法总表
 
-与 `protocol/methods.json` 一致（注册表收录 16 个方法，含 `session/subscribe` / `session/unsubscribe`，见 8.11 / 8.12）：
+与 `protocol/methods.json` 一致（注册表收录全部 21 个方法）：
 
 | 方法 | 类型 | 方向 | params | result | 说明 |
 |------|------|------|--------|--------|------|
@@ -368,18 +373,23 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 | `initialized` | notification | C→S | — | — | 客户端就绪 |
 | `shutdown` | request | C→S | — | null | 断开连接 / 触发优雅关闭（见 §4.5） |
 | `exit` | notification | C→S | — | — | shutdown 后进程退出 |
-| `session/new` | request | C→S | — | SessionNewResult | 新建会话 |
+| `session/new` | request | C→S | SessionNewParams（可选 `project_root`，`@since 0.13.0`） | SessionNewResult | 新建会话 |
 | `session/run` | request | C→S | SessionRunParams | SessionRunResult | 运行一轮（流式，见 §7） |
 | `session/status` | request | C→S | SessionIdParams | SessionStatusResult | 查询会话状态 |
 | `session/archive` | request | C→S | SessionIdParams | null | 软删除 |
 | `session/delete` | request | C→S | SessionIdParams | null | 硬删除 |
 | `session/subscribe` | request | C→S | SessionSubscribeParams | null | 订阅会话运行进度（`@since 0.3.0`，守护内核） |
 | `session/unsubscribe` | request | C→S | SessionIdParams | null | 退订会话进度（`@since 0.3.0`，守护内核） |
+| `session/list` | request | C→S | SessionListParams | SessionListResult | 列举会话（`@since 0.12.0`，见 8.18） |
+| `session/history` | request | C→S | SessionHistoryParams | SessionHistoryResult | 会话轨迹分页回放（`@since 0.12.0`，见 8.19） |
 | `permission/respond` | request | C→S | PermissionRespondParams | PermissionRespondResult | 响应审批（`@since 0.2.0`） |
 | `kernel/status` | request | C→S | — | KernelStatusResult | 内核与模块状态 |
 | `$/permissionRequest` | notification | S→C | PermissionRequestParams | — | 审批请求通知（`@since 0.2.0`） |
 | `$/cancelRequest` | notification | both | CancelParams | — | 取消进行中的请求 |
 | `$/progress` | notification | S→C | ProgressParams | — | 流式增量（见 §7） |
+| `file/list` | request | C→S | FileListParams | FileListResult | 沙箱化目录列举（`@since 0.13.0`，见 8.20） |
+| `$/askQuestion` | notification | S→C | AskQuestionParams | — | owner 定向模型提问（`@since 0.13.0`，见 8.21） |
+| `question/respond` | request | C→S | QuestionRespondParams | QuestionRespondResult | 响应模型提问（`@since 0.13.0`，见 8.22） |
 
 ### 8.2 initialize（请求，见 §4.1）
 
@@ -416,7 +426,12 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 ### 8.6 session/new（请求）
 
 - **能力声明**：会话能力 `SessionNewResult`；v0.1 无强制能力项。
-- **请求**：无参数。
+- **请求**：`SessionNewParams`（可选；`@since 0.13.0`，旧客户端不传 params 行为不变）。
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `project_root` | string | 否 | 会话 `project_root`：必须是存在的绝对目录（否则 `-32602`），canonicalize 后随会话持久化；缺省 = 进程 CWD。`file/list` 沙箱、bash git 采样、工具相对路径均以此根为基准（见 8.20） |
+
 - **响应**：`SessionNewResult`。
 
 ```json
@@ -428,7 +443,7 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 | `session_id` | string | 是 | 新会话的全局唯一标识 |
 
 - **部分结果**：无。
-- **error.data**：`-32603` 时 MAY 携带内部上下文。
+- **error.data**：`project_root` 不是存在的绝对目录 → `-32602`，MAY 携带 `{ "project_root": "<原值>" }`；`-32603` 时 MAY 携带内部上下文。
 
 ### 8.7 session/run（请求，流式）
 
@@ -620,11 +635,167 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 - **部分结果**：不适用（通知本身就是部分结果载体）。
 - **error.data**：不适用；未知 `kind` 忽略（见 §7.3）。
 
+### 8.18 session/list（请求，`@since 0.12.0`）
+
+- **能力声明**：无（只读列举，不经 60s 审批通道）。
+- **请求**：`SessionListParams`（空对象 `{}`，无必填字段）。
+- **响应**：`SessionListResult`。
+
+```json
+{ "jsonrpc": "2.0", "id": 8, "result": { "sessions": [
+  { "session_id": "s-1", "updated_at": 1700000000, "state": "active", "preview": "帮我总结这段代码" }
+] } }
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `sessions` | SessionSummary[] | 是 | 会话摘要列表；`SessionSummary = { session_id, updated_at, state, preview? }` |
+
+- **SessionSummary**：`session_id`（string）、`updated_at`（integer，epoch **秒**）、`state`（SessionStatus，见 §9）、`preview`（string，可选，末条消息摘要，内核截断至 120 字符）。
+- **部分结果**：无。
+- **error.data**：`-32603` 时 MAY 携带内部上下文（如存储读取失败）。
+
+### 8.19 session/history（请求，`@since 0.12.0`）
+
+- **能力声明**：无（只读轨迹回放）。
+- **请求**：`SessionHistoryParams`。
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `session_id` | string | 是 | 目标会话 id |
+| `cursor` | integer | 否 | 分页游标（起始 `seq`，含）；缺省从头开始 |
+| `limit` | integer | 否 | 单页事件数，服务端 clamp 至 `1..=500`，缺省 100 |
+
+- **响应**：`SessionHistoryResult`。
+
+```json
+{ "jsonrpc": "2.0", "id": 9, "result": {
+  "events": [
+    { "session_id": "s-1", "seq": 0, "ts": 1700000000000, "value": { "kind": "user", "content": "hi" } }
+  ],
+  "next_cursor": 3
+} }
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `events` | TrajectoryEvent[] | 是 | 本页轨迹事件；`TrajectoryEvent = { session_id, seq, ts, value }` |
+| `next_cursor` | integer | 否 | 下一页游标（= 本页最后 `seq` + 1）；无更多页时省略 |
+
+- **TrajectoryEvent**：`seq`（integer，会话内单调递增，页游标基准）、`ts`（integer，epoch **毫秒**）、`value: TrajectoryValue`（按 `value.kind` 判别的联合类型，见下）。轨迹是**追加式**事件日志，存储文件与 `session/history` payload 逐字节同构。
+- **TrajectoryValue kind**：`user`、`thinking`、`tool_call`、`tool_result`、`permission`、`usage`、`error`（`session/history` 引入时既有）；`todo`、`file_change`、`ask_question`、`question_answer`（`@since 0.13.0`）。未知 `kind` 按 §7.3 的 `$` 前缀约定忽略。
+- **未知 session**：返回空 `events`（`next_cursor` 省略），**不报错**、不泄露会话信息。
+- **部分结果**：无（分页以 `next_cursor` 表达，非流式）。
+- **error.data**：`-32603` 时 MAY 携带内部上下文（如轨迹存储读取失败）。
+
+### 8.20 file/list（请求，`@since 0.13.0`）
+
+- **能力声明**：无（只读列举，沙箱即安全边界）。
+- **请求**：`FileListParams`。
+
+```json
+{ "jsonrpc": "2.0", "id": 10, "method": "file/list", "params": {
+  "session_id": "s-1",
+  "path": "src",
+  "depth": 1
+} }
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `session_id` | string | 是 | 解析会话 `project_root` 与归属 |
+| `path` | string | 否 | 相对项目根的目录路径；缺省 / `""` = 根 |
+| `depth` | integer | 否 | 列举深度 `1..=8`，缺省 1；越界 → `-32602` |
+
+- **响应**：`FileListResult`。
+
+```json
+{ "jsonrpc": "2.0", "id": 10, "result": {
+  "entries": [
+    { "name": "main.rs", "path": "src/main.rs", "kind": "file", "size": 42, "mtime_ms": 1700000000000, "git_status": "M" }
+  ],
+  "truncated": false
+} }
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `entries` | FileEntry[] | 是 | 目录条目；上限 2000，超出截断 |
+| `truncated` | boolean | 是 | 是否因 2000 条目上限被截断 |
+
+- **FileEntry**：`name`（不含分隔符）、`path`（相对项目根，无 `./` 前缀）、`kind`（`file` \| `dir`，见 §9）、`size`（integer，可选；目录为省略）、`mtime_ms`（integer，可选，epoch 毫秒）、`git_status`（`M` \| `A` \| `U` \| `D`，可选；目录 / clean / 非 git 仓库省略）。
+- **排序与排除**：目录在前、同类按名称升序；`.git` 目录本身不返回、不下钻；其余隐藏文件正常返回。
+- **git 映射**（porcelain `XY`）：`??` / `A ` → `A`；` D` / `D ` → `D`；冲突（`UU/AA/DD/AU/UA/DU/UD`）→ `U`；其余非 clean 状态（含 `M` 等）→ `M` 兜底；clean → 省略；非 git 仓库或 git 不可用 → 全省略（降级，不报错）。
+- **沙箱**：root = 会话 `project_root`（canonicalize；缺省 = 进程 CWD）；请求 `path` 先词法规范化再 canonicalize，结果必须 `starts_with(root)`，否则 `-32807 PathNotAllowed`；目录内**指向根外的符号链接条目跳过**（条目不返回，不报错）。
+- **部分结果**：无（分页由 `depth` + `truncated` 表达，非流式）。
+- **error.data**：会话不存在 → `-32802`；`path` 不存在 → `-32602` + `{ "path": "<原值>", "reason": "not_found" }`；`path` 指向文件而非目录 → `-32602` + `{ "path": "<原值>", "reason": "not_a_directory" }`；`depth` 越界 → `-32602` + `{ "reason": "invalid_depth" }`；沙箱越界 → `-32807` + `{ "path": "<原值>", "reason": "outside_project_root" }`；目标目录不可读 → `-32603` + `{ "path": "<原值>", "reason": "<io 错误>" }`。
+
+### 8.21 $/askQuestion（通知，`@since 0.13.0`，owner 定向）
+
+- **能力声明**：提问能力（对端以 `question/respond` 请求声明）。
+- **请求（通知）**：`AskQuestionParams`。
+
+```json
+{ "jsonrpc": "2.0", "method": "$/askQuestion", "params": {
+  "question_id": "q-1",
+  "session_id": "s-1",
+  "question": "选择部署目标？",
+  "header": "部署",
+  "options": [ { "id": "staging", "label": "Staging", "hint": "预发" }, { "id": "prod", "label": "Production" } ],
+  "allow_multiple": false,
+  "allow_other": true,
+  "timeout_s": 60
+} }
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `question_id` | string | 是 | 提问标识（独立于 JSON-RPC 请求 id，见 §7.5 的解耦模式） |
+| `session_id` | string | 是 | 归属会话 id |
+| `question` | string | 是 | 提问正文 |
+| `header` | string | 否 | 提问卡片短标题 |
+| `options` | AskOption[] | 是 | 选项列表（2–8 项）；`AskOption = { id, label, hint? }` |
+| `allow_multiple` | boolean | 否 | 是否允许多选；缺省 `false`（wire 上总是序列化） |
+| `allow_other` | boolean | 否 | 是否允许 `other:` 自由文本；缺省 `true`（wire 上总是序列化） |
+| `timeout_s` | integer | 否 | 超时秒数；缺省省略 = 不超时（超时按 skip 结算） |
+
+- **定向路由**：服务端按 `session_owner` **定向**发送给发起该 run 的客户端连接；其余客户端不收到（非 owner 不可见，见 决策 #5 的 `$/permissionRequest` 同款语义）。
+- **无 owner 兜底**：归属连接缺席时该提问按 `skipped` 结算，不悬挂。
+- **响应**：无（通知不响应）；发起方通过 `question/respond`（见 8.22）响应。
+- **部分结果**：不适用。
+- **error.data**：不适用。
+
+### 8.22 question/respond（请求，`@since 0.13.0`）
+
+- **能力声明**：提问能力（服务端以 `$/askQuestion` 通知对端声明）。
+- **请求**：`QuestionRespondParams`。
+
+```json
+{ "jsonrpc": "2.0", "id": 11, "method": "question/respond", "params": {
+  "question_id": "q-1",
+  "answers": ["staging"],
+  "skipped": false
+} }
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `question_id` | string | 是 | 对应 `$/askQuestion` 的通知标识 |
+| `answers` | string[] | 是 | 作答：`AskOption.id` 或 `other:` 前缀自由文本 |
+| `skipped` | boolean | 否 | 是否跳过；缺省 `false` |
+
+- **响应**：`QuestionRespondResult`（`{ "accepted": boolean }`）。
+- **归属与校验顺序**：先解析 `question_id`——未知（从未存在 / 已过期清理）→ 直接 `{ "accepted": false }`，不做归属校验、不泄露会话信息；可解析时先做 owner 校验（非 owner → `-32806`），再做参数校验（畸形 / 未知 option id / 单选多答 → `-32602`），最后做结算尝试。
+- **幂等**：同一 `question_id` 仅首次有效响应接受（`accepted: true`）；重复 / 已结算 / 未知 → `{ "accepted": false }`，**不报错**（客户端重试安全）。
+- **结算**：respond / 超时 / run 取消 / 会话归档删除 / owner 连接断开 → 统一结算一次（`answers` 或 `skipped`），settle hook 保证轨迹只记录一次（`question_answer`）。
+- **部分结果**：无。
+- **error.data**：非 owner → `-32806`；未知 option id → `-32602` + `{ "unknown_options": ["<id>", …] }`；单选传多答 → `-32602` + `{ "reason": "too_many_answers" }`。
+
 ## 9. 枚举与向前兼容
 
 ### 9.1 值枚举
 
-v0.2 定义四个字符串值枚举：
+当前定义以下字符串值枚举（`Role` / `ModuleState` / `SessionStatus` / `PermissionDecision` 为 v0.2 既有）：
 
 | 枚举 | 已知值 | 用于 |
 |------|--------|------|
@@ -632,6 +803,11 @@ v0.2 定义四个字符串值枚举：
 | `ModuleState` | `unloaded` \| `initializing` \| `ready` \| `stopping` \| `stopped` \| `failed` | 内核模块状态 |
 | `SessionStatus` | `active` \| `archived` \| `deleted` | 会话状态 |
 | `PermissionDecision` | `allow` \| `deny` \| `allow_always` | 审批决策（`@since 0.2.0`，见 8.13） |
+| `FileKind` | `file` \| `dir` | `file/list` 条目类型（`@since 0.13.0`，见 8.20） |
+| `TodoStatus` | `pending` \| `in_progress` \| `completed` \| `cancelled` | TODO 条目状态（`@since 0.13.0`，见 7.3） |
+| `FileChangeKind` | `add` \| `modify` \| `delete` | 文件变更操作（`@since 0.13.0`，见 7.3） |
+
+上述枚举均带 `Unknown` 变体容忍前向值（`FileKind` / `TodoStatus` / `FileChangeKind` 由 `serde(other)` + `schemars(skip)` 实现，schema 只列已知值；`git_status` 的 `M`/`A`/`U`/`D` 为 `FileEntry` 内联的固定字母集合，见 8.20）。
 
 ### 9.2 未知值处理
 
@@ -648,14 +824,15 @@ v0.2 定义四个字符串值枚举：
 
 - 协议演进严格「只加不改」：新方法、新字段、新枚举值均为加性，MUST NOT 修改或删除已发布字段的语义。
 - 新增的字段 / 方法 / 枚举值 SHOULD 以 `@since` 注解标注引入版本（如 `@since 0.2.0`）。
+- 协议扩展（0.13.0）新增的 `-32807 PathNotAllowed`、`$/progress` 的 `todo` / `file_change` kind、`file/list`、`$/askQuestion` / `question/respond`、`session/new` 的 `project_root`，以及 `FileKind` / `TodoStatus` / `FileChangeKind` 三个值枚举，均遵循该加性纪律并标注 `@since 0.13.0`；`session/list` / `session/history` 与 `usage` / `permission` kind 为 0.12.0 引入，本规范补录其小节（§8.18 / §8.19、§7.3）。
 - 破坏性变更只能通过 major 版本引入，且 MUST 在变更日志（§11）中说明迁移路径。
 
 ## 10. 机器可读模型
 
 本规范是叙述性人类规范；机器事实来源为以下两个工件，两者由 CI 门禁保证与实现一致：
 
-- **`schemas/*.json`**：33 个 JSON Schema（JSON Schema Draft 2020-12），由 Rust `agentj-protocol` 的 serde 类型经 `schemars` 生成并提交。它们是所有消息 payload 结构的唯一事实来源，任意语言可从中生成绑定或做运行时校验。
-- **`protocol/methods.json`**：方法注册表，捕获 JSON Schema 表达不了的方法语义（method 字符串 ↔ params/result schema 引用、方向、类型）。当前 `protocol_version` 为 `0.10.0`。
+- **`schemas/*.json`**：51 个 JSON Schema（JSON Schema Draft 2020-12），由 Rust `agentj-protocol` 的 serde 类型经 `schemars` 生成并提交。它们是所有消息 payload 结构的唯一事实来源，任意语言可从中生成绑定或做运行时校验。
+- **`protocol/methods.json`**：方法注册表，捕获 JSON Schema 表达不了的方法语义（method 字符串 ↔ params/result schema 引用、方向、类型）。当前收录 21 个方法，`protocol_version` 为 `0.13.0`。
 
 对应关系：
 
@@ -665,20 +842,25 @@ v0.2 定义四个字符串值枚举：
 | `initialized` | — | — |
 | `shutdown` | — | — |
 | `exit` | — | — |
-| `session/new` | — | `SessionNewResult.json` |
+| `session/new` | `SessionNewParams.json` | `SessionNewResult.json` |
 | `session/run` | `SessionRunParams.json` | `SessionRunResult.json` |
 | `session/status` | `SessionIdParams.json` | `SessionStatusResult.json` |
 | `session/archive` | `SessionIdParams.json` | — |
 | `session/delete` | `SessionIdParams.json` | — |
 | `session/subscribe` | `SessionSubscribeParams.json` | — |
 | `session/unsubscribe` | `SessionIdParams.json` | — |
+| `session/list` | `SessionListParams.json` | `SessionListResult.json` |
+| `session/history` | `SessionHistoryParams.json` | `SessionHistoryResult.json` |
 | `permission/respond` | `PermissionRespondParams.json` | `PermissionRespondResult.json` |
 | `kernel/status` | — | `KernelStatusResult.json` |
 | `$/permissionRequest` | `PermissionRequestParams.json` | — |
 | `$/cancelRequest` | `CancelParams.json` | — |
 | `$/progress` | `ProgressParams.json` | — |
+| `file/list` | `FileListParams.json` | `FileListResult.json` |
+| `$/askQuestion` | `AskQuestionParams.json` | — |
+| `question/respond` | `QuestionRespondParams.json` | `QuestionRespondResult.json` |
 
-信封与公共类型见 `RequestMessage.json`、`NotificationMessage.json`、`ResponseMessage.json`、`ErrorObject.json`、`Id.json`、`ProgressToken.json`、`ProgressValue.json`、`Role.json`、`PermissionDecision.json` 等。
+信封与公共类型见 `RequestMessage.json`、`NotificationMessage.json`、`ResponseMessage.json`、`ErrorObject.json`、`Id.json`、`ProgressToken.json`、`ProgressValue.json`、`Role.json`、`PermissionDecision.json` 等；协议扩展（0.13.0）新增 / 更新的公共类型见 `SessionNewParams.json`、`SessionSummary.json`、`FileListParams.json`、`FileListResult.json`、`FileEntry.json`、`FileKind.json`、`AskQuestionParams.json`、`AskOption.json`、`QuestionRespondParams.json`、`QuestionRespondResult.json`、`TodoItem.json`、`TodoStatus.json`、`FileChange.json`、`FileChangeKind.json`、`UsageInfo.json`。
 
 一致性锚点：Rust 侧 `schemars` 生成 `schemas/*.json` 并提交，契约测试断言实际 wire 输出与 Schema 一致，CI 漂移门禁在生成结果与提交版本不一致时失败。
 
@@ -686,7 +868,7 @@ v0.2 定义四个字符串值枚举：
 
 ### 11.1 版本策略
 
-协议版本遵循语义化版本（semver），规则见 §4.3：major 破坏 / minor 加方法 / patch 修 bug。当前版本 `0.10.0`（`protocol/methods.json` 中 `protocol_version` 字段为准）。
+协议版本遵循语义化版本（semver），规则见 §4.3：major 破坏 / minor 加方法 / patch 修 bug。当前版本 `0.13.0`（`protocol/methods.json` 中 `protocol_version` 字段为准）。
 
 ### 11.2 命名归一化决策（v0.1.0 记录）
 
@@ -707,7 +889,7 @@ v0.2 定义四个字符串值枚举：
 
 ### 11.3 变更日志
 
-#### 0.1.0（当前）
+#### 0.1.0
 
 - 初版协议规范，定义 12 个方法（4 个生命周期方法、5 个 `session/*` 方法、`kernel/status`、`$/cancelRequest`、`$/progress`）。
 - 定义 JSON-RPC 2.0 信封、Id 规则、错误码表（JSON-RPC 保留段 + `-32000 … -32099` 实现自定义段 + agentj 块 `-32800` … `-32804`）。
@@ -722,7 +904,7 @@ v0.2 定义四个字符串值枚举：
 - 值枚举新增 `PermissionDecision`（`allow` / `deny` / `allow_always` + Unknown）。
 - 全部为加性变更（只加不改），v0.1 客户端零破坏。
 
-#### 0.3.0（守护内核 + 商业扩展，`protocol_version` 当前值）
+#### 0.3.0（守护内核 + 商业扩展）
 
 - 方法面 14 → **16**（注册表）：新增 `session/subscribe`（请求）与 `session/unsubscribe`（请求），支撑多客户端订阅广播（见 §8.11 / §8.12）。
 - 错误码新增 2 个：`-32805 SessionBusy`（同 session 并发 run 互斥）、`-32806 NotAuthorized`（非 owner 的 respond / cancel、`--token` 不匹配）。
@@ -737,6 +919,15 @@ v0.2 定义四个字符串值枚举：
 - **传输层**：新增 `2.3 WebSocket`（`ws://127.0.0.1:<port>/ws`，与 raw TCP 同端口共存，`MSG_PEEK` + `looks_like_http` 分类器），每条 WS Text 帧 = 一条 JSON-RPC 消息；鉴权双通道 `?token=` 403 + `initialize.token` -32806；`max_connections` 对 WS 独立计数，WS 不参与最后连接断开全局关闭。
 - **事件总线重入防护（G7）**：`EventGuard` thread_local `EVENT_DEPTH`/`EVENT_STACK` + `MAX_EVENT_DEPTH=16` + 同栈循环检测 + `tracing::warn!` 丢弃 + RAII Drop 回卷。
 - 协议 wire 零破坏（加性传输扩展）。
+
+#### 0.13.0（协议扩展：`file/list` + progress kind + 结构化提问）
+
+- **方法面 18 → 21**：新增 **3 个方法**——`file/list`（请求，沙箱化目录列举）、`$/askQuestion`（通知，owner 定向模型提问）、`question/respond`（请求，响应提问）；同时**补录** 0.12.0 已引入的 `session/list` / `session/history` 小节（§8.18 / §8.19），§8.1 方法总表与 §10 映射表补齐至 21 行。
+- **`$/progress` 新增 kind**：`usage` / `permission`（`@since 0.12.0`）与 `todo` / `file_change`（`@since 0.13.0`）补入 §7.3 判别表；`todo` 为全量快照（`revision` 单调递增，客户端丢弃比已见更旧的快照），`file_change` 携带 `FileChange`（行数 + unified diff）。未知 `kind` 仍按 `$/` 前缀约定忽略。
+- **新错误码 `-32807 PathNotAllowed`**（agentj 块向下加性分配）：`file/list` 请求路径（含符号链接逃逸）落在会话 `project_root` 之外；`error.data = { path, reason: "outside_project_root" }`（见 §3.4 / §8.20）。
+- **`session/new` 加性参数** `SessionNewParams.project_root`（可选绝对目录，canonicalize 后随会话持久化；缺省 = 进程 CWD）；旧客户端不传 params 行为不变。
+- **新增值枚举**：`FileKind`、`TodoStatus`、`FileChangeKind`（均带 `Unknown` 变体容忍前向值，见 §9.1）；schema 计数 38 → 51。
+- 全部为**加性变更（只加不改）**，此前客户端零破坏；协议版本 minor 递增 `0.12.1 → 0.13.0`。
 
 #### 后续版本
 
