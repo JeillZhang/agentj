@@ -31,10 +31,15 @@ export default function AskQuestionCard({
   const canSubmit = selected !== null || hasOther;
 
   if (collapsed) {
+    const chosenLabel =
+      selected !== null
+        ? question.options.find((o) => o.id === selected)?.label
+        : undefined;
+    const summary = chosenLabel ?? selectedLabel ?? (hasOther ? other : "—");
     return (
       <section className="ask" aria-label={`模型提问：${question.question}`}>
         <button type="button" className="ask-collapsed" onClick={onToggleCollapsed}>
-          {`✓ 已选择：${selectedLabel ?? "—"} ⌄`}
+          {`✓ 已选择：${summary} ⌄`}
         </button>
       </section>
     );

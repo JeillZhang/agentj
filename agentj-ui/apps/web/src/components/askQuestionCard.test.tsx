@@ -47,6 +47,29 @@ test("other input overrides", () => {
   expect(onSubmit).toHaveBeenCalledWith({ optionId: null, other: "自定义范围" });
 });
 
+test("collapsed summary reflects internally selected option", () => {
+  const { rerender } = render(
+    <AskQuestionCard
+      question={q}
+      collapsed={false}
+      onToggleCollapsed={() => {}}
+      onSubmit={() => {}}
+      onSkip={() => {}}
+    />,
+  );
+  fireEvent.click(screen.getByText("三栏 + 协议扩展"));
+  rerender(
+    <AskQuestionCard
+      question={q}
+      collapsed
+      onToggleCollapsed={() => {}}
+      onSubmit={() => {}}
+      onSkip={() => {}}
+    />,
+  );
+  expect(screen.getByText(/已选择：三栏 \+ 协议扩展/)).toBeInTheDocument();
+});
+
 test("skip and collapsed summary", () => {
   const onSkip = vi.fn();
   const { rerender } = render(
