@@ -129,6 +129,66 @@ impl ModelProvider for MockWorkbench {
     }
 }
 
+/// E2E `mock-ask` script (T26): call 1 emits an `ask` tool call with a question
+/// and two options (`opt-a` / `opt-b`), call 2 a text delta + Done. The owner
+/// connection answers through `question/respond`, unblocking the tool.
+struct MockAsk {
+    calls: AtomicUsize,
+}
+
+impl MockAsk {
+    fn new() -> Self {
+        Self {
+            calls: AtomicUsize::new(0),
+        }
+    }
+
+    fn script(call: usize) -> Vec<Result<ModelEvent, ModelError>> {
+        match call {
+            0 => vec![Ok(ModelEvent::ToolCall(ToolCall {
+                id: "call_ask".into(),
+                name: "ask".into(),
+                arguments: serde_json::json!({
+                    "question": "Which option should the E2E scenario pick?",
+                    "header": "E2E ask",
+                    "options": [
+                        {"id": "opt-a", "label": "Option A"},
+                        {"id": "opt-b", "label": "Option B"}
+                    ]
+                }),
+            }))],
+            _ => vec![
+                Ok(ModelEvent::Delta("ask answered".into())),
+                Ok(ModelEvent::Done),
+            ],
+        }
+    }
+}
+
+#[async_trait]
+impl ModelProvider for MockAsk {
+    async fn chat_stream(
+        &self,
+        _m: Vec<ChatMessage>,
+        _t: Vec<ToolDefinition>,
+        _o: ModelOptions,
+    ) -> Result<BoxStream<'static, Result<ModelEvent, ModelError>>, ModelError> {
+        let n = self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok(Box::pin(stream::iter(Self::script(n))))
+    }
+
+    async fn chat(
+        &self,
+        _m: Vec<ChatMessage>,
+        _o: ModelOptions,
+    ) -> Result<agentj_core::types::ChatResponse, ModelError> {
+        Ok(agentj_core::types::ChatResponse {
+            content: "mock response".into(),
+            tool_calls: vec![],
+        })
+    }
+}
+
 /// Single instantiation entry for model providers (design 4.3). The config `kind`
 /// field ("openai-compat" | "responses" | "anthropic" | "opencode-go") selects the
 /// concrete provider; unknown kinds are a config error (no silent fallback).
@@ -157,6 +217,9 @@ impl ProviderFactory {
             // "mock-workbench" scripts the T25 E2E scenario: todo → write →
             // delta/done, producing todo + file_change `$/progress` frames.
             "mock-workbench" => Arc::new(MockWorkbench::new()),
+            // "mock-ask" scripts the T26 E2E scenario: one `ask` tool call with
+            // two options → delta/done, driven by `question/respond`.
+            "mock-ask" => Arc::new(MockAsk::new()),
             other => {
                 return Err(ModelError::Stream(format!(
                     "unknown provider kind: {other}"
@@ -243,6 +306,35 @@ mod tests {
         assert!(
             matches!(third.as_slice(), [ModelEvent::Delta(_), ModelEvent::Done]),
             "call 3 must be a text delta + Done, got {third:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn factory_creates_mock_ask() {
+        let provider =
+            ProviderFactory::create("mock-ask", "mock-ask", "mock://local", String::new()).unwrap();
+        let first = scripted_events(&provider).await;
+        match first.as_slice() {
+            [ModelEvent::ToolCall(call)] => {
+                assert_eq!(call.name, "ask");
+                assert!(
+                    call.arguments["question"]
+                        .as_str()
+                        .is_some_and(|q| !q.is_empty()),
+                    "ask must script a question: {:?}",
+                    call.arguments
+                );
+                let options = call.arguments["options"].as_array().unwrap();
+                assert_eq!(options.len(), 2, "ask must script two options");
+                assert_eq!(options[0]["id"], "opt-a");
+                assert_eq!(options[1]["id"], "opt-b");
+            }
+            other => panic!("call 1 must be one ask tool call, got {other:?}"),
+        }
+        let second = scripted_events(&provider).await;
+        assert!(
+            matches!(second.as_slice(), [ModelEvent::Delta(_), ModelEvent::Done]),
+            "call 2 must be a text delta + Done, got {second:?}"
         );
     }
 
