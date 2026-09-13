@@ -196,7 +196,7 @@ flowchart TB
 - `WorkspaceShell` 持有 `leftWidth/rightWidth/rightCollapsed` 状态（初始值同步读 `layoutStore` 防 CLS）；`SplitPane` 为受控组件：`{ side, width, min, max, defaultWidth, collapsed?, onResize, onReset, onToggleCollapse? }`。
 - 拖拽：`pointerdown` → `setPointerCapture`；`pointermove` 实时 clamp（并保证中栏 ≥480px）；`pointerup` 写入 store；`pointercancel` 还原拖拽前宽度；**双击复位**默认宽（256/320）。
 - 键盘：`role="separator"` + `aria-orientation="vertical"` + `tabindex=0` + `aria-valuenow/min/max`；`←/→` ±8px（右分隔条方向相反：`←` 加宽）、`Shift+←/→` ±32px、`Home` 复位、右分隔条 `Enter/Space` 切换折叠；键盘操作即时持久化。
-- 视觉：7px 命中区（`--aj-splitter-hit`）、1px 发丝线 + 垂直居中 3 点 grip；hover/拖拽态高亮 `--aj-accent`、grip 透明度提升（静态稿无此态，`design.md` 规定本项为补充）。
+- 视觉：7px 命中区（`--aj-splitterHit`）、1px 发丝线 + 垂直居中 3 点 grip；hover/拖拽态高亮 `--aj-accent`、grip 透明度提升（静态稿无此态，`design.md` 规定本项为补充）。
 
 **D2 layoutStore（P0）**
 - 新模块 `src/layoutStore.ts`，沿用 `projectStore.ts` 模式：`safeParse` + try/catch + 类型校验 + clamp + 默认回退；`loadLayout()/saveLayout(patch)`；自定义事件 `agentj:layout-updated` + 原生 `storage`（多标签同步，应用时再次 clamp）。
@@ -223,7 +223,7 @@ flowchart TB
 **D6 右栏运行详情（P0）**
 - `RightPanel`：头部 44px（`运行详情` + 折叠钮 `»`）；两块 section（`任务` / `文件变更`），`sec-head` 11px 大写 + 计数 pill；折叠为 40px 图标栏（D1）。
 - `TodoPanel`：计数 `N / M`；行 = 16px 复选框（完成 = success 实底 `✓`；进行中 = accent 描边 + 6px 脉冲点；待办 = 灰描边）+ 标签 + 状态 pill（已完成/进行中/待办）；props 接口 `items: {id, content, status}[]`，阶段二由 `$/progress kind:"todo"` 全量快照驱动。
-- `ChangeList`：行 = 文件徽标（如 `TS`）+ mono 路径 + `+N` 绿/`-N` 红 + `新增/修改/删除` 徽标；点击展开 unified diff（头行 `路径 · unified diff` + `+N -N`；新增行 `diffAddTint` + `+`、删除行 `diffDelTint` + `-`、上下文 muted）；`diff` 缺失时行不可展开。数据 = 真实派生（D6 数据流）或 demo 覆盖。
+- `ChangeList`：行 = 文件徽标（如 `TS`）+ mono 路径 + `+N` 绿/`-N` 红 + `新增/修改/删除` 徽标；点击展开 unified diff（头行 `路径 · unified diff` + `+N -N`；新增行 `diffAddTint` + `+`、删除行 `diffDelTint` + `-`、上下文 muted）；`diff` 缺失时行不可展开。数据 = 真实派生（`deriveChanges`）或 demo 覆盖。
 
 **D7 Demo 模式（P0）**
 - 激活：`localStorage agentj.demo=1` 或 `?demo=1`（Desktop WebView 以 localStorage 为主）；顶栏菜单提供「演示数据」开关（即时生效）。
@@ -236,7 +236,7 @@ flowchart TB
 **D9 Tokens 增量（P0）**
 - `palette.ts` 新增 5 个语义 key（双主题值）：`radiusCtl: "8px"`、`radiusCard: "12px"`、`accentTint`（深 `rgba(103,158,254,.12)` / 浅 `rgba(65,118,230,.10)`，用于选中/淡底）、`diffAddTint`（深 `rgba(34,197,94,.12)` / 浅 `rgba(34,197,94,.14)`）、`diffDelTint`（深 `rgba(242,90,90,.12)` / 浅 `rgba(236,19,19,.10)`）；`SEMANTIC_KEYS 19 → 24`。
 - 新增非主题常量块 `LAYOUT`（`leftWidth 256 / leftMin 200 / leftMax 420 / rightWidth 320 / rightMin 260 / rightMax 480 / splitterHit 7 / topbarHeight 48 / gap 12`），生成器输出至 `:root`（不随主题；变量名按既有生成规则为 camelCase，如 `--aj-leftWidth`、`--aj-splitterHit`、`--aj-topbarH`）；`--aj-gap` 从 `index.css` 迁移入此单源（值不变）。
-- 迁移：`--aj-radius-ctl:6px → --aj-radiusCtl:8px`、`--aj-radius-card:10px → --aj-radiusCard:12px`（约 22 处消费点更新；旧 kebab 变量删除）；`hero.css` 硬编码 22px 改用 `--aj-radiusXl`；`inlineCodeBg` 在行内 code 样式接入（现零消费）。
+- 迁移：`--aj-radius-ctl:6px → --aj-radiusCtl:8px`、`--aj-radius-card:10px → --aj-radiusCard:12px`（21 处引用更新，含 index.css 定义与 theme.test.ts 断言；旧 kebab 变量删除）；`hero.css` 硬编码 22px 改用 `--aj-radiusXl`；`inlineCodeBg` 在行内 code 样式接入（现零消费）。
 - 生成链：改 `palette.ts` 后 `npm --prefix agentj-ui run generate --workspace=@agentj/tokens`（**不手改** `tokens.css`）；`palette.test.ts`/`ui-tokens.test.ts`/`theme.test.ts` 期望值同步 24 keys + 新变量。
 
 **D10 版本与范围（P0）**
