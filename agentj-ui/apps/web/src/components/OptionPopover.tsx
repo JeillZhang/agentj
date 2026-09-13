@@ -40,6 +40,7 @@ export default function OptionPopover({
     };
     document.addEventListener("keydown", handleKeyDown);
     document.addEventListener("mousedown", handleMouseDown);
+    ref.current?.focus?.({ preventScroll: true });
     return () => {
       document.removeEventListener("keydown", handleKeyDown);
       document.removeEventListener("mousedown", handleMouseDown);

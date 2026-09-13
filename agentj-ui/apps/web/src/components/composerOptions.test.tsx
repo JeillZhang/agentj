@@ -28,6 +28,7 @@ test("keyboard navigation selects an option", () => {
   render(<ComposerOptions model="deepseek-chat" />);
   fireEvent.click(screen.getByRole("button", { name: /Build/ }));
   const pop = document.querySelector(".pop") as HTMLElement;
+  expect(pop.contains(document.activeElement)).toBe(true);
   fireEvent.keyDown(pop, { key: "ArrowDown" });
   fireEvent.keyDown(pop, { key: "Enter" });
   expect(localStorage.getItem("agentj.composer.agent")).toBe("plan");

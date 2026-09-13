@@ -16,3 +16,12 @@ test("esc and outside close", () => {
   fireEvent.mouseDown(document.body);
   expect(onClose).toHaveBeenCalledTimes(2);
 });
+test("open focuses the panel when focusable", () => {
+  render(
+    <OptionPopover open onClose={vi.fn()} tabIndex={-1}>
+      <div>panel</div>
+    </OptionPopover>,
+  );
+  const pop = document.querySelector(".pop") as HTMLElement;
+  expect(document.activeElement).toBe(pop);
+});

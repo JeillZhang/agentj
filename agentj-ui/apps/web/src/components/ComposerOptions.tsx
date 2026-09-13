@@ -39,6 +39,11 @@ function entropyMatches(preset: EntropyPreset, entropy: number): boolean {
   return Math.abs(preset.value - entropy) < 1e-9;
 }
 
+function entropyIndex(entropy: number): number {
+  const index = ENTROPY_PRESETS.findIndex((entry) => entropyMatches(entry, entropy));
+  return index < 0 ? 0 : index;
+}
+
 function entropyShortLabel(entropy: number): string {
   const preset = ENTROPY_PRESETS.find((entry) => entropyMatches(entry, entropy));
   return preset ? preset.short : "自定义";
@@ -160,7 +165,7 @@ export default function ComposerOptions({ model = null, children }: ComposerOpti
         className="sel"
         aria-haspopup="listbox"
         aria-expanded={openId === "entropy"}
-        onClick={() => openPanel("entropy", 0)}
+        onClick={() => openPanel("entropy", entropyIndex(prefs.entropy))}
       >
         <span className="g">∿</span>
         {entropyShortLabel(prefs.entropy)}
