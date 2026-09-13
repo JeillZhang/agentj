@@ -128,6 +128,39 @@ impl Tool for BashTool {
 }
 
 pub struct GrepTool;
+
+impl GrepTool {
+    fn args(input: &serde_json::Value) -> (&str, &str) {
+        (
+            input["pattern"].as_str().unwrap_or(".*"),
+            input["include"].as_str().unwrap_or("*"),
+        )
+    }
+
+    fn run(
+        pattern: &str,
+        include: &str,
+        cwd: Option<&std::path::Path>,
+    ) -> Result<serde_json::Value, ToolError> {
+        let mut cmd = std::process::Command::new("rg");
+        cmd.arg("--no-heading")
+            .arg("--with-filename")
+            .arg(pattern)
+            .arg("--glob")
+            .arg(include);
+        if let Some(dir) = cwd {
+            cmd.current_dir(dir);
+        }
+        let output = cmd.output().map_err(|e| ToolError::ExecutionFailed {
+            name: "grep".into(),
+            reason: e.to_string(),
+        })?;
+        Ok(serde_json::Value::String(
+            String::from_utf8_lossy(&output.stdout).to_string(),
+        ))
+    }
+}
+
 impl Tool for GrepTool {
     fn name(&self) -> &str {
         "grep"
@@ -146,26 +179,38 @@ impl Tool for GrepTool {
         })
     }
     fn execute(&self, input: serde_json::Value) -> Result<serde_json::Value, ToolError> {
-        let pattern = input["pattern"].as_str().unwrap_or(".*");
-        let include = input["include"].as_str().unwrap_or("*");
-        let output = std::process::Command::new("rg")
-            .arg("--no-heading")
-            .arg("--with-filename")
-            .arg(pattern)
-            .arg("--glob")
-            .arg(include)
-            .output()
-            .map_err(|e| ToolError::ExecutionFailed {
-                name: "grep".into(),
-                reason: e.to_string(),
-            })?;
+        let (pattern, include) = Self::args(&input);
+        Self::run(pattern, include, None)
+    }
+    fn execute_with_context(
+        &self,
+        input: serde_json::Value,
+        ctx: &ToolCallContext,
+    ) -> Result<serde_json::Value, ToolError> {
+        let (pattern, include) = Self::args(&input);
+        Self::run(pattern, include, Some(&ctx.workspace_root))
+    }
+}
+
+pub struct GlobTool;
+
+impl GlobTool {
+    fn run(pattern: &str, cwd: Option<&std::path::Path>) -> Result<serde_json::Value, ToolError> {
+        let mut cmd = std::process::Command::new("find");
+        cmd.arg(".").arg("-name").arg(pattern).arg("-type").arg("f");
+        if let Some(dir) = cwd {
+            cmd.current_dir(dir);
+        }
+        let output = cmd.output().map_err(|e| ToolError::ExecutionFailed {
+            name: "glob".into(),
+            reason: e.to_string(),
+        })?;
         Ok(serde_json::Value::String(
             String::from_utf8_lossy(&output.stdout).to_string(),
         ))
     }
 }
 
-pub struct GlobTool;
 impl Tool for GlobTool {
     fn name(&self) -> &str {
         "glob"
@@ -181,21 +226,17 @@ impl Tool for GlobTool {
         })
     }
     fn execute(&self, input: serde_json::Value) -> Result<serde_json::Value, ToolError> {
-        let pat = input["pattern"].as_str().unwrap_or("*");
-        let output = std::process::Command::new("find")
-            .arg(".")
-            .arg("-name")
-            .arg(pat)
-            .arg("-type")
-            .arg("f")
-            .output()
-            .map_err(|e| ToolError::ExecutionFailed {
-                name: "glob".into(),
-                reason: e.to_string(),
-            })?;
-        Ok(serde_json::Value::String(
-            String::from_utf8_lossy(&output.stdout).to_string(),
-        ))
+        Self::run(input["pattern"].as_str().unwrap_or("*"), None)
+    }
+    fn execute_with_context(
+        &self,
+        input: serde_json::Value,
+        ctx: &ToolCallContext,
+    ) -> Result<serde_json::Value, ToolError> {
+        Self::run(
+            input["pattern"].as_str().unwrap_or("*"),
+            Some(&ctx.workspace_root),
+        )
     }
 }
 
@@ -379,6 +420,56 @@ mod tests {
         register_builtins(&registry);
         assert_eq!(registry.definitions().len(), 6);
         assert!(registry.get("todo").is_some());
+    }
+
+    fn ctx_for(root: &std::path::Path) -> ToolCallContext {
+        ToolCallContext {
+            session_id: "s1".into(),
+            workspace_root: root.to_path_buf(),
+        }
+    }
+
+    #[test]
+    fn glob_tool_scopes_to_context_workspace_root() {
+        let root = tempfile::TempDir::new().unwrap();
+        let outside = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(root.path().join("src")).unwrap();
+        std::fs::write(root.path().join("src/main.rs"), "fn main() {}").unwrap();
+        std::fs::write(outside.path().join("outside.rs"), "").unwrap();
+
+        let out = GlobTool
+            .execute_with_context(
+                serde_json::json!({"pattern": "*.rs"}),
+                &ctx_for(root.path()),
+            )
+            .unwrap();
+        let stdout = out.as_str().unwrap();
+        assert!(
+            stdout.contains("./src/main.rs"),
+            "missing root file: {stdout}"
+        );
+        assert!(
+            !stdout.contains("outside.rs"),
+            "leaked outside root: {stdout}"
+        );
+    }
+
+    #[test]
+    fn glob_tool_survives_registry_rebase_of_basename_pattern() {
+        let root = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(root.path().join("src")).unwrap();
+        std::fs::write(root.path().join("src/main.rs"), "fn main() {}").unwrap();
+
+        let args = agentj_core::tool_paths::rebase_tool_args(
+            "glob",
+            serde_json::json!({"pattern": "*.rs"}),
+            root.path(),
+        );
+        assert_eq!(args, serde_json::json!({"pattern": "*.rs"}));
+        let out = GlobTool
+            .execute_with_context(args, &ctx_for(root.path()))
+            .unwrap();
+        assert!(out.as_str().unwrap().contains("./src/main.rs"));
     }
 
     #[test]

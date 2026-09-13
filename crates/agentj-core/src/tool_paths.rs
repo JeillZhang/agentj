@@ -7,13 +7,15 @@ use std::path::Path;
 
 /// Rebase a tool's path-like argument onto `root` when it is a relative string.
 ///
-/// Mapping: `read`/`write`/`grep` → `path`, `glob` → `pattern`. Tools without a
+/// Mapping: `read`/`write`/`grep` → `path`. `glob` arguments pass through
+/// untouched: rewriting the pattern into an absolute path regressed the tool
+/// (`find -name` matches basenames only), so `GlobTool` resolves the session
+/// root itself via `ToolCallContext.workspace_root` instead. Tools without a
 /// path argument (`bash`, ...), absolute paths, and missing keys pass through
 /// untouched.
 pub fn rebase_tool_args(name: &str, args: serde_json::Value, root: &Path) -> serde_json::Value {
     let key = match name {
         "read" | "write" | "grep" => "path",
-        "glob" => "pattern",
         _ => return args,
     };
     let Some(rel) = args.get(key).and_then(serde_json::Value::as_str) else {
@@ -50,10 +52,13 @@ mod tests {
         let out = rebase_tool_args("bash", args.clone(), Path::new("/root"));
         assert_eq!(out, args);
 
-        // glob uses the "pattern" key.
+        // glob patterns are intentionally NOT rewritten: the tool scopes
+        // itself with the session root as cwd (`find . -name <pattern>`).
+        // Rewriting to `/root/**/*.rs` used to break `find -name` (basename
+        // matching only) and silently return empty for every session.
         let args = serde_json::json!({"pattern": "**/*.rs"});
-        let out = rebase_tool_args("glob", args, Path::new("/root"));
-        assert_eq!(out["pattern"], "/root/**/*.rs");
+        let out = rebase_tool_args("glob", args.clone(), Path::new("/root"));
+        assert_eq!(out, args);
     }
 
     #[test]
