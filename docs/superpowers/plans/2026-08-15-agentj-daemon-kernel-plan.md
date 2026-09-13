@@ -861,7 +861,7 @@ git commit -m "docs(spec): document subscribe/permission methods and multi-conne
 **Files:**
 - Modify: `AGENTS.md`
 - Modify: `README.md`
-- Modify: `.claude/summary/summary_and_next.md`
+- Modify: `.agents/summary/summary_and_next.md`
 - Test: content assertions via grep + full workspace gate
 
 **Interfaces:**
@@ -902,7 +902,7 @@ Expected: FAIL — README still says "12 个 v0.1 方法" and lists 12 methods
 - [ ] **Step 4: Update summary_and_next.md**
 
 ```markdown
-# .claude/summary/summary_and_next.md — replace with current-feature content:
+# .agents/summary/summary_and_next.md — replace with current-feature content:
 > 当前功能设计文档：docs/superpowers/specs/2026-08-15-agentj-daemon-kernel-design.md
 > 当前实现计划：docs/superpowers/plans/2026-08-15-agentj-daemon-kernel-plan.md
 
@@ -932,7 +932,7 @@ Expected: ≥ 1 match
 - [ ] **Step 6: Commit**
 
 ```bash
-git add AGENTS.md README.md .claude/summary/summary_and_next.md
+git add AGENTS.md README.md .agents/summary/summary_and_next.md
 git commit -m "docs: sync AGENTS.md, README.md, summary after daemon-kernel design phase"
 ```
 

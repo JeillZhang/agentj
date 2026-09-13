@@ -40,7 +40,7 @@
 | `crates/agentj-model/src/factory.rs` | Mock script gains `Usage` frame | T9 |
 | `crates/agentj-cli/tests/e2e_serve.rs` | New e2e: session/run returns usage | T9 |
 | `Cargo.toml` + `Cargo.lock` | Version bump `0.7.0` → `0.8.0` | T10 |
-| `AGENTS.md` + `README.md` + `.claude/summary/summary_and_next.md` | Doc sync | T11 |
+| `AGENTS.md` + `README.md` + `.agents/summary/summary_and_next.md` | Doc sync | T11 |
 
 ---
 
@@ -796,7 +796,7 @@
 **Files:**
 - Modify: `AGENTS.md`
 - Modify: `README.md`
-- Modify: `.claude/summary/summary_and_next.md`
+- Modify: `.agents/summary/summary_and_next.md`
 
 **Interfaces:**
 - Consumes: G3 changes (this plan), gap doc status update requirement (gap doc G3 row → ✅ 已实现)
@@ -808,7 +808,7 @@
   files:
     - AGENTS.md
     - README.md
-    - .claude/summary/summary_and_next.md
+    - .agents/summary/summary_and_next.md
   depends_on: [T10]
   breaking: false
   ac:

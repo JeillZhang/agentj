@@ -504,7 +504,7 @@ ac:
     then: "Cargo + sdk/config + desktop package.json + src-tauri/tauri.conf.json all 0.12.2 and PROTOCOL_VERSION still 0.12.1"
   - given: "spec TODO"
     when: "update specs and summary"
-    then: "docs/superpowers/specs/2026-09-07-agentj-web-refine-design.md TODO checked, .claude/summary/summary_and_next.md replaced with Visual 2.1 summary, cargo fmt/clippy zero warnings"
+    then: "docs/superpowers/specs/2026-09-07-agentj-web-refine-design.md TODO checked, .agents/summary/summary_and_next.md replaced with Visual 2.1 summary, cargo fmt/clippy zero warnings"
 regression:
   - "./scripts/check-version.sh"
   - "cargo test --workspace -- --skip permission_request_notified"

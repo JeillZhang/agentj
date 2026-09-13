@@ -179,7 +179,7 @@ flowchart TB
 
 > 本设计 D1-D8 对应的 P0-P3 任务均已在
 > `docs/superpowers/plans/2026-09-05-agentj-ui-plan.md`（T0-T18）兑现，
-> 验证见 `.claude/summary/summary_and_next.md`。
+> 验证见 `.agents/summary/summary_and_next.md`。
 
 - [x] P0 重命名与 SDK 抽取（T0-T5）：
   `web-dashboard` → `agentj-ui/apps/web`、`bindings` → `packages/protocol`、
