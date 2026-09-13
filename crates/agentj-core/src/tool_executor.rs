@@ -407,6 +407,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn executor_without_project_root_uses_process_cwd() {
+        let mut kernel = Kernel::new();
+        let roots = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let checker = Arc::new(RecordingChecker {
+            roots: Arc::clone(&roots),
+        });
+        let session = Arc::new(MockSession { root: None });
+        let ctx = executor_ctx_with_store(checker, session);
+        let mut register =
+            crate::module::ModuleRegister::new(Arc::clone(&ctx.tools), Arc::clone(&ctx.providers));
+        kernel
+            .register_module(
+                Box::new(ToolExecutorModule::new(ctx.clone())),
+                &ctx,
+                &mut register,
+            )
+            .unwrap();
+        let handle = kernel.start();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        kernel
+            .sender()
+            .send(KernelMessage::ToolCallRequest {
+                session_id: "s1".into(),
+                tool_call: ToolCall {
+                    id: "c1".into(),
+                    name: "dummy".into(),
+                    arguments: serde_json::json!({}),
+                },
+                target: "tool_executor".into(),
+                reply: Arc::new(std::sync::Mutex::new(Some(tx))),
+            })
+            .unwrap();
+        let reply: Result<ToolExecutionOutcome, ToolError> =
+            tokio::time::timeout(std::time::Duration::from_secs(2), rx)
+                .await
+                .expect("reply must arrive")
+                .expect("sender dropped");
+        assert_eq!(reply.unwrap().result["done"], true);
+        let cwd = std::env::current_dir().expect("process cwd is available");
+        assert_eq!(
+            roots.lock().unwrap().clone(),
+            vec![cwd],
+            "unset project_root must preserve the process CWD fallback"
+        );
+        kernel.sender().send(KernelMessage::Shutdown).unwrap();
+        handle.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
     async fn taken_reply_is_dropped_without_panic() {
         let mut kernel = Kernel::new();
         let ctx = executor_ctx(Arc::new(AllowAll));
