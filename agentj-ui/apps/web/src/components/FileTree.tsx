@@ -22,7 +22,7 @@ function collectStats(nodes: FileNode[]): FileTreeStats {
         continue;
       }
       stats.files += 1;
-      if (node.git) stats.changes += 1;
+      if (node.git && node.git !== "U") stats.changes += 1;
     }
   };
   walk(nodes);
@@ -110,7 +110,7 @@ export default function FileTree({ nodes }: FileTreeProps) {
       )}
       <div className="left-foot">
         <span>{files} 个文件 · {changes} 处变更</span>
-        <span>展开全部</span>
+        <span>⤢ 展开全部</span>
       </div>
     </div>
   );

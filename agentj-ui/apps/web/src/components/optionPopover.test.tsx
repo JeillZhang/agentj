@@ -25,3 +25,19 @@ test("open focuses the panel when focusable", () => {
   const pop = document.querySelector(".pop") as HTMLElement;
   expect(document.activeElement).toBe(pop);
 });
+test("rerender with a new onClose identity does not steal focus", () => {
+  const { rerender } = render(
+    <OptionPopover open onClose={vi.fn()} tabIndex={-1}>
+      <input aria-label="child" />
+    </OptionPopover>,
+  );
+  const input = document.querySelector("input") as HTMLInputElement;
+  input.focus();
+  expect(document.activeElement).toBe(input);
+  rerender(
+    <OptionPopover open onClose={vi.fn()} tabIndex={-1}>
+      <input aria-label="child" />
+    </OptionPopover>,
+  );
+  expect(document.activeElement).toBe(input);
+});

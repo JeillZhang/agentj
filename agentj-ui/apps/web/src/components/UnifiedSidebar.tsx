@@ -71,7 +71,6 @@ function formatTime(ts: unknown): string {
   return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${clock}`;
 }
 
-/** Grouped project rows show the id (the flat recent list owns the preview title). */
 function SessionListItem({
   row,
   activeSessionId,
@@ -97,7 +96,7 @@ function SessionListItem({
         }}
       >
         <span className="aj-session-state" data-state={row.state} />
-        <span className="aj-session-id">{row.id}</span>
+        <span className="aj-session-id">{row.preview ?? row.id}</span>
       </button>
     </li>
   );

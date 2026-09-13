@@ -471,7 +471,7 @@ describe("App shell + history rebuild", () => {
     shared.sessionListResult.value = { sessions: [{ session_id: "s1", state: "active", preview: "hi" }] };
     render(<App />);
     const list = await screen.findByRole("list", { name: "session list" });
-    fireEvent.click(await within(list).findByText(/s1/));
+    fireEvent.click(await within(list).findByText(/hi/));
     expect(await screen.findByText("hello world")).toBeInTheDocument();
     expect(screen.getByText("in=10 out=5")).toBeInTheDocument();
     expect(screen.queryByText("boom")).not.toBeInTheDocument();
@@ -481,9 +481,9 @@ describe("App shell + history rebuild", () => {
     shared.sessionListResult.value = { sessions: [{ session_id: "s1", state: "active", preview: "hi" }] };
     render(<App />);
     const list = await screen.findByRole("list", { name: "session list" });
-    fireEvent.click(await within(list).findByText(/s1/));
+    fireEvent.click(await within(list).findByText(/hi/));
     await screen.findByText("hello world");
-    fireEvent.click(screen.getByRole("tab", { name: /trajectory/i }));
+    fireEvent.click(screen.getByRole("tab", { name: /轨迹/ }));
     expect(await screen.findByText("boom")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /play/i })).toBeInTheDocument();
   });
@@ -510,7 +510,7 @@ describe("App shell + history rebuild", () => {
     expect(await within(header).findByText("deepseek-chat")).toBeInTheDocument();
     expect(within(header).getByLabelText("model")).toBeInTheDocument();
     const list = await screen.findByRole("list", { name: "session list" });
-    fireEvent.click(await within(list).findByText(/s1/));
+    fireEvent.click(await within(list).findByText(/hi/));
     await screen.findByText("hello world");
     expect(screen.getAllByText("deepseek-chat").length).toBeGreaterThanOrEqual(2);
   });

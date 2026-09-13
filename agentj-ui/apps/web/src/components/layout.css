@@ -180,6 +180,21 @@
   overflow: hidden;
 }
 
+/* T25 — ≥1024: the sidebar must follow the shell column width set by the splitter.
+   Only wide layouts get this; <1024 keeps the fixed-drawer width from sidebar.css. */
+@media (min-width: 1024px) {
+  .aj-shell__left > .aj-sidebar {
+    width: 100%;
+    min-width: 0;
+    max-width: none;
+  }
+  .aj-workspace--right-collapsed .aj-shell__right {
+    flex-basis: 40px;
+    min-width: 0;
+    max-width: 40px;
+  }
+}
+
 /* <1024px: splitters hidden; right becomes a drawer; left keeps existing drawer rules */
 @media (max-width: 1023px) {
   .aj-workspace > .aj-splitter { display: none; }

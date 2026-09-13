@@ -29,14 +29,16 @@ export default function OptionPopover({
   ...rest
 }: OptionPopoverProps) {
   const ref = useRef<HTMLDivElement>(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
 
   useEffect(() => {
     if (!open) return;
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
+      if (event.key === "Escape") onCloseRef.current();
     };
     const handleMouseDown = (event: MouseEvent) => {
-      if (!ref.current?.contains(event.target as Node)) onClose();
+      if (!ref.current?.contains(event.target as Node)) onCloseRef.current();
     };
     document.addEventListener("keydown", handleKeyDown);
     document.addEventListener("mousedown", handleMouseDown);
@@ -45,7 +47,7 @@ export default function OptionPopover({
       document.removeEventListener("keydown", handleKeyDown);
       document.removeEventListener("mousedown", handleMouseDown);
     };
-  }, [open, onClose]);
+  }, [open]);
 
   if (!open) return null;
 

@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom/vitest";
 import { test, expect } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, within } from "@testing-library/react";
 import UnifiedSidebar from "./UnifiedSidebar";
 
 const client = {
@@ -41,7 +41,10 @@ test("flat list renders sessions and star toggle persists", async () => {
   const { container } = render(
     <UnifiedSidebar wsUrl="ws://x" client={client as never} activeSessionId={null} onActiveChange={() => {}} />,
   );
-  await screen.findByText("hi");
+  const flat = container.querySelector('[aria-label="最近会话"]') as HTMLElement;
+  await within(flat).findByText("hi");
+  const grouped = container.querySelector('[aria-label="session list"]') as HTMLElement;
+  expect(within(grouped).getByText("hi")).toBeInTheDocument();
   fireEvent.click(container.querySelector(".aj-star") as HTMLElement);
   expect(JSON.parse(localStorage.getItem("agentj.favorites") ?? "[]")).toContain("s1");
 });

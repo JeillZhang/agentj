@@ -100,12 +100,17 @@ export default function WorkspaceShell({
     "--aj-right-w": `${rightWidth}px`,
   } as CSSProperties;
 
+  const rootClass = [
+    "aj-layout",
+    "aj-workspace",
+    rightDrawerOpen ? "aj-workspace--right-open" : "",
+    rightCollapsed ? "aj-workspace--right-collapsed" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+
   return (
-    <div
-      ref={rootRef}
-      className={`aj-layout aj-workspace${rightDrawerOpen ? " aj-workspace--right-open" : ""}`}
-      style={styleVars}
-    >
+    <div ref={rootRef} className={rootClass} style={styleVars}>
       <div className="aj-shell__left">{left}</div>
       <SplitPane
         side="left"

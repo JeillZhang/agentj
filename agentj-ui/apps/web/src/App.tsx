@@ -439,8 +439,22 @@ export default function App() {
         />
         <div className="aj-main">
           <div role="tablist" aria-label="views">
-            <button role="tab" aria-selected={tab === "conversation"} className="aj-tab" onClick={() => setTab("conversation")}>Conversation</button>
-            <button role="tab" aria-selected={tab === "trajectory"} className="aj-tab" onClick={() => setTab("trajectory")}>Trajectory</button>
+            <button
+              role="tab"
+              aria-selected={tab === "conversation"}
+              className="aj-tab"
+              onClick={() => setTab("conversation")}
+            >
+              对话
+            </button>
+            <button
+              role="tab"
+              aria-selected={tab === "trajectory"}
+              className="aj-tab"
+              onClick={() => setTab("trajectory")}
+            >
+              轨迹
+            </button>
           </div>
           {tab === "conversation" ? (
             activeSessionId === null ? (

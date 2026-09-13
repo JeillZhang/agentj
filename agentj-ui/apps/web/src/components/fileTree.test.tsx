@@ -23,3 +23,12 @@ test("empty state and footer", () => {
   expect(screen.getByText(/0 个文件 · 0 处变更/)).toBeInTheDocument();
   expect(screen.getByText(/展开全部/)).toBeInTheDocument();
 });
+test("footer counts tracked-status changes only and keeps the expand glyph", () => {
+  const nodes = [
+    { name: "a.ts", path: "a.ts", kind: "file" as const, git: "M" as const },
+    { name: "b.ts", path: "b.ts", kind: "file" as const, git: "U" as const },
+  ];
+  render(<FileTree nodes={nodes} />);
+  expect(screen.getByText(/2 个文件 · 1 处变更/)).toBeInTheDocument();
+  expect(screen.getByText("⤢ 展开全部")).toBeInTheDocument();
+});
