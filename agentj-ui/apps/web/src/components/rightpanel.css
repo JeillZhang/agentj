@@ -1,0 +1,371 @@
+/* RightPanel (第三栏 运行详情) + shared TodoPanel(任务) / ChangeList(文件变更) styles.
+   Consumed through aj-* generated tokens only (no raw hex). */
+
+.aj-right {
+  width: var(--aj-right-w, var(--aj-rightWidth));
+  min-width: 0;
+  flex-shrink: 0;
+  background: var(--aj-sidebar);
+  border-left: 0.5px solid var(--aj-border);
+  display: flex;
+  flex-direction: column;
+  transition: width var(--aj-motion) var(--aj-ease);
+  overflow: hidden;
+}
+
+.aj-right--collapsed {
+  width: 40px;
+}
+
+.aj-right--collapsed .aj-right__body {
+  visibility: hidden;
+}
+
+.aj-right__head {
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 12px;
+  border-bottom: 0.5px solid var(--aj-border);
+  flex-shrink: 0;
+}
+
+.aj-right--collapsed .aj-right__head {
+  padding: 0;
+  justify-content: center;
+}
+
+.aj-right--collapsed .aj-right__title {
+  display: none;
+}
+
+.aj-right__title {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.aj-right__collapse {
+  width: 32px;
+  height: 32px;
+  border-radius: var(--aj-radiusCtl);
+  border: 0.5px solid var(--aj-border);
+  background: var(--aj-panel);
+  color: var(--aj-textMuted);
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background var(--aj-motion) var(--aj-ease), color var(--aj-motion) var(--aj-ease);
+}
+
+.aj-right__collapse:hover {
+  background: var(--aj-raised);
+  color: var(--aj-text);
+}
+
+.aj-right__body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ---- sections ---- */
+
+.right-section {
+  padding: 10px 12px;
+}
+
+.right-section + .right-section {
+  border-top: 0.5px solid var(--aj-border);
+}
+
+.sec-head {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: var(--aj-textCaption);
+  text-transform: uppercase;
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.count {
+  font-size: 11px;
+  color: var(--aj-textCaption);
+  background: var(--aj-panel);
+  border: 0.5px solid var(--aj-border);
+  padding: 1px 6px;
+  border-radius: 999px;
+}
+
+/* ---- todo rows ---- */
+
+.todo-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.aj-todo {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.cb {
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  flex-shrink: 0;
+}
+
+.cb.done {
+  background: var(--aj-success);
+  color: var(--aj-accentOnAccent);
+  border: 1px solid var(--aj-success);
+}
+
+.cb.prog {
+  border: 1.5px solid var(--aj-accent);
+  color: var(--aj-accent);
+  background: transparent;
+  position: relative;
+}
+
+.cb.prog::after {
+  content: "";
+  position: absolute;
+  width: 6px;
+  height: 6px;
+  background: var(--aj-accent);
+  border-radius: 50%;
+  animation: pulse 1.1s infinite;
+}
+
+.cb.pending {
+  border: 1.5px solid var(--aj-border);
+  background: transparent;
+  color: transparent;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.todo-label {
+  font-size: 13px;
+  color: var(--aj-text);
+  line-height: 1.2;
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.todo-label.muted {
+  color: var(--aj-textMuted);
+}
+
+.pill-st {
+  font-size: 11px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 0.5px solid var(--aj-border);
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.pill-st.done {
+  background: var(--aj-diffAddTint);
+  color: var(--aj-success);
+  border-color: var(--aj-diffAddTint);
+}
+
+.pill-st.prog {
+  background: var(--aj-accentTint);
+  color: var(--aj-accent);
+  border-color: var(--aj-accentTint);
+}
+
+.pill-st.todo {
+  background: transparent;
+  color: var(--aj-textCaption);
+}
+
+/* ---- file changes ---- */
+
+.file-changes {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.fc {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--aj-panel);
+  border: 0.5px solid var(--aj-border);
+  border-radius: var(--aj-radiusCtl);
+  padding: 7px 9px;
+}
+
+button.fc {
+  width: 100%;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+button.fc:hover {
+  background: var(--aj-raised);
+}
+
+.fc-icon {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  background: var(--aj-raised);
+  border: 0.5px solid var(--aj-border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  color: var(--aj-textMuted);
+  flex-shrink: 0;
+}
+
+.fc-path {
+  font-family: "SF Mono", ui-monospace, Menlo, monospace;
+  font-size: 12.5px;
+  color: var(--aj-text);
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fc-counts {
+  font-family: "SF Mono", ui-monospace, Menlo, monospace;
+  font-size: 11px;
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.add {
+  color: var(--aj-success);
+}
+
+.del {
+  color: var(--aj-error);
+}
+
+.badge {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 999px;
+  flex-shrink: 0;
+}
+
+.badge-new {
+  background: var(--aj-diffAddTint);
+  color: var(--aj-success);
+}
+
+.badge-mod {
+  background: var(--aj-accentTint);
+  color: var(--aj-accent);
+}
+
+/* ---- unified diff ---- */
+
+.diff-wrap {
+  margin-top: 8px;
+  border: 0.5px solid var(--aj-border);
+  border-radius: var(--aj-radiusCtl);
+  overflow: hidden;
+  background: var(--aj-codeBg);
+}
+
+.diff-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: var(--aj-panel);
+  border-bottom: 0.5px solid var(--aj-border);
+  font-family: "SF Mono", ui-monospace, Menlo, monospace;
+  font-size: 11px;
+  color: var(--aj-textMuted);
+}
+
+.diff-head strong {
+  color: var(--aj-text);
+  font-weight: 600;
+}
+
+.diff {
+  font-family: "SF Mono", ui-monospace, Menlo, monospace;
+  font-size: 11.5px;
+  line-height: 1.6;
+  padding: 8px 0;
+  overflow-x: auto;
+}
+
+.diff-line {
+  padding: 0 10px;
+  white-space: pre;
+}
+
+.diff-line.add {
+  background: var(--aj-diffAddTint);
+  color: var(--aj-text);
+}
+
+.diff-line.add::before {
+  color: var(--aj-success);
+}
+
+.diff-line.del {
+  background: var(--aj-diffDelTint);
+  color: var(--aj-text);
+}
+
+.diff-line.ctx {
+  color: var(--aj-textMuted);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .aj-right {
+    transition: none;
+  }
+
+  .aj-right__collapse {
+    transition: none;
+  }
+
+  .cb.prog::after {
+    animation: none;
+  }
+}
