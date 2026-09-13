@@ -1,0 +1,111 @@
+.filetree {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 4px 0 0;
+}
+
+.tree {
+  padding: 4px 6px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  font-family: "SF Mono", ui-monospace, Menlo, monospace;
+  font-size: 12.5px;
+  overflow: auto;
+}
+
+.trow {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 6px 3px 2px;
+  border-radius: var(--aj-radiusCtl);
+  color: var(--aj-textMuted);
+  line-height: 1.4;
+}
+
+button.trow {
+  width: 100%;
+  border: none;
+  background: transparent;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+button.trow:hover {
+  background: var(--aj-panel);
+  color: var(--aj-text);
+}
+
+.trow .chev {
+  width: 12px;
+  text-align: center;
+  font-size: 9px;
+  color: var(--aj-textCaption);
+  flex-shrink: 0;
+}
+
+.trow .file-icon {
+  flex-shrink: 0;
+  opacity: 0.7;
+  color: var(--aj-textMuted);
+}
+
+.trow .name {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.trow .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.trow .status-txt {
+  font-size: 10px;
+  font-weight: 700;
+  width: 10px;
+  text-align: center;
+}
+
+.indent-1 { padding-left: 16px; }
+.indent-2 { padding-left: 32px; }
+.indent-3 { padding-left: 48px; }
+.indent-4 { padding-left: 64px; }
+
+.status-M { color: var(--aj-warning); }
+.status-A { color: var(--aj-success); }
+.status-U { color: var(--aj-textCaption); }
+.status-D { color: var(--aj-error); }
+
+.dot-M { background: var(--aj-warning); }
+.dot-A { background: var(--aj-success); }
+.dot-U { background: var(--aj-textCaption); }
+.dot-D { background: var(--aj-error); }
+
+.left-foot {
+  margin-top: auto;
+  padding: 8px 10px;
+  border-top: 0.5px solid var(--aj-border);
+  font-size: 11px;
+  color: var(--aj-textCaption);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .trow,
+  button.trow {
+    transition: none;
+  }
+}

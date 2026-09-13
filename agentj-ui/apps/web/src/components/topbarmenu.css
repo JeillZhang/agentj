@@ -1,0 +1,178 @@
+/* topbarmenu.css — topbar ⋯ overflow menu (agentj 0.14.0 three-column workbench).
+   Owns .aj-menu panel, second-level prefs panels, and the right-drawer toggle
+   (.aj-right-toggle) that T23 renders but whose responsive style lives here. */
+
+.aj-topbar-menu {
+  position: relative;
+  display: inline-flex;
+}
+
+.aj-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0.5px solid var(--aj-border);
+  border-radius: var(--aj-radiusCtl);
+  background: transparent;
+  color: var(--aj-textMuted);
+  font: inherit;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background var(--aj-motion) var(--aj-ease), color var(--aj-motion) var(--aj-ease);
+}
+.aj-icon-btn:hover {
+  background: var(--aj-raised);
+  color: var(--aj-text);
+}
+.aj-icon-btn:focus-visible {
+  outline: 2px solid var(--aj-accent);
+  outline-offset: 1px;
+}
+
+.aj-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  min-width: 200px;
+  padding: 6px;
+  background: var(--aj-panel);
+  border: 0.5px solid var(--aj-border);
+  border-radius: var(--aj-radiusCard);
+  box-shadow: var(--aj-shadowRaised);
+  z-index: var(--aj-z-dialog);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.aj-menu__status {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px 8px;
+  color: var(--aj-textMuted);
+  font-size: 12px;
+}
+.aj-menu__conn {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.aj-menu__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  flex-shrink: 0;
+  background: var(--aj-textCaption);
+}
+.aj-menu__dot[data-state="on"] {
+  background: var(--aj-success);
+}
+.aj-menu__dot[data-state="off"] {
+  background: var(--aj-warning);
+}
+
+.aj-menu__sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--aj-border);
+}
+
+.aj-menu__label {
+  margin: 6px 8px 2px;
+  color: var(--aj-textCaption);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.aj-menu__empty {
+  margin: 0;
+  padding: 6px 10px;
+  color: var(--aj-textCaption);
+  font-size: 12px;
+}
+
+.aj-menu__item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--aj-text);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--aj-motion) var(--aj-ease), color var(--aj-motion) var(--aj-ease);
+}
+.aj-menu__item:hover {
+  background: var(--aj-raised);
+}
+.aj-menu__item:focus-visible {
+  outline: 2px solid var(--aj-accent);
+  outline-offset: -2px;
+}
+.aj-menu__item--sub {
+  padding-left: 18px;
+  font-size: 12.5px;
+  color: var(--aj-textMuted);
+}
+.aj-menu__state {
+  color: var(--aj-textCaption);
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
+.aj-menu__sub {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 2px 4px 2px 10px;
+  padding-left: 4px;
+  border-left: 2px solid var(--aj-border);
+}
+
+.aj-dialog__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.aj-dialog__title {
+  margin: 0;
+  font-size: 16px;
+}
+.aj-dialog__actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+}
+
+.aj-right-toggle {
+  display: none;
+}
+@media (max-width: 1023px) {
+  .aj-right-toggle {
+    display: inline-flex;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .aj-menu,
+  .aj-menu__item,
+  .aj-icon-btn {
+    transition: none;
+    animation: none;
+  }
+}

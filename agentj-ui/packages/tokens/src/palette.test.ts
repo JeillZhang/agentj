@@ -14,6 +14,7 @@ describe("@agentj/tokens palette", () => {
       "bg","sidebar","panel","raised","text","textMuted","accent","accentOnAccent",
       "userBubble","border","codeBg","inlineCodeBg","success","error","warning",
       "shadowSoft","shadowRaised","radiusXl","textCaption",
+      "radiusCtl","radiusCard","accentTint","diffAddTint","diffDelTint",
     ];
     expect(SEMANTIC_KEYS).toEqual(expected);
     for (const mode of ["light", "dark"] as ThemeName[]) {
@@ -78,5 +79,26 @@ describe("@agentj/tokens palette", () => {
   it("cssForMode emits one custom property per key", () => {
     const out = cssForMode("dark", palettes.dark);
     expect(out.split(";").length).toBe(SEMANTIC_KEYS.length + 1); // trailing newline
+  });
+  it("emits radius and tint tokens into tokens.css", () => {
+    expect(css).toContain("--aj-radiusCtl:8px");
+    expect(css).toContain("--aj-radiusCard:12px");
+    expect(css).toContain("--aj-accentTint:rgba(65,118,230,.10)");
+    expect(css).toContain("--aj-diffAddTint:rgba(34,197,94,.14)");
+    expect(css).toContain("--aj-diffDelTint:rgba(236,19,19,.10)");
+  });
+  it("emits LAYOUT constants once in :root", () => {
+    expect(css).toContain("--aj-leftWidth:256px");
+    expect(css).toContain("--aj-leftMin:200px");
+    expect(css).toContain("--aj-rightWidth:320px");
+    expect(css).toContain("--aj-splitterHit:7px");
+    expect(css).toContain("--aj-topbarH:48px");
+    expect(css).toContain("--aj-gap:12px");
+  });
+  it("mirrors LAYOUT in tokens.json", () => {
+    const parsed = JSON.parse(json);
+    expect(parsed.layout.leftWidth).toBe("256px");
+    expect(parsed.dark.radiusCard).toBe("12px");
+    expect(parsed.light.radiusCtl).toBe("8px");
   });
 });

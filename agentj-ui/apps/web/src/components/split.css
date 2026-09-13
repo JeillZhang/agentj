@@ -1,0 +1,45 @@
+.aj-splitter {
+  width: var(--aj-splitterHit);
+  min-width: var(--aj-splitterHit);
+  flex: 0 0 auto;
+  cursor: col-resize;
+  touch-action: none;
+  user-select: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  background: var(--aj-bg);
+}
+
+.aj-splitter__line {
+  width: 1px;
+  height: 100%;
+  background: var(--aj-border);
+}
+
+.aj-splitter__grip {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  opacity: 0.6;
+}
+
+.aj-splitter__grip i {
+  width: 2px;
+  height: 2px;
+  border-radius: 50%;
+  background: var(--aj-textCaption);
+}
+
+.aj-splitter:hover .aj-splitter__line,
+.aj-splitter[data-dragging="true"] .aj-splitter__line {
+  background: var(--aj-accent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .aj-splitter * {
+    transition: none;
+  }
+}

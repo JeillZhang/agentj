@@ -21,11 +21,15 @@ describe("T1 scaffold", () => {
       "trajectory.css",
       "hero.css",
       "dialog.css",
+      "split.css",
+      "rightpanel.css",
+      "filetree.css",
     ]) {
       expect(existsSync(join(compDir, f)), f).toBe(true);
     }
     const main = readFileSync(join(webRoot, "src/main.tsx"), "utf8");
     expect(main).toContain("components/layout.css");
+    expect(main).toContain("components/split.css");
   });
 });
 
@@ -58,6 +62,34 @@ describe("BUG-004 desktop breakpoint keeps compact layout gap", () => {
   });
 });
 
+describe("ghost button is self-contained (no native look)", () => {
+  function readAppCss(): string {
+    const webRoot = join(dirname(fileURLToPath(import.meta.url)), "../..");
+    const cands = [
+      join(webRoot, "src/App.css"),
+      join(process.cwd(), "src/App.css"),
+      join(process.cwd(), "apps/web/src/App.css"),
+      join(process.cwd(), "agentj-ui/apps/web/src/App.css"),
+    ];
+    for (const p of cands) if (existsSync(p)) return readFileSync(p, "utf8");
+    return readFileSync(cands[0]!, "utf8");
+  }
+  it(".aj-button--ghost declares full control styling", () => {
+    const css = readAppCss();
+    const match = css.match(/\.aj-button--ghost\s*\{([^}]*)\}/);
+    expect(match).not.toBeNull();
+    const body = match![1];
+    for (const prop of ["padding", "border", "border-radius", "font", "cursor"]) {
+      expect(body, prop).toMatch(new RegExp(`(^|[;{\\s])${prop}\\s*:`));
+    }
+  });
+  it(".aj-button--ghost hover/disabled states are styled", () => {
+    const css = readAppCss();
+    expect(css).toMatch(/\.aj-button--ghost:hover\s*\{[^}]*background:\s*var\(--aj-raised\)/);
+    expect(css).toMatch(/\.aj-button--ghost:disabled\s*\{[^}]*opacity/);
+  });
+});
+
 describe("T0 scaffold density and hairline", () => {
   function readIndexCss(): string {
     const webRoot = join(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -76,8 +108,10 @@ describe("T0 scaffold density and hairline", () => {
     expect(css).toMatch(/--aj-sidebar-bg-diff:\s*color-mix/);
   });
   it("density vars present", () => {
+    const webRoot = join(dirname(fileURLToPath(import.meta.url)), "../..");
+    const tokens = readFileSync(join(webRoot, "../../packages/tokens/tokens.css"), "utf8");
+    expect(tokens).toContain("--aj-gap:12px");
     const css = readIndexCss();
-    expect(css).toMatch(/--aj-gap/);
     expect(css).toMatch(/--aj-shadow-soft-sm/);
   });
   it("palette unchanged and hairline uses 0.5px box-shadow", () => {
@@ -94,8 +128,15 @@ describe("T0 scaffold density and hairline", () => {
     expect(palette).toMatch(/SEMANTIC_KEYS/);
     const keysMatch = palette.match(/SEMANTIC_KEYS\s*=\s*\[/s);
     expect(keysMatch).not.toBeNull();
-    const count = (palette.match(/"bg"|"sidebar"|"panel"|"raised"|"text"|"textMuted"|"accent"|"accentOnAccent"|"userBubble"|"border"|"codeBg"|"inlineCodeBg"|"success"|"error"|"warning"|"shadowSoft"|"shadowRaised"|"radiusXl"|"textCaption"/g) ?? []).length;
-    expect(count).toBe(19);
+    const keys = [
+      "bg", "sidebar", "panel", "raised", "text", "textMuted", "accent", "accentOnAccent",
+      "userBubble", "border", "codeBg", "inlineCodeBg", "success", "error", "warning",
+      "shadowSoft", "shadowRaised", "radiusXl", "textCaption",
+      "radiusCtl", "radiusCard", "accentTint", "diffAddTint", "diffDelTint",
+    ];
+    const quoted = keys.map((k) => `"${k}"`).join("|");
+    const count = (palette.match(new RegExp(quoted, "g")) ?? []).length;
+    expect(count).toBe(24);
     const compDir = join(webRoot, "src/components");
     const sidebarCandidates = [
       join(compDir, "sidebar.css"),

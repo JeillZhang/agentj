@@ -78,7 +78,7 @@
   justify-content: center;
   width: 32px;
   height: 32px;
-  border-radius: var(--aj-radius-ctl);
+  border-radius: var(--aj-radiusCtl);
   border: 0.5px solid var(--aj-border);
   background: var(--aj-panel);
   color: var(--aj-textMuted);
@@ -93,7 +93,7 @@
   max-width: 320px;
   background: var(--aj-panel);
   border: 0.5px solid var(--aj-border);
-  border-radius: var(--aj-radius-card);
+  border-radius: var(--aj-radiusCard);
   box-shadow: var(--aj-shadowRaised);
   padding: 10px;
   z-index: 20;
@@ -131,6 +131,7 @@
   box-shadow: 0 0 0 0.5px var(--aj-border);
 }
 
+/* T24 — content wrapper only; `.aj-shell__center` owns all center-column sizing. */
 .aj-main {
   display: flex;
   flex-direction: column;
@@ -139,14 +140,93 @@
   gap: 10px;
   overflow: hidden;
   padding: 10px;
-  max-width: var(--aj-content-max);
-  width: clamp(680px, 64%, 920px);
+}
+
+/* T11 — three-column workspace shell (left 256 / center ≥480 / right 320) */
+.aj-shell__left {
+  flex: 0 1 var(--aj-left-w, 256px);
+  min-width: 200px;
+  max-width: 420px;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.aj-shell__center {
+  flex: 1 1 auto;
+  min-width: 480px;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  position: relative;
+}
+
+.aj-shell__center .aj-conv,
+.aj-shell__center .aj-composer-card {
+  width: 100%;
+  max-width: 720px;
   margin: 0 auto;
 }
 
-/* Narrow: padding 0 16px */
-@media (max-width: 767px) {
-  .aj-main { width: 100%; max-width: 100%; padding: 0 16px; }
+.aj-shell__right {
+  flex: 0 1 var(--aj-right-w, 320px);
+  min-width: 260px;
+  max-width: 480px;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* T25 — ≥1024: the sidebar must follow the shell column width set by the splitter.
+   Only wide layouts get this; <1024 keeps the fixed-drawer width from sidebar.css. */
+@media (min-width: 1024px) {
+  .aj-shell__left > .aj-sidebar {
+    width: 100%;
+    min-width: 0;
+    max-width: none;
+  }
+  .aj-workspace--right-collapsed .aj-shell__right {
+    flex-basis: 40px;
+    min-width: 0;
+    max-width: 40px;
+  }
+}
+
+/* <1024px: splitters hidden; right becomes a drawer; left keeps existing drawer rules */
+@media (max-width: 1023px) {
+  .aj-workspace > .aj-splitter { display: none; }
+  .aj-shell__left {
+    flex: none;
+    width: 0;
+    min-width: 0;
+    max-width: none;
+  }
+  .aj-shell__center { min-width: 0; }
+  .aj-shell__right {
+    position: fixed;
+    top: var(--aj-topbarH);
+    right: 0;
+    bottom: 0;
+    width: min(320px, 86vw);
+    max-width: none;
+    background: var(--aj-sidebar);
+    border-left: 0.5px solid var(--aj-border);
+    box-shadow: 0 0 0 0.5px var(--aj-border);
+    transform: translateX(100%);
+    transition: transform 150ms var(--aj-ease);
+    z-index: 10;
+  }
+  .aj-workspace--right-open .aj-shell__right {
+    transform: none;
+    box-shadow: -2px 0 8px rgba(0, 0, 0, 0.15);
+  }
+}
+
+@media (min-width: 1024px) {
+  .aj-shell__right { transform: none; }
 }
 
 /* Scrim: rgba(0,0,0,.24) 150ms transform, focus not obscured */
@@ -167,7 +247,7 @@
   .aj-sidebar {
     position: fixed;
     left: 0;
-    top: var(--aj-topbar-h, 48px);
+    top: var(--aj-topbarH);
     bottom: 0;
     transform: translateX(-100%);
     transition: transform 150ms var(--aj-ease);
@@ -206,10 +286,21 @@
 /* Ensure drawer toggle visibility helper (also defined in App.css) */
 .aj-drawer-toggle {
   border: none;
-  border-radius: var(--aj-radius-ctl);
+  border-radius: var(--aj-radiusCtl);
   background: var(--aj-accent);
   color: var(--aj-accentOnAccent);
   padding: 7px 10px;
   font: inherit;
   cursor: pointer;
+}
+
+/* T24 — reduced motion: kill drawer/scrim transitions */
+@media (prefers-reduced-motion: reduce) {
+  .aj-shell__right,
+  .aj-scrim,
+  .aj-session-rail,
+  .aj-sidebar {
+    transition: none !important;
+    animation: none !important;
+  }
 }

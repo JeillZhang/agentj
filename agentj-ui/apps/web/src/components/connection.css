@@ -45,7 +45,7 @@
 
 .aj-input {
   min-height: 40px;
-  border-radius: var(--aj-radius-ctl);
+  border-radius: var(--aj-radiusCtl);
   border: 1px solid var(--aj-border);
   background: var(--aj-panel);
   color: var(--aj-text);

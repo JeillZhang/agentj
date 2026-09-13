@@ -15,6 +15,13 @@
   z-index: 2;
 }
 
+/* BUG-003 — short viewports: let the expanded ask card shrink & scroll inside
+   the composer so .comp-tools + send stay visible and its popovers aren't clipped. */
+.aj-composer-card > .ask {
+  min-height: 0;
+  overflow-y: auto;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .aj-composer-card,
   .aj-composer-card *,
@@ -31,7 +38,7 @@
   min-height: 44px;
   flex: 1;
   resize: none;
-  border-radius: var(--aj-radius-ctl);
+  border-radius: var(--aj-radiusCtl);
   color: var(--aj-text);
   font: inherit;
   padding: 8px 10px;
@@ -66,7 +73,7 @@
   align-items: center;
   gap: 6px;
   padding: 6px 10px;
-  border-radius: var(--aj-radius-ctl);
+  border-radius: var(--aj-radiusCtl);
   border: 0.5px solid var(--aj-border);
   background: var(--aj-panel);
   color: var(--aj-text);
@@ -90,7 +97,7 @@
   max-width: 280px;
   background: var(--aj-panel);
   border: 0.5px solid var(--aj-border);
-  border-radius: var(--aj-radius-card);
+  border-radius: var(--aj-radiusCard);
   box-shadow: var(--aj-shadowRaised);
   padding: 6px;
   margin: 0;
@@ -109,7 +116,7 @@
 .aj-composer__picker-option,
 .aj-composer__at-option {
   padding: 7px 10px;
-  border-radius: var(--aj-radius-ctl);
+  border-radius: var(--aj-radiusCtl);
   font-size: 13px;
   color: var(--aj-text);
   cursor: pointer;
@@ -132,20 +139,9 @@
   color: var(--aj-accent);
 }
 
-.aj-composer__status-wrap {
-  position: relative;
-  display: inline-flex;
-}
-
-.aj-composer__toolbar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  justify-content: space-between;
-}
-
-.aj-composer__toolbar .aj-chip {
-  transform: translateY(-2px);
+.sel[aria-expanded="true"] {
+  background: var(--aj-raised);
+  color: var(--aj-text);
 }
 
 .aj-button--send {
@@ -158,32 +154,13 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  font-size: 14px;
   cursor: pointer;
-  transform: translateY(-2px);
   flex-shrink: 0;
   padding: 0;
-}
-
-.aj-button--send svg {
-  width: var(--aj-icon-sm);
-  height: var(--aj-icon-sm);
 }
 
 .aj-button--send:disabled {
   opacity: .4;
   cursor: default;
-}
-
-.aj-pending {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--aj-accent);
-  animation: aj-pending 1s ease-in-out infinite alternate;
-  display: inline-block;
-}
-
-@keyframes aj-pending {
-  from { opacity: .3; }
-  to { opacity: 1; }
 }

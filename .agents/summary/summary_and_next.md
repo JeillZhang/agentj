@@ -1,65 +1,56 @@
 # Summary & Next
 
 > 本文件仅保留**当前正在开发**功能设计文档的内容：进度、剩余步骤、遗留问题与下一步。同步更新时**替换**（不要追加）前一功能内容。
-> 当前功能：**agentj-ui Visual 2.2 Opencode redesign（0.13.0）—— UnifiedSidebar 256px + local Project + composer 增强**
-> ——设计文档 `docs/superpowers/specs/2026-09-06-agentj-opencode-redesign-design.md`
-> + 实现计划 `docs/superpowers/plans/2026-09-06-agentj-opencode-redesign-plan.md`
-> （11 任务 T0-T10，后端零改造，纯 `agentj-ui` 增量，0.12.3 → 0.13.0 minor）
+> 当前功能：**agentj-ui 三栏工作台（0.14.6）—— Sessions/Files 左栏 + 会话中栏 + 运行详情右栏 + composer 模型/Agent/熵变选择器 + 模型提问卡片 + demo 模式**
+> ——设计文档 `docs/superpowers/specs/2026-09-13-agentj-three-column-workbench-design.md`
+> + 实现计划 `.superpowers/sdd/2026-09-13-agentj-three-column-workbench-plan/`
+> （T0-T28 + final review fix wave + acceptance 3 bugs + 评审反馈修复 1 bugfix + 评审反馈修复 3 项 + 评审反馈修复 1 项（弹窗 portal）+ 评审反馈修复 1 项（添加项目弹窗统一）+ 评审反馈修复 1 项（ghost 按钮自足化），后端零改造，纯 `agentj-ui` 增量，0.13.0 → 0.14.6 patch）
 
-## 待实施
+## 进度与摘要
 
-| 阶段 | 标题 | 依赖 | 优先级 | 状态 |
-|------|------|------|--------|------|
-| ✅ 完成 | IPC 协议契约（agentj-protocol + schemas + registry + spec + TS 绑定） | 无 | P0 | 已完成 |
-| ✅ 完成 | v0.1 核心内核（25 任务，v0.1.x 发布） | 无 | P0 | 已完成 |
-| ✅ 完成 | v0.2 权限审批系统（13 任务，v0.2.x 发布） | v0.1 | P0 | 已完成 |
-| ✅ 完成 | v0.3 生态扩展（T0-T11，v0.3.0 发布） | v0.1+v0.2 | P1 | 已完成 |
-| ✅ 完成 | v0.4 商业扩展（守护内核常驻 serve / Web Dashboard / 用量统计 / License；v0.4.1） | v0.1-v0.3 | P2 | 已完成 |
-| ✅ 完成 | v0.5 内核调度全重构（决策 #18 兑现，v0.5.0/0.5.1） | v0.4 | P0 | 已完成 |
-| ✅ 完成 | G2 修复：单全局 in-flight 会话槽 → per-session 路由（T1-T6，v0.6.0） | v0.5 | P0 | ✅ 已实现 v0.6.0 |
-| ✅ 完成 | G4 会话持久化生产接线（FileBackedStore + 唯一 tmp + 目录 fsync，v0.7.0） | v0.6.0 | P0 | ✅ 已实现 v0.7.0 |
-| ✅ 完成 | G3 token 级用量统计（TokenUsage + 4 提供方 + SessionRunResult.usage，v0.8.0） | v0.7.0 | P0 | ✅ 已实现 v0.8.0 |
-| ✅ 完成 | G5 License gating + G6 MCP wiring（[license] + McpServerSpec + close_all，v0.9.1） | v0.8.0 | P0 | ✅ 已实现 v0.9.1 |
-| ✅ 完成 | G7 EventBus 重入防护 + G8 WebSocket 网关（v0.10.0，G1-G8 全闭环） | v0.9.1 | P0 | ✅ 已实现 v0.10.0 |
-| ✅ 完成 | **agentj-ui 三端统一前端（Web / TUI / Desktop + SDK，v0.11.1）**（T0-T18 + 9 acceptance fixes） | v0.10.0 | P0 | ✅ 已实现 v0.11.1 |
-| ✅ 完成 | **agentj-ui Visual 2.0 视觉重设计（v0.12.1）**（T0-T25：共享 tokens / trajectory+history / Web+TUI+Desktop 重设计 / brand 图标 + 4 acceptance fixes） | v0.11.1 | P0 | ✅ 已实现 v0.12.1 |
-| ✅ 完成 | **agentj-ui Visual 2.1 refine（v0.12.3）**（T0-T10：tokens 19 keys + Web 精细化 shell/composer/session/conversation/trajectory/hero/dialog + lucide） | v0.12.1 | P0 | ✅ 已实现 v0.12.3 |
-| ✅ 完成 | **agentj-ui Visual 2.2 Opencode redesign（v0.13.0）**（T0-T10：UnifiedSidebar 256px + local Project + composer enhance + density + TUI 32char + Desktop + a11y） | v0.12.3 | P0 | ✅ 已实现 v0.13.0 |
+- ✅ **T0-T28 全部完成并提交**（分支 `feature/agentj-three-column-workbench`）。
+- ✅ **T0-T2 数据与 tokens**：`palette.ts` 24 keys（radiusCtl/radiusCard/accentTint/diffAddTint/diffDelTint）+ `LAYOUT` 常量块；`deriveChanges` 从 write tool_call 派生变更行；`demoData`（agentj.demo / ?demo=1）驱动 demo。
+- ✅ **T1-T7 布局原语**：`layoutStore`（宽度/折叠/持久化）+ `SplitPane`（拖拽/键盘/双击/separator a11y）+ `demoData` + `index.css` tokens 对齐 + radius 迁移 batch A/B + `TopbarMenu`。
+- ✅ **T8-T24 组件与接线**：`TodoPanel` + `ChangeList`（unified diff 展开）+ `FileTree`（懒展开 + git 状态点）+ `WorkspaceShell` 三栏 + `RightPanel`（折叠导轨）+ `SidebarTabs` + `UnifiedSidebar` 重构 + `OptionPopover` + `ComposerOptions`（模型/Agent/熵变互斥 + 持久化）+ `AskQuestionCard`（折叠 + 问答记录）+ `App.tsx` 集成 + `<1024` 右抽屉 + a11y 门禁。
+- ✅ **T25-T27 版本同步**：Cargo workspace + SDK `VERSION` + Desktop 壳 + `check-version.sh` 全部 0.14.0（`PROTOCOL_VERSION` 保持 0.12.1）。
+- ✅ **T28 全量门禁 + 文档同步**：summary + `AGENTS.md` + `README.md` + spec TODO 刷新。
+- ✅ **final review fix wave**（`fb4fd7f`）：splitter 几何、popover focus、filetree footer、sidebar rows、tab copy 收口修复。
+- ✅ **验收 3 bugs 修复并回归验证**：BUG-001 右分栏折叠态锁定（`ad8e537`）/ BUG-002 提问卡折叠态摘要（`672209a`）/ BUG-003 短视口 composer 裁剪（`dab74c6`），acceptance 回归 3/3 verified。
+- ✅ **验收后 patch bump 0.14.0 → 0.14.1**：Cargo workspace + Cargo.lock + SDK `VERSION` + Desktop 壳 + `check-version.sh` + 文档自动同步。
+- ✅ **评审反馈修复（`7f2ef33`）**：移除 unreachable 时三栏间渲染的无样式 standalone dashboard 提示行（`App.tsx`），消除左栏与顶栏视觉割裂；顶栏状态行与左栏 `aj-sidebar--unreachable` 灰化保持不变；原 b007.repro 提示行测试随功能移除而废弃，App.test 改为断言提示行不存在。**验收数据不变**，随后 patch bump 0.14.1 → 0.14.2。
+- ✅ **评审反馈修复 3 项（`ad3beeb`）**：① `.aj-right` 由内容高度改为 `flex:1 1 auto; min-height:0`，右栏始终从顶栏下沿延伸至视口底部（CDP：展开/折叠、demo 开/关 `bottom === innerHeight`）；② `TodoPanel`/`ChangeList` 标题行改为 `<button className="sec-head" aria-expanded aria-controls>`，点击折叠/展开，折叠后仅保留标题条 + 计数，body 始终挂载（空态不变）；③ `.sec-head` 重写为 14px/600 无边框无底色按钮行，与 `.aj-right__title` 风格统一（mockup 的「11px uppercase caption」被用户直需求覆盖）。随后 patch bump 0.14.2 → 0.14.3。
+- ✅ **评审反馈修复 1 项（`9addeb7`）**：顶栏「连接设置…/继续会话…」弹窗改用 `createPortal` 渲染到 `document.body`，逃离 `.aj-topbar` 的 `backdrop-filter: blur(8px)` 包含块（否则 `position: fixed` 相对约 64px 顶栏定位，卡片被挤出视口顶部）；同时给 `.aj-dialog` 遮罩容器加 `onMouseDown`（点遮罩关闭、点卡片内部不关闭，X/Esc 行为保留）。CDP：`.aj-dialog-card` `parentElement === document.body`，1440×813 视口下四边均在视口内，`dCenterX=0`、`dCenterY=-0.01`；遮罩 (20, innerHeight/2) mousedown 后弹窗消失。随后 patch bump 0.14.3 → 0.14.4。
+- ✅ **评审反馈修复 1 项（`fa7172c`）**：抽共享 `components/ModalDialog.tsx`（`createPortal(document.body)` + `.aj-dialog/.aj-dialog-card` 居中 + Esc 关闭 + 遮罩 mousedown 关闭、卡片内部不关闭；复用既有类，不改 CSS），`TopbarMenu` 连接/继续弹窗与 `UnifiedSidebar` 页脚「+ 添加项目」三处统一复用之；添加项目由 `window.prompt` + `agentj:add-project` window 事件改为 ModalDialog 表单（项目名称 input、空名禁用「添加」、取消/添加按钮）。CDP：`.aj-dialog-card` `parentElement === document.body`，卡 rect `left=440 top=311.95 right=1000 bottom=501.05`（1440×813 视口四边在视口内），`dCenterX=0`、`dCenterY=0`；输入→添加后弹窗关闭、侧栏出现项目名、localStorage 含该名；重开遮罩 mousedown 关闭。随后 patch bump 0.14.4 → 0.14.5。
+- ✅ **评审反馈修复 1 项（`eddeae3`）**：`.aj-button--ghost` 由「仅 background/color/box-shadow」改为**自足次级按钮**（display:inline-flex + align/justify + gap + padding:7px 14px + border:0.5px solid var(--aj-border) + border-radius + font + cursor + hover/disabled），无需搭配 `.aj-button` 基数类即拥有完整控件外观；统一 8+ 处单独使用该修饰类的按钮（添加项目取消/继续会话取消/ApprovalDialog/SessionPanel 清空/继续、Trajectory 等）；顶栏主题切换钮 `aj-button--ghost` → `.aj-icon-btn`（与 ⋯ 菜单触发钮同款 32px 方形）；`.aj-dialog__actions` 补 `align-items:center` 使取消/添加对齐。新增 `scaffold.test.ts` 静态 CSS 契约锁死 ghost 规则体含 padding/border/border-radius/font/cursor。随后 patch bump 0.14.5 → 0.14.6。
 
-## Phase: agentj-ui Visual 2.2 Opencode redesign (v0.13.0) ✅ 已完成
+## 验证结果（验收 + bump 门禁，逐条记录）
 
-### 进度与摘要
+1. `npm --prefix agentj-ui test --workspace=@agentj/web` — ✅ 29 files / 190 tests passed。
+2. `npm --prefix agentj-ui run build --workspace=@agentj/web` — ✅ `tsc -b && vite build` 通过。
+3. `npm --prefix agentj-ui test --workspace=@agentj/sdk` — ✅ 30 passed。
+4. `cargo test --workspace` — ✅ 414 passed。
+5. `cargo clippy --workspace --all-targets -- -D warnings` — ✅ 零警告。
+6. `cargo test -p agentj-protocol -- drift` — ✅ 2 passed（33 schemas 无漂移）。
+7. `bun --cwd agentj-ui/apps/tui test` — ✅ 69 pass / 0 fail。
+8. `./scripts/check-version.sh` — ✅ `version-ok`（Cargo 0.14.6 + sdk 0.14.6 + PROTOCOL_VERSION 0.12.1 + desktop 0.14.6）。
+9. `node agentj-ui/apps/desktop/check-desktop-ui.mjs` — ✅ `desktop-ui-ok`。
+10. acceptance 回归 — ✅ 3/3 verified。
+11. CDP（chrome headless 1440×900，`http://127.0.0.1:8092/?demo=1`）— ✅ 右栏 bottom === innerHeight（展开/折叠/demo 关均 delta 0）；标题点击折叠/展开 + aria-expanded 切换；截图 `rp-expanded.png`/`rp-folded.png`。
+12. CDP 弹窗 portal（chrome headless 1440×900，`http://127.0.0.1:8093/`）— ✅ `.aj-dialog-card` `parentElement === document.body`；卡 rect `left=440 top=225 right=1000 bottom=588`（视口 1440×813，四边均在视口内），`dCenterX=0`、`dCenterY=-0.01`；遮罩 (20, innerHeight/2) mousedown 后 `[aria-label="连接设置"]` 消失；截图 `dialog-centered.png`。
+13. CDP 添加项目弹窗统一（chrome headless 1440×900，`http://127.0.0.1:8094/?demo=1`）— ✅ `.aj-dialog-card` `parentElement === document.body`；卡 rect `left=440 top=311.95 right=1000 bottom=501.05`（视口 1440×813，四边在视口内），`dCenterX=0`、`dCenterY=0`；输入「评审项目X」→ 添加后弹窗关闭、侧栏项目名出现、`agentj.projects` 含该名；重开遮罩 mousedown 关闭；截图 `add-project-dialog.png`。
+14. CDP ghost 按钮（chrome headless 1440×900 DPR2，`http://127.0.0.1:8095/?demo=1`）— ✅ 取消按钮 computed `border-radius:8px`、`padding:7px 14px`、`border-width:0.5px`、`cursor:pointer`、color `rgb(97,102,107)`（textMuted #61666B）；hover 后 background `rgb(249,250,251)`（raised）+ color `rgb(15,17,21)`（text）；取消/添加高度 38.25 vs 37.25（差 1px）；顶栏主题钮 `aj-icon-btn` 32×32 + 圆角 8px，与 ⋯ 菜单同款；继续会话弹窗 ghost 同款。截图 `ghost-button-styled.png` / `topbar-buttons.png`。
 
-- ✅ **动机**：v0.12.3 已完成 Web 精细化但侧栏仍为 280px 扁平列表，与 Opencode Codex-style 统一 256px 差距显著。本次对标 Opencode 桌面 PR #20242，实现布局完全对标、色板混合保留（DeepSeek-blue 仍为主色）的 Visual 2.2。
-- ✅ **方案**：`index.css` 新增 --aj-sidebar-width 256px/--aj-gap 12px/--aj-shadow-soft-sm/--aj-sidebar-bg-diff；新建 `UnifiedSidebar 256px`（Threads header + Filter/Sort/View + Add Project + 搜索 + body 按 projectMap 分组 + footer Settings/Help）；新建 `projectStore.ts`（localStorage agentj.projects/projectMap/collapsed/currentProject，dedup + corrupted fallback + groupSessionsByProject Today/7days/Older）；`App.tsx` 瘦身接入 UnifiedSidebar + status popover + projectMap 接线 + stale fallback；`RunPanel.tsx` Composer 增强（Project picker 下拉 + model chip + status popover + @/slash 前端本地）；`conversation.css` 密度收紧 gap 10→8 + Trajectory Project filter chips；`TUI sidebar.tsx` 文本版 32char（▶/▼ + indented + footer + projects.json 持久化）接入 app.tsx；版本同源 `0.13.0`（Cargo + sdk/config + desktop tauri.conf/package.json/src-tauri/Cargo）；`a11y`（aria-expanded/controls/selected + reduced-motion + CLS min-height 120px + >50 virtualize 分页 + unreachable 灰化）。
-- ✅ **任务分解（T0-T10）已完成**：T0 density vars / T1 UnifiedSidebar shell / T2 projectStore / T3 App Shell slim / T4 Composer enhance / T5 density + Trajectory filter / T6 TUI 32char / T7 SDK 0.13.0 / T8 Desktop 0.13.0 / T9 a11y/perf / T10 gates + docs sync。
+## 遗留问题 / 已知限制
 
-### 验证结果
+- **协议 gap（阶段二待协议支持）**：无 TODO 事件、无文件 diff 事件、无目录列举方法 → 以 demo/空态呈现（`TodoPanel`/`FileTree` 显示「待协议支持」，`ChangeList` 仅渲染真实派生数据，不伪造 diff）。
+- `$/askQuestion` + `question/respond` 未实现，`AskQuestionCard` 当前仅由 demo 驱动。
+- 后端 `session/status` 对未知会话返回 `-32601`（方法未实现观察项）。
+- protocol-version banner 与 `PROTOCOL_VERSION` 展示存在不一致观察项。
+- T23 后「继续会话」不再自动收藏该会话，且连接失败时缺少错误反馈。
+- Desktop 独立 `src-tauri/Cargo.lock` 仍停留在旧版本 `agentj-ui 0.11.0`（历史遗留，非本次 bump 范围）。
 
-- `cargo test --workspace -- --skip permission_request_notified` — 通过
-- `cargo clippy --workspace --all-targets -- -D warnings` — 零警告
-- `cargo test -p agentj-protocol -- drift` — 通过（2 drift checks）
-- `./scripts/check-version.sh` — version-ok（Cargo 0.13.0 + sdk VERSION 0.13.0 + PROTOCOL_VERSION 0.12.1 + desktop 0.13.0）
-- `node agentj-ui/apps/desktop/check-desktop-ui.mjs` — desktop-ui-ok（900/600/1100/760）
-- `npm --prefix agentj-ui test --workspace=@agentj/sdk` — 通过（29 tests）
-- `npm --prefix agentj-ui test --workspace=@agentj/web` — 通过（13 files, 115 tests）
-- `npm --prefix agentj-ui run build --workspace=@agentj/web` — 通过（1836 modules, 400kB）
-- `bun --cwd agentj-ui/apps/tui test` — 通过（69 tests, 176 expects）
+## 下一步
 
-### 遗留问题 / 已知限制
-
-- Project 仅前端本地 `localStorage` + `projects.json`，后端零改造；多项目文件树/分支选择为后续 feature。
-- TUI mock WS e2e 覆盖 sidebar 32char 与 projects.json 持久化；`@opentui/react` pre-1.0 上游关注不变。
-- Desktop 仅随 Web 产物与版本同步，无额外窗口质感变更（Tauri v2 壳）。
-
-### 下一步
-
-- 合并 `feature/agentj-opencode-redesign` → `main`，打 `v0.13.0` tag，发布。
-- 运行 `/jskill-test-acceptance` 自动验收 → 验收 PASS 后自动创建 PR（含验收修复 + patch bump）。
-- PR 合并后清理 acceptance 产物（如有）。
-
-### Spec TODO 更新
-
-- `docs/superpowers/specs/2026-09-06-agentj-opencode-redesign-design.md` TODO 已全部勾选（T0-T10）。
-- `docs/superpowers/specs/2026-09-06-agentj-web-refine-design.md` 保持已完成（v0.12.3）。
-- `docs/superpowers/specs/2026-09-06-agentj-ui-visual-design.md` 保持已完成（v0.12.1）。
+- push 分支 + 创建 PR（用户负责合并）。
+- 合并后打 `v0.14.6` tag 并清理 acceptance 产物。
+- 阶段二（独立 feature）：按 `protocol-extension-prompt.md` 落地 TODO 事件 / 文件变更事件 / `file/list` / `$/askQuestion` + `question/respond`，替换 demo 数据源。
