@@ -75,6 +75,20 @@ export function fmtDuration(ms: number): string {
   return ms < 1000 ? `${Math.round(ms)}ms` : `${(ms / 1000).toFixed(2)}s`;
 }
 
+function demoQaEntry(): Extract<RunEntry, { kind: "qa" }> {
+  return {
+    kind: "qa",
+    id: DEMO_QA_RECORD.id,
+    question: DEMO_QA_RECORD.question,
+    answer: DEMO_QA_RECORD.answer,
+  };
+}
+
+function withDemoSeed(entries: RunEntry[]): RunEntry[] {
+  if (entries.some((e) => e.kind === "qa" && e.id === DEMO_QA_RECORD.id)) return entries;
+  return [...entries, demoQaEntry()];
+}
+
 type Props = {
   client: RpcClient | null;
   activeSessionId: string | null;
@@ -247,27 +261,27 @@ export default function RunPanel({
   const [askVisible, setAskVisible] = useState(isDemoEnabled);
   const [askCollapsed, setAskCollapsed] = useState(loadAskCollapsed);
   const [chosenLabel, setChosenLabel] = useState<string | undefined>(undefined);
-  const seedDone = useRef(false);
   const askSubmitted = useRef(false);
+  const demoRef = useRef(demo);
+  demoRef.current = demo;
 
   useEffect(() => subscribeDemo(setDemo), []);
 
   useEffect(() => {
-    if (demo) setAskVisible(true);
+    setAskVisible(demo);
   }, [demo]);
 
   useEffect(() => {
-    if (!demo || seedDone.current) return;
-    seedDone.current = true;
-    setEntries((prev) => [
-      ...prev,
-      {
-        kind: "qa",
-        id: DEMO_QA_RECORD.id,
-        question: DEMO_QA_RECORD.question,
-        answer: DEMO_QA_RECORD.answer,
-      },
-    ]);
+    if (initialEntries.length === 0) return;
+    setEntries((prev) => {
+      if (prev === initialEntries) return prev;
+      return demoRef.current ? withDemoSeed(initialEntries) : initialEntries;
+    });
+  }, [initialEntries]);
+
+  useEffect(() => {
+    if (!demo) return;
+    setEntries((prev) => withDemoSeed(prev));
   }, [demo]);
 
   // composer header state
@@ -297,10 +311,6 @@ export default function RunPanel({
   useEffect(() => {
     try { setProjects(loadProjects()); } catch {}
   }, [pickerOpen]);
-
-  useEffect(() => {
-    if (initialEntries.length > 0) setEntries(initialEntries);
-  }, [initialEntries]);
 
   useEffect(() => {
     if (!client) return;

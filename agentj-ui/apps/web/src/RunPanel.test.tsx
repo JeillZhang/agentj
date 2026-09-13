@@ -1,8 +1,9 @@
 import "@testing-library/jest-dom/vitest";
 import { beforeEach, describe, expect, it } from "vitest";
-import { render, screen, fireEvent, within } from "@testing-library/react";
+import { render, screen, fireEvent, within, act } from "@testing-library/react";
 import RunPanel, { ConversationFeed, failRun, fmtDuration, reduceRunFeed, type RunEntry } from "./RunPanel.tsx";
 import UnifiedSidebar from "./components/UnifiedSidebar";
+import { setDemoEnabled } from "./demoData";
 import type { ProgressFrame } from "@agentj/sdk";
 
 beforeEach(() => localStorage.clear());
@@ -259,6 +260,26 @@ describe("RunPanel demo ask card → QA record", () => {
     fireEvent.click(screen.getByRole("button", { name: "跳过" }));
     expect(document.querySelector(".ask")).toBeNull(); // card removed
     expect(document.querySelectorAll(".qa").length).toBe(1); // only the seeded record remains
+    localStorage.clear();
+  });
+  it("seeds the demo QA record alongside non-empty initialEntries exactly once", () => {
+    localStorage.setItem("agentj.demo", "1");
+    const history: RunEntry[] = [user("历史消息"), ai("收到")];
+    const { container } = render(
+      <RunPanel client={noopClient} activeSessionId="s1" initialEntries={history} />,
+    );
+    const records = container.querySelectorAll(".qa");
+    expect(records.length).toBe(1);
+    expect(records[0].textContent).toContain("是否同时更新 TUI？");
+    expect(container.querySelectorAll(".qa-q").length).toBe(1);
+    localStorage.clear();
+  });
+  it("hides the ask card when demo mode turns off", () => {
+    localStorage.setItem("agentj.demo", "1");
+    render(<RunPanel client={noopClient} activeSessionId="s1" />);
+    expect(document.querySelector(".ask")).not.toBeNull();
+    act(() => setDemoEnabled(false));
+    expect(document.querySelector(".ask")).toBeNull();
     localStorage.clear();
   });
 });
