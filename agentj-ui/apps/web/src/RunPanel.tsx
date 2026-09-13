@@ -5,6 +5,9 @@ import { Check, ChevronDown, Clock, Folder, Minus, X } from "lucide-react";
 import { METHODS, parseProgress, RpcClient } from "@agentj/sdk";
 import type { ProgressFrame } from "@agentj/sdk";
 import ComposerOptions from "./components/ComposerOptions";
+import AskQuestionCard, { type AskAnswer } from "./components/AskQuestionCard";
+import { DEMO_QA_RECORD, DEMO_QUESTION, isDemoEnabled, subscribeDemo } from "./demoData";
+import { loadAskCollapsed, saveAskCollapsed } from "./layoutStore";
 import { createProject, loadCurrentProject, loadProjects, setCurrentProject } from "./projectStore";
 
 export type RunEntry =
@@ -12,6 +15,7 @@ export type RunEntry =
   | { kind: "ai"; text: string }
   | { kind: "tool"; id: string; name: string; args: unknown; state: "running" | "ok" | "denied" | "failed"; output?: string }
   | { kind: "usage"; prompt_tokens: number; completion_tokens: number }
+  | { kind: "qa"; id: string; question: string; answer: string }
   | { kind: "error"; text: string };
 
 export function reduceRunFeed(entries: RunEntry[], frame: ProgressFrame): RunEntry[] {
@@ -173,6 +177,19 @@ export function ConversationFeed({
               </div>
             );
           }
+          case "qa":
+            return (
+              <div key={i} className="qa">
+                <div className="qa-head">
+                  <span className="qa-badge" aria-hidden="true">?</span>
+                  <span className="qa-title">模型提问</span>
+                  <span className="qa-fold">已折叠 ⌄</span>
+                </div>
+                <div className="qa-q">{entry.question}</div>
+                <div className="qa-a">→ {entry.answer}</div>
+                <div className="qa-note">已按此决定继续执行。</div>
+              </div>
+            );
           case "error":
             return (
               <div key={i} className="aj-error-row" role="alert">
@@ -225,6 +242,33 @@ export default function RunPanel({
   const [draft, setDraft] = useState("");
   const busy = useRef(false);
   const [isBusy, setIsBusy] = useState(false);
+
+  const [demo, setDemo] = useState(isDemoEnabled);
+  const [askVisible, setAskVisible] = useState(isDemoEnabled);
+  const [askCollapsed, setAskCollapsed] = useState(loadAskCollapsed);
+  const [chosenLabel, setChosenLabel] = useState<string | undefined>(undefined);
+  const seedDone = useRef(false);
+  const askSubmitted = useRef(false);
+
+  useEffect(() => subscribeDemo(setDemo), []);
+
+  useEffect(() => {
+    if (demo) setAskVisible(true);
+  }, [demo]);
+
+  useEffect(() => {
+    if (!demo || seedDone.current) return;
+    seedDone.current = true;
+    setEntries((prev) => [
+      ...prev,
+      {
+        kind: "qa",
+        id: DEMO_QA_RECORD.id,
+        question: DEMO_QA_RECORD.question,
+        answer: DEMO_QA_RECORD.answer,
+      },
+    ]);
+  }, [demo]);
 
   // composer header state
   const [projects, setProjects] = useState(() => {
@@ -320,6 +364,29 @@ export default function RunPanel({
     setDraft(cmd + " ");
     setSlashOpen(false);
     setAtFilter(null);
+  }
+
+  function toggleAskCollapsed() {
+    const next = !askCollapsed;
+    saveAskCollapsed(next);
+    setAskCollapsed(next);
+  }
+
+  function handleAskSubmit({ optionId, other }: AskAnswer) {
+    if (askSubmitted.current) return;
+    askSubmitted.current = true;
+    const option = DEMO_QUESTION.options.find((o) => o.id === optionId);
+    const answer = option?.label ?? other;
+    setChosenLabel(answer);
+    setAskVisible(false);
+    setEntries((prev) => [
+      ...prev,
+      { kind: "qa", id: `qa-${prev.length + 1}`, question: DEMO_QUESTION.question, answer },
+    ]);
+  }
+
+  function handleAskSkip() {
+    setAskVisible(false);
   }
 
   async function submit(text: string) {
@@ -460,6 +527,17 @@ export default function RunPanel({
             <span className="aj-chip aj-chip--model">{model}</span>
           )}
         </div>
+
+        {askVisible && (
+          <AskQuestionCard
+            question={DEMO_QUESTION}
+            collapsed={askCollapsed}
+            selectedLabel={chosenLabel}
+            onToggleCollapsed={toggleAskCollapsed}
+            onSubmit={handleAskSubmit}
+            onSkip={handleAskSkip}
+          />
+        )}
 
         <div style={{ position: "relative" }}>
           <label htmlFor="aj-prompt" className="aj-visually-hidden">prompt</label>

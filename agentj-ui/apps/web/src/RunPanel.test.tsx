@@ -239,6 +239,30 @@ describe("RunPanel composer toolbar", () => {
   });
 });
 
+describe("RunPanel demo ask card → QA record", () => {
+  it("demo ask card submit appends QA record", () => {
+    localStorage.setItem("agentj.demo", "1");
+    render(<RunPanel client={noopClient} activeSessionId="s1" model="deepseek-chat" />);
+    fireEvent.click(screen.getByText("三栏 + 协议扩展"));
+    fireEvent.click(screen.getByRole("button", { name: "提交" }));
+    expect(document.querySelector(".ask")).toBeNull(); // composer card removed
+    const records = document.querySelectorAll(".qa");
+    expect(records.length).toBe(2); // seeded DEMO_QA_RECORD + the new record
+    const record = records[1] as HTMLElement;
+    expect(record.textContent).toContain("模型提问");
+    expect(record.textContent).toContain("三栏 + 协议扩展");
+    localStorage.clear();
+  });
+  it("skip removes card without record", () => {
+    localStorage.setItem("agentj.demo", "1");
+    render(<RunPanel client={noopClient} activeSessionId="s1" />);
+    fireEvent.click(screen.getByRole("button", { name: "跳过" }));
+    expect(document.querySelector(".ask")).toBeNull(); // card removed
+    expect(document.querySelectorAll(".qa").length).toBe(1); // only the seeded record remains
+    localStorage.clear();
+  });
+});
+
 describe("RunPanel project picker → UnifiedSidebar sync", () => {
   it("shows a project created via the composer picker in the already-mounted sidebar immediately", () => {
     render(
