@@ -5,7 +5,7 @@ import { Check, ChevronDown, Clock, Folder, Minus, X } from "lucide-react";
 import { METHODS, parseProgress, RpcClient } from "@agentj/sdk";
 import type { ProgressFrame } from "@agentj/sdk";
 import ComposerOptions from "./components/ComposerOptions";
-import AskQuestionCard, { type AskAnswer } from "./components/AskQuestionCard";
+import AskQuestionCard, { type AskAnswer, type AskQuestionView } from "./components/AskQuestionCard";
 import { DEMO_QA_RECORD, DEMO_QUESTION, isDemoEnabled, subscribeDemo } from "./demoData";
 import { loadAskCollapsed, saveAskCollapsed } from "./layoutStore";
 import { createProject, loadCurrentProject, loadProjects, setCurrentProject } from "./projectStore";
@@ -59,6 +59,8 @@ export function reduceRunFeed(entries: RunEntry[], frame: ProgressFrame): RunEnt
       const u = { kind: "usage" as const, prompt_tokens: frame.usage.prompt_tokens, completion_tokens: frame.usage.completion_tokens };
       return last?.kind === "usage" ? [...entries.slice(0, -1), u] : [...entries, u];
     }
+    case "todo":
+    case "file_change":
     case "unknown":
       return entries;
   }
@@ -88,6 +90,15 @@ function withDemoSeed(entries: RunEntry[]): RunEntry[] {
   if (entries.some((e) => e.kind === "qa" && e.id === DEMO_QA_RECORD.id)) return entries;
   return [...entries, demoQaEntry()];
 }
+
+/** Minimal adapter: demo fixture -> protocol-shaped question view (T34; full RPC wiring is T35). */
+const DEMO_ASK_VIEW: AskQuestionView = {
+  questionId: DEMO_QUESTION.id,
+  question: DEMO_QUESTION.question,
+  options: DEMO_QUESTION.options.map(({ id, label, hint }) => ({ id, label, hint })),
+  allowMultiple: false,
+  allowOther: true,
+};
 
 type Props = {
   client: RpcClient | null;
@@ -382,11 +393,13 @@ export default function RunPanel({
     setAskCollapsed(next);
   }
 
-  function handleAskSubmit({ optionId, other }: AskAnswer) {
+  function handleAskSubmit({ optionIds, other }: AskAnswer) {
     if (askSubmitted.current) return;
     askSubmitted.current = true;
-    const option = DEMO_QUESTION.options.find((o) => o.id === optionId);
-    const answer = option?.label ?? other;
+    const labels = optionIds
+      .map((id) => DEMO_QUESTION.options.find((o) => o.id === id)?.label)
+      .filter((label): label is string => label !== undefined);
+    const answer = labels.length > 0 ? labels.join("、") : other;
     setChosenLabel(answer);
     setAskVisible(false);
     setEntries((prev) => [
@@ -540,7 +553,7 @@ export default function RunPanel({
 
         {askVisible && (
           <AskQuestionCard
-            question={DEMO_QUESTION}
+            question={DEMO_ASK_VIEW}
             collapsed={askCollapsed}
             selectedLabel={chosenLabel}
             onToggleCollapsed={toggleAskCollapsed}
