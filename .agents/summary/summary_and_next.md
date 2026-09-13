@@ -1,10 +1,10 @@
 # Summary & Next
 
 > 本文件仅保留**当前正在开发**功能设计文档的内容：进度、剩余步骤、遗留问题与下一步。同步更新时**替换**（不要追加）前一功能内容。
-> 当前功能：**agentj-ui 三栏工作台（0.14.5）—— Sessions/Files 左栏 + 会话中栏 + 运行详情右栏 + composer 模型/Agent/熵变选择器 + 模型提问卡片 + demo 模式**
+> 当前功能：**agentj-ui 三栏工作台（0.14.6）—— Sessions/Files 左栏 + 会话中栏 + 运行详情右栏 + composer 模型/Agent/熵变选择器 + 模型提问卡片 + demo 模式**
 > ——设计文档 `docs/superpowers/specs/2026-09-13-agentj-three-column-workbench-design.md`
 > + 实现计划 `.superpowers/sdd/2026-09-13-agentj-three-column-workbench-plan/`
-> （T0-T28 + final review fix wave + acceptance 3 bugs + 评审反馈修复 1 bugfix + 评审反馈修复 3 项 + 评审反馈修复 1 项（弹窗 portal）+ 评审反馈修复 1 项（添加项目弹窗统一），后端零改造，纯 `agentj-ui` 增量，0.13.0 → 0.14.5 patch）
+> （T0-T28 + final review fix wave + acceptance 3 bugs + 评审反馈修复 1 bugfix + 评审反馈修复 3 项 + 评审反馈修复 1 项（弹窗 portal）+ 评审反馈修复 1 项（添加项目弹窗统一）+ 评审反馈修复 1 项（ghost 按钮自足化），后端零改造，纯 `agentj-ui` 增量，0.13.0 → 0.14.6 patch）
 
 ## 进度与摘要
 
@@ -21,22 +21,24 @@
 - ✅ **评审反馈修复 3 项（`ad3beeb`）**：① `.aj-right` 由内容高度改为 `flex:1 1 auto; min-height:0`，右栏始终从顶栏下沿延伸至视口底部（CDP：展开/折叠、demo 开/关 `bottom === innerHeight`）；② `TodoPanel`/`ChangeList` 标题行改为 `<button className="sec-head" aria-expanded aria-controls>`，点击折叠/展开，折叠后仅保留标题条 + 计数，body 始终挂载（空态不变）；③ `.sec-head` 重写为 14px/600 无边框无底色按钮行，与 `.aj-right__title` 风格统一（mockup 的「11px uppercase caption」被用户直需求覆盖）。随后 patch bump 0.14.2 → 0.14.3。
 - ✅ **评审反馈修复 1 项（`9addeb7`）**：顶栏「连接设置…/继续会话…」弹窗改用 `createPortal` 渲染到 `document.body`，逃离 `.aj-topbar` 的 `backdrop-filter: blur(8px)` 包含块（否则 `position: fixed` 相对约 64px 顶栏定位，卡片被挤出视口顶部）；同时给 `.aj-dialog` 遮罩容器加 `onMouseDown`（点遮罩关闭、点卡片内部不关闭，X/Esc 行为保留）。CDP：`.aj-dialog-card` `parentElement === document.body`，1440×813 视口下四边均在视口内，`dCenterX=0`、`dCenterY=-0.01`；遮罩 (20, innerHeight/2) mousedown 后弹窗消失。随后 patch bump 0.14.3 → 0.14.4。
 - ✅ **评审反馈修复 1 项（`fa7172c`）**：抽共享 `components/ModalDialog.tsx`（`createPortal(document.body)` + `.aj-dialog/.aj-dialog-card` 居中 + Esc 关闭 + 遮罩 mousedown 关闭、卡片内部不关闭；复用既有类，不改 CSS），`TopbarMenu` 连接/继续弹窗与 `UnifiedSidebar` 页脚「+ 添加项目」三处统一复用之；添加项目由 `window.prompt` + `agentj:add-project` window 事件改为 ModalDialog 表单（项目名称 input、空名禁用「添加」、取消/添加按钮）。CDP：`.aj-dialog-card` `parentElement === document.body`，卡 rect `left=440 top=311.95 right=1000 bottom=501.05`（1440×813 视口四边在视口内），`dCenterX=0`、`dCenterY=0`；输入→添加后弹窗关闭、侧栏出现项目名、localStorage 含该名；重开遮罩 mousedown 关闭。随后 patch bump 0.14.4 → 0.14.5。
+- ✅ **评审反馈修复 1 项（`eddeae3`）**：`.aj-button--ghost` 由「仅 background/color/box-shadow」改为**自足次级按钮**（display:inline-flex + align/justify + gap + padding:7px 14px + border:0.5px solid var(--aj-border) + border-radius + font + cursor + hover/disabled），无需搭配 `.aj-button` 基数类即拥有完整控件外观；统一 8+ 处单独使用该修饰类的按钮（添加项目取消/继续会话取消/ApprovalDialog/SessionPanel 清空/继续、Trajectory 等）；顶栏主题切换钮 `aj-button--ghost` → `.aj-icon-btn`（与 ⋯ 菜单触发钮同款 32px 方形）；`.aj-dialog__actions` 补 `align-items:center` 使取消/添加对齐。新增 `scaffold.test.ts` 静态 CSS 契约锁死 ghost 规则体含 padding/border/border-radius/font/cursor。随后 patch bump 0.14.5 → 0.14.6。
 
 ## 验证结果（验收 + bump 门禁，逐条记录）
 
-1. `npm --prefix agentj-ui test --workspace=@agentj/web` — ✅ 29 files / 188 tests passed。
+1. `npm --prefix agentj-ui test --workspace=@agentj/web` — ✅ 29 files / 190 tests passed。
 2. `npm --prefix agentj-ui run build --workspace=@agentj/web` — ✅ `tsc -b && vite build` 通过。
 3. `npm --prefix agentj-ui test --workspace=@agentj/sdk` — ✅ 30 passed。
 4. `cargo test --workspace` — ✅ 414 passed。
 5. `cargo clippy --workspace --all-targets -- -D warnings` — ✅ 零警告。
 6. `cargo test -p agentj-protocol -- drift` — ✅ 2 passed（33 schemas 无漂移）。
 7. `bun --cwd agentj-ui/apps/tui test` — ✅ 69 pass / 0 fail。
-8. `./scripts/check-version.sh` — ✅ `version-ok`（Cargo 0.14.5 + sdk 0.14.5 + PROTOCOL_VERSION 0.12.1 + desktop 0.14.5）。
+8. `./scripts/check-version.sh` — ✅ `version-ok`（Cargo 0.14.6 + sdk 0.14.6 + PROTOCOL_VERSION 0.12.1 + desktop 0.14.6）。
 9. `node agentj-ui/apps/desktop/check-desktop-ui.mjs` — ✅ `desktop-ui-ok`。
 10. acceptance 回归 — ✅ 3/3 verified。
 11. CDP（chrome headless 1440×900，`http://127.0.0.1:8092/?demo=1`）— ✅ 右栏 bottom === innerHeight（展开/折叠/demo 关均 delta 0）；标题点击折叠/展开 + aria-expanded 切换；截图 `rp-expanded.png`/`rp-folded.png`。
 12. CDP 弹窗 portal（chrome headless 1440×900，`http://127.0.0.1:8093/`）— ✅ `.aj-dialog-card` `parentElement === document.body`；卡 rect `left=440 top=225 right=1000 bottom=588`（视口 1440×813，四边均在视口内），`dCenterX=0`、`dCenterY=-0.01`；遮罩 (20, innerHeight/2) mousedown 后 `[aria-label="连接设置"]` 消失；截图 `dialog-centered.png`。
 13. CDP 添加项目弹窗统一（chrome headless 1440×900，`http://127.0.0.1:8094/?demo=1`）— ✅ `.aj-dialog-card` `parentElement === document.body`；卡 rect `left=440 top=311.95 right=1000 bottom=501.05`（视口 1440×813，四边在视口内），`dCenterX=0`、`dCenterY=0`；输入「评审项目X」→ 添加后弹窗关闭、侧栏项目名出现、`agentj.projects` 含该名；重开遮罩 mousedown 关闭；截图 `add-project-dialog.png`。
+14. CDP ghost 按钮（chrome headless 1440×900 DPR2，`http://127.0.0.1:8095/?demo=1`）— ✅ 取消按钮 computed `border-radius:8px`、`padding:7px 14px`、`border-width:0.5px`、`cursor:pointer`、color `rgb(97,102,107)`（textMuted #61666B）；hover 后 background `rgb(249,250,251)`（raised）+ color `rgb(15,17,21)`（text）；取消/添加高度 38.25 vs 37.25（差 1px）；顶栏主题钮 `aj-icon-btn` 32×32 + 圆角 8px，与 ⋯ 菜单同款；继续会话弹窗 ghost 同款。截图 `ghost-button-styled.png` / `topbar-buttons.png`。
 
 ## 遗留问题 / 已知限制
 
@@ -50,5 +52,5 @@
 ## 下一步
 
 - push 分支 + 创建 PR（用户负责合并）。
-- 合并后打 `v0.14.5` tag 并清理 acceptance 产物。
+- 合并后打 `v0.14.6` tag 并清理 acceptance 产物。
 - 阶段二（独立 feature）：按 `protocol-extension-prompt.md` 落地 TODO 事件 / 文件变更事件 / `file/list` / `$/askQuestion` + `question/respond`，替换 demo 数据源。
