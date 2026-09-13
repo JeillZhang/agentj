@@ -1,6 +1,6 @@
 # 设计文档：AgentJ 协议扩展 —— file/list + `$/progress` todo/file_change + `$/askQuestion` / `question/respond`（三栏工作台真实数据源）
 
-> 状态：**待评审** ｜ 日期：2026-09-13 ｜ 上游输入：`docs/design/three-column/protocol-extension-prompt.md`（草案契约）、`docs/design/three-column/design.md`（界面规格）、`docs/superpowers/specs/2026-09-13-agentj-three-column-workbench-design.md`（阶段一占位数据交付）
+> 状态：**已实现（v0.15.0，协议 0.13.0）** ｜ 日期：2026-09-13 ｜ 上游输入：`docs/design/three-column/protocol-extension-prompt.md`（草案契约）、`docs/design/three-column/design.md`（界面规格）、`docs/superpowers/specs/2026-09-13-agentj-three-column-workbench-design.md`（阶段一占位数据交付）
 >
 > 本文档定义**数据契约与架构**（WHAT / WHY）；任务级 TDD 拆解属下一阶段（`/jskill-feature-plan`）。落地后阶段一的三处 demo/占位数据源（右栏 TODO、左栏文件树、提问卡片）与半推导变更列表（`deriveChanges`）全部切换为真实数据。
 
@@ -362,3 +362,14 @@ flowchart TB
 - **新增 crate**：`agentj-question`（工作区成员；依赖 agentj-core / agentj-protocol / serde / serde_json / tokio / uuid——均为工作区已有依赖，非新第三方）。
 - **代码触点**：`agentj-protocol`（新类型 + gen）、`agentj-core`（AgentEvent / ToolCallReply / Tool trait default / artifacts / tool_executor / turn_runner）、`agentj-session`（根持久化）、`agentj-ipc`（dispatch / file_list / question 接线 / error.data）、`agentj-cli`（装配）、`agentj-tools`（todo + register_builtins）、`agentj-ui`（sdk / web / tui）、`docs/specs/ipc-protocol.md`、`protocol/methods.json`、`scripts/check-version.sh`。
 - **阻塞项**：无。可独立于其他 feature 开发；与阶段一 UI 代码只通过既有组件接口衔接。
+
+## 实施状态
+
+> 落地版本：**v0.15.0**（协议 0.13.0）｜ 2026-09-13 ｜ 分支 `feature/agentj-protocol-extension`
+
+- 全部任务 **T0-T42** 已完成并提交（实现计划 `.superpowers/sdd/2026-09-13-agentj-protocol-extension-plan/`，逐任务 review PASS）。
+- 协议面：**21 方法 / 51 schemas**（新增 13 类型；`ProgressValue` 七个 kind、`TrajectoryValue` 十一类），`-32807 PathNotAllowed` + `error.data`，`file/list`、`$/askQuestion`、`question/respond`、`SessionNewParams.project_root` 全部加性落地（0.12.1 → 0.13.0 minor）。
+- 工作区：16 → 17 crates（新增 `agentj-question`），版本 0.14.6 → 0.15.0（Cargo + SDK `VERSION` + Desktop 同源）。
+- 前端：阶段一三处占位数据源（右栏 TODO / 左栏文件树 / 提问卡）与 `deriveChanges` 半推导全部切换为真实协议驱动；demo 模式保留为可切换预览通道；TUI runview 只读 TODO 区块。
+- 全量门禁（T42）：`cargo fmt` / `cargo test --workspace`（545 passed）/ `clippy -D warnings`（零警告）/ drift（2 passed）/ SDK 37 / Web 219 / Web build / TUI 71 / `check-version.sh` / `check-desktop-ui.mjs` 全绿。
+- 规范落地：`docs/specs/ipc-protocol.md` 同步 0.13.0（21 方法 / 51 schemas，新增 §8.18-§8.22、§7.3 扩展、§3.4 `-32807`、§11.3 changelog）。

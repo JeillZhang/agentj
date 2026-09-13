@@ -1,29 +1,40 @@
 # AGENTS.md
 
-> Updated 2026-09-13 — v0.14.6 三栏工作台（Sessions/Files 侧栏 + 会话中栏 + 运行详情右栏；composer 模型/Agent/熵变选择器；模型提问卡片；demo 模式）
-> 验收修复（3 bugs）：BUG-001 短视口 composer 裁剪（dab74c6）/
-> BUG-002 右分栏折叠态锁定（ad8e537）/ BUG-003 提问卡折叠态摘要（672209a）。
-> 评审反馈修复（1 bugfix）：移除三栏间无样式 standalone dashboard 提示行（7f2ef33）。
-> 评审反馈修复（3 项，ad3beeb）：右栏始终满高（flex:1 1 auto）/
-> 任务与文件变更区块标题点击折叠（aria-expanded + aria-controls）/
-> `.sec-head` 标题风格统一为 14px/600（与 `.aj-right__title` 一致）。
-> 评审反馈修复（1 项，9addeb7）：顶栏「连接设置…/继续会话…」弹窗
-> `createPortal` 至 `document.body` 窗口居中（逃离顶栏 `backdrop-filter`
-> 包含块）+ 遮罩点击关闭（点卡片内部不关闭）。
-> 评审反馈修复（1 项，fa7172c）：抽共享 `components/ModalDialog.tsx`
-> （portal 至 body + Esc/遮罩关闭），连接设置/继续会话/添加项目三处统一；
-> 「+ 添加项目」由 `window.prompt` 改为同款 ModalDialog 表单。
-> 评审反馈修复（1 项，eddeae3）：`.aj-button--ghost` 改为自足次级按钮
-> （display/padding/border/border-radius/font/cursor 齐全，无需搭配 `.aj-button`），
-> 统一 8+ 处单独使用该修饰类的按钮（添加项目取消/继续会话取消/ApprovalDialog/
-> SessionPanel/Trajectory 等）；顶栏主题切换钮改用 `.aj-icon-btn` 与 ⋯ 菜单同款。
-> (16 crates + agentj-ui monorepo：Web / TUI / Desktop + SDK + tokens，
+> Updated 2026-09-13 — v0.15.0 协议扩展（三栏工作台真实数据源）
+> `file/list` 沙箱化目录懒加载 + git 状态点；`$/progress` 新增 `kind:"todo"`
+> （全量快照 + 会话内单调 `revision`）与 `kind:"file_change"`（write 自研行级
+> diff / bash git 前后采样，unified diff ≤64 KiB）；`$/askQuestion` +
+> `question/respond` owner 定向提问往返（幂等 + 超时/取消/断开按 skip 结算）；
+> 会话级 `project_root`（路径基准五处同源）+ 新错误码 `-32807 PathNotAllowed`
+> + `error.data`；`session/history` 回放重建 TODO/变更/Q&A；新 crate
+> `agentj-question`（17 crates）；21 方法 / 51 schemas / PROTOCOL_VERSION 0.13.0；
+> Web 三栏工作台 TODO/文件树/变更/提问卡切换真实协议驱动（`deriveChanges`
+> 半推导退役，demo 模式保留为可切换预览通道）；TUI runview 只读 TODO 区块。
+> T0-T42 全部落地，T42 全量门禁通过：cargo fmt / 545 Rust tests / clippy 零警告 /
+> drift 2 passed / sdk 37 / web 219 / web build / tui 71 / check-version /
+> desktop-ui。
+> (17 crates + agentj-ui monorepo：Web / TUI / Desktop + SDK + tokens，
 > npm workspaces `apps/*`+`packages/*`，共享 SDK + protocol + tokens，
 > WebSocket 网关同端口复用，后端零改造，frontend stays in-repo)
 
 ## Project Status
 
 AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + 可插拔模块」架构。
+v0.15 已落地：**协议扩展 —— 三栏工作台真实数据源（后端 + 三端前端）**
+（`file/list` 沙箱化目录懒加载 + git 状态点（M/A/U/D）；`$/progress`
+`kind:"todo"` 全量快照 + 会话内单调 `revision`、`kind:"file_change"`
+（write 自研行级 LCS diff ≤64 KiB / bash git 前后采样 + numstat，
+tracked 走 `git diff HEAD`、untracked 仅计数）；`$/askQuestion` +
+`question/respond` owner 定向提问往返（重复响应幂等 `accepted:false`，
+超时/取消/owner 断开按 skip 结算一次）；`session/new` 加性 `project_root`
+（canonicalize 持久化，file/list 沙箱 / bash cwd / 权限 workspace_root /
+工具相对路径 / file_change 相对路径五处同源）；新错误码
+`-32807 PathNotAllowed` + `error.data`；`session/history` 回放重建
+TODO 快照/变更列表/问答记录；新 crate `agentj-question`（16 → 17 crates）；
+Web `TodoPanel`/`ChangeList`/`FileTree`/`AskQuestionCard` 由真实协议驱动
+（`deriveChanges` 半推导退役，demo 模式保留为可切换预览通道）；
+TUI runview 只读 TODO 区块；协议 0.13.0（21 方法 / 51 schemas），
+工作区 0.14.6 → 0.15.0 minor）。
 v0.14 已落地：**agentj-ui 三栏工作台（Web）**
 （三栏布局：`WorkspaceShell` 组合 Sessions/Files 左栏 + 会话中栏 +
 运行详情右栏；`SplitPane` 拖拽/键盘/双击 + `layoutStore` 宽度持久化
@@ -60,12 +71,12 @@ Desktop：Tauri v2 壳套 `apps/web` 产物，四件套 deb/AppImage/dmg/msi，
 ## Commands
 
 - `cargo test --workspace` — 全量测试
-  （~320+ 通过；含 bus 密封 + FileBackedStore/Config/CLI 单测
+  （545 passed / 0 failed；含 bus 密封 + FileBackedStore/Config/CLI 单测
   + e2e_cli/e2e_permission/e2e_serve/e2e_ws 密封测试）
 - `cargo clippy --workspace --all-targets -- -D warnings` — lint 门禁（零警告）
 - `cargo bench -p agentj-model` — 模型流式基准（criterion）
 - `cargo run -p agentj-protocol --bin gen_schemas` — 重新生成 `schemas/*.json`
-- `cargo test -p agentj-protocol -- drift` — 漂移门禁（33 schemas 无漂移）
+- `cargo test -p agentj-protocol -- drift` — 漂移门禁（51 schemas 无漂移）
 - `npm --prefix agentj-ui run generate --workspace=@agentj/protocol` — 生成 protocol 类型
   （`schemas/*.json` → `agentj-ui/packages/protocol/types.d.ts`）
 - `npm --prefix agentj-ui run build --workspace=@agentj/protocol` — `tsc --noEmit` 校验
@@ -76,7 +87,9 @@ Desktop：Tauri v2 壳套 `apps/web` 产物，四件套 deb/AppImage/dmg/msi，
 - `npm --prefix agentj-ui run build --workspace=@agentj/web` — Web 构建（`tsc -b && vite build`）
 - `bun --cwd agentj-ui/apps/tui test` — TUI 单测（含 mock WS e2e）
 - `./agentj-ui/apps/desktop/check-artifacts.sh linux` — Desktop 产物校验
-- `./scripts/check-version.sh` — 版本一致性（Cargo + sdk/config + desktop 均为 0.14.6，PROTOCOL_VERSION 0.12.1）
+- `node agentj-ui/apps/desktop/check-desktop-ui.mjs` — Desktop 前端产物/配置一致性校验
+- `./scripts/check-version.sh` — 版本一致性（Cargo + sdk VERSION + desktop 均为 0.15.0，
+  PROTOCOL_VERSION 0.13.0 + `protocol/methods.json` 版本 0.13.0）
 
 ### CI Pipelines (GitHub Actions)
 
@@ -91,22 +104,30 @@ Desktop：Tauri v2 壳套 `apps/web` 产物，四件套 deb/AppImage/dmg/msi，
 
 ## Architecture
 
-> 全部 16 个 crate 位于 `crates/`（`crates/*`），前端 monorepo 位于
+> 全部 17 个 crate 位于 `crates/`（`crates/*`），前端 monorepo 位于
 > `agentj-ui/`（npm workspaces，frontend stays in-repo，不拆独立仓），
 > 下文 `agentj-*` 均为 `crates/agentj-*`，`@agentj/*` 为 `agentj-ui` 包。
 
 - `agentj-protocol`（leaf）：IPC 协议权威 wire 类型（JSON-RPC 2.0、
-  错误码、16 方法 params/result、流式/订阅/权限类型），serde + schemars，
-  零内核耦合。v0.6 加性 CancelParams/PermissionRequestParams
-  session_id；v0.8 加性 UsageInfo/SessionRunResult.usage（33 schemas）。
+  错误码、21 方法 params/result、流式/订阅/权限/提问/文件列举类型），
+  serde + schemars，零内核耦合。v0.6 加性 CancelParams/PermissionRequestParams
+  session_id；v0.8 加性 UsageInfo/SessionRunResult.usage；v0.13 加性
+  `file/list`、`$/progress` todo/file_change、`$/askQuestion` + `question/respond`、
+  `SessionNewParams.project_root`、`-32807`（21 方法 / 51 schemas）。
 - `agentj-core`（内核）：Kernel 混合总线 + 模块 trait 注册表
   + ServiceRegistry（同步/异步） + TurnRunner 总线化 turn 编排
+  + `ToolCallContext`（会话根上下文，工具相对路径重定基）
+  + `TurnArtifact`（FileChange/Todo 产出 + 自研 unified diff）
   + 事件总线重入防护（EventGuard thread_local + MAX_EVENT_DEPTH=16）。
 - `agentj-config`：TOML 配置（[model]/[permission]/[session]/[license]/[[mcp.servers]]）。
-- `agentj-session`：会话生命周期（InMemoryStore/FileBackedStore + 过期清理）。
+- `agentj-session`：会话生命周期（InMemoryStore/FileBackedStore + 过期清理
+  + 会话级 `project_root` 持久化，serde default 兼容旧快照）。
 - `agentj-permission`：权限系统（决策引擎 + 60s 超时 + allow_always）。
+- `agentj-question`：提问通道（`QuestionModule` + `AskTool`，镜像 permission 的
+  pending/owner 归属；`ask_blocking` 阻塞等待、`respond` 幂等 `accepted:false`、
+  `timeout_s` 可空、`set_notifier`/`set_settle_hook` 统一结算一次）。
 - `agentj-model`：模型提供方（三线 wire-format + opencode-go + Mock + Ollama）。
-- `agentj-tools`：内置工具（bash/glob/grep/read/write）。
+- `agentj-tools`：内置工具（bash/glob/grep/read/write + `todo`，共 6 个）。
 - `agentj-context`：上下文管线。
 - `agentj-stats`：用量统计 UsageCollector。
 - `agentj-license`：Ed25519 许可证校验（entitlements + free mode）。
@@ -115,10 +136,13 @@ Desktop：Tauri v2 壳套 `apps/web` 产物，四件套 deb/AppImage/dmg/msi，
 - `agentj-skills`：skills 加载器。
 - `agentj-plugin`：插件系统（manifest + 状态机 + 依赖图 + libloading）。
 - `agentj-ipc`：JSON-RPC IPC（stdio/TCP/WS + 同端口分类器
-  + WsConnection + WsServerState/ws_router/serve_http + per-session 路由）。
-- `agentj-cli`：`agentj` 二进制（run/serve/dashboard，模块注册进 Kernel）。
+  + WsConnection + WsServerState/ws_router/serve_http + per-session 路由
+  + `file/list` dispatch（沙箱 + git 状态）+ question notifier/settle hook 接线
+  + `error.data` 透传）。
+- `agentj-cli`：`agentj` 二进制（run/serve/dashboard，模块注册进 Kernel，
+  agentj-question 的 stdio 与 `serve --port` 两条装配路径）。
 - `agentj-plugin-fixture`（dev-only）：插件 cdylib 测试夹具。
-- `schemas/*.json`：33 JSON Schema（schemars 生成，提交件 + drift 门禁）。
+- `schemas/*.json`：51 JSON Schema（schemars 生成，提交件 + drift 门禁）。
 - `protocol/methods.json`：方法注册表（method ↔ schema/方向/类型）。
 - `docs/specs/ipc-protocol.md`：人类可读协议规范（11 节）。
 - `agentj-ui/packages/protocol`：协议包（原 `bindings` 迁入，
@@ -126,29 +150,33 @@ Desktop：Tauri v2 壳套 `apps/web` 产物，四件套 deb/AppImage/dmg/msi，
   为 drift 门禁后第一门）。
 - `agentj-ui/packages/sdk`：共享 SDK（`src/client.ts` RpcClient +
   `src/router.ts` ResponseRouter/RpcTransport + `src/config.ts`
-   `VERSION="0.14.6"` + `PROTOCOL_VERSION="0.12.1"` + `resolveWsUrl` + `src/methods.ts` METHODS
+   `VERSION="0.15.0"` + `PROTOCOL_VERSION="0.13.0"` + `resolveWsUrl` + `src/methods.ts` METHODS
   + `transports/websocket.ts` WebSocketTransport
   + `transports/tcp.ts` TcpTransport；被 Web/TUI/Desktop 同源消费）。
 - `agentj-ui/packages/tokens`：共享语义 tokens（`palette.ts` 24 keys × dark/light + `SEMANTIC_KEYS` + `LAYOUT` 常量块（left/right 宽度/splitter/topbar/gap），`tokens.css/tokens.json/docs/ui-tokens.md` 生成，radius 类 keys kebab→camel 迁移，三端约束）。
 - `agentj-ui/apps/web`：Web 前端（Vite + React 19，消费 `@agentj/sdk` + `@agentj/tokens` + `lucide-react`；
-  **三栏工作台**：`WorkspaceShell`（Sessions/Files 左栏 `SidebarTabs` +
+  **三栏工作台（真实协议驱动）**：`WorkspaceShell`（Sessions/Files 左栏 `SidebarTabs` +
   会话中栏 + 运行详情右栏） + `SplitPane`（拖拽/键盘/双击） +
-  `RightPanel`（`TodoPanel` + `ChangeList` unified diff） +
-  `FileTree` + `OptionPopover`/`ComposerOptions`（模型/Agent/熵变） +
-  `AskQuestionCard` + `TopbarMenu`（demo 开关）；`layoutStore`
-  宽度持久化 + `demoData`/`changes` 派生，布局/会话/Composer/对话/轨迹/
-  Hero/对话框拆 `components/*.css`，vitest + vite build）。
+  `RightPanel`（`TodoPanel` ← `$/progress` todo 全量快照 + revision 门控；
+  `ChangeList` ← `file_change` upsert + unified diff） +
+  `FileTree`（`file/list` 懒加载 + git 状态点） +
+  `OptionPopover`/`ComposerOptions`（模型/Agent/熵变） +
+  `AskQuestionCard`（`$/askQuestion` → `question/respond`） +
+  `TopbarMenu`（demo 开关覆盖为固定 fixtures）；`layoutStore` 宽度持久化，
+  `todoState`/`changes` reducer，`deriveChanges` 半推导退役；
+  布局/会话/Composer/对话/轨迹/Hero/对话框拆 `components/*.css`，vitest + vite build）。
 - `agentj-ui/apps/tui`：TUI 前端（Bun + @opentui/react，全功能：
   connection/session/composer/runview/permission/palette/models/
-  completion/theme/usage + mock WS e2e + sidebar 文本版 UnifiedSidebar 32char；`testRender` 快照）。
+  completion/theme/usage + runview 只读 TODO 区块（revision 门控） +
+  mock WS e2e + sidebar 文本版 UnifiedSidebar 32char；`testRender` 快照）。
 - `agentj-ui/apps/desktop`：Desktop 壳（Tauri v2，`frontendDist` →
-   `../../web/dist`，与 workspace 版本同源 `0.14.6`，四件套打包）。
+   `../../web/dist`，与 workspace 版本同源 `0.15.0`，四件套打包）。
 - `agentj-ui/` 根：`package.json` workspaces `["apps/*","packages/*"]`
-  （frontend stays in-repo，前端不拆独立仓，与 Rust 共享 0.14.6）。
+  （frontend stays in-repo，前端不拆独立仓，与 Rust 共享 0.15.0）。
 - **守护内核（v0.4 已实现）**：统一 Connection 抽象 + `serve --port`
   常驻多客户端 + `run --attach` + `dashboard`（见 daemon-kernel 设计文档）。
 
-> Crate 边界：Rust 16 crate 保持 `crates/*` 边界纯净，
+> Crate 边界：Rust 17 crate 保持 `crates/*` 边界纯净，
 > 前端（TS/React/Bun/Tauri）全部收敛于 `agentj-ui/` 内，
 > 通过 `protocol/methods.json` + `schemas/*.json` 与后端契约对齐，
 > 不向 Rust workspace 注入前端构建产物。
