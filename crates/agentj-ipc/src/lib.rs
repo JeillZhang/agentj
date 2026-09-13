@@ -4,6 +4,9 @@ pub mod tcp;
 pub mod trajectory;
 pub mod ws;
 
+use agentj_core::artifacts::{
+    FileChangeArtifact, FileChangeOp, TodoItemArtifact, TodoStatusArtifact,
+};
 use agentj_core::error::{IpcError, KernelError, ModuleError};
 use agentj_core::kernel::Kernel;
 use agentj_core::module::{KernelMessage, SessionStore};
@@ -843,8 +846,43 @@ impl IpcServer {
                     );
                     return Err(DispatchError::internal(e));
                 }
-                // T23: broadcast $/progress + record trajectory — temporary no-op to keep the workspace compiling.
-                AgentEvent::Todo { .. } | AgentEvent::FileChange(_) => {}
+                AgentEvent::Todo { revision, snapshot } => {
+                    self.flush_thinking(&mut pending_thinking, sid);
+                    let items = todo_items_into_wire(snapshot.items);
+                    let frame = build_progress_frame(
+                        &progress_token,
+                        &agentj_protocol::streaming::ProgressValue::Todo {
+                            session_id: sid.to_string(),
+                            revision,
+                            items: items.clone(),
+                        },
+                    );
+                    if let Ok(reg) = self.registry.read() {
+                        reg.broadcast_to_session(&sid.to_string(), &frame);
+                    }
+                    self.record_trajectory(
+                        sid,
+                        agentj_protocol::trajectory::TrajectoryValue::Todo { revision, items },
+                    );
+                }
+                AgentEvent::FileChange(artifact) => {
+                    self.flush_thinking(&mut pending_thinking, sid);
+                    let change = file_change_into_wire(artifact);
+                    let frame = build_progress_frame(
+                        &progress_token,
+                        &agentj_protocol::streaming::ProgressValue::FileChange {
+                            session_id: sid.to_string(),
+                            change: change.clone(),
+                        },
+                    );
+                    if let Ok(reg) = self.registry.read() {
+                        reg.broadcast_to_session(&sid.to_string(), &frame);
+                    }
+                    self.record_trajectory(
+                        sid,
+                        agentj_protocol::trajectory::TrajectoryValue::FileChange { change },
+                    );
+                }
             }
         }
         let mut result = serde_json::json!({ "content": text, "tool_calls": tc_list });
@@ -1437,6 +1475,53 @@ fn build_progress_frame(
         "params": { "token": token.clone(), "value": serde_json::to_value(value).expect("serializable") },
     })
     .to_string()
+}
+
+/// Map core TODO items to wire items (design contract item 2), enums 1:1.
+fn todo_items_into_wire(items: Vec<TodoItemArtifact>) -> Vec<agentj_protocol::streaming::TodoItem> {
+    items
+        .into_iter()
+        .map(|item| agentj_protocol::streaming::TodoItem {
+            id: item.id,
+            content: item.content,
+            status: todo_status_into_wire(item.status),
+        })
+        .collect()
+}
+
+/// 1:1 TODO status mapping — the wire `Unknown` tolerance is never produced
+/// by the kernel (artifacts only exist for known statuses).
+fn todo_status_into_wire(status: TodoStatusArtifact) -> agentj_protocol::streaming::TodoStatus {
+    match status {
+        TodoStatusArtifact::Pending => agentj_protocol::streaming::TodoStatus::Pending,
+        TodoStatusArtifact::InProgress => agentj_protocol::streaming::TodoStatus::InProgress,
+        TodoStatusArtifact::Completed => agentj_protocol::streaming::TodoStatus::Completed,
+        TodoStatusArtifact::Cancelled => agentj_protocol::streaming::TodoStatus::Cancelled,
+    }
+}
+
+/// Map a core file-change artifact to the wire shape (design contract item 3).
+/// `diff_truncated` is `Some(true)` only when truncated; `false` stays omitted
+/// per the field's `skip_serializing_if`.
+fn file_change_into_wire(change: FileChangeArtifact) -> agentj_protocol::streaming::FileChange {
+    agentj_protocol::streaming::FileChange {
+        path: change.path,
+        op: file_change_op_into_wire(change.op),
+        additions: change.additions,
+        deletions: change.deletions,
+        tool_call_id: change.tool_call_id,
+        diff: change.diff,
+        diff_truncated: change.diff_truncated.then_some(true),
+    }
+}
+
+/// 1:1 file-change op mapping (artifact ops are a closed set).
+fn file_change_op_into_wire(op: FileChangeOp) -> agentj_protocol::streaming::FileChangeKind {
+    match op {
+        FileChangeOp::Add => agentj_protocol::streaming::FileChangeKind::Add,
+        FileChangeOp::Modify => agentj_protocol::streaming::FileChangeKind::Modify,
+        FileChangeOp::Delete => agentj_protocol::streaming::FileChangeKind::Delete,
+    }
 }
 
 /// AskQuestion trajectory node recorded at notify time (design 决策 #10).
@@ -3497,6 +3582,356 @@ mod tests {
         );
     }
 
+    /// T23 fixture: accepts any `todo` args; the executor derives the snapshot
+    /// artifact itself (that production path is what T23 broadcasts).
+    struct TodoMock;
+
+    impl Tool for TodoMock {
+        fn name(&self) -> &str {
+            "todo"
+        }
+
+        fn description(&self) -> &str {
+            "test todo"
+        }
+
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+
+        fn execute(
+            &self,
+            input: serde_json::Value,
+        ) -> Result<serde_json::Value, agentj_core::error::ToolError> {
+            let count = input["items"].as_array().map(Vec::len).unwrap_or(0);
+            Ok(serde_json::json!({"ok": true, "count": count}))
+        }
+    }
+
+    /// T23 fixture: really writes the file so the executor's pre/post-read pair
+    /// yields a `file_change` artifact (op `add` for a fresh target).
+    struct WriteMock;
+
+    impl Tool for WriteMock {
+        fn name(&self) -> &str {
+            "write"
+        }
+
+        fn description(&self) -> &str {
+            "test write"
+        }
+
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+
+        fn execute(
+            &self,
+            input: serde_json::Value,
+        ) -> Result<serde_json::Value, agentj_core::error::ToolError> {
+            let path = input["path"].as_str().unwrap_or("");
+            let content = input["content"].as_str().unwrap_or("");
+            std::fs::write(path, content).map_err(|e| {
+                agentj_core::error::ToolError::ExecutionFailed {
+                    name: "write".into(),
+                    reason: e.to_string(),
+                }
+            })?;
+            Ok(serde_json::json!({"ok": true}))
+        }
+    }
+
+    #[test]
+    fn todo_event_to_protocol_value_roundtrip() {
+        use agentj_core::artifacts::{TodoItemArtifact, TodoStatusArtifact};
+        use agentj_protocol::streaming::{ProgressValue, TodoItem, TodoStatus};
+
+        let wire = todo_items_into_wire(vec![
+            TodoItemArtifact {
+                id: "t1".into(),
+                content: "first".into(),
+                status: TodoStatusArtifact::Pending,
+            },
+            TodoItemArtifact {
+                id: "t2".into(),
+                content: "second".into(),
+                status: TodoStatusArtifact::InProgress,
+            },
+            TodoItemArtifact {
+                id: "t3".into(),
+                content: "third".into(),
+                status: TodoStatusArtifact::Completed,
+            },
+            TodoItemArtifact {
+                id: "t4".into(),
+                content: "fourth".into(),
+                status: TodoStatusArtifact::Cancelled,
+            },
+        ]);
+        assert_eq!(
+            wire,
+            vec![
+                TodoItem {
+                    id: "t1".into(),
+                    content: "first".into(),
+                    status: TodoStatus::Pending,
+                },
+                TodoItem {
+                    id: "t2".into(),
+                    content: "second".into(),
+                    status: TodoStatus::InProgress,
+                },
+                TodoItem {
+                    id: "t3".into(),
+                    content: "third".into(),
+                    status: TodoStatus::Completed,
+                },
+                TodoItem {
+                    id: "t4".into(),
+                    content: "fourth".into(),
+                    status: TodoStatus::Cancelled,
+                },
+            ],
+            "all four statuses map 1:1"
+        );
+
+        let value = ProgressValue::Todo {
+            session_id: "s1".into(),
+            revision: 7,
+            items: wire.clone(),
+        };
+        let json = serde_json::to_value(&value).unwrap();
+        assert_eq!(json["kind"], "todo");
+        assert_eq!(json["session_id"], "s1");
+        assert_eq!(json["revision"], 7);
+        assert_eq!(json["items"][1]["status"], "in_progress");
+        assert_eq!(json["items"][3]["status"], "cancelled");
+        let back: ProgressValue = serde_json::from_value(json).unwrap();
+        match back {
+            ProgressValue::Todo {
+                session_id,
+                revision,
+                items,
+            } => {
+                assert_eq!(session_id, "s1");
+                assert_eq!(revision, 7);
+                assert_eq!(items, wire, "items survive the wire roundtrip");
+            }
+            other => panic!("expected todo, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn file_change_event_to_protocol_value_roundtrip() {
+        use agentj_core::artifacts::{FileChangeArtifact, FileChangeOp};
+        use agentj_protocol::streaming::{FileChangeKind, ProgressValue};
+
+        let change = file_change_into_wire(FileChangeArtifact {
+            path: "src/lib.rs".into(),
+            op: FileChangeOp::Modify,
+            additions: 3,
+            deletions: 1,
+            tool_call_id: Some("c1".into()),
+            diff: Some("@@ -1,2 +1,2 @@\n-a\n+b\n".into()),
+            diff_truncated: false,
+        });
+        assert_eq!(change.op, FileChangeKind::Modify);
+        assert_eq!(change.diff_truncated, None, "false must stay omitted");
+        let value = ProgressValue::FileChange {
+            session_id: "s1".into(),
+            change,
+        };
+        let json = serde_json::to_value(&value).unwrap();
+        assert_eq!(json["kind"], "file_change");
+        assert_eq!(json["session_id"], "s1");
+        assert_eq!(json["change"]["path"], "src/lib.rs");
+        assert_eq!(json["change"]["op"], "modify");
+        assert_eq!(json["change"]["additions"], 3);
+        assert_eq!(json["change"]["deletions"], 1);
+        assert_eq!(json["change"]["tool_call_id"], "c1");
+        assert!(
+            json["change"]["diff"].as_str().unwrap().contains("+b"),
+            "diff preserved: {json}"
+        );
+        assert!(
+            json["change"].get("diff_truncated").is_none(),
+            "false diff_truncated must be skipped: {json}"
+        );
+        let back: ProgressValue = serde_json::from_value(json).unwrap();
+        match back {
+            ProgressValue::FileChange { session_id, change } => {
+                assert_eq!(session_id, "s1");
+                assert_eq!(change.op, FileChangeKind::Modify);
+                assert_eq!(change.diff_truncated, None);
+                assert_eq!(change.path, "src/lib.rs");
+            }
+            other => panic!("expected file_change, got {other:?}"),
+        }
+
+        let add = file_change_into_wire(FileChangeArtifact {
+            path: "new.txt".into(),
+            op: FileChangeOp::Add,
+            additions: 1,
+            deletions: 0,
+            tool_call_id: None,
+            diff: None,
+            diff_truncated: false,
+        });
+        assert_eq!(add.op, FileChangeKind::Add);
+        let add_json = serde_json::to_value(&add).unwrap();
+        assert!(add_json.get("tool_call_id").is_none());
+        assert!(add_json.get("diff").is_none());
+
+        let delete = file_change_into_wire(FileChangeArtifact {
+            path: "gone.txt".into(),
+            op: FileChangeOp::Delete,
+            additions: 0,
+            deletions: 4,
+            tool_call_id: Some("c9".into()),
+            diff: None,
+            diff_truncated: true,
+        });
+        assert_eq!(delete.op, FileChangeKind::Delete);
+        let delete_json = serde_json::to_value(&delete).unwrap();
+        assert_eq!(delete_json["diff_truncated"], true, "truncation surfaced");
+    }
+
+    /// T23 AC: a run yielding todo + write artifacts must broadcast both
+    /// `$/progress` kinds to subscribers and record them once for replay.
+    #[tokio::test]
+    async fn subscriber_receives_todo_and_file_change_broadcast() {
+        let dir = temp_dir_traj("t23-artifacts");
+        let target = std::env::temp_dir().join(format!("aj-ipc-t23-{}.txt", std::process::id()));
+        std::fs::remove_file(&target).ok();
+        let path = target.to_string_lossy().into_owned();
+        let mut server = scripted_run_server_with_tools(
+            vec![
+                Ok(agentj_core::types::ModelEvent::ToolCall(
+                    agentj_core::types::ToolCall {
+                        id: "call_todo".into(),
+                        name: "todo".into(),
+                        arguments: serde_json::json!({"items": [
+                            {"content": "write tests", "status": "in_progress"},
+                            {"content": "implement", "status": "pending"}
+                        ]}),
+                    },
+                )),
+                Ok(agentj_core::types::ModelEvent::ToolCall(
+                    agentj_core::types::ToolCall {
+                        id: "call_write".into(),
+                        name: "write".into(),
+                        arguments: serde_json::json!({"path": path, "content": "a\nb\n"}),
+                    },
+                )),
+                Ok(agentj_core::types::ModelEvent::Done),
+            ],
+            |tools| {
+                tools.register(Arc::new(TodoMock));
+                tools.register(Arc::new(WriteMock));
+            },
+        );
+        server.trajectory_store = Some(wired_store(&dir));
+        let server = Arc::new(server);
+        let a = register_fake_conn(&server);
+        let b = register_fake_conn(&server);
+        let new_resp = server
+            .handle_request_from(r#"{"jsonrpc":"2.0","id":1,"method":"session/new"}"#, &a)
+            .await
+            .unwrap();
+        let sid = extract_sid(&new_resp);
+        server
+            .handle_request_from(
+                &format!(
+                    r#"{{"jsonrpc":"2.0","id":2,"method":"session/subscribe","params":{{"session_id":"{sid}"}}}}"#
+                ),
+                &b,
+            )
+            .await
+            .unwrap();
+        let run_raw = format!(
+            r#"{{"jsonrpc":"2.0","id":3,"method":"session/run","params":{{"session_id":"{sid}","content":"hi"}}}}"#
+        );
+        server
+            .handle_request_from(&run_raw, &a)
+            .await
+            .unwrap();
+
+        let frames: Vec<serde_json::Value> = drain_sent(&server, &b)
+            .iter()
+            .filter_map(|m| serde_json::from_str::<serde_json::Value>(m).ok())
+            .filter(|v| v["method"] == "$/progress")
+            .collect();
+        let todo = frames
+            .iter()
+            .find(|f| f["params"]["value"]["kind"] == "todo")
+            .unwrap_or_else(|| panic!("subscriber must receive a todo frame: {frames:?}"));
+        assert_eq!(todo["params"]["token"], 3, "token echoes the request id");
+        assert_eq!(todo["params"]["value"]["session_id"], sid);
+        assert_eq!(todo["params"]["value"]["revision"], 1);
+        assert_eq!(todo["params"]["value"]["items"][0]["status"], "in_progress");
+        assert_eq!(todo["params"]["value"]["items"][1]["status"], "pending");
+
+        let change = frames
+            .iter()
+            .find(|f| f["params"]["value"]["kind"] == "file_change")
+            .unwrap_or_else(|| panic!("subscriber must receive a file_change frame: {frames:?}"));
+        assert_eq!(change["params"]["token"], 3);
+        assert_eq!(change["params"]["value"]["session_id"], sid);
+        assert_eq!(change["params"]["value"]["change"]["op"], "add");
+        assert_eq!(change["params"]["value"]["change"]["path"], path);
+        assert_eq!(change["params"]["value"]["change"]["additions"], 2);
+        assert_eq!(
+            change["params"]["value"]["change"]["tool_call_id"],
+            "call_write"
+        );
+        assert!(
+            change["params"]["value"]["change"]["diff"]
+                .as_str()
+                .unwrap()
+                .contains("+b"),
+            "diff preserved: {change}"
+        );
+        assert!(
+            change["params"]["value"]["change"]
+                .get("diff_truncated")
+                .is_none(),
+            "false diff_truncated stays omitted: {change}"
+        );
+
+        let events = read_traj_events(&dir, &sid);
+        assert_eq!(
+            traj_kinds(&events),
+            vec![
+                "user",
+                "tool_call",
+                "tool_result",
+                "todo",
+                "tool_call",
+                "tool_result",
+                "file_change"
+            ],
+            "each artifact is recorded exactly once, in stream order"
+        );
+        let agentj_protocol::trajectory::TrajectoryValue::Todo { revision, items } = &events[3].value
+        else {
+            panic!("todo node at index 3: {events:?}")
+        };
+        assert_eq!(*revision, 1);
+        assert_eq!(items[0].content, "write tests");
+        assert_eq!(
+            items[1].status,
+            agentj_protocol::streaming::TodoStatus::Pending
+        );
+        let agentj_protocol::trajectory::TrajectoryValue::FileChange { change } = &events[6].value
+        else {
+            panic!("file_change node at index 6: {events:?}")
+        };
+        assert_eq!(change.op, agentj_protocol::streaming::FileChangeKind::Add);
+        assert_eq!(change.path, path);
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_file(&target).ok();
+    }
+
     /// BUG-004 regression: §7.2 — when the client omits `progress_token`, the
     /// `$/progress` `params.token` must echo the request id, never null.
     #[tokio::test]
@@ -3869,9 +4304,19 @@ mod tests {
     fn scripted_run_server(
         script: Vec<Result<agentj_core::types::ModelEvent, agentj_core::error::ModelError>>,
     ) -> IpcServer {
+        scripted_run_server_with_tools(script, |_| {})
+    }
+
+    /// T23: like `scripted_run_server`, but lets the caller register test tools so
+    /// tool artifacts (todo / write) flow as real `AgentEvent`s through the bus.
+    fn scripted_run_server_with_tools(
+        script: Vec<Result<agentj_core::types::ModelEvent, agentj_core::error::ModelError>>,
+        register_tools: impl FnOnce(&ToolRegistry),
+    ) -> IpcServer {
         let store: Arc<InMemoryStore> = Arc::new(InMemoryStore::new());
         let session_dyn: Arc<dyn SessionStore> = store.clone();
         let tools = Arc::new(ToolRegistry::new());
+        register_tools(&tools);
         let providers = Arc::new(ProviderRegistry::new());
         providers.register("mock".into(), Arc::new(MockModelProvider::new(script)));
         let ctx = KernelContext {
