@@ -557,11 +557,11 @@ impl IpcServer {
         if let Ok(mut reg) = self.registry.write() {
             reg.mark_authorized(conn_id);
         }
-        let version = env!("CARGO_PKG_VERSION");
+        let product_version = env!("CARGO_PKG_VERSION");
         Ok(serde_json::json!({
-            "protocol_version": version,
+            "protocol_version": agentj_protocol::PROTOCOL_VERSION,
             "capabilities": { "multi_client": true },
-            "server_info": { "name": "agentj", "version": version },
+            "server_info": { "name": "agentj", "version": product_version },
             "connection_id": conn_id,
         }))
     }
@@ -3430,6 +3430,28 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
         assert_eq!(v["result"]["connection_id"], conn_id);
         assert_eq!(v["result"]["capabilities"]["multi_client"], true);
+    }
+
+    #[tokio::test]
+    async fn initialize_reports_protocol_version_not_product_version() {
+        let server = Arc::new(IpcServer::new(Kernel::new(), stub_session()));
+        let conn_id = register_fake_conn(&server);
+        let resp = server
+            .handle_request_from(
+                r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocol_version":"0.13.0"}}"#,
+                &conn_id,
+            )
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(
+            v["result"]["protocol_version"],
+            agentj_protocol::PROTOCOL_VERSION
+        );
+        assert_eq!(
+            v["result"]["server_info"]["version"],
+            env!("CARGO_PKG_VERSION")
+        );
     }
 
     #[tokio::test]

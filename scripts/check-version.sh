@@ -3,6 +3,7 @@ set -eu
 grep -q 'version = "0.15.0"' Cargo.toml || exit 1
 grep -q 'export const VERSION = "0.15.0"' agentj-ui/packages/sdk/src/config.ts || exit 1
 grep -q 'PROTOCOL_VERSION = "0.13.0"' agentj-ui/packages/sdk/src/config.ts || exit 1
+grep -q 'PROTOCOL_VERSION: &str = "0.13.0"' crates/agentj-protocol/src/lib.rs || exit 1
 grep -q '"protocol_version": "0.13.0"' protocol/methods.json || exit 1
 grep -q '"version": "0.15.0"' agentj-ui/apps/desktop/src-tauri/tauri.conf.json || exit 1
 grep -q '"version": "0.15.0"' agentj-ui/apps/desktop/package.json || exit 1
