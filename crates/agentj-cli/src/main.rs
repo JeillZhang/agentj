@@ -182,6 +182,7 @@ struct TcpServeOptions {
     port: u16,
     token: Option<String>,
     max_connections: usize,
+    trajectory_store: Option<Arc<agentj_ipc::trajectory::TrajectoryStore>>,
 }
 
 async fn serve_tcp(
@@ -198,8 +199,11 @@ async fn serve_tcp(
         session,
         Some(permission_module),
         Some(question_module),
-        options.token,
-        options.max_connections,
+        agentj_ipc::tcp::TcpBindOptions {
+            token: options.token,
+            max_connections: options.max_connections,
+            trajectory_store: options.trajectory_store,
+        },
     )
     .await?;
     println!("listening on {}", tcp.local_addr()?);
@@ -489,6 +493,7 @@ async fn main() -> anyhow::Result<()> {
                     port,
                     token,
                     max_connections,
+                    trajectory_store: Some(Arc::clone(&trajectory_store)),
                 },
                 mcp_manager.clone(),
             )
@@ -504,6 +509,7 @@ async fn main() -> anyhow::Result<()> {
                     port,
                     token: None,
                     max_connections: 16,
+                    trajectory_store: Some(Arc::clone(&trajectory_store)),
                 },
                 mcp_manager.clone(),
             )

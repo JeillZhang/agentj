@@ -1,6 +1,6 @@
 use agentj_core::kernel::Kernel;
 use agentj_core::module::SessionStore;
-use agentj_ipc::tcp::TcpIpcServer;
+use agentj_ipc::tcp::{TcpBindOptions, TcpIpcServer};
 use agentj_session::InMemoryStore;
 use futures::{SinkExt, StreamExt};
 use std::sync::Arc;
@@ -25,8 +25,11 @@ async fn bind_server(
         session,
         None,
         None,
-        token,
-        max_connections,
+        TcpBindOptions {
+            token,
+            max_connections,
+            ..Default::default()
+        },
     )
     .await
     .unwrap();

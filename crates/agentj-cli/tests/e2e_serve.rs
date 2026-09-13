@@ -316,3 +316,132 @@ fn e2e_tcp_ask_roundtrip() {
     let _ = child.0.wait();
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// BUG-005 regression guard: the resident TCP/WS serve path (`serve --port` /
+/// `dashboard`) must wire the trajectory store so `session/history` replays a
+/// completed run's todo/file_change events. Before the fix the TCP shared
+/// server had `trajectory_store: None`, so history always returned
+/// `{"events": []}` even though the same scenario records 8 events over stdio.
+#[test]
+fn e2e_tcp_session_history_replays_run_events() {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let dir =
+        std::env::temp_dir().join(format!("agentj-e2e-traj-{}-{}", std::process::id(), nanos));
+    let _ = std::fs::remove_dir_all(&dir);
+    let project = dir.join("project");
+    let sess_dir = dir.join("sessions");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::create_dir_all(&sess_dir).unwrap();
+    let cfg = dir.join("workbench_config.toml");
+    std::fs::write(
+        &cfg,
+        format!(
+            "[model]\nprovider = \"mock-workbench\"\n\n\
+             [[model.providers]]\nname = \"mock-workbench\"\nkind = \"mock-workbench\"\
+             \nbase_url = \"mock://local\"\napi_key_env = \"\"\n\n\
+             [permission.tools.write]\nmode = \"allow\"\n\n\
+             [session]\ndir = \"{}\"\n",
+            sess_dir.display()
+        ),
+    )
+    .unwrap();
+    let mut child = AutoReap(
+        Command::new(env!("CARGO_BIN_EXE_agentj"))
+            .args(["--config", cfg.to_str().unwrap(), "serve", "--port", "0"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let stdout = child.0.stdout.take().unwrap();
+    let mut server_reader = BufReader::new(stdout);
+    let addr = read_listening_addr(&mut server_reader);
+
+    let stream = TcpStream::connect(&addr).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(20)))
+        .unwrap();
+    let mut writer = stream.try_clone().unwrap();
+    let mut reader = BufReader::new(stream);
+
+    let new_request = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "session/new",
+        "params": { "project_root": project },
+    });
+    writeln!(writer, "{new_request}").unwrap();
+    let new_line = read_socket_line(&mut reader, &[]);
+    let new_response: serde_json::Value = serde_json::from_str(&new_line).unwrap();
+    let sid = new_response["result"]["session_id"]
+        .as_str()
+        .expect("session/new must return a session id")
+        .to_string();
+
+    // One full mock-workbench run: todo call → write call → text delta + Done.
+    // The initiator is auto-subscribed, so consume $/progress frames until the
+    // run response (id 2) arrives.
+    let run = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "session/run",
+        "params": { "session_id": sid, "content": "run the workbench scenario" },
+    });
+    writeln!(writer, "{run}").unwrap();
+    let mut seen: Vec<String> = Vec::new();
+    let mut run_result: Option<serde_json::Value> = None;
+    for _ in 0..80 {
+        let line = read_socket_line(&mut reader, &seen);
+        let value: serde_json::Value = serde_json::from_str(&line).unwrap();
+        seen.push(line);
+        if value["id"] == 2 {
+            run_result = Some(value);
+            break;
+        }
+    }
+    let run = run_result.expect("session/run must respond; saw {seen:?}");
+    assert!(
+        run["result"]["content"]
+            .as_str()
+            .is_some_and(|c| c.contains("workbench done")),
+        "run must complete with the scripted final text: {run}"
+    );
+
+    // session/history must replay the recorded trajectory (todo + file_change).
+    let history = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "session/history",
+        "params": { "session_id": sid },
+    });
+    writeln!(writer, "{history}").unwrap();
+    let hist_line = read_socket_line(&mut reader, &seen);
+    let hist: serde_json::Value = serde_json::from_str(&hist_line).unwrap();
+    let events = hist["result"]["events"]
+        .as_array()
+        .expect("session/history must return an events array");
+    assert!(
+        !events.is_empty(),
+        "session/history must replay run events, got: {hist_line}"
+    );
+    let kinds: Vec<&str> = events
+        .iter()
+        .filter_map(|e| e["value"]["kind"].as_str())
+        .collect();
+    assert!(
+        kinds.contains(&"todo"),
+        "history must contain a todo event; got {kinds:?}"
+    );
+    assert!(
+        kinds.contains(&"file_change"),
+        "history must contain a file_change event; got {kinds:?}"
+    );
+
+    let _ = child.0.kill();
+    let _ = child.0.wait();
+    let _ = std::fs::remove_dir_all(&dir);
+}
