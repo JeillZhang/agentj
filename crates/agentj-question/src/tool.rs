@@ -3,8 +3,8 @@
 //!
 //! The tool validates the model-facing input (2..=8 options), builds
 //! [`AskQuestionParams`], calls [`QuestionModule::ask_blocking`] with the
-//! [`ToolCallContext::session_id`] and serializes the terminal outcome as a
-//! JSON string `{"question_id","answers","skipped"}`.
+//! [`ToolCallContext::session_id`] and returns the terminal outcome as a JSON
+//! object `{"question_id","answers","skipped"}`.
 
 use std::sync::Arc;
 
@@ -44,21 +44,12 @@ impl AskTool {
         })
     }
 
-    fn result_json(
-        question_id: &str,
-        outcome: &QuestionOutcome,
-    ) -> Result<serde_json::Value, ToolError> {
-        let payload = serde_json::json!({
+    fn result_json(question_id: &str, outcome: &QuestionOutcome) -> serde_json::Value {
+        serde_json::json!({
             "question_id": question_id,
             "answers": outcome.answers(),
             "skipped": outcome.is_skipped(),
-        });
-        serde_json::to_string(&payload)
-            .map(serde_json::Value::String)
-            .map_err(|e| ToolError::ExecutionFailed {
-                name: "ask".into(),
-                reason: format!("failed to serialize ask result: {e}"),
-            })
+        })
     }
 }
 
@@ -180,7 +171,7 @@ impl Tool for AskTool {
             timeout_s: parsed.timeout_s,
         };
         let (question_id, outcome) = self.module.ask_blocking(&ctx.session_id, &params);
-        Self::result_json(&question_id, &outcome)
+        Ok(Self::result_json(&question_id, &outcome))
     }
 }
 
@@ -212,9 +203,14 @@ mod tests {
         })
     }
 
+    /// The ask result must be a JSON object (not a JSON-encoded string):
+    /// `TurnRunner` uses a string result verbatim and serializes anything else.
     fn ask_json(out: &serde_json::Value) -> serde_json::Value {
-        let text = out.as_str().expect("ask result must be a JSON string");
-        serde_json::from_str(text).expect("ask result must be valid JSON")
+        assert!(
+            out.is_object(),
+            "ask result must be a JSON object, got {out}"
+        );
+        out.clone()
     }
 
     #[test]
@@ -249,11 +245,11 @@ mod tests {
     #[test]
     fn ask_tool_returns_answers_json() {
         let module = Arc::new(QuestionModule::new());
-        let seen_session = Arc::new(Mutex::new(None::<String>));
+        let seen = Arc::new(Mutex::new(None::<(String, String)>));
         let responder = Arc::clone(&module);
-        let seen = Arc::clone(&seen_session);
+        let seen2 = Arc::clone(&seen);
         module.set_notifier(Arc::new(move |p: &AskQuestionParams, session_id: &str| {
-            *seen.lock().unwrap() = Some(session_id.to_string());
+            *seen2.lock().unwrap() = Some((session_id.to_string(), p.question_id.clone()));
             let question_id = p.question_id.clone();
             let module = Arc::clone(&responder);
             std::thread::spawn(move || {
@@ -266,16 +262,22 @@ mod tests {
             .execute_with_context(valid_input(), &test_ctx())
             .unwrap();
         let v = ask_json(&out);
+        let question_id = v["question_id"].as_str().unwrap_or_default();
         assert!(
-            !v["question_id"].as_str().unwrap_or_default().is_empty(),
+            !question_id.is_empty(),
             "question_id must be the generated uuid: {v}"
         );
         assert_eq!(v["answers"], json!(["a"]));
         assert_eq!(v["skipped"], false);
+        let seen = seen.lock().unwrap();
+        let (session_id, delivered_id) = seen.as_ref().expect("notifier must fire");
         assert_eq!(
-            seen_session.lock().unwrap().as_deref(),
-            Some("s1"),
+            session_id, "s1",
             "notifier must receive the ToolCallContext session id"
+        );
+        assert_eq!(
+            delivered_id, question_id,
+            "delivered question_id must match the tool result"
         );
     }
 
