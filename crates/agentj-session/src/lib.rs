@@ -6,6 +6,7 @@ use agentj_core::hooks::EventBus;
 use agentj_core::module::{EventType, SessionStatus, SessionStore};
 use agentj_core::types::{ChatMessage, SessionId, SessionSnapshot, now_epoch_secs};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -16,6 +17,8 @@ pub struct InMemoryStore {
     last_activity: Mutex<HashMap<SessionId, u64>>,
     // v0.3 T9: injectable clock for deterministic expiry tests (SystemTime by default)
     clock: fn() -> u64,
+    // T6/design decision #3: session-level path base
+    roots: Mutex<HashMap<SessionId, PathBuf>>,
 }
 
 impl InMemoryStore {
@@ -31,6 +34,7 @@ impl InMemoryStore {
             statuses: Mutex::new(HashMap::new()),
             last_activity: Mutex::new(HashMap::new()),
             clock,
+            roots: Mutex::new(HashMap::new()),
         }
     }
 
@@ -97,6 +101,22 @@ impl SessionStore for InMemoryStore {
         // v0.1: approximate token counting — ~4 chars per token for English text
         let total_chars: usize = messages.iter().map(|m| m.content.len()).sum();
         Ok(total_chars / 4)
+    }
+
+    fn project_root(&self, session: &SessionId) -> Option<PathBuf> {
+        self.roots
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(session)
+            .cloned()
+    }
+
+    fn set_project_root(&self, session: &SessionId, root: PathBuf) -> Result<(), ModuleError> {
+        self.roots
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(session.clone(), root);
+        Ok(())
     }
 
     // ---- v0.1 lifecycle contract (design §Session 生命周期契约) ----
@@ -308,6 +328,16 @@ mod tests {
             store.delete(&"nonexistent".into()),
             Err(ModuleError::Session(SessionError::NotFound(_)))
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn inmemory_set_project_root_roundtrip() -> Result<(), ModuleError> {
+        let store = InMemoryStore::new();
+        let sid = store.create()?;
+        assert_eq!(store.project_root(&sid), None, "unset by default");
+        store.set_project_root(&sid, std::path::PathBuf::from("/tmp/p"))?;
+        assert_eq!(store.project_root(&sid), Some(std::path::PathBuf::from("/tmp/p")));
         Ok(())
     }
 
