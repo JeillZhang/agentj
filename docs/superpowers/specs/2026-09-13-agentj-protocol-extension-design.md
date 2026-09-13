@@ -277,7 +277,7 @@ flowchart TB
 ### #3 会话级 `project_root`：路径基准五处同源
 
 - **上下文**：草案要求 `file/list` 限于「会话所属项目根」，但会话模型无根字段；现有 `workspace_root` 是进程 CWD（`ToolExecutorModule` 构造期取得），权限沙箱、bash cwd、工具相对路径均以进程 CWD 为基准。
-- **决策**：`session/new` 加可选 `project_root`（canonicalize 持久化）；以下**五处**统一以会话根为基准：① `file/list` 沙箱 ② bash git 采样根 ③ `PermissionContext.workspace_root`（每调用按会话解析，缺省 CWD）④ 文件类工具相对路径重定基（`read`/`write`→`path`，`grep`→`path`，`glob`→`pattern`；集中在 `ToolRegistry::execute_async` 按工具名映射处理）⑤ bash 子进程 `cwd` 与 file_change 相对路径。
+- **决策**：`session/new` 加可选 `project_root`（canonicalize 持久化）；以下**五处**统一以会话根为基准：① `file/list` 沙箱 ② bash git 采样根 ③ `PermissionContext.workspace_root`（每调用按会话解析，缺省 CWD）④ 文件类工具相对路径重定基（`read`/`write`→`path`，`grep`→`path`；`read`/`write`/`grep` 的 `path` 映射集中在 `ToolRegistry::execute_async` 按工具名映射处理；**2026-09-14 修订**：不再改写 `glob`→`pattern`——改写会让 `find -name` 对 `*.rs` 等模式静默返回空，`glob`/`grep` 改以会话根为子进程 cwd 执行）⑤ bash 子进程 `cwd` 与 file_change 相对路径。
 - **工具上下文获取**：`Tool` trait 新增 `execute_with_context(&self, input, ctx: &ToolCallContext { session_id, workspace_root })`，**默认实现委托既有 `execute`**——存量工具（含 MCP 桥）零改动；`AskTool` 覆写以拿到 `session_id`，`BashTool` 覆写以设置子进程 cwd。
 - **理由**：单 serve 实例支持多项目会话；与权限沙箱语义收敛到同一根；default 方法保证零涟漪。
 - **影响**：`SessionStore` trait 加 `project_root` / `set_project_root`（同样给 default 实现避免测试替身连锁改）；`SessionSnapshot` 加字段（serde default 兼容旧数据）。
@@ -373,3 +373,11 @@ flowchart TB
 - 前端：阶段一三处占位数据源（右栏 TODO / 左栏文件树 / 提问卡）与 `deriveChanges` 半推导全部切换为真实协议驱动；demo 模式保留为可切换预览通道；TUI runview 只读 TODO 区块。
 - 全量门禁（T42）：`cargo fmt` / `cargo test --workspace`（545 passed）/ `clippy -D warnings`（零警告）/ drift（2 passed）/ SDK 37 / Web 219 / Web build / TUI 71 / `check-version.sh` / `check-desktop-ui.mjs` 全绿。
 - 规范落地：`docs/specs/ipc-protocol.md` 同步 0.13.0（21 方法 / 51 schemas，新增 §8.18-§8.22、§7.3 扩展、§3.4 `-32807`、§11.3 changelog）。
+
+## 实现已知限制（v0.15.0）
+
+> 2026-09-14 final review 记录；均为已接受的行为边界/延迟项，非缺陷。
+
+1. **TODO `revision` 仅在守护进程内单调**：`revision` 由进程内计数器分配，重启后从 1 重新开始；客户端以 `session/history` 回放的最大 revision 做门控，因此重启后早期帧（revision ≤ 历史最大值）会被丢弃，直到计数器超过历史最大值。正解 = 按会话持久化/播种 revision，推迟到下一迭代。
+2. **SDK `ResponseRouter` 通知处理器为单槽**：Web（`App.tsx`）与 TUI（`permission.tsx`）通过 monkey-patch `RpcClient.prototype` 扇出多处理器（功能可用、有测试覆盖）；原生多处理器路由推迟。
+3. **glob 仅 basename 模式完备**：含 `/` 的模式行为与修复前一致（`find -name` 只匹配 basename）；glob 与 grep 现均以会话根为子进程 cwd（对决策 #3④ 的修订——不再改写 glob pattern）。`find -path` 因 fnmatch 的 `*` 可跨 `/`、无法等价 glob 语义，故未采用。

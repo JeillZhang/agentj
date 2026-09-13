@@ -33,7 +33,9 @@
 
 ## 遗留问题 / 已知限制
 
-- **T7 遗留（预存在能力边界，非回归）**：`GlobTool` 的 `find -name` 无法消费带根前缀的模式（如 `<root>/**/*.rs`）——工具相对路径重定基暴露的既有局限；`GrepTool` 无 `path` 参数，grep 重定基无实际作用（设计 #3④ 未完全落地）。不在本计划文件范围，需后续独立加性扩展。
+- **T7 遗留 → final review 已修复（2026-09-14）**：glob 重定基会让 `find -name` 对 `*.rs` 等模式静默返回空（回归），已改为 **glob pattern 不再改写**、`GlobTool`/`GrepTool` 以会话根为 cwd 执行（新增回归测试）；含 `/` 的 glob 模式仍不支持（`find -name` basename 语义），见设计文档「实现已知限制（v0.15.0）」。
+- **TODO revision 仅进程内单调（final review 记录，延迟项）**：守护进程重启后 revision 从 1 重新计数，而客户端以 `session/history` 最大 revision 门控 → 重启后早期帧被丢弃；正解 = 按会话持久化/播种 revision，推迟下一迭代。
+- **SDK `ResponseRouter` 通知单槽（final review 记录，延迟项）**：Web `App.tsx` / TUI `permission.tsx` 以 monkey-patch `RpcClient.prototype` 扇出多处理器（功能可用、有测试）；原生多处理器路由推迟。
 - **T35 遗留（minor）**：`RunPanel` 的 `pendingQuestion` 在 `activeSessionId` 切换 / demo 开关时不清理，可能残留上一条会话的提问卡（会话切换场景）。
 - **Desktop `src-tauri/Cargo.lock` 历史遗留**：仍停留在旧版本 `agentj-ui 0.11.0`（非本次 bump 范围）。
 - **E2E 本地预存在风险（环境性）**：`e2e_permission` 硬编码会话 id `s1` 且未设置 `[session] dir`，会写 `$HOME/.local/share/agentj/sessions/s1.json`；若该文件处于过期/归档态，本地运行会挂起（CI 全新 HOME 不受影响）。本次 T42 门禁工作区干净、测试 60.24s 内正常通过；如遇本地挂起，先清理该残留文件。
