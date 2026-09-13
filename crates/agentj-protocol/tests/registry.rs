@@ -17,6 +17,7 @@ fn registry_lists_all_v01_methods() {
         .iter()
         .map(|m| m["method"].as_str().unwrap())
         .collect();
+    assert_eq!(methods.len(), 21, "unexpected method count");
     for expected in [
         "initialize",
         "initialized",
@@ -36,10 +37,48 @@ fn registry_lists_all_v01_methods() {
         "session/unsubscribe",
         "session/list",
         "session/history",
+        "file/list",
+        "$/askQuestion",
+        "question/respond",
     ] {
         assert!(names.contains(&expected), "missing method {expected}");
     }
-    assert_eq!(methods.len(), 18, "unexpected method count");
+}
+
+#[test]
+fn registry_extension_method_shapes() {
+    let reg: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(repo_root().join("protocol/methods.json")).unwrap(),
+    )
+    .unwrap();
+    let methods = reg["methods"].as_array().unwrap();
+    let find = |name: &str| {
+        methods
+            .iter()
+            .find(|m| m["method"] == name)
+            .unwrap_or_else(|| panic!("missing method {name}"))
+    };
+
+    let file_list = find("file/list");
+    assert_eq!(file_list["kind"], "request");
+    assert_eq!(file_list["direction"], "client_to_server");
+    assert_eq!(file_list["params"], "FileListParams");
+    assert_eq!(file_list["result"], "FileListResult");
+
+    let ask = find("$/askQuestion");
+    assert_eq!(ask["kind"], "notification");
+    assert_eq!(ask["direction"], "server_to_client");
+    assert_eq!(ask["params"], "AskQuestionParams");
+    assert!(ask["result"].is_null());
+
+    let respond = find("question/respond");
+    assert_eq!(respond["kind"], "request");
+    assert_eq!(respond["direction"], "client_to_server");
+    assert_eq!(respond["params"], "QuestionRespondParams");
+    assert_eq!(respond["result"], "QuestionRespondResult");
+
+    assert_eq!(find("session/new")["params"], "SessionNewParams");
+    assert_eq!(reg["protocol_version"], "0.13.0");
 }
 
 #[test]

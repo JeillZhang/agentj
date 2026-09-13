@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AskQuestionParams",
+  "description": "`$/askQuestion` params (server → owner client, 2–8 options). @since 0.13.0",
+  "type": "object",
+  "properties": {
+    "allow_multiple": {
+      "description": "Always serialized; omitted on the wire means false. @since 0.13.0",
+      "type": "boolean",
+      "default": false
+    },
+    "allow_other": {
+      "description": "Always serialized; omitted on the wire means true. @since 0.13.0",
+      "type": "boolean",
+      "default": true
+    },
+    "header": {
+      "description": "Optional short header for the question card. @since 0.13.0",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "options": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/AskOption"
+      }
+    },
+    "question": {
+      "type": "string"
+    },
+    "question_id": {
+      "type": "string"
+    },
+    "session_id": {
+      "type": "string"
+    },
+    "timeout_s": {
+      "description": "Timeout in seconds; `None` = no timeout (timeout settles as skipped).\n@since 0.13.0",
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint64",
+      "minimum": 0
+    }
+  },
+  "required": [
+    "question_id",
+    "session_id",
+    "question",
+    "options"
+  ],
+  "$defs": {
+    "AskOption": {
+      "description": "One selectable answer option. @since 0.13.0",
+      "type": "object",
+      "properties": {
+        "hint": {
+          "description": "Optional hint rendered with the option. @since 0.13.0",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "label"
+      ]
+    }
+  }
+}

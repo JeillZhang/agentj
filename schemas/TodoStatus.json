@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TodoStatus",
+  "description": "Lifecycle status of a TODO item. `Unknown` tolerates forward values\n(serde(other)); schema lists only the known values. @since 0.13.0",
+  "type": "string",
+  "enum": [
+    "pending",
+    "in_progress",
+    "completed",
+    "cancelled"
+  ]
+}

@@ -1,11 +1,11 @@
 {
-  "protocol_version": "0.3.0",
+  "protocol_version": "0.13.0",
   "methods": [
     { "method": "initialize", "kind": "request", "direction": "client_to_server", "params": "InitializeParams", "result": "InitializeResult" },
     { "method": "initialized", "kind": "notification", "direction": "client_to_server", "params": null, "result": null },
     { "method": "shutdown", "kind": "request", "direction": "client_to_server", "params": null, "result": null },
     { "method": "exit", "kind": "notification", "direction": "client_to_server", "params": null, "result": null },
-    { "method": "session/new", "kind": "request", "direction": "client_to_server", "params": null, "result": "SessionNewResult" },
+    { "method": "session/new", "kind": "request", "direction": "client_to_server", "params": "SessionNewParams", "result": "SessionNewResult" },
     { "method": "session/run", "kind": "request", "direction": "client_to_server", "params": "SessionRunParams", "result": "SessionRunResult" },
     { "method": "session/status", "kind": "request", "direction": "client_to_server", "params": "SessionIdParams", "result": "SessionStatusResult" },
     { "method": "session/archive", "kind": "request", "direction": "client_to_server", "params": "SessionIdParams", "result": null },
@@ -18,6 +18,9 @@
     { "method": "$/cancelRequest", "kind": "notification", "direction": "both", "params": "CancelParams", "result": null },
     { "method": "$/progress", "kind": "notification", "direction": "server_to_client", "params": "ProgressParams", "result": null },
     { "method": "$/permissionRequest", "kind": "notification", "direction": "server_to_client", "params": "PermissionRequestParams", "result": null },
-    { "method": "permission/respond", "kind": "request", "direction": "client_to_server", "params": "PermissionRespondParams", "result": "PermissionRespondResult" }
+    { "method": "permission/respond", "kind": "request", "direction": "client_to_server", "params": "PermissionRespondParams", "result": "PermissionRespondResult" },
+    { "method": "file/list", "kind": "request", "direction": "client_to_server", "params": "FileListParams", "result": "FileListResult" },
+    { "method": "$/askQuestion", "kind": "notification", "direction": "server_to_client", "params": "AskQuestionParams", "result": null },
+    { "method": "question/respond", "kind": "request", "direction": "client_to_server", "params": "QuestionRespondParams", "result": "QuestionRespondResult" }
   ]
 }

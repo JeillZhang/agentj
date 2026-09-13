@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "FileChange",
+  "description": "A workspace file change. @since 0.13.0",
+  "type": "object",
+  "properties": {
+    "additions": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "deletions": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "diff": {
+      "description": "Unified diff text; omitted when unavailable (untracked / over limit).",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "diff_truncated": {
+      "description": "True only when the diff was truncated; omitted otherwise.",
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "op": {
+      "$ref": "#/$defs/FileChangeKind"
+    },
+    "path": {
+      "description": "Path relative to the project root.",
+      "type": "string"
+    },
+    "tool_call_id": {
+      "description": "Tool call card this change belongs to; omitted when unavailable.",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "path",
+    "op",
+    "additions",
+    "deletions"
+  ],
+  "$defs": {
+    "FileChangeKind": {
+      "description": "Change operation of a `FileChange`. `Unknown` tolerates forward values\n(serde(other)); schema lists only the known values. @since 0.13.0",
+      "type": "string",
+      "enum": [
+        "add",
+        "modify",
+        "delete"
+      ]
+    }
+  }
+}

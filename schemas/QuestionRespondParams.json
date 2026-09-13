@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "QuestionRespondParams",
+  "description": "`question/respond` params (`answers` are option ids or `other:`-prefixed\nfree text). @since 0.13.0",
+  "type": "object",
+  "properties": {
+    "answers": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "question_id": {
+      "type": "string"
+    },
+    "skipped": {
+      "description": "Omitted on the wire means false. @since 0.13.0",
+      "type": "boolean",
+      "default": false
+    }
+  },
+  "required": [
+    "question_id",
+    "answers"
+  ]
+}

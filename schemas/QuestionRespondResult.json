@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "QuestionRespondResult",
+  "description": "`question/respond` result — `false` for duplicate/unknown/settled ids.\n@since 0.13.0",
+  "type": "object",
+  "properties": {
+    "accepted": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "accepted"
+  ]
+}

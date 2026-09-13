@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AskOption",
+  "description": "One selectable answer option. @since 0.13.0",
+  "type": "object",
+  "properties": {
+    "hint": {
+      "description": "Optional hint rendered with the option. @since 0.13.0",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "id": {
+      "type": "string"
+    },
+    "label": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "label"
+  ]
+}

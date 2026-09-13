@@ -23,6 +23,88 @@
     "events"
   ],
   "$defs": {
+    "AskOption": {
+      "description": "One selectable answer option. @since 0.13.0",
+      "type": "object",
+      "properties": {
+        "hint": {
+          "description": "Optional hint rendered with the option. @since 0.13.0",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "label"
+      ]
+    },
+    "FileChange": {
+      "description": "A workspace file change. @since 0.13.0",
+      "type": "object",
+      "properties": {
+        "additions": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "deletions": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "diff": {
+          "description": "Unified diff text; omitted when unavailable (untracked / over limit).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "diff_truncated": {
+          "description": "True only when the diff was truncated; omitted otherwise.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "op": {
+          "$ref": "#/$defs/FileChangeKind"
+        },
+        "path": {
+          "description": "Path relative to the project root.",
+          "type": "string"
+        },
+        "tool_call_id": {
+          "description": "Tool call card this change belongs to; omitted when unavailable.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "path",
+        "op",
+        "additions",
+        "deletions"
+      ]
+    },
+    "FileChangeKind": {
+      "description": "Change operation of a `FileChange`. `Unknown` tolerates forward values\n(serde(other)); schema lists only the known values. @since 0.13.0",
+      "type": "string",
+      "enum": [
+        "add",
+        "modify",
+        "delete"
+      ]
+    },
     "PermissionDecision": {
       "description": "Decision value in `PermissionRespondParams`. `Unknown` tolerates forward\nvalues (serde(other)); schema lists only the known values.",
       "type": "string",
@@ -30,6 +112,37 @@
         "allow",
         "deny",
         "allow_always"
+      ]
+    },
+    "TodoItem": {
+      "description": "One entry of a full TODO snapshot. @since 0.13.0",
+      "type": "object",
+      "properties": {
+        "content": {
+          "type": "string"
+        },
+        "id": {
+          "description": "Kernel-computed stable id (content hash; duplicates disambiguated by occurrence).",
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/TodoStatus"
+        }
+      },
+      "required": [
+        "id",
+        "content",
+        "status"
+      ]
+    },
+    "TodoStatus": {
+      "description": "Lifecycle status of a TODO item. `Unknown` tolerates forward values\n(serde(other)); schema lists only the known values. @since 0.13.0",
+      "type": "string",
+      "enum": [
+        "pending",
+        "in_progress",
+        "completed",
+        "cancelled"
       ]
     },
     "ToolCall": {
@@ -205,6 +318,119 @@
           "required": [
             "kind",
             "message"
+          ]
+        },
+        {
+          "description": "Full TODO snapshot replay; the highest revision wins on rebuild (决策 #10). @since 0.13.0",
+          "type": "object",
+          "properties": {
+            "items": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/TodoItem"
+              }
+            },
+            "kind": {
+              "type": "string",
+              "const": "todo"
+            },
+            "revision": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "kind",
+            "revision",
+            "items"
+          ]
+        },
+        {
+          "description": "File change replay, mirroring the live `file_change` progress payload. @since 0.13.0",
+          "type": "object",
+          "properties": {
+            "change": {
+              "$ref": "#/$defs/FileChange"
+            },
+            "kind": {
+              "type": "string",
+              "const": "file_change"
+            }
+          },
+          "required": [
+            "kind",
+            "change"
+          ]
+        },
+        {
+          "description": "Question replay recorded at notify time, mirroring the live `$/askQuestion` params. @since 0.13.0",
+          "type": "object",
+          "properties": {
+            "allow_multiple": {
+              "type": "boolean"
+            },
+            "allow_other": {
+              "type": "boolean"
+            },
+            "header": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "type": "string",
+              "const": "ask_question"
+            },
+            "options": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/AskOption"
+              }
+            },
+            "question": {
+              "type": "string"
+            },
+            "question_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "question_id",
+            "question",
+            "options",
+            "allow_multiple",
+            "allow_other"
+          ]
+        },
+        {
+          "description": "Question settlement replay, recorded exactly once per question. @since 0.13.0",
+          "type": "object",
+          "properties": {
+            "answers": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "kind": {
+              "type": "string",
+              "const": "question_answer"
+            },
+            "question_id": {
+              "type": "string"
+            },
+            "skipped": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "kind",
+            "question_id",
+            "answers",
+            "skipped"
           ]
         }
       ]
