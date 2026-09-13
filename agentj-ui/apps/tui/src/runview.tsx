@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef } from "react";
 import { METHODS } from "@agentj/sdk";
 import type { RpcClient } from "@agentj/sdk";
-import type { ProgressFrame } from "@agentj/sdk";
+import type { ProgressFrame, TodoFrame, TodoItemFrame } from "@agentj/sdk";
 import type { ScrollBoxRenderable } from "@opentui/core";
 import { useTheme, type ThemePalette } from "./theme.tsx";
 
@@ -199,13 +199,55 @@ function rowColor(row: TranscriptRow, palette: ThemePalette): string {
   }
 }
 
-export function RunTranscript(props: { rows: TranscriptRow[] }): React.ReactNode {
+export type TodoState = { revision: number; items: TodoItemFrame[] };
+
+/** Sentinel revision for "no snapshot yet": any non-negative revision supersedes it. */
+export const EMPTY_TODOS: TodoState = { revision: -1, items: [] };
+
+/** Revision-gated fold for `$/progress` todo frames. A revision <= the current one is stale
+ * and returns the SAME state reference so callers can skip re-rendering. */
+export function applyTodoFrame(state: TodoState, frame: TodoFrame): TodoState {
+  if (frame.revision <= state.revision) return state;
+  return { revision: frame.revision, items: frame.items };
+}
+
+const TODO_MARKERS: Record<string, string> = {
+  completed: "[x]",
+  in_progress: "[~]",
+  pending: "[ ]",
+};
+
+export function todoMarker(status: string): string {
+  return TODO_MARKERS[status] ?? "[ ]";
+}
+
+export function TodoBlock(props: { items: TodoItemFrame[] }): React.ReactNode {
   const { palette } = useTheme();
-  const { rows } = props;
+  const { items } = props;
+  if (items.length === 0) return null;
+  return (
+    <box flexDirection="column" flexShrink={0} paddingLeft={1} paddingBottom={1}>
+      <text style={{ fg: palette.textMuted }}>todos</text>
+      {items.map((item) => (
+        <text
+          key={item.id}
+          style={{ fg: item.status === "completed" ? palette.textMuted : palette.text }}
+        >
+          {`${todoMarker(item.status)} ${item.content}`}
+        </text>
+      ))}
+    </box>
+  );
+}
+
+export function RunTranscript(props: { rows: TranscriptRow[]; todos?: TodoItemFrame[] }): React.ReactNode {
+  const { palette } = useTheme();
+  const { rows, todos } = props;
   const scrollRef = useRef<ScrollBoxRenderable>(null);
   useAutoScroll(rows, scrollRef);
   return (
     <box flexDirection="column" flexGrow={1} padding={1}>
+      <TodoBlock items={todos ?? []} />
       <scrollbox ref={scrollRef} flexGrow={1} style={{ flexGrow: 1 }}>
         {rows.map((r) => {
           const glyph = rowGlyph(r);
