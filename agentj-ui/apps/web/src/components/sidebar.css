@@ -213,16 +213,6 @@
   gap: 4px;
 }
 
-.aj-project-group__header {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--aj-textMuted);
-  margin: 8px 0 4px;
-}
-
 .aj-project-row {
   display: flex;
   align-items: center;
@@ -307,10 +297,6 @@
 .aj-project-new {
   margin-left: 28px;
   align-self: flex-start;
-}
-
-.aj-sidebar__connection {
-  margin-bottom: 8px;
 }
 
 .aj-sidebar--unreachable {
