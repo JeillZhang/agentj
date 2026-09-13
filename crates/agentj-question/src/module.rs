@@ -424,7 +424,8 @@ impl KernelModule for QuestionModule {
 mod tests {
     use super::*;
     use agentj_protocol::question::AskOption;
-    use std::time::Duration;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::{Duration, Instant};
 
     fn params_with_options() -> AskQuestionParams {
         AskQuestionParams {
@@ -468,6 +469,90 @@ mod tests {
         let m = Arc::new(QuestionModule::new());
         m.set_notifier(Arc::new(|_p: &AskQuestionParams, _sid: &str| true));
         m
+    }
+
+    /// Busy-wait until at least `n` pending questions are registered and return
+    /// their generated ids.
+    fn wait_for_pending_count(m: &QuestionModule, n: usize) -> Vec<String> {
+        for _ in 0..500 {
+            if let Ok(pending) = m.pending.lock()
+                && pending.len() >= n
+            {
+                return pending.keys().cloned().collect();
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!("fewer than {n} pending questions registered within 5s");
+    }
+
+    fn recording_hook() -> (Arc<Mutex<Vec<QuestionSettlement>>>, SettleHook) {
+        let seen = Arc::new(Mutex::new(Vec::<QuestionSettlement>::new()));
+        let seen2 = Arc::clone(&seen);
+        let hook: SettleHook = Arc::new(
+            move |_session_id: &str, _question_id: &str, s: &QuestionSettlement| {
+                seen2.lock().unwrap().push(s.clone());
+            },
+        );
+        (seen, hook)
+    }
+
+    fn panicking_hook() -> (Arc<AtomicUsize>, SettleHook) {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls2 = Arc::clone(&calls);
+        let hook: SettleHook = Arc::new(
+            move |_session_id: &str, _question_id: &str, _s: &QuestionSettlement| {
+                calls2.fetch_add(1, Ordering::SeqCst);
+                panic!("settle hook panic must be isolated");
+            },
+        );
+        (calls, hook)
+    }
+
+    fn answered(ids: &[&str]) -> QuestionOutcome {
+        QuestionOutcome::Answered {
+            answers: ids.iter().map(|id| (*id).to_string()).collect(),
+        }
+    }
+
+    /// Run one respond-vs-timeout race and assert the responder and the blocked
+    /// asker agree on the single winner. Returns (question id, responder
+    /// outcome, asker outcome).
+    fn race_once(
+        m: &Arc<QuestionModule>,
+        delay_ms: u64,
+    ) -> (String, RespondOutcome, QuestionOutcome) {
+        let mut params = params_with_options();
+        params.timeout_s = Some(1);
+        let asker = Arc::clone(m);
+        let h = std::thread::spawn(move || asker.ask_blocking("s1", &params));
+        let qid = wait_for_pending(m);
+        let responder = Arc::clone(m);
+        let qid2 = qid.clone();
+        let r = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(delay_ms));
+            responder.respond(&qid2, vec!["a".into()], false)
+        });
+        let response = r.join().unwrap().unwrap();
+        let (asked_id, outcome) = h.join().unwrap();
+        assert_eq!(asked_id, qid);
+        match response {
+            RespondOutcome::Accepted(true) => {
+                assert_eq!(
+                    outcome,
+                    answered(&["a"]),
+                    "respond won but asker saw {outcome:?}"
+                );
+            }
+            RespondOutcome::Accepted(false) => {
+                assert_eq!(
+                    outcome,
+                    QuestionOutcome::Skipped,
+                    "timeout won but respond was accepted"
+                );
+            }
+        }
+        assert_eq!(m.settled_of(&qid), Some(outcome.clone()));
+        (qid, response, outcome)
     }
 
     #[test]
@@ -594,5 +679,243 @@ mod tests {
         assert_eq!(outcome, QuestionOutcome::Skipped);
         assert_eq!(m.session_of(&qid), None);
         assert_eq!(m.pending_count(), 0);
+    }
+
+    #[test]
+    fn timeout_settles_skip_and_fires_hook_once() {
+        let m = delivering_module();
+        let (seen, hook) = recording_hook();
+        m.set_settle_hook(hook);
+        let mut params = params_with_options();
+        params.timeout_s = Some(1);
+        let started = Instant::now();
+        let (qid, outcome) = m.ask_blocking("s1", &params);
+        let elapsed = started.elapsed();
+        assert_eq!(outcome, QuestionOutcome::Skipped);
+        assert!(
+            elapsed >= Duration::from_millis(900),
+            "returned before the timeout: {elapsed:?}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "timeout overshot: {elapsed:?}"
+        );
+        assert_eq!(m.pending_count(), 0);
+        assert_eq!(m.settled_of(&qid), Some(QuestionOutcome::Skipped));
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1, "hook must fire exactly once on timeout");
+        assert_eq!(seen[0].question_id, qid);
+        assert_eq!(seen[0].session_id, "s1");
+        assert_eq!(seen[0].outcome, QuestionOutcome::Skipped);
+    }
+
+    #[test]
+    fn cancel_session_settles_all_pending() {
+        let m = delivering_module();
+        let (seen, hook) = recording_hook();
+        m.set_settle_hook(hook);
+        let asker1 = Arc::clone(&m);
+        let h1 = std::thread::spawn(move || asker1.ask_blocking("s1", &params_with_options()));
+        let asker2 = Arc::clone(&m);
+        let h2 = std::thread::spawn(move || asker2.ask_blocking("s1", &params_with_options()));
+        let ids = wait_for_pending_count(&m, 2);
+        assert_eq!(m.cancel_session("s1"), 2);
+        let (id1, outcome1) = h1.join().unwrap();
+        let (id2, outcome2) = h2.join().unwrap();
+        assert_eq!(outcome1, QuestionOutcome::Skipped);
+        assert_eq!(outcome2, QuestionOutcome::Skipped);
+        assert!(ids.contains(&id1) && ids.contains(&id2));
+        assert_eq!(m.pending_count(), 0);
+        assert_eq!(m.cancel_session("s1"), 0, "no pending left to cancel");
+        // cancel_session drops the session's settled records (决策 #4), so a
+        // late respond is an idempotent false instead of a resurrection.
+        assert_eq!(m.settled_of(&id1), None);
+        assert_eq!(m.settled_of(&id2), None);
+        assert_eq!(
+            m.respond(&id1, vec!["a".into()], false).unwrap(),
+            RespondOutcome::Accepted(false)
+        );
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 2, "one hook fire per settled question");
+        for recorded in seen.iter() {
+            assert_eq!(recorded.session_id, "s1");
+            assert_eq!(recorded.outcome, QuestionOutcome::Skipped);
+        }
+        let mut recorded_ids: Vec<&str> = seen.iter().map(|s| s.question_id.as_str()).collect();
+        recorded_ids.sort_unstable();
+        let mut expected = vec![id1.as_str(), id2.as_str()];
+        expected.sort_unstable();
+        assert_eq!(recorded_ids, expected);
+    }
+
+    #[test]
+    fn cancel_session_without_pending_is_noop() {
+        let m = delivering_module();
+        let (seen, hook) = recording_hook();
+        m.set_settle_hook(hook);
+        assert_eq!(m.cancel_session("s-missing"), 0);
+        assert_eq!(m.pending_count(), 0);
+        assert!(
+            seen.lock().unwrap().is_empty(),
+            "no-op cancel must not fire hooks"
+        );
+        let asker = Arc::clone(&m);
+        let h = std::thread::spawn(move || asker.ask_blocking("s1", &params_with_options()));
+        let qid = wait_for_pending(&m);
+        assert_eq!(m.cancel_session("s-other"), 0);
+        assert_eq!(m.pending_count(), 1);
+        assert_eq!(m.session_of(&qid), Some("s1".into()));
+        assert_eq!(
+            m.respond(&qid, vec!["a".into()], false).unwrap(),
+            RespondOutcome::Accepted(true)
+        );
+        let (settled_id, outcome) = h.join().unwrap();
+        assert_eq!(settled_id, qid);
+        assert_eq!(
+            outcome,
+            QuestionOutcome::Answered {
+                answers: vec!["a".into()]
+            }
+        );
+        assert_eq!(seen.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn respond_racing_timeout_settles_exactly_once() {
+        let m = delivering_module();
+        let (seen, hook) = recording_hook();
+        m.set_settle_hook(hook);
+        let mut accepted = 0usize;
+        let mut rejected = 0usize;
+        for i in 0..6 {
+            // 950ms: respond usually wins; 1000ms: true race; 1050ms: timeout wins.
+            let (qid, response, outcome) = race_once(&m, 950 + (i as u64 % 3) * 50);
+            let seen = seen.lock().unwrap();
+            assert_eq!(seen.len(), i + 1, "exactly one settlement per question");
+            assert_eq!(seen[i].question_id, qid);
+            assert_eq!(
+                seen[i].outcome, outcome,
+                "hook must match the asker's outcome"
+            );
+            match response {
+                RespondOutcome::Accepted(true) => accepted += 1,
+                RespondOutcome::Accepted(false) => rejected += 1,
+            }
+        }
+        assert_eq!(accepted + rejected, 6);
+        assert_eq!(m.pending_count(), 0);
+    }
+
+    #[test]
+    fn timeout_losing_removal_race_waits_for_winner() {
+        let m = delivering_module();
+        let delivered = Arc::new(AtomicUsize::new(0));
+        let delivered2 = Arc::clone(&delivered);
+        m.set_settle_hook(Arc::new(
+            move |_s: &str, _q: &str, _st: &QuestionSettlement| {
+                delivered2.fetch_add(1, Ordering::SeqCst);
+                // Delay the winner's channel delivery past the 1s deadline.
+                std::thread::sleep(Duration::from_millis(1000));
+            },
+        ));
+        let mut params = params_with_options();
+        params.timeout_s = Some(1);
+        let asker = Arc::clone(&m);
+        let started = Instant::now();
+        let h = std::thread::spawn(move || asker.ask_blocking("s1", &params));
+        let qid = wait_for_pending(&m);
+        let responder = Arc::clone(&m);
+        let qid2 = qid.clone();
+        let r = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+            responder.respond(&qid2, vec!["a".into()], false)
+        });
+        let response = r.join().unwrap().unwrap();
+        let (asked_id, outcome) = h.join().unwrap();
+        let elapsed = started.elapsed();
+        assert_eq!(asked_id, qid);
+        assert_eq!(
+            response,
+            RespondOutcome::Accepted(true),
+            "respond won at ~200ms"
+        );
+        assert_eq!(outcome, answered(&["a"]));
+        assert!(
+            elapsed >= Duration::from_millis(1000),
+            "asker must have timed out before the delayed delivery: {elapsed:?}"
+        );
+        assert_eq!(delivered.load(Ordering::SeqCst), 1);
+        assert_eq!(m.settled_of(&qid), Some(answered(&["a"])));
+        assert_eq!(m.pending_count(), 0);
+    }
+
+    #[test]
+    fn settle_hook_panic_is_isolated() {
+        let m = delivering_module();
+        let (calls, hook) = panicking_hook();
+        m.set_settle_hook(hook);
+        // Respond path: the hook panics, respond still reports acceptance.
+        let asker = Arc::clone(&m);
+        let h1 = std::thread::spawn(move || asker.ask_blocking("s1", &params_with_options()));
+        let q1 = wait_for_pending(&m);
+        assert_eq!(
+            m.respond(&q1, vec!["a".into()], false).unwrap(),
+            RespondOutcome::Accepted(true)
+        );
+        let (_, outcome) = h1.join().unwrap();
+        assert_eq!(
+            outcome,
+            QuestionOutcome::Answered {
+                answers: vec!["a".into()]
+            }
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(m.pending_count(), 0);
+        assert_eq!(
+            m.settled_of(&q1),
+            Some(QuestionOutcome::Answered {
+                answers: vec!["a".into()]
+            })
+        );
+        // The module is neither poisoned nor torn: swap in a recording hook
+        // and run one more full roundtrip.
+        let (seen, good_hook) = recording_hook();
+        m.set_settle_hook(good_hook);
+        let asker = Arc::clone(&m);
+        let h2 = std::thread::spawn(move || asker.ask_blocking("s1", &params_with_options()));
+        let q2 = wait_for_pending(&m);
+        assert_eq!(
+            m.respond(&q2, vec!["b".into()], false).unwrap(),
+            RespondOutcome::Accepted(true)
+        );
+        let (_, outcome) = h2.join().unwrap();
+        assert_eq!(
+            outcome,
+            QuestionOutcome::Answered {
+                answers: vec!["b".into()]
+            }
+        );
+        assert_eq!(seen.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn settle_hook_panic_on_cancel_path_is_isolated() {
+        let m = delivering_module();
+        let (calls, hook) = panicking_hook();
+        m.set_settle_hook(hook);
+        let asker = Arc::clone(&m);
+        let h = std::thread::spawn(move || asker.ask_blocking("s1", &params_with_options()));
+        let qid = wait_for_pending(&m);
+        assert_eq!(m.cancel_session("s1"), 1);
+        let (_, outcome) = h.join().unwrap();
+        assert_eq!(
+            outcome,
+            QuestionOutcome::Skipped,
+            "cancel must settle Skipped despite panic"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(m.pending_count(), 0);
+        assert_eq!(m.settled_of(&qid), None);
+        assert_eq!(m.session_of(&qid), None);
     }
 }
