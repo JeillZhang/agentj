@@ -131,6 +131,7 @@
   box-shadow: 0 0 0 0.5px var(--aj-border);
 }
 
+/* T24 — content wrapper only; `.aj-shell__center` owns all center-column sizing. */
 .aj-main {
   display: flex;
   flex-direction: column;
@@ -139,19 +140,9 @@
   gap: 10px;
   overflow: hidden;
   padding: 10px;
-  max-width: var(--aj-content-max);
-  width: clamp(680px, 64%, 920px);
-  margin: 0 auto;
-}
-
-/* Narrow: padding 0 16px */
-@media (max-width: 767px) {
-  .aj-main { width: 100%; max-width: 100%; padding: 0 16px; }
 }
 
 /* T11 — three-column workspace shell (left 256 / center ≥480 / right 320) */
-.aj-workspace .aj-main { width: 100%; max-width: 100%; }
-
 .aj-shell__left {
   flex: 0 1 var(--aj-left-w, 256px);
   min-width: 200px;
@@ -201,11 +192,11 @@
   .aj-shell__center { min-width: 0; }
   .aj-shell__right {
     position: fixed;
-    top: var(--aj-topbar-h, 48px);
+    top: var(--aj-topbarH);
     right: 0;
     bottom: 0;
-    width: var(--aj-right-w, 320px);
-    max-width: 90vw;
+    width: min(320px, 86vw);
+    max-width: none;
     background: var(--aj-sidebar);
     border-left: 0.5px solid var(--aj-border);
     box-shadow: 0 0 0 0.5px var(--aj-border);
@@ -214,7 +205,7 @@
     z-index: 10;
   }
   .aj-workspace--right-open .aj-shell__right {
-    transform: translateX(0);
+    transform: none;
     box-shadow: -2px 0 8px rgba(0, 0, 0, 0.15);
   }
 }
@@ -241,7 +232,7 @@
   .aj-sidebar {
     position: fixed;
     left: 0;
-    top: var(--aj-topbar-h, 48px);
+    top: var(--aj-topbarH);
     bottom: 0;
     transform: translateX(-100%);
     transition: transform 150ms var(--aj-ease);
@@ -286,4 +277,15 @@
   padding: 7px 10px;
   font: inherit;
   cursor: pointer;
+}
+
+/* T24 — reduced motion: kill drawer/scrim transitions */
+@media (prefers-reduced-motion: reduce) {
+  .aj-shell__right,
+  .aj-scrim,
+  .aj-session-rail,
+  .aj-sidebar {
+    transition: none !important;
+    animation: none !important;
+  }
 }

@@ -610,8 +610,8 @@ describe("T2 App Shell grid + popover + scrim", () => {
     const css = readFileSync(p, "utf8");
     expect(css).toContain("display: grid");
     expect(css).toContain("backdrop-filter");
-    expect(css).toContain("clamp");
-    expect(css).toContain("--aj-content-max");
+    expect(css).toContain(".aj-shell__center");
+    expect(css).not.toContain("--aj-content-max");
     expect(css).toContain("rgba(0,0,0,.24)");
     expect(css).toContain("280px");
     expect(css).toContain("var(--aj-space-4)");

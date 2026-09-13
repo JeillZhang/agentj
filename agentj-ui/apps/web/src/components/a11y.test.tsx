@@ -2,8 +2,9 @@ import "@testing-library/jest-dom/vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { beforeEach, describe, expect, test } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import UnifiedSidebar from "./UnifiedSidebar";
+import WorkspaceShell from "./WorkspaceShell";
 
 // helper to read sidebar/composer css via import.meta.dirname
 function readCss(name: string): string {
@@ -104,5 +105,25 @@ describe("a11y gates T9", () => {
     expect(css).toMatch(/aj-sidebar--unreachable/);
     expect(css).toMatch(/opacity:\s*0\.6/);
     expect(css).toMatch(/var\(--aj-error\)/);
+  });
+
+  test("separator exposes full aria contract and keyboard control", () => {
+    render(
+      <WorkspaceShell right={<div>R</div>} rightCollapsed={false} onRightCollapsedChange={() => {}}>
+        <div>L</div>
+        <div>C</div>
+      </WorkspaceShell>,
+    );
+    const sep = screen.getByRole("separator", { name: "调整左栏宽度" });
+    expect(sep).toHaveAttribute("aria-valuemin", "200");
+    expect(sep).toHaveAttribute("aria-valuemax", "420");
+    fireEvent.keyDown(sep, { key: "ArrowRight" });
+    expect(sep).toHaveAttribute("aria-valuenow", "264");
+  });
+
+  test("responsive layout rules present", () => {
+    const layout = readCss("layout.css");
+    expect(layout).toMatch(/@media\s*\(max-width:\s*1023px\)/);
+    expect(layout).toMatch(/display:\s*none/); // splitters hidden on narrow
   });
 });
