@@ -1,5 +1,6 @@
 use crate::artifacts::{TurnArtifact, write_change};
 use crate::error::ModuleError;
+use crate::git_sample;
 use crate::module::{
     KernelContext, KernelMessage, KernelModule, KernelResponse, Module, ModuleMetadata,
     ModuleRegister, ToolExecutionOutcome, ToolSource,
@@ -93,6 +94,23 @@ async fn write_artifacts(
     ))]
 }
 
+/// `file_change` artifacts for a finished bash call; empty when the after-sample
+/// degrades. The caller only passes a `before` snapshot that sampled cleanly.
+async fn bash_artifacts(
+    before: &git_sample::GitSnapshot,
+    root: &Path,
+    call_id: &str,
+) -> Vec<TurnArtifact> {
+    let Some(after) = git_sample::sample(root).await else {
+        return vec![];
+    };
+    git_sample::changes_between(Some(before), &after, root, call_id)
+        .await
+        .into_iter()
+        .map(TurnArtifact::FileChange)
+        .collect()
+}
+
 /// Run one tool call, attaching `file_change` artifacts on success.
 async fn execute_tool(
     ctx: &KernelContext,
@@ -116,11 +134,21 @@ async fn execute_tool(
         Some(target) => pre_read(target).await,
         None => PreRead::Skip,
     };
+    // Git sampling is a bash-only side channel: a non-repo or failed `rev-parse`
+    // yields `None`, which also gates the after-sample below.
+    let git_before = if tool_call.name == "bash" {
+        git_sample::sample(&workspace_root).await
+    } else {
+        None
+    };
     let result = ctx
         .tools
         .execute_async(&tool_call.name, tool_call.arguments.clone(), &perm_ctx)
         .await?;
-    let artifacts = write_artifacts(target.as_deref(), &workspace_root, tool_call, pre).await;
+    let mut artifacts = write_artifacts(target.as_deref(), &workspace_root, tool_call, pre).await;
+    if let Some(before) = git_before.as_ref() {
+        artifacts.extend(bash_artifacts(before, &workspace_root, &tool_call.id).await);
+    }
     Ok(ToolExecutionOutcome { result, artifacts })
 }
 
@@ -721,6 +749,188 @@ mod tests {
         kernel.sender().send(KernelMessage::Shutdown).unwrap();
         handle.await.unwrap().unwrap();
         reply
+    }
+
+    struct BashMock {
+        fail: bool,
+    }
+
+    impl Tool for BashMock {
+        fn name(&self) -> &str {
+            "bash"
+        }
+
+        fn description(&self) -> &str {
+            ""
+        }
+
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({})
+        }
+
+        fn execute(&self, _input: serde_json::Value) -> Result<serde_json::Value, ToolError> {
+            Ok(serde_json::json!({"ok": true}))
+        }
+
+        fn execute_with_context(
+            &self,
+            input: serde_json::Value,
+            ctx: &crate::module::ToolCallContext,
+        ) -> Result<serde_json::Value, ToolError> {
+            let command = input["command"].as_str().unwrap_or_default();
+            let output = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(command)
+                .current_dir(&ctx.workspace_root)
+                .output()
+                .map_err(|err| ToolError::ExecutionFailed {
+                    name: "bash".into(),
+                    reason: err.to_string(),
+                })?;
+            if self.fail {
+                return Err(ToolError::ExecutionFailed {
+                    name: "bash".into(),
+                    reason: format!("exit code {}", output.status.code().unwrap_or(-1)),
+                });
+            }
+            Ok(serde_json::json!({
+                "stdout": String::from_utf8_lossy(&output.stdout),
+                "stderr": String::from_utf8_lossy(&output.stderr),
+            }))
+        }
+    }
+
+    fn bash_call(id: &str, command: &str) -> ToolCall {
+        ToolCall {
+            id: id.into(),
+            name: "bash".into(),
+            arguments: serde_json::json!({"command": command}),
+        }
+    }
+
+    fn file_changes(outcome: &ToolExecutionOutcome) -> Vec<crate::artifacts::FileChangeArtifact> {
+        outcome
+            .artifacts
+            .iter()
+            .filter_map(|artifact| match artifact {
+                TurnArtifact::FileChange(change) => Some(change.clone()),
+                TurnArtifact::Todo(_) => None,
+            })
+            .collect()
+    }
+
+    fn init_git_repo(root: &Path) {
+        let git = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .arg("-C")
+                .arg(root)
+                .args(args)
+                .output()
+                .expect("git binary is available");
+            assert!(
+                output.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        git(&["init"]);
+        std::fs::write(root.join("A.txt"), "1\n2\n3\n").expect("fixture file");
+        git(&["add", "A.txt"]);
+        git(&[
+            "-c",
+            "user.name=AgentJ",
+            "-c",
+            "user.email=agentj@example.com",
+            "commit",
+            "-m",
+            "init",
+        ]);
+    }
+
+    #[tokio::test]
+    async fn bash_tool_emits_git_file_change_artifacts() {
+        use crate::artifacts::FileChangeOp;
+        let root = temp_root("bash-git");
+        init_git_repo(&root);
+        let ctx = write_executor_ctx(
+            Arc::new(AllowAll),
+            Arc::new(MockSession {
+                root: Some(root.clone()),
+            }),
+            Arc::new(BashMock { fail: false }),
+        );
+
+        let modified = run_tool_call(&ctx, bash_call("c1", "echo x >> A.txt"))
+            .await
+            .expect("bash modify succeeds");
+        let changes = file_changes(&modified);
+        assert_eq!(changes.len(), 1, "one modify artifact: {changes:?}");
+        assert_eq!(changes[0].path, "A.txt");
+        assert_eq!(changes[0].op, FileChangeOp::Modify);
+        assert_eq!(changes[0].additions, 1);
+        assert_eq!(changes[0].deletions, 0);
+        assert_eq!(changes[0].tool_call_id.as_deref(), Some("c1"));
+        assert!(
+            changes[0]
+                .diff
+                .as_deref()
+                .unwrap_or_default()
+                .contains("+x"),
+            "diff carries the git delta: {:?}",
+            changes[0].diff
+        );
+
+        let created = run_tool_call(&ctx, bash_call("c2", "printf 'n1\\nn2\\n' > B.txt"))
+            .await
+            .expect("bash create succeeds");
+        let changes = file_changes(&created);
+        assert_eq!(changes.len(), 1, "one add artifact: {changes:?}");
+        assert_eq!(changes[0].path, "B.txt");
+        assert_eq!(changes[0].op, FileChangeOp::Add);
+        assert_eq!(changes[0].additions, 2);
+        assert!(changes[0].diff.is_none(), "untracked add keeps diff=None");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn bash_tool_error_emits_no_artifacts() {
+        let root = temp_root("bash-fail");
+        init_git_repo(&root);
+        let ctx = write_executor_ctx(
+            Arc::new(AllowAll),
+            Arc::new(MockSession {
+                root: Some(root.clone()),
+            }),
+            Arc::new(BashMock { fail: true }),
+        );
+        let reply = run_tool_call(&ctx, bash_call("c1", "echo x >> A.txt")).await;
+        assert!(
+            matches!(reply, Err(ToolError::ExecutionFailed { .. })),
+            "failing bash keeps its error and carries no artifacts: {reply:?}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn bash_tool_outside_git_emits_no_artifacts() {
+        let root = temp_root("bash-non-git");
+        let ctx = write_executor_ctx(
+            Arc::new(AllowAll),
+            Arc::new(MockSession {
+                root: Some(root.clone()),
+            }),
+            Arc::new(BashMock { fail: false }),
+        );
+        let outcome = run_tool_call(&ctx, bash_call("c1", "printf 'hi\\n' > fresh.txt"))
+            .await
+            .expect("bash succeeds outside git");
+        assert!(outcome.result.get("stdout").is_some(), "result unaffected");
+        assert!(outcome.artifacts.is_empty(), "non-git emits no artifacts");
+        assert_eq!(
+            std::fs::read_to_string(root.join("fresh.txt")).unwrap(),
+            "hi\n"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[tokio::test]

@@ -4,6 +4,7 @@ pub mod agent_loop_module;
 pub mod artifacts;
 pub mod dispatcher;
 pub mod error;
+pub mod git_sample;
 pub mod hooks;
 pub mod kernel;
 pub mod module;
