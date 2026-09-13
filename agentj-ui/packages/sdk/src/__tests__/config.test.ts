@@ -5,7 +5,7 @@ import { METHODS } from "../methods.js";
 describe("config", () => {
   it("version bumped to 0.14.6", () => {
     expect(VERSION).toBe("0.14.6");
-    expect(PROTOCOL_VERSION).toBe("0.12.1");
+    expect(PROTOCOL_VERSION).toBe("0.13.0");
   });
 
   it("resolveWsUrl appends token query", () => {
