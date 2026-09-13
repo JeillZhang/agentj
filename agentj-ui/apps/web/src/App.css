@@ -1,7 +1,7 @@
 /* App.css shell only — layout/session/composer/conversation/trajectory in components/*.css */
 .aj-app { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
 .aj-button {
-  border: none; border-radius: var(--aj-radius-ctl);
+  border: none; border-radius: var(--aj-radiusCtl);
   background: var(--aj-accent); color: var(--aj-accentOnAccent);
   padding: 7px 14px; font: inherit; cursor: pointer;
   transition: opacity var(--aj-motion) var(--aj-ease), transform var(--aj-motion) var(--aj-ease);
@@ -16,7 +16,7 @@
 .aj-button--danger { background: transparent; color: var(--aj-error); border: 1px solid var(--aj-error); }
 .aj-visually-hidden { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; border:0; }
 .aj-chips { display:flex; flex-wrap:wrap; gap:6px; list-style:none; margin:0; padding:0; }
-.aj-chip { display:inline-flex; align-items:center; padding:4px 8px; border-radius:var(--aj-radius-ctl); background:var(--aj-raised); color:var(--aj-textMuted); font-size:12px; border:0.5px solid var(--aj-border); }
+.aj-chip { display:inline-flex; align-items:center; padding:4px 8px; border-radius:var(--aj-radiusCtl); background:var(--aj-raised); color:var(--aj-textMuted); font-size:12px; border:0.5px solid var(--aj-border); }
 .aj-chip--on { background:var(--aj-accent); color:var(--aj-accentOnAccent); }
 .aj-chip--model { border:0.5px solid var(--aj-accent); color:var(--aj-accent); background:transparent; }
 .aj-tab { padding:8px 14px; border:none; background:transparent; cursor:pointer; font:inherit; color:var(--aj-textMuted); border-bottom:2px solid transparent; transition: color var(--aj-motion) var(--aj-ease); }
