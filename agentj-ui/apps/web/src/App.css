@@ -9,10 +9,16 @@
 .aj-button:hover { opacity: 0.92; }
 .aj-button:disabled { opacity: 0.55; cursor: default; }
 .aj-button--ghost {
-  background: transparent; color: var(--aj-accent);
-  box-shadow: 0 0 0 1px var(--aj-border);
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  padding: 7px 14px;
+  border: 0.5px solid var(--aj-border);
+  border-radius: var(--aj-radiusCtl);
+  background: transparent; color: var(--aj-textMuted);
+  font: inherit; cursor: pointer;
+  transition: background var(--aj-motion) var(--aj-ease), color var(--aj-motion) var(--aj-ease), border-color var(--aj-motion) var(--aj-ease);
 }
-.aj-button--ghost:hover { background: var(--aj-raised); }
+.aj-button--ghost:hover { background: var(--aj-raised); color: var(--aj-text); }
+.aj-button--ghost:disabled { opacity: 0.55; cursor: default; }
 .aj-button--danger { background: transparent; color: var(--aj-error); border: 1px solid var(--aj-error); }
 .aj-visually-hidden { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; border:0; }
 .aj-chips { display:flex; flex-wrap:wrap; gap:6px; list-style:none; margin:0; padding:0; }

@@ -62,6 +62,34 @@ describe("BUG-004 desktop breakpoint keeps compact layout gap", () => {
   });
 });
 
+describe("ghost button is self-contained (no native look)", () => {
+  function readAppCss(): string {
+    const webRoot = join(dirname(fileURLToPath(import.meta.url)), "../..");
+    const cands = [
+      join(webRoot, "src/App.css"),
+      join(process.cwd(), "src/App.css"),
+      join(process.cwd(), "apps/web/src/App.css"),
+      join(process.cwd(), "agentj-ui/apps/web/src/App.css"),
+    ];
+    for (const p of cands) if (existsSync(p)) return readFileSync(p, "utf8");
+    return readFileSync(cands[0]!, "utf8");
+  }
+  it(".aj-button--ghost declares full control styling", () => {
+    const css = readAppCss();
+    const match = css.match(/\.aj-button--ghost\s*\{([^}]*)\}/);
+    expect(match).not.toBeNull();
+    const body = match![1];
+    for (const prop of ["padding", "border", "border-radius", "font", "cursor"]) {
+      expect(body, prop).toMatch(new RegExp(`(^|[;{\\s])${prop}\\s*:`));
+    }
+  });
+  it(".aj-button--ghost hover/disabled states are styled", () => {
+    const css = readAppCss();
+    expect(css).toMatch(/\.aj-button--ghost:hover\s*\{[^}]*background:\s*var\(--aj-raised\)/);
+    expect(css).toMatch(/\.aj-button--ghost:disabled\s*\{[^}]*opacity/);
+  });
+});
+
 describe("T0 scaffold density and hairline", () => {
   function readIndexCss(): string {
     const webRoot = join(dirname(fileURLToPath(import.meta.url)), "../..");
