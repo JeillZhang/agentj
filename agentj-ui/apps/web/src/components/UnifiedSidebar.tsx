@@ -19,7 +19,7 @@ import {
 } from "../projectStore";
 import type { Project } from "../projectStore";
 import { loadFavorites, loadLayout, saveLayout, toggleFavorite } from "../layoutStore";
-import { DEMO_FILE_TREE, isDemoEnabled, subscribeDemo } from "../demoData";
+import { isDemoEnabled, subscribeDemo } from "../demoData";
 import SidebarTabs from "./SidebarTabs";
 import FileTree from "./FileTree";
 import ModalDialog from "./ModalDialog";
@@ -604,7 +604,7 @@ export default function UnifiedSidebar({ wsUrl, client, activeSessionId, onActiv
         </div>
       ) : (
         <div className="aj-sidebar__body" aria-label="文件">
-          <FileTree nodes={demo ? DEMO_FILE_TREE : []} />
+          <FileTree client={client as RpcClient | null} sessionId={activeSessionId} demo={demo} />
         </div>
       )}
       <div className="aj-sidebar__footer">
