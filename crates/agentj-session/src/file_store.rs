@@ -520,9 +520,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = FileBackedStore::new(dir.path()).unwrap();
         let sid = store.create().unwrap();
-        store.set_project_root(&sid, PathBuf::from("/tmp/proj")).unwrap();
+        store
+            .set_project_root(&sid, PathBuf::from("/tmp/proj"))
+            .unwrap();
         let reopened = FileBackedStore::new(dir.path()).unwrap();
-        assert_eq!(reopened.project_root(&sid), Some(PathBuf::from("/tmp/proj")));
+        assert_eq!(
+            reopened.project_root(&sid),
+            Some(PathBuf::from("/tmp/proj"))
+        );
     }
 
     #[test]
@@ -538,7 +543,10 @@ mod tests {
             project_root: Some("/tmp/restored".into()),
         };
         store.restore(&snap)?;
-        assert_eq!(store.project_root(&snap.session_id), Some(PathBuf::from("/tmp/restored")));
+        assert_eq!(
+            store.project_root(&snap.session_id),
+            Some(PathBuf::from("/tmp/restored"))
+        );
         Ok(())
     }
 

@@ -337,7 +337,10 @@ mod tests {
         let sid = store.create()?;
         assert_eq!(store.project_root(&sid), None, "unset by default");
         store.set_project_root(&sid, std::path::PathBuf::from("/tmp/p"))?;
-        assert_eq!(store.project_root(&sid), Some(std::path::PathBuf::from("/tmp/p")));
+        assert_eq!(
+            store.project_root(&sid),
+            Some(std::path::PathBuf::from("/tmp/p"))
+        );
         Ok(())
     }
 
