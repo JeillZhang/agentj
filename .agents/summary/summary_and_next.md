@@ -1,65 +1,42 @@
 # Summary & Next
 
 > 本文件仅保留**当前正在开发**功能设计文档的内容：进度、剩余步骤、遗留问题与下一步。同步更新时**替换**（不要追加）前一功能内容。
-> 当前功能：**agentj-ui Visual 2.2 Opencode redesign（0.13.0）—— UnifiedSidebar 256px + local Project + composer 增强**
-> ——设计文档 `docs/superpowers/specs/2026-09-06-agentj-opencode-redesign-design.md`
-> + 实现计划 `docs/superpowers/plans/2026-09-06-agentj-opencode-redesign-plan.md`
-> （11 任务 T0-T10，后端零改造，纯 `agentj-ui` 增量，0.12.3 → 0.13.0 minor）
+> 当前功能：**agentj-ui 三栏工作台（0.14.0）—— Sessions/Files 左栏 + 会话中栏 + 运行详情右栏 + composer 模型/Agent/熵变选择器 + 模型提问卡片 + demo 模式**
+> ——设计文档 `docs/superpowers/specs/2026-09-13-agentj-three-column-workbench-design.md`
+> + 实现计划 `.superpowers/sdd/2026-09-13-agentj-three-column-workbench-plan/`
+> （T0-T28，后端零改造，纯 `agentj-ui` 增量，0.13.0 → 0.14.0 minor）
 
-## 待实施
+## 进度与摘要
 
-| 阶段 | 标题 | 依赖 | 优先级 | 状态 |
-|------|------|------|--------|------|
-| ✅ 完成 | IPC 协议契约（agentj-protocol + schemas + registry + spec + TS 绑定） | 无 | P0 | 已完成 |
-| ✅ 完成 | v0.1 核心内核（25 任务，v0.1.x 发布） | 无 | P0 | 已完成 |
-| ✅ 完成 | v0.2 权限审批系统（13 任务，v0.2.x 发布） | v0.1 | P0 | 已完成 |
-| ✅ 完成 | v0.3 生态扩展（T0-T11，v0.3.0 发布） | v0.1+v0.2 | P1 | 已完成 |
-| ✅ 完成 | v0.4 商业扩展（守护内核常驻 serve / Web Dashboard / 用量统计 / License；v0.4.1） | v0.1-v0.3 | P2 | 已完成 |
-| ✅ 完成 | v0.5 内核调度全重构（决策 #18 兑现，v0.5.0/0.5.1） | v0.4 | P0 | 已完成 |
-| ✅ 完成 | G2 修复：单全局 in-flight 会话槽 → per-session 路由（T1-T6，v0.6.0） | v0.5 | P0 | ✅ 已实现 v0.6.0 |
-| ✅ 完成 | G4 会话持久化生产接线（FileBackedStore + 唯一 tmp + 目录 fsync，v0.7.0） | v0.6.0 | P0 | ✅ 已实现 v0.7.0 |
-| ✅ 完成 | G3 token 级用量统计（TokenUsage + 4 提供方 + SessionRunResult.usage，v0.8.0） | v0.7.0 | P0 | ✅ 已实现 v0.8.0 |
-| ✅ 完成 | G5 License gating + G6 MCP wiring（[license] + McpServerSpec + close_all，v0.9.1） | v0.8.0 | P0 | ✅ 已实现 v0.9.1 |
-| ✅ 完成 | G7 EventBus 重入防护 + G8 WebSocket 网关（v0.10.0，G1-G8 全闭环） | v0.9.1 | P0 | ✅ 已实现 v0.10.0 |
-| ✅ 完成 | **agentj-ui 三端统一前端（Web / TUI / Desktop + SDK，v0.11.1）**（T0-T18 + 9 acceptance fixes） | v0.10.0 | P0 | ✅ 已实现 v0.11.1 |
-| ✅ 完成 | **agentj-ui Visual 2.0 视觉重设计（v0.12.1）**（T0-T25：共享 tokens / trajectory+history / Web+TUI+Desktop 重设计 / brand 图标 + 4 acceptance fixes） | v0.11.1 | P0 | ✅ 已实现 v0.12.1 |
-| ✅ 完成 | **agentj-ui Visual 2.1 refine（v0.12.3）**（T0-T10：tokens 19 keys + Web 精细化 shell/composer/session/conversation/trajectory/hero/dialog + lucide） | v0.12.1 | P0 | ✅ 已实现 v0.12.3 |
-| ✅ 完成 | **agentj-ui Visual 2.2 Opencode redesign（v0.13.0）**（T0-T10：UnifiedSidebar 256px + local Project + composer enhance + density + TUI 32char + Desktop + a11y） | v0.12.3 | P0 | ✅ 已实现 v0.13.0 |
+- ✅ **T0-T28 全部完成并提交**（分支 `feature/agentj-three-column-workbench`）。
+- ✅ **T0-T2 数据与 tokens**：`palette.ts` 24 keys（radiusCtl/radiusCard/accentTint/diffAddTint/diffDelTint）+ `LAYOUT` 常量块；`deriveChanges` 从 write tool_call 派生变更行；`demoData`（agentj.demo / ?demo=1）驱动 demo。
+- ✅ **T1-T7 布局原语**：`layoutStore`（宽度/折叠/持久化）+ `SplitPane`（拖拽/键盘/双击/separator a11y）+ `demoData` + `index.css` tokens 对齐 + radius 迁移 batch A/B + `TopbarMenu`。
+- ✅ **T8-T24 组件与接线**：`TodoPanel` + `ChangeList`（unified diff 展开）+ `FileTree`（懒展开 + git 状态点）+ `WorkspaceShell` 三栏 + `RightPanel`（折叠导轨）+ `SidebarTabs` + `UnifiedSidebar` 重构（最近会话平铺 + 项目分组）+ `OptionPopover` + `ComposerOptions`（模型/Agent/熵变互斥 + 持久化）+ `AskQuestionCard`（折叠 + 问答记录）+ `App.tsx` 集成 + `<1024` 右抽屉 + a11y 门禁。
+- ✅ **T25-T27 版本同步**：Cargo workspace + SDK `VERSION` + Desktop 壳 + `check-version.sh` 全部 0.14.0（`PROTOCOL_VERSION` 保持 0.12.1）。
+- ✅ **T28 全量门禁 + 文档同步**：本文件 + `AGENTS.md` + `README.md` + spec TODO 刷新（详见验证结果）。
 
-## Phase: agentj-ui Visual 2.2 Opencode redesign (v0.13.0) ✅ 已完成
+## 验证结果（T28 全量门禁，逐条记录）
 
-### 进度与摘要
+1. `npm --prefix agentj-ui test --workspace=@agentj/web` — ✅ Test Files 27 passed (27)、Tests 164 passed (164)。
+2. `npm --prefix agentj-ui run build --workspace=@agentj/web` — ✅ `tsc -b && vite build` 通过（1856 modules，index js 428.91 kB / gzip 129.81 kB，361ms）。
+3. `npm --prefix agentj-ui test --workspace=@agentj/sdk` — ✅ 6 files、30 tests passed。
+4. `cargo test --workspace -- --skip permission_request_notified` — ⚠️ 首次全量运行命中已知 flake `e2e_serve_exits_gracefully_on_sigterm`（并行负载下超时，非回归）；隔离重跑通过后全量重跑 ✅ 全绿（EXIT 0，所有 test result ok）。
+5. `cargo clippy --workspace --all-targets -- -D warnings` — ✅ Finished，零警告（exit 0）。
+6. `cargo test -p agentj-protocol -- drift` — ✅ 2 passed（33 schemas 无漂移）。
+7. `bun --cwd agentj-ui/apps/tui test` — ✅ 69 pass / 0 fail / 176 expect() / 14 files。
+8. `./scripts/check-version.sh` — ✅ `version-ok`（Cargo + sdk + desktop 均 0.14.0，PROTOCOL_VERSION 0.12.1）。
 
-- ✅ **动机**：v0.12.3 已完成 Web 精细化但侧栏仍为 280px 扁平列表，与 Opencode Codex-style 统一 256px 差距显著。本次对标 Opencode 桌面 PR #20242，实现布局完全对标、色板混合保留（DeepSeek-blue 仍为主色）的 Visual 2.2。
-- ✅ **方案**：`index.css` 新增 --aj-sidebar-width 256px/--aj-gap 12px/--aj-shadow-soft-sm/--aj-sidebar-bg-diff；新建 `UnifiedSidebar 256px`（Threads header + Filter/Sort/View + Add Project + 搜索 + body 按 projectMap 分组 + footer Settings/Help）；新建 `projectStore.ts`（localStorage agentj.projects/projectMap/collapsed/currentProject，dedup + corrupted fallback + groupSessionsByProject Today/7days/Older）；`App.tsx` 瘦身接入 UnifiedSidebar + status popover + projectMap 接线 + stale fallback；`RunPanel.tsx` Composer 增强（Project picker 下拉 + model chip + status popover + @/slash 前端本地）；`conversation.css` 密度收紧 gap 10→8 + Trajectory Project filter chips；`TUI sidebar.tsx` 文本版 32char（▶/▼ + indented + footer + projects.json 持久化）接入 app.tsx；版本同源 `0.13.0`（Cargo + sdk/config + desktop tauri.conf/package.json/src-tauri/Cargo）；`a11y`（aria-expanded/controls/selected + reduced-motion + CLS min-height 120px + >50 virtualize 分页 + unreachable 灰化）。
-- ✅ **任务分解（T0-T10）已完成**：T0 density vars / T1 UnifiedSidebar shell / T2 projectStore / T3 App Shell slim / T4 Composer enhance / T5 density + Trajectory filter / T6 TUI 32char / T7 SDK 0.13.0 / T8 Desktop 0.13.0 / T9 a11y/perf / T10 gates + docs sync。
+## 遗留问题 / 已知限制
 
-### 验证结果
+- **协议 gap（阶段二待协议支持）**：无 TODO 事件、无文件 diff 事件、无目录列举方法 → 阶段一以 demo/空态呈现（`TodoPanel`/`FileTree` 显示「待协议支持」，`ChangeList` 仅渲染真实派生数据，不伪造 `-N`/diff）。
+- `$/askQuestion` + `question/respond` 未实现，`AskQuestionCard` 当前仅由 demo 驱动。
+- T23 后「继续会话」不再自动收藏该会话，且连接失败时缺少错误反馈。
+- `index.css` 中 `--aj-content-max`/`--aj-content-fluid` 变量已无引用（清理项）。
+- demo fixture 数量与 mockup 存在少量不一致（如文件树 footer 计数/展开层级）。
+- 已知 flake：`e2e_serve_exits_gracefully_on_sigterm` 在全量并行负载下偶发失败，隔离运行可过（历史问题，非本次回归）。
 
-- `cargo test --workspace -- --skip permission_request_notified` — 通过
-- `cargo clippy --workspace --all-targets -- -D warnings` — 零警告
-- `cargo test -p agentj-protocol -- drift` — 通过（2 drift checks）
-- `./scripts/check-version.sh` — version-ok（Cargo 0.13.0 + sdk VERSION 0.13.0 + PROTOCOL_VERSION 0.12.1 + desktop 0.13.0）
-- `node agentj-ui/apps/desktop/check-desktop-ui.mjs` — desktop-ui-ok（900/600/1100/760）
-- `npm --prefix agentj-ui test --workspace=@agentj/sdk` — 通过（29 tests）
-- `npm --prefix agentj-ui test --workspace=@agentj/web` — 通过（13 files, 115 tests）
-- `npm --prefix agentj-ui run build --workspace=@agentj/web` — 通过（1836 modules, 400kB）
-- `bun --cwd agentj-ui/apps/tui test` — 通过（69 tests, 176 expects）
+## 下一步
 
-### 遗留问题 / 已知限制
-
-- Project 仅前端本地 `localStorage` + `projects.json`，后端零改造；多项目文件树/分支选择为后续 feature。
-- TUI mock WS e2e 覆盖 sidebar 32char 与 projects.json 持久化；`@opentui/react` pre-1.0 上游关注不变。
-- Desktop 仅随 Web 产物与版本同步，无额外窗口质感变更（Tauri v2 壳）。
-
-### 下一步
-
-- 合并 `feature/agentj-opencode-redesign` → `main`，打 `v0.13.0` tag，发布。
-- 运行 `/jskill-test-acceptance` 自动验收 → 验收 PASS 后自动创建 PR（含验收修复 + patch bump）。
-- PR 合并后清理 acceptance 产物（如有）。
-
-### Spec TODO 更新
-
-- `docs/superpowers/specs/2026-09-06-agentj-opencode-redesign-design.md` TODO 已全部勾选（T0-T10）。
-- `docs/superpowers/specs/2026-09-06-agentj-web-refine-design.md` 保持已完成（v0.12.3）。
-- `docs/superpowers/specs/2026-09-06-agentj-ui-visual-design.md` 保持已完成（v0.12.1）。
+- 运行 `/jskill-test-acceptance` 自动验收（测试 agent 发现 Bug → Bug-fix 修复 → 回归）。
+- 验收 PASS 后自动创建 PR（用户负责合并），合并后打 `v0.14.0` tag 并清理 acceptance 产物。
+- 阶段二（独立 feature）：按 `protocol-extension-prompt.md` 落地 TODO 事件 / 文件变更事件 / `file/list` / `$/askQuestion` + `question/respond`，替换 demo 数据源。

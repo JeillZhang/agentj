@@ -335,15 +335,21 @@ flowchart TB
 
 ## TODO 清单（plan 阶段逐期勾选）
 
-- [ ] T0 tokens 增量（`palette.ts` 24 keys：`radiusCtl 8 / radiusCard 12 / accentTint / diffAddTint / diffDelTint` + `LAYOUT` 常量块；generate + kebab→camel 迁移 + `palette/ui-tokens/theme` 测试更新）
-- [ ] T1 `layoutStore`（键/容错/clamp/事件）+ 单测
-- [ ] T2 `SplitPane`（拖拽/键盘/双击/aria）+ `split.css` + 单测
-- [ ] T3 `WorkspaceShell` 接线 `App.tsx`（三栏 + 右栏折叠 + `<1024` 右抽屉；`.aj-main` 改全宽 + feed 720 居中）
-- [ ] T4 左栏重构（`SidebarTabs` + 最近会话平铺 + 项目分组视觉对齐；视觉规格按预览）
-- [ ] T5 `FileTree` + 文件 tab（demo/空态 + 状态点 + 底部统计）
-- [ ] T6 `RightPanel + TodoPanel + ChangeList`（含 `deriveChanges` 半数据 + demo 覆盖 + diff 展开）
-- [ ] T7 `TopbarMenu` 迁移（连接设置/继续会话/收藏/排序/过滤/设置/帮助 + demo 开关；dialogs）
-- [ ] T8 Composer 3 行版（`OptionPopover + ComposerOptions`：模型/Agent/熵变 + 互斥 + 持久化）
-- [ ] T9 `AskQuestionCard` + 问答记录（demo 驱动 + 折叠持久化）
-- [ ] T10 响应式与 a11y 收尾（抽屉/popover 满宽/焦点/reduced-motion）
-- [ ] T11 测试更新 + 全量门禁（web test/build + sdk + cargo + drift + check-version）+ 文档同步（AGENTS/README/summary）+ 版本 0.14.0
+> 状态：**Phase 1（UI，0.14.0）全部完成 — 2026-09-13**；
+> 对应 SDD 实现任务 T0-T28 全部提交，全量门禁与文档同步见
+> `.agents/summary/summary_and_next.md`（验证结果逐条记录）。
+> Phase 2（协议扩展：TODO/文件变更事件、`file/list`、`$/askQuestion`）
+> 为独立 feature，待协议支持后另行规划。
+
+- [x] T0 tokens 增量（`palette.ts` 24 keys：`radiusCtl 8 / radiusCard 12 / accentTint / diffAddTint / diffDelTint` + `LAYOUT` 常量块；generate + kebab→camel 迁移 + `palette/ui-tokens/theme` 测试更新）
+- [x] T1 `layoutStore`（键/容错/clamp/事件）+ 单测
+- [x] T2 `SplitPane`（拖拽/键盘/双击/aria）+ `split.css` + 单测
+- [x] T3 `WorkspaceShell` 接线 `App.tsx`（三栏 + 右栏折叠 + `<1024` 右抽屉；`.aj-main` 改全宽 + feed 720 居中）
+- [x] T4 左栏重构（`SidebarTabs` + 最近会话平铺 + 项目分组视觉对齐；视觉规格按预览）
+- [x] T5 `FileTree` + 文件 tab（demo/空态 + 状态点 + 底部统计）
+- [x] T6 `RightPanel + TodoPanel + ChangeList`（含 `deriveChanges` 半数据 + demo 覆盖 + diff 展开）
+- [x] T7 `TopbarMenu` 迁移（连接设置/继续会话/收藏/排序/过滤/设置/帮助 + demo 开关；dialogs）
+- [x] T8 Composer 3 行版（`OptionPopover + ComposerOptions`：模型/Agent/熵变 + 互斥 + 持久化）
+- [x] T9 `AskQuestionCard` + 问答记录（demo 驱动 + 折叠持久化）
+- [x] T10 响应式与 a11y 收尾（抽屉/popover 满宽/焦点/reduced-motion）
+- [x] T11 测试更新 + 全量门禁（web test/build + sdk + cargo + drift + check-version）+ 文档同步（AGENTS/README/summary）+ 版本 0.14.0
