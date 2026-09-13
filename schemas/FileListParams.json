@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "FileListParams",
+  "description": "`file/list` params — enumerate a directory relative to the session\n`project_root`. @since 0.13.0",
+  "type": "object",
+  "properties": {
+    "depth": {
+      "description": "Enumeration depth 1..=8 (default 1, server-validated). @since 0.13.0",
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint32",
+      "minimum": 0
+    },
+    "path": {
+      "description": "Directory path relative to the project root; absent = root.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "session_id": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "session_id"
+  ]
+}

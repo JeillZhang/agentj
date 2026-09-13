@@ -20,6 +20,9 @@ export const METHODS = {
   progress: "$/progress",
   permissionRequest: "$/permissionRequest",
   permissionRespond: "permission/respond",
+  fileList: "file/list",
+  askQuestion: "$/askQuestion",
+  questionRespond: "question/respond",
 } as const;
 
 export type MethodName = (typeof METHODS)[keyof typeof METHODS];

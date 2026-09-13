@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "FileChangeKind",
+  "description": "Change operation of a `FileChange`. `Unknown` tolerates forward values\n(serde(other)); schema lists only the known values. @since 0.13.0",
+  "type": "string",
+  "enum": [
+    "add",
+    "modify",
+    "delete"
+  ]
+}

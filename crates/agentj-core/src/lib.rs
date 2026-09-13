@@ -1,14 +1,17 @@
 //! AgentJ kernel — shared types, traits, and event loop.
 
 pub mod agent_loop_module;
+pub mod artifacts;
 pub mod dispatcher;
 pub mod error;
+pub mod git_sample;
 pub mod hooks;
 pub mod kernel;
 pub mod module;
 pub mod permission;
 pub mod resolver;
 pub mod tool_executor;
+pub mod tool_paths;
 pub mod turn_runner;
 pub mod types;
 

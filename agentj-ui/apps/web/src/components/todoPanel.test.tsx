@@ -2,6 +2,7 @@ import { expect, test } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import TodoPanel from "./TodoPanel";
+import type { TodoView } from "../todoState";
 test("renders counter, pill states and rows", () => {
   const items = [
     { id: "1", content: "解析现有 App 布局", status: "completed" as const },
@@ -43,4 +44,13 @@ test("section collapses when the title button is clicked", () => {
 test("empty state shows protocol gap notice", () => {
   render(<TodoPanel items={[]} />);
   expect(screen.getByText("待协议支持")).toBeInTheDocument();
+});
+
+test("renders unknown status as pending", () => {
+  const items: TodoView[] = [
+    { id: "1", content: "未知状态", status: "bogus" as unknown as TodoView["status"] },
+  ];
+  const { container } = render(<TodoPanel items={items} />);
+  expect(screen.getByText("待办")).toBeInTheDocument();
+  expect(container.querySelector(".aj-todo .pill-st.todo")).not.toBeNull();
 });

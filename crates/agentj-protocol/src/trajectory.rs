@@ -8,7 +8,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::permission::PermissionDecision;
+use crate::question::AskOption;
 use crate::session::UsageInfo;
+use crate::streaming::{FileChange, TodoItem};
 use crate::types::{SessionId, ToolCall};
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -54,13 +56,39 @@ pub enum TrajectoryValue {
     Error {
         message: String,
     },
+    /// Full TODO snapshot replay; the highest revision wins on rebuild (决策 #10). @since 0.13.0
+    Todo {
+        revision: u64,
+        items: Vec<TodoItem>,
+    },
+    /// File change replay, mirroring the live `file_change` progress payload. @since 0.13.0
+    FileChange {
+        change: FileChange,
+    },
+    /// Question replay recorded at notify time, mirroring the live `$/askQuestion` params. @since 0.13.0
+    AskQuestion {
+        question_id: String,
+        question: String,
+        header: Option<String>,
+        options: Vec<AskOption>,
+        allow_multiple: bool,
+        allow_other: bool,
+    },
+    /// Question settlement replay, recorded exactly once per question. @since 0.13.0
+    QuestionAnswer {
+        question_id: String,
+        answers: Vec<String>,
+        skipped: bool,
+    },
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::permission::PermissionDecision;
+    use crate::question::AskOption;
     use crate::session::UsageInfo;
+    use crate::streaming::{FileChange, FileChangeKind, TodoItem, TodoStatus};
     use crate::types::ToolCall;
 
     fn event(seq: u64, kind: &str) -> serde_json::Value {
@@ -96,6 +124,42 @@ mod tests {
             "error" => TrajectoryValue::Error {
                 message: "boom".into(),
             },
+            "todo" => TrajectoryValue::Todo {
+                revision: 3,
+                items: vec![TodoItem {
+                    id: "t1".into(),
+                    content: "task".into(),
+                    status: TodoStatus::InProgress,
+                }],
+            },
+            "file_change" => TrajectoryValue::FileChange {
+                change: FileChange {
+                    path: "src/lib.rs".into(),
+                    op: FileChangeKind::Modify,
+                    additions: 1,
+                    deletions: 2,
+                    tool_call_id: Some("c1".into()),
+                    diff: None,
+                    diff_truncated: None,
+                },
+            },
+            "ask_question" => TrajectoryValue::AskQuestion {
+                question_id: "q1".into(),
+                question: "pick one".into(),
+                header: Some("Header".into()),
+                options: vec![AskOption {
+                    id: "o1".into(),
+                    label: "One".into(),
+                    hint: None,
+                }],
+                allow_multiple: false,
+                allow_other: true,
+            },
+            "question_answer" => TrajectoryValue::QuestionAnswer {
+                question_id: "q1".into(),
+                answers: vec!["o1".into()],
+                skipped: false,
+            },
             other => panic!("bad kind {other}"),
         };
         serde_json::to_value(TrajectoryEvent {
@@ -117,12 +181,81 @@ mod tests {
             "permission",
             "usage",
             "error",
+            "todo",
+            "file_change",
+            "ask_question",
+            "question_answer",
         ] {
             let json = event(7, kind);
             assert_eq!(json["session_id"], "s-1");
             assert_eq!(json["seq"], 7);
             assert_eq!(json["ts"], 1_700_000_000_000_u64);
             assert_eq!(json["value"]["kind"], kind, "kind tag for {kind}");
+        }
+    }
+
+    #[test]
+    fn trajectory_todo_and_file_change_variants_roundtrip() {
+        let json = event(4, "todo");
+        assert_eq!(json["value"]["revision"], 3);
+        assert_eq!(json["value"]["items"][0]["status"], "in_progress");
+        let back: TrajectoryEvent = serde_json::from_value(json).unwrap();
+        match back.value {
+            TrajectoryValue::Todo { revision, items } => {
+                assert_eq!(revision, 3);
+                assert_eq!(items[0].id, "t1");
+            }
+            other => panic!("expected todo, got {other:?}"),
+        }
+
+        let json = event(5, "file_change");
+        assert_eq!(json["value"]["change"]["path"], "src/lib.rs");
+        assert_eq!(json["value"]["change"]["op"], "modify");
+        let back: TrajectoryEvent = serde_json::from_value(json).unwrap();
+        match back.value {
+            TrajectoryValue::FileChange { change } => {
+                assert_eq!(change.path, "src/lib.rs");
+                assert_eq!(change.op, FileChangeKind::Modify);
+            }
+            other => panic!("expected file_change, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn trajectory_new_variants_roundtrip() {
+        let json = event(6, "ask_question");
+        assert_eq!(json["value"]["question_id"], "q1");
+        assert_eq!(json["value"]["options"][0]["id"], "o1");
+        assert_eq!(json["value"]["allow_multiple"], false);
+        assert_eq!(json["value"]["allow_other"], true);
+        let back: TrajectoryEvent = serde_json::from_value(json).unwrap();
+        match back.value {
+            TrajectoryValue::AskQuestion {
+                question_id,
+                options,
+                ..
+            } => {
+                assert_eq!(question_id, "q1");
+                assert_eq!(options[0].label, "One");
+            }
+            other => panic!("expected ask_question, got {other:?}"),
+        }
+
+        let json = event(7, "question_answer");
+        assert_eq!(json["value"]["answers"][0], "o1");
+        assert_eq!(json["value"]["skipped"], false);
+        let back: TrajectoryEvent = serde_json::from_value(json).unwrap();
+        match back.value {
+            TrajectoryValue::QuestionAnswer {
+                question_id,
+                answers,
+                skipped,
+            } => {
+                assert_eq!(question_id, "q1");
+                assert_eq!(answers, vec!["o1".to_string()]);
+                assert!(!skipped);
+            }
+            other => panic!("expected question_answer, got {other:?}"),
         }
     }
 
@@ -167,7 +300,7 @@ mod tests {
     }
 
     #[test]
-    fn trajectory_schema_lists_seven_kinds() {
+    fn trajectory_schema_lists_all_kinds() {
         let s = schemars::schema_for!(TrajectoryValue);
         let text = serde_json::to_string(&s).unwrap();
         for kind in [
@@ -178,6 +311,10 @@ mod tests {
             "permission",
             "usage",
             "error",
+            "todo",
+            "file_change",
+            "ask_question",
+            "question_answer",
         ] {
             assert!(
                 text.contains(&format!("\"{kind}\"")),

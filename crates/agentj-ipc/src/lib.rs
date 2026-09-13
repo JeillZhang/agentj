@@ -1,22 +1,33 @@
 //! Unified Connection abstraction (design 决策 #1/#2) — transport-agnostic serve.
+pub mod file_list;
 pub mod tcp;
 pub mod trajectory;
 pub mod ws;
 
+use agentj_core::artifacts::{
+    FileChangeArtifact, FileChangeOp, TodoItemArtifact, TodoStatusArtifact,
+};
 use agentj_core::error::{IpcError, KernelError, ModuleError};
 use agentj_core::kernel::Kernel;
 use agentj_core::module::{KernelMessage, SessionStore};
 use agentj_core::types::{AgentEvent, SessionId};
 use agentj_permission::{ApprovalDecision, PermissionModule};
 use agentj_protocol::base::error_codes;
+use agentj_protocol::file::{FileKind, FileListParams, FileListResult};
 use agentj_protocol::lifecycle::InitializeParams;
 use agentj_protocol::permission::{PermissionRequestParams, PermissionRespondParams};
-use agentj_protocol::session::{SessionIdParams, SessionSubscribeParams};
+use agentj_protocol::question::{AskQuestionParams, QuestionRespondParams, QuestionRespondResult};
+use agentj_protocol::session::{SessionIdParams, SessionNewParams, SessionSubscribeParams};
 use agentj_protocol::streaming::CancelParams;
+use agentj_question::{
+    QuestionModule, QuestionNotifier, QuestionOutcome, QuestionSettlement, RespondError,
+    RespondOutcome, SettleHook,
+};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::io::Write;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -146,6 +157,14 @@ impl ConnectionRegistry {
     pub fn session_owner(&self, session: &SessionId) -> Option<&String> {
         self.session_owner.get(session)
     }
+    /// Sessions owned by a connection (owner-disconnect question settlement).
+    pub fn sessions_owned_by(&self, conn_id: &str) -> Vec<SessionId> {
+        self.session_owner
+            .iter()
+            .filter(|(_, owner)| owner.as_str() == conn_id)
+            .map(|(sid, _)| sid.clone())
+            .collect()
+    }
     /// Record that a connection passed `initialize` auth (token-gated mode).
     pub fn mark_authorized(&mut self, conn_id: &str) {
         self.authorized.insert(conn_id.to_string());
@@ -232,14 +251,21 @@ struct JsonRpcResponse {
 struct JsonRpcError {
     code: i32,
     message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    data: Option<Value>,
 }
 
 /// Method-dispatch failure carrying the JSON-RPC 2.0 standard error code
 /// (design 决策 #4). `handle_request` echoes the request `id` alongside this
-/// code so every error path round-trips the correlation id.
+/// code so every error path round-trips the correlation id. `data` carries
+/// parameterized error details (`error.data`, design 决策 #5) and stays off
+/// the wire when None.
+#[derive(Debug, Serialize)]
 struct DispatchError {
     code: i32,
     message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    data: Option<Value>,
 }
 
 impl DispatchError {
@@ -247,24 +273,42 @@ impl DispatchError {
         Self {
             code: -32602,
             message: msg.into(),
+            data: None,
+        }
+    }
+    fn invalid_params_with_data(msg: impl Into<String>, data: Value) -> Self {
+        Self {
+            code: -32602,
+            message: msg.into(),
+            data: Some(data),
         }
     }
     fn invalid_request(msg: impl Into<String>) -> Self {
         Self {
             code: -32600,
             message: msg.into(),
+            data: None,
         }
     }
     fn method_not_found(method: &str) -> Self {
         Self {
             code: -32601,
             message: format!("method not found: {method}"),
+            data: None,
         }
     }
     fn internal(msg: impl Into<String>) -> Self {
         Self {
             code: -32603,
             message: msg.into(),
+            data: None,
+        }
+    }
+    fn internal_with_data(msg: impl Into<String>, data: Value) -> Self {
+        Self {
+            code: -32603,
+            message: msg.into(),
+            data: Some(data),
         }
     }
 }
@@ -283,6 +327,9 @@ pub struct IpcServer {
     token: std::sync::Mutex<Option<String>>,
     /// Optional PermissionModule: `permission/respond` and `$/cancelRequest` dispatch into it.
     pub permission_module: Option<Arc<PermissionModule>>,
+    /// Optional QuestionModule: `question/respond` dispatch, owner-directed
+    /// `$/askQuestion` notify and settle-on-cancel/disconnect.
+    pub question_module: Option<Arc<QuestionModule>>,
     /// Optional TrajectoryStore: run/respond recording + session/history reads.
     pub trajectory_store: Option<Arc<trajectory::TrajectoryStore>>,
 }
@@ -314,6 +361,7 @@ impl IpcServer {
             registry: Arc::new(std::sync::RwLock::new(ConnectionRegistry::new())),
             token: std::sync::Mutex::new(None),
             permission_module: None,
+            question_module: None,
             trajectory_store: None,
         }
     }
@@ -403,6 +451,7 @@ impl IpcServer {
                     error: Some(JsonRpcError {
                         code: -32700,
                         message: format!("Parse error: {e}"),
+                        data: None,
                     }),
                 };
                 return Ok(serde_json::to_string(&err_resp)?);
@@ -414,15 +463,17 @@ impl IpcServer {
         } else {
             match req.method.as_str() {
                 "initialize" => self.dispatch_initialize(&req, conn_id),
-                "session/new" => self.dispatch_session_new(conn_id),
+                "session/new" => self.dispatch_session_new(&req, conn_id),
                 "session/run" => self.dispatch_session_run(&req, conn_id).await,
                 "session/subscribe" => self.dispatch_subscribe(&req, conn_id),
                 "session/unsubscribe" => self.dispatch_unsubscribe(&req, conn_id),
                 "kernel/status" => self.dispatch_kernel_status(),
                 "session/list" => self.dispatch_session_list(),
                 "session/history" => self.dispatch_session_history(&req),
+                "file/list" => self.dispatch_file_list(&req).await,
                 "shutdown" => self.dispatch_shutdown(),
                 "permission/respond" => self.dispatch_permission_respond(&req, conn_id).await,
+                "question/respond" => self.dispatch_question_respond(&req, conn_id),
                 "$/cancelRequest" => self.dispatch_cancel_request(&req).await,
                 other => Err(DispatchError::method_not_found(other)),
             }
@@ -442,6 +493,7 @@ impl IpcServer {
                 error: Some(JsonRpcError {
                     code: e.code,
                     message: e.message,
+                    data: e.data,
                 }),
             },
         };
@@ -476,6 +528,7 @@ impl IpcServer {
             return Some(DispatchError {
                 code: error_codes::NOT_AUTHORIZED,
                 message: "NotAuthorized".into(),
+                data: None,
             });
         }
         None
@@ -496,6 +549,7 @@ impl IpcServer {
             return Err(DispatchError {
                 code: error_codes::NOT_AUTHORIZED,
                 message: "NotAuthorized".into(),
+                data: None,
             });
         }
         // Successful auth: the connection may now issue business methods on a
@@ -503,11 +557,11 @@ impl IpcServer {
         if let Ok(mut reg) = self.registry.write() {
             reg.mark_authorized(conn_id);
         }
-        let version = env!("CARGO_PKG_VERSION");
+        let product_version = env!("CARGO_PKG_VERSION");
         Ok(serde_json::json!({
-            "protocol_version": version,
+            "protocol_version": agentj_protocol::PROTOCOL_VERSION,
             "capabilities": { "multi_client": true },
-            "server_info": { "name": "agentj", "version": version },
+            "server_info": { "name": "agentj", "version": product_version },
             "connection_id": conn_id,
         }))
     }
@@ -546,15 +600,67 @@ impl IpcServer {
         Ok(serde_json::json!({}))
     }
 
-    fn dispatch_session_new(&self, conn_id: &str) -> Result<Value, DispatchError> {
+    fn dispatch_session_new(
+        &self,
+        req: &JsonRpcRequest,
+        conn_id: &str,
+    ) -> Result<Value, DispatchError> {
+        let project_root = Self::resolve_project_root(req.params.as_ref())?;
         let sid = self
             .session_store
             .create()
             .map_err(|e| DispatchError::internal(e.to_string()))?;
+        if let Some(root) = project_root
+            && let Err(e) = self.session_store.set_project_root(&sid, root)
+        {
+            let _ = self.session_store.delete(&sid);
+            return Err(DispatchError::internal_with_data(
+                e.to_string(),
+                serde_json::json!({ "session_id": sid, "reason": "project_root_persist_failed" }),
+            ));
+        }
         if let Ok(mut reg) = self.registry.write() {
             reg.set_session_owner(&sid, conn_id);
         }
         Ok(serde_json::json!({ "session_id": sid }))
+    }
+
+    /// Validate `session/new {project_root}` (design item 6): absent params keep
+    /// the legacy session (no root); when present the root must be an absolute
+    /// existing directory, returned canonicalized.
+    fn resolve_project_root(
+        params: Option<&Value>,
+    ) -> Result<Option<std::path::PathBuf>, DispatchError> {
+        let Some(raw) = params else {
+            return Ok(None);
+        };
+        let parsed: SessionNewParams = serde_json::from_value(raw.clone()).map_err(|_| {
+            let bad = raw.get("project_root").unwrap_or(&Value::Null);
+            Self::invalid_project_root(bad)
+        })?;
+        let Some(root) = parsed.project_root else {
+            return Ok(None);
+        };
+        let path = std::path::PathBuf::from(&root);
+        if !path.is_absolute() {
+            return Err(Self::invalid_project_root(&Value::String(root)));
+        }
+        let canonical = path
+            .canonicalize()
+            .map_err(|_| Self::invalid_project_root(&Value::String(root.clone())))?;
+        if !canonical.is_dir() {
+            return Err(Self::invalid_project_root(&Value::String(root)));
+        }
+        Ok(Some(canonical))
+    }
+
+    /// `-32602` + `error.data {path, reason}` for an invalid `session/new`
+    /// `project_root` (design item 7).
+    fn invalid_project_root(path: &Value) -> DispatchError {
+        DispatchError::invalid_params_with_data(
+            "invalid project_root: must be an absolute existing directory",
+            serde_json::json!({ "path": path, "reason": "invalid_project_root" }),
+        )
     }
 
     fn record_trajectory(&self, sid: &str, value: agentj_protocol::trajectory::TrajectoryValue) {
@@ -601,6 +707,7 @@ impl IpcServer {
             return Err(DispatchError {
                 code: error_codes::SESSION_BUSY,
                 message: "SessionBusy".into(),
+                data: None,
             });
         }
         let _run_guard = RunGuard {
@@ -729,6 +836,7 @@ impl IpcServer {
                         return Err(DispatchError {
                             code: -32800,
                             message: "RequestCancelled".into(),
+                            data: None,
                         });
                     }
                     self.flush_thinking(&mut pending_thinking, sid);
@@ -737,6 +845,43 @@ impl IpcServer {
                         agentj_protocol::trajectory::TrajectoryValue::Error { message: e.clone() },
                     );
                     return Err(DispatchError::internal(e));
+                }
+                AgentEvent::Todo { revision, snapshot } => {
+                    self.flush_thinking(&mut pending_thinking, sid);
+                    let items = todo_items_into_wire(snapshot.items);
+                    let frame = build_progress_frame(
+                        &progress_token,
+                        &agentj_protocol::streaming::ProgressValue::Todo {
+                            session_id: sid.to_string(),
+                            revision,
+                            items: items.clone(),
+                        },
+                    );
+                    if let Ok(reg) = self.registry.read() {
+                        reg.broadcast_to_session(&sid.to_string(), &frame);
+                    }
+                    self.record_trajectory(
+                        sid,
+                        agentj_protocol::trajectory::TrajectoryValue::Todo { revision, items },
+                    );
+                }
+                AgentEvent::FileChange(artifact) => {
+                    self.flush_thinking(&mut pending_thinking, sid);
+                    let change = file_change_into_wire(artifact);
+                    let frame = build_progress_frame(
+                        &progress_token,
+                        &agentj_protocol::streaming::ProgressValue::FileChange {
+                            session_id: sid.to_string(),
+                            change: change.clone(),
+                        },
+                    );
+                    if let Ok(reg) = self.registry.read() {
+                        reg.broadcast_to_session(&sid.to_string(), &frame);
+                    }
+                    self.record_trajectory(
+                        sid,
+                        agentj_protocol::trajectory::TrajectoryValue::FileChange { change },
+                    );
                 }
             }
         }
@@ -830,6 +975,35 @@ impl IpcServer {
         Ok(serde_json::to_value(result).expect("serializable"))
     }
 
+    /// `file/list` (design contract item 1): sandboxed enumeration relative to
+    /// the session `project_root`, with git porcelain statuses per file entry.
+    async fn dispatch_file_list(&self, req: &JsonRpcRequest) -> Result<Value, DispatchError> {
+        let params: FileListParams = serde_json::from_value(
+            req.params
+                .clone()
+                .ok_or_else(|| DispatchError::invalid_params("missing params"))?,
+        )
+        .map_err(|e| DispatchError::invalid_params(format!("invalid file/list params: {e}")))?;
+        if self.session_store.status(&params.session_id).is_err() {
+            return Err(DispatchError {
+                code: error_codes::SESSION_NOT_FOUND,
+                message: "SessionNotFound".into(),
+                data: None,
+            });
+        }
+        let root = match self.session_store.project_root(&params.session_id) {
+            Some(root) => root,
+            None => std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+        };
+        match file_list::list(&root, params.path.as_deref(), params.depth) {
+            Ok(result) => {
+                let result = attach_git_statuses(result, &root).await;
+                Ok(serde_json::to_value(result).expect("serializable"))
+            }
+            Err(e) => Err(map_file_list_error(e, &params.path)),
+        }
+    }
+
     /// `permission/respond`: deliver the client's decision to a pending approval.
     /// An unknown request_id is an error (-32600), never silent success.
     async fn dispatch_permission_respond(
@@ -864,6 +1038,7 @@ impl IpcServer {
             return Err(DispatchError {
                 code: error_codes::NOT_AUTHORIZED,
                 message: "NotAuthorized".into(),
+                data: None,
             });
         }
         let decision = match params.decision {
@@ -912,6 +1087,68 @@ impl IpcServer {
         Ok(serde_json::json!({}))
     }
 
+    /// Wire result for `question/respond` (design item 5): `false` is the
+    /// idempotent answer for duplicate / already-settled / unknown ids.
+    fn question_result(accepted: bool) -> Value {
+        serde_json::to_value(QuestionRespondResult { accepted }).expect("serializable")
+    }
+
+    /// `question/respond`: owner-gated, idempotent answer delivery. Check order
+    /// (design item 5): question_id shape → pending session lookup (unknown →
+    /// `{accepted:false}` without owner check) → owner gate → parameter
+    /// validation/settlement inside the module.
+    fn dispatch_question_respond(
+        &self,
+        req: &JsonRpcRequest,
+        conn_id: &str,
+    ) -> Result<Value, DispatchError> {
+        let module = self
+            .question_module
+            .clone()
+            .ok_or_else(|| DispatchError::invalid_request("no question module"))?;
+        let raw = req
+            .params
+            .as_ref()
+            .ok_or_else(|| DispatchError::invalid_params("missing params"))?;
+        let question_id = raw
+            .get("question_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| DispatchError::invalid_params("missing question_id"))?
+            .to_string();
+        let Some(session_id) = module.session_of(&question_id) else {
+            return Ok(Self::question_result(false));
+        };
+        let is_owner = self
+            .registry
+            .read()
+            .ok()
+            .and_then(|r| r.session_owner(&session_id).cloned())
+            .map(|owner| owner == conn_id)
+            .unwrap_or(false);
+        if !is_owner {
+            return Err(DispatchError {
+                code: error_codes::NOT_AUTHORIZED,
+                message: "NotAuthorized".into(),
+                data: None,
+            });
+        }
+        let params: QuestionRespondParams = serde_json::from_value(raw.clone())
+            .map_err(|e| DispatchError::invalid_params(e.to_string()))?;
+        match module.respond(&question_id, params.answers, params.skipped) {
+            Ok(RespondOutcome::Accepted(accepted)) => Ok(Self::question_result(accepted)),
+            Err(RespondError::UnknownOptions { unknown }) => {
+                Err(DispatchError::invalid_params_with_data(
+                    "unknown option ids",
+                    serde_json::json!({ "unknown_options": unknown }),
+                ))
+            }
+            Err(RespondError::TooManyAnswers) => Err(DispatchError::invalid_params_with_data(
+                "multiple answers for a single-choice question",
+                serde_json::json!({ "reason": "too_many_answers" }),
+            )),
+        }
+    }
+
     async fn dispatch_cancel_request(&self, req: &JsonRpcRequest) -> Result<Value, DispatchError> {
         let params: CancelParams =
             serde_json::from_value(req.params.clone().unwrap_or(serde_json::json!({})))
@@ -942,6 +1179,9 @@ impl IpcServer {
         if let Some(ref sid) = session_id {
             if let Some(module) = self.permission_module.as_ref() {
                 let _ = module.cancel_session(sid, "cancelled");
+            }
+            if let Some(module) = self.question_module.as_ref() {
+                let _ = module.cancel_session(sid);
             }
             let (tx, _rx) = tokio::sync::oneshot::channel();
             let _ = self.kernel.sender().send(KernelMessage::ServiceCall {
@@ -975,10 +1215,27 @@ impl IpcServer {
         let serve_result = Arc::clone(&self)
             .serve_connection_requests(conn, &conn_id)
             .await;
-        if let Ok(mut reg) = self.registry.write() {
-            reg.unregister(&conn_id);
-        }
+        self.cleanup_connection(&conn_id);
         serve_result
+    }
+
+    /// Unregister a closed connection and settle the pending questions of every
+    /// session it owned (design 错误处理: owner disconnect → skipped).
+    fn cleanup_connection(&self, conn_id: &str) {
+        let owned = self
+            .registry
+            .read()
+            .ok()
+            .map(|r| r.sessions_owned_by(conn_id))
+            .unwrap_or_default();
+        if let Ok(mut reg) = self.registry.write() {
+            reg.unregister(conn_id);
+        }
+        if let Some(module) = &self.question_module {
+            for sid in owned {
+                let _ = module.cancel_session(&sid);
+            }
+        }
     }
 
     /// Per-connection request loop body. The connection stays owned by this
@@ -1067,6 +1324,54 @@ impl IpcServer {
         }
     }
 
+    /// Route $/askQuestion notifications to the session owner through the
+    /// registry and record the question in the trajectory at notify time. The
+    /// settle hook records exactly one QuestionAnswer per question (the module
+    /// settles each question through a single winner). Attach once per
+    /// transport entry point.
+    pub(crate) fn attach_question_notifier(&self) {
+        if let Some(module) = &self.question_module {
+            module.set_notifier(self.question_notifier());
+            module.set_settle_hook(self.question_settle_hook());
+        }
+    }
+
+    /// Owner-directed question notifier; the returned bool is the module's
+    /// "delivered" signal (an absent owner settles the question as skipped).
+    fn question_notifier(&self) -> QuestionNotifier {
+        let registry = Arc::clone(&self.registry);
+        let trajectory = self.trajectory_store.clone();
+        Arc::new(move |p: &AskQuestionParams, session_id: &str| {
+            record_ask_question(trajectory.as_ref(), session_id, p);
+            let owner = registry
+                .read()
+                .ok()
+                .and_then(|r| r.session_owner(&session_id.to_string()).cloned());
+            let delivered = owner.is_some();
+            if let Some(owner_id) = owner {
+                let msg = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "method": "$/askQuestion",
+                    "params": serde_json::to_value(p).expect("serializable"),
+                });
+                if let Ok(r) = registry.read() {
+                    let _ = r.send_to(&owner_id, &msg.to_string());
+                }
+            }
+            delivered
+        })
+    }
+
+    /// Settlement sink: one QuestionAnswer trajectory node per settled question.
+    fn question_settle_hook(&self) -> SettleHook {
+        let trajectory = self.trajectory_store.clone();
+        Arc::new(
+            move |session_id: &str, _question_id: &str, s: &QuestionSettlement| {
+                record_question_answer(trajectory.as_ref(), session_id, s);
+            },
+        )
+    }
+
     /// Run the server in stdio mode via the unified Connection serve loop (design 决策 #2).
     /// On EOF or after a shutdown request, signal the kernel and await its graceful shutdown.
     /// The read loop is interrupted when the kernel finishes (design #13: SIGINT/SIGTERM
@@ -1083,6 +1388,7 @@ impl IpcServer {
         // Subscribe the permission notifier: $/permissionRequest is routed to
         // the session owner through the registry (决策 #5).
         self.attach_permission_notifier();
+        self.attach_question_notifier();
         // Poll the kernel handle by `&mut` (taken out so the future needs no `self` borrow
         // while the loop also reads the registry); it is restored below for await_shutdown.
         let mut kernel_handle = self.kernel_handle.take();
@@ -1169,6 +1475,156 @@ fn build_progress_frame(
         "params": { "token": token.clone(), "value": serde_json::to_value(value).expect("serializable") },
     })
     .to_string()
+}
+
+/// Map core TODO items to wire items (design contract item 2), enums 1:1.
+fn todo_items_into_wire(items: Vec<TodoItemArtifact>) -> Vec<agentj_protocol::streaming::TodoItem> {
+    items
+        .into_iter()
+        .map(|item| agentj_protocol::streaming::TodoItem {
+            id: item.id,
+            content: item.content,
+            status: todo_status_into_wire(item.status),
+        })
+        .collect()
+}
+
+/// 1:1 TODO status mapping — the wire `Unknown` tolerance is never produced
+/// by the kernel (artifacts only exist for known statuses).
+fn todo_status_into_wire(status: TodoStatusArtifact) -> agentj_protocol::streaming::TodoStatus {
+    match status {
+        TodoStatusArtifact::Pending => agentj_protocol::streaming::TodoStatus::Pending,
+        TodoStatusArtifact::InProgress => agentj_protocol::streaming::TodoStatus::InProgress,
+        TodoStatusArtifact::Completed => agentj_protocol::streaming::TodoStatus::Completed,
+        TodoStatusArtifact::Cancelled => agentj_protocol::streaming::TodoStatus::Cancelled,
+    }
+}
+
+/// Map a core file-change artifact to the wire shape (design contract item 3).
+/// `diff_truncated` is `Some(true)` only when truncated; `false` stays omitted
+/// per the field's `skip_serializing_if`.
+fn file_change_into_wire(change: FileChangeArtifact) -> agentj_protocol::streaming::FileChange {
+    agentj_protocol::streaming::FileChange {
+        path: change.path,
+        op: file_change_op_into_wire(change.op),
+        additions: change.additions,
+        deletions: change.deletions,
+        tool_call_id: change.tool_call_id,
+        diff: change.diff,
+        diff_truncated: change.diff_truncated.then_some(true),
+    }
+}
+
+/// 1:1 file-change op mapping (artifact ops are a closed set).
+fn file_change_op_into_wire(op: FileChangeOp) -> agentj_protocol::streaming::FileChangeKind {
+    match op {
+        FileChangeOp::Add => agentj_protocol::streaming::FileChangeKind::Add,
+        FileChangeOp::Modify => agentj_protocol::streaming::FileChangeKind::Modify,
+        FileChangeOp::Delete => agentj_protocol::streaming::FileChangeKind::Delete,
+    }
+}
+
+/// AskQuestion trajectory node recorded at notify time (design 决策 #10).
+fn record_ask_question(
+    store: Option<&Arc<trajectory::TrajectoryStore>>,
+    session_id: &str,
+    p: &AskQuestionParams,
+) {
+    let Some(store) = store else {
+        return;
+    };
+    let value = agentj_protocol::trajectory::TrajectoryValue::AskQuestion {
+        question_id: p.question_id.clone(),
+        question: p.question.clone(),
+        header: p.header.clone(),
+        options: p.options.clone(),
+        allow_multiple: p.allow_multiple,
+        allow_other: p.allow_other,
+    };
+    if let Err(e) = store.record(&session_id.to_string(), value) {
+        tracing::warn!("trajectory record failed for {session_id}: {e}");
+    }
+}
+
+/// QuestionAnswer trajectory node; the settle hook fires at most once per
+/// question, so exactly one node is recorded (module single-winner settle).
+fn record_question_answer(
+    store: Option<&Arc<trajectory::TrajectoryStore>>,
+    session_id: &str,
+    s: &QuestionSettlement,
+) {
+    let Some(store) = store else {
+        return;
+    };
+    let (answers, skipped) = match &s.outcome {
+        QuestionOutcome::Answered { answers } => (answers.clone(), false),
+        QuestionOutcome::Skipped => (Vec::new(), true),
+    };
+    let value = agentj_protocol::trajectory::TrajectoryValue::QuestionAnswer {
+        question_id: s.question_id.clone(),
+        answers,
+        skipped,
+    };
+    if let Err(e) = store.record(&session_id.to_string(), value) {
+        tracing::warn!("trajectory record failed for {session_id}: {e}");
+    }
+}
+
+/// Attach `git_status` to file entries from one snapshot of `root`; a non-git
+/// root or git failure degrades to all-null (design error handling).
+async fn attach_git_statuses(result: FileListResult, root: &std::path::Path) -> FileListResult {
+    let snapshot = agentj_core::git_sample::sample(root).await;
+    if snapshot.is_none() {
+        tracing::debug!(root = %root.display(), "file/list: git sample unavailable");
+    }
+    let entries = result
+        .entries
+        .into_iter()
+        .map(|mut entry| {
+            if entry.kind == FileKind::File {
+                entry.git_status = snapshot
+                    .as_ref()
+                    .and_then(|s| file_list::git_statuses(s, &entry.path))
+                    .and_then(|(x, y)| file_list::map_git_status(x, y));
+            }
+            entry
+        })
+        .collect();
+    FileListResult {
+        entries,
+        truncated: result.truncated,
+    }
+}
+
+/// Map a `file/list` failure onto its JSON-RPC code + `error.data` shape
+/// (design error handling).
+fn map_file_list_error(
+    error: file_list::FileListError,
+    requested: &Option<String>,
+) -> DispatchError {
+    match error {
+        file_list::FileListError::NotFound => DispatchError::invalid_params_with_data(
+            "file/list: path not found",
+            serde_json::json!({ "path": requested, "reason": "not_found" }),
+        ),
+        file_list::FileListError::NotADirectory => DispatchError::invalid_params_with_data(
+            "file/list: path is not a directory",
+            serde_json::json!({ "path": requested, "reason": "not_a_directory" }),
+        ),
+        file_list::FileListError::InvalidDepth => DispatchError::invalid_params_with_data(
+            "file/list: depth must be within 1..=8",
+            serde_json::json!({ "reason": "invalid_depth" }),
+        ),
+        file_list::FileListError::OutsideRoot { path } => DispatchError {
+            code: error_codes::PATH_NOT_ALLOWED,
+            message: "PathNotAllowed".into(),
+            data: Some(serde_json::json!({ "path": path, "reason": "outside_project_root" })),
+        },
+        file_list::FileListError::Io { path, reason } => DispatchError::internal_with_data(
+            "file/list: io error",
+            serde_json::json!({ "path": path, "reason": reason }),
+        ),
+    }
 }
 
 fn kernel_model_info(
@@ -1649,6 +2105,293 @@ mod tests {
         }
     }
 
+    /// Fixture: an IpcServer wired to a fresh QuestionModule (notifier not yet attached).
+    fn question_server() -> (IpcServer, Arc<agentj_question::QuestionModule>) {
+        let module = Arc::new(agentj_question::QuestionModule::new());
+        let mut server = IpcServer::new(Kernel::new(), stub_session());
+        server.question_module = Some(module.clone());
+        (server, module)
+    }
+
+    fn ask_params(sid: &str) -> agentj_protocol::question::AskQuestionParams {
+        use agentj_protocol::question::AskOption;
+        agentj_protocol::question::AskQuestionParams {
+            question_id: String::new(), // ask_blocking generates the real id
+            session_id: sid.to_string(),
+            question: "Pick a color".into(),
+            header: None,
+            options: vec![
+                AskOption {
+                    id: "red".into(),
+                    label: "Red".into(),
+                    hint: None,
+                },
+                AskOption {
+                    id: "blue".into(),
+                    label: "Blue".into(),
+                    hint: None,
+                },
+            ],
+            allow_multiple: false,
+            allow_other: true,
+            timeout_s: None,
+        }
+    }
+
+    fn question_id_of(msg: &str) -> String {
+        serde_json::from_str::<serde_json::Value>(msg).unwrap()["params"]["question_id"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
+    fn respond_request(qid: &str, answers: &str) -> String {
+        format!(
+            concat!(
+                r#"{{"jsonrpc":"2.0","id":3,"method":"question/respond","#,
+                r#""params":{{"question_id":"{}","answers":{}}}}}"#
+            ),
+            qid, answers
+        )
+    }
+
+    /// Wait for the owner's `$/askQuestion` notification; return the generated id.
+    async fn wait_for_ask_question(server: &Arc<IpcServer>, owner: &str) -> String {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if let Some(msg) = drain_sent(server, owner)
+                    .into_iter()
+                    .find(|m| m.contains("$/askQuestion"))
+                {
+                    return question_id_of(&msg);
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("timed out waiting for $/askQuestion")
+    }
+
+    #[tokio::test]
+    async fn question_respond_non_owner_rejected() {
+        let (server, module) = question_server();
+        let server = Arc::new(server);
+        server.attach_question_notifier();
+        let a = register_fake_conn(&server);
+        let b = register_fake_conn(&server);
+        server
+            .registry
+            .write()
+            .unwrap()
+            .set_session_owner(&"s1".to_string(), &a);
+        let m = module.clone();
+        let params = ask_params("s1");
+        let handle = std::thread::spawn(move || m.ask_blocking("s1", &params));
+        let qid = wait_for_ask_question(&server, &a).await;
+        let respond = respond_request(&qid, r#"["red"]"#);
+        let resp = server.handle_request_from(&respond, &b).await.unwrap();
+        assert!(
+            resp.contains("-32806") && resp.contains("NotAuthorized"),
+            "non-owner must be rejected with -32806: {resp}"
+        );
+        let resp = server.handle_request_from(&respond, &a).await.unwrap();
+        assert!(
+            resp.contains("\"accepted\":true"),
+            "owner must resolve: {resp}"
+        );
+        let (settled_id, outcome) = handle.join().unwrap();
+        assert_eq!(settled_id, qid);
+        assert_eq!(
+            outcome,
+            agentj_question::QuestionOutcome::Answered {
+                answers: vec!["red".into()]
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn question_respond_unknown_id_is_idempotent_false() {
+        let (server, module) = question_server();
+        let raw = concat!(
+            r#"{"jsonrpc":"2.0","id":4,"method":"question/respond","#,
+            r#""params":{"question_id":"nope","answers":[]}}"#,
+        );
+        let resp = server.handle_request_from(raw, "conn-x").await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(v["result"]["accepted"], false, "{resp}");
+        assert!(
+            v.get("error").is_none(),
+            "unknown id must not error: {resp}"
+        );
+        assert_eq!(module.pending_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn cancel_request_settles_pending_question() {
+        let (server, module) = question_server();
+        let server = Arc::new(server);
+        server.attach_question_notifier();
+        let a = register_fake_conn(&server);
+        server
+            .registry
+            .write()
+            .unwrap()
+            .set_session_owner(&"s1".to_string(), &a);
+        let m = module.clone();
+        let params = ask_params("s1");
+        let handle = std::thread::spawn(move || m.ask_blocking("s1", &params));
+        let qid = wait_for_ask_question(&server, &a).await;
+        assert_eq!(module.pending_count(), 1);
+        let raw =
+            r#"{"jsonrpc":"2.0","method":"$/cancelRequest","params":{"id":5,"session_id":"s1"}}"#;
+        let _ = server.handle_request_from(raw, &a).await.unwrap();
+        assert_eq!(
+            module.pending_count(),
+            0,
+            "cancel must settle the pending question"
+        );
+        let (settled_id, outcome) = handle.join().unwrap();
+        assert_eq!(settled_id, qid);
+        assert_eq!(outcome, agentj_question::QuestionOutcome::Skipped);
+    }
+
+    #[tokio::test]
+    async fn notifier_targets_owner_connection() {
+        let (server, module) = question_server();
+        let server = Arc::new(server);
+        server.attach_question_notifier();
+        let a = register_fake_conn(&server);
+        let b = register_fake_conn(&server);
+        server
+            .registry
+            .write()
+            .unwrap()
+            .set_session_owner(&"s1".to_string(), &a);
+        let m = module.clone();
+        let params = ask_params("s1");
+        let handle = std::thread::spawn(move || m.ask_blocking("s1", &params));
+        let qid = wait_for_ask_question(&server, &a).await;
+        let ask = drain_sent(&server, &a)
+            .into_iter()
+            .find(|m| m.contains("$/askQuestion"))
+            .expect("owner must receive $/askQuestion");
+        let v: serde_json::Value = serde_json::from_str(&ask).unwrap();
+        assert_eq!(v["method"], "$/askQuestion");
+        assert_eq!(v["params"]["question_id"], qid);
+        assert_eq!(v["params"]["session_id"], "s1");
+        assert_eq!(v["params"]["question"], "Pick a color");
+        assert_eq!(v["params"]["options"].as_array().unwrap().len(), 2);
+        let b_sent = drain_sent(&server, &b);
+        assert!(
+            !b_sent.iter().any(|m| m.contains("$/askQuestion")),
+            "non-owner must NOT receive $/askQuestion: {b_sent:?}"
+        );
+        let _ = module.cancel_session("s1");
+        assert_eq!(
+            handle.join().unwrap().1,
+            agentj_question::QuestionOutcome::Skipped
+        );
+    }
+
+    #[tokio::test]
+    async fn question_respond_maps_validation_errors_to_error_data() {
+        let (server, module) = question_server();
+        let server = Arc::new(server);
+        server.attach_question_notifier();
+        let a = register_fake_conn(&server);
+        server
+            .registry
+            .write()
+            .unwrap()
+            .set_session_owner(&"s1".to_string(), &a);
+        let m = module.clone();
+        let params = ask_params("s1");
+        let handle = std::thread::spawn(move || m.ask_blocking("s1", &params));
+        let qid = wait_for_ask_question(&server, &a).await;
+        let unknown = respond_request(&qid, r#"["purple"]"#);
+        let resp = server.handle_request_from(&unknown, &a).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(v["error"]["code"], -32602, "{resp}");
+        assert_eq!(v["error"]["data"]["unknown_options"][0], "purple", "{resp}");
+        let too_many = respond_request(&qid, r#"["red","blue"]"#);
+        let resp = server.handle_request_from(&too_many, &a).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(v["error"]["code"], -32602, "{resp}");
+        assert_eq!(v["error"]["data"]["reason"], "too_many_answers", "{resp}");
+        assert_eq!(
+            module.pending_count(),
+            1,
+            "rejected validation must leave the question pending"
+        );
+        let _ = module.cancel_session("s1");
+        handle.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn owner_disconnect_settles_pending_question_skipped() {
+        let (server, module) = question_server();
+        let server = Arc::new(server);
+        server.attach_question_notifier();
+        let (conn, log, tx) = scripted_conn("tcp-owner");
+        let s = Arc::clone(&server);
+        let task = tokio::spawn(async move { s.serve_connection(Box::new(conn), None).await });
+        tx.send(r#"{"jsonrpc":"2.0","id":1,"method":"session/new"}"#.to_string())
+            .await
+            .unwrap();
+        let new_resp = wait_for_line(&log, |m| m.contains("\"session_id\"")).await;
+        let sid = extract_sid(&new_resp);
+        let m = module.clone();
+        let params = ask_params(&sid);
+        let handle = std::thread::spawn(move || m.ask_blocking(&sid, &params));
+        let ask_line = wait_for_line(&log, |m| m.contains("$/askQuestion")).await;
+        let qid = question_id_of(&ask_line);
+        assert_eq!(module.pending_count(), 1);
+        drop(tx); // EOF -> serve_connection unregisters and settles owned sessions
+        task.await.unwrap().unwrap();
+        assert_eq!(
+            module.pending_count(),
+            0,
+            "disconnect must settle pending questions"
+        );
+        let (settled_id, outcome) = handle.join().unwrap();
+        assert_eq!(settled_id, qid);
+        assert_eq!(outcome, agentj_question::QuestionOutcome::Skipped);
+    }
+
+    #[tokio::test]
+    async fn question_settle_records_ask_and_answer_trajectory_once() {
+        let dir = temp_dir_traj("question");
+        let (mut server, module) = question_server();
+        server.trajectory_store = Some(wired_store(&dir));
+        let server = Arc::new(server);
+        server.attach_question_notifier();
+        let a = register_fake_conn(&server);
+        server
+            .registry
+            .write()
+            .unwrap()
+            .set_session_owner(&"s1".to_string(), &a);
+        let m = module.clone();
+        let params = ask_params("s1");
+        let handle = std::thread::spawn(move || m.ask_blocking("s1", &params));
+        let qid = wait_for_ask_question(&server, &a).await;
+        let respond = respond_request(&qid, r#"["red"]"#);
+        let resp = server.handle_request_from(&respond, &a).await.unwrap();
+        assert!(resp.contains("\"accepted\":true"), "{resp}");
+        assert_eq!(
+            handle.join().unwrap().1,
+            agentj_question::QuestionOutcome::Answered {
+                answers: vec!["red".into()]
+            }
+        );
+        // Duplicate respond is idempotent and must NOT record a second answer.
+        let resp = server.handle_request_from(&respond, &a).await.unwrap();
+        assert!(resp.contains("\"accepted\":false"), "{resp}");
+        let events = read_traj_events(&dir, "s1");
+        assert_eq!(traj_kinds(&events), vec!["ask_question", "question_answer"]);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     /// M1 regression: JSON-RPC 2.0 §2.1 — a notification (request without an
     /// id, e.g. $/cancelRequest) must produce NO response line, while a
     /// request WITH an id still gets its response.
@@ -2022,6 +2765,119 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
         assert!(v["result"]["session_id"].is_string());
         assert!(!v["result"]["session_id"].as_str().unwrap().is_empty());
+    }
+
+    /// Temp tree for `session/new` project_root tests (mirrors `temp_dir_traj`).
+    fn temp_dir_root(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("aj-ipc-root-{tag}-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// T20: `session/new {project_root}` stores the canonicalized directory on
+    /// the created session (design item 6).
+    #[tokio::test]
+    async fn session_new_with_project_root_persists_it() {
+        let store = stub_session();
+        let server = IpcServer::new(Kernel::new(), store.clone());
+        let dir = temp_dir_root("persist");
+        let canonical = dir.canonicalize().unwrap();
+        let raw = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "session/new",
+            "params": { "project_root": dir.to_str().unwrap() },
+        })
+        .to_string();
+        let resp = server.handle_request(&raw).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert!(
+            v["error"].is_null(),
+            "valid project_root must not error: {resp}"
+        );
+        let sid = v["result"]["session_id"].as_str().unwrap().to_string();
+        assert_eq!(store.project_root(&sid), Some(canonical));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// T20: a relative `project_root` is rejected with -32602 carrying
+    /// `error.data {path, reason}`; no session is created (validate before create).
+    #[tokio::test]
+    async fn session_new_rejects_relative_root_with_32602() {
+        let dir = temp_dir_root("reject");
+        let store = Arc::new(agentj_session::FileBackedStore::new(dir.as_path()).unwrap());
+        let server = IpcServer::new(Kernel::new(), store.clone());
+        let raw = r#"{"jsonrpc":"2.0","id":2,"method":"session/new","params":{"project_root":"rel/path"}}"#;
+        let resp = server.handle_request(raw).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(v["error"]["code"], -32602, "must be invalid params: {resp}");
+        assert_eq!(v["error"]["data"]["reason"], "invalid_project_root");
+        assert_eq!(v["error"]["data"]["path"], "rel/path");
+        assert!(v["result"].is_null(), "no result on error: {resp}");
+        assert_eq!(
+            std::fs::read_dir(&dir).unwrap().count(),
+            0,
+            "invalid project_root must not create a session"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// T20 AC guard: a missing path and a regular file are also rejected with
+    /// -32602 + `error.data {path, reason}`.
+    #[tokio::test]
+    async fn session_new_rejects_missing_and_file_root_with_32602() {
+        let server = IpcServer::new(Kernel::new(), stub_session());
+        let dir = temp_dir_root("badshape");
+        let missing = dir.join("missing");
+        let file = dir.join("not-a-dir.txt");
+        std::fs::write(&file, "x").unwrap();
+        for bad in [missing.as_path(), file.as_path()] {
+            let raw = serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "session/new",
+                "params": { "project_root": bad.to_str().unwrap() },
+            })
+            .to_string();
+            let resp = server.handle_request(&raw).await.unwrap();
+            let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+            assert_eq!(v["error"]["code"], -32602, "must be invalid params: {resp}");
+            assert_eq!(v["error"]["data"]["reason"], "invalid_project_root");
+            assert_eq!(v["error"]["data"]["path"], bad.to_str().unwrap());
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// T20: the optional `data` key is omitted from the wire when None (additive
+    /// discipline), and carried when a parameterized error sets it.
+    #[test]
+    fn error_object_omits_data_when_none() {
+        let resp = JsonRpcResponse {
+            jsonrpc: "2.0".into(),
+            id: serde_json::json!(9),
+            result: None,
+            error: Some(JsonRpcError {
+                code: -32602,
+                message: "bad params".into(),
+                data: None,
+            }),
+        };
+        let v = serde_json::to_value(&resp).unwrap();
+        assert!(
+            v["error"].get("data").is_none(),
+            "data key must be omitted when None: {v}"
+        );
+        assert_eq!(v["error"]["code"], -32602);
+        assert_eq!(v["error"]["message"], "bad params");
+
+        let err = DispatchError::invalid_params_with_data(
+            "bad root",
+            serde_json::json!({ "path": "/x", "reason": "invalid_project_root" }),
+        );
+        let v = serde_json::to_value(&err).unwrap();
+        assert_eq!(v["code"], -32602);
+        assert_eq!(v["data"]["reason"], "invalid_project_root");
     }
 
     #[tokio::test]
@@ -2577,6 +3433,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn initialize_reports_protocol_version_not_product_version() {
+        let server = Arc::new(IpcServer::new(Kernel::new(), stub_session()));
+        let conn_id = register_fake_conn(&server);
+        let resp = server
+            .handle_request_from(
+                r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocol_version":"0.13.0"}}"#,
+                &conn_id,
+            )
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(
+            v["result"]["protocol_version"],
+            agentj_protocol::PROTOCOL_VERSION
+        );
+        assert_eq!(
+            v["result"]["server_info"]["version"],
+            env!("CARGO_PKG_VERSION")
+        );
+    }
+
+    #[tokio::test]
     async fn initialize_with_wrong_token_is_rejected() {
         let server = Arc::new(IpcServer::new(Kernel::new(), stub_session()));
         server.set_token(Some("secret".into()));
@@ -2724,6 +3602,354 @@ mod tests {
                 .any(|m| m.contains("$/progress") && m.contains("hello")),
             "subscriber B must receive $/progress deltas: {b_sent:?}"
         );
+    }
+
+    /// T23 fixture: accepts any `todo` args; the executor derives the snapshot
+    /// artifact itself (that production path is what T23 broadcasts).
+    struct TodoMock;
+
+    impl Tool for TodoMock {
+        fn name(&self) -> &str {
+            "todo"
+        }
+
+        fn description(&self) -> &str {
+            "test todo"
+        }
+
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+
+        fn execute(
+            &self,
+            input: serde_json::Value,
+        ) -> Result<serde_json::Value, agentj_core::error::ToolError> {
+            let count = input["items"].as_array().map(Vec::len).unwrap_or(0);
+            Ok(serde_json::json!({"ok": true, "count": count}))
+        }
+    }
+
+    /// T23 fixture: really writes the file so the executor's pre/post-read pair
+    /// yields a `file_change` artifact (op `add` for a fresh target).
+    struct WriteMock;
+
+    impl Tool for WriteMock {
+        fn name(&self) -> &str {
+            "write"
+        }
+
+        fn description(&self) -> &str {
+            "test write"
+        }
+
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+
+        fn execute(
+            &self,
+            input: serde_json::Value,
+        ) -> Result<serde_json::Value, agentj_core::error::ToolError> {
+            let path = input["path"].as_str().unwrap_or("");
+            let content = input["content"].as_str().unwrap_or("");
+            std::fs::write(path, content).map_err(|e| {
+                agentj_core::error::ToolError::ExecutionFailed {
+                    name: "write".into(),
+                    reason: e.to_string(),
+                }
+            })?;
+            Ok(serde_json::json!({"ok": true}))
+        }
+    }
+
+    #[test]
+    fn todo_event_to_protocol_value_roundtrip() {
+        use agentj_core::artifacts::{TodoItemArtifact, TodoStatusArtifact};
+        use agentj_protocol::streaming::{ProgressValue, TodoItem, TodoStatus};
+
+        let wire = todo_items_into_wire(vec![
+            TodoItemArtifact {
+                id: "t1".into(),
+                content: "first".into(),
+                status: TodoStatusArtifact::Pending,
+            },
+            TodoItemArtifact {
+                id: "t2".into(),
+                content: "second".into(),
+                status: TodoStatusArtifact::InProgress,
+            },
+            TodoItemArtifact {
+                id: "t3".into(),
+                content: "third".into(),
+                status: TodoStatusArtifact::Completed,
+            },
+            TodoItemArtifact {
+                id: "t4".into(),
+                content: "fourth".into(),
+                status: TodoStatusArtifact::Cancelled,
+            },
+        ]);
+        assert_eq!(
+            wire,
+            vec![
+                TodoItem {
+                    id: "t1".into(),
+                    content: "first".into(),
+                    status: TodoStatus::Pending,
+                },
+                TodoItem {
+                    id: "t2".into(),
+                    content: "second".into(),
+                    status: TodoStatus::InProgress,
+                },
+                TodoItem {
+                    id: "t3".into(),
+                    content: "third".into(),
+                    status: TodoStatus::Completed,
+                },
+                TodoItem {
+                    id: "t4".into(),
+                    content: "fourth".into(),
+                    status: TodoStatus::Cancelled,
+                },
+            ],
+            "all four statuses map 1:1"
+        );
+
+        let value = ProgressValue::Todo {
+            session_id: "s1".into(),
+            revision: 7,
+            items: wire.clone(),
+        };
+        let json = serde_json::to_value(&value).unwrap();
+        assert_eq!(json["kind"], "todo");
+        assert_eq!(json["session_id"], "s1");
+        assert_eq!(json["revision"], 7);
+        assert_eq!(json["items"][1]["status"], "in_progress");
+        assert_eq!(json["items"][3]["status"], "cancelled");
+        let back: ProgressValue = serde_json::from_value(json).unwrap();
+        match back {
+            ProgressValue::Todo {
+                session_id,
+                revision,
+                items,
+            } => {
+                assert_eq!(session_id, "s1");
+                assert_eq!(revision, 7);
+                assert_eq!(items, wire, "items survive the wire roundtrip");
+            }
+            other => panic!("expected todo, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn file_change_event_to_protocol_value_roundtrip() {
+        use agentj_core::artifacts::{FileChangeArtifact, FileChangeOp};
+        use agentj_protocol::streaming::{FileChangeKind, ProgressValue};
+
+        let change = file_change_into_wire(FileChangeArtifact {
+            path: "src/lib.rs".into(),
+            op: FileChangeOp::Modify,
+            additions: 3,
+            deletions: 1,
+            tool_call_id: Some("c1".into()),
+            diff: Some("@@ -1,2 +1,2 @@\n-a\n+b\n".into()),
+            diff_truncated: false,
+        });
+        assert_eq!(change.op, FileChangeKind::Modify);
+        assert_eq!(change.diff_truncated, None, "false must stay omitted");
+        let value = ProgressValue::FileChange {
+            session_id: "s1".into(),
+            change,
+        };
+        let json = serde_json::to_value(&value).unwrap();
+        assert_eq!(json["kind"], "file_change");
+        assert_eq!(json["session_id"], "s1");
+        assert_eq!(json["change"]["path"], "src/lib.rs");
+        assert_eq!(json["change"]["op"], "modify");
+        assert_eq!(json["change"]["additions"], 3);
+        assert_eq!(json["change"]["deletions"], 1);
+        assert_eq!(json["change"]["tool_call_id"], "c1");
+        assert!(
+            json["change"]["diff"].as_str().unwrap().contains("+b"),
+            "diff preserved: {json}"
+        );
+        assert!(
+            json["change"].get("diff_truncated").is_none(),
+            "false diff_truncated must be skipped: {json}"
+        );
+        let back: ProgressValue = serde_json::from_value(json).unwrap();
+        match back {
+            ProgressValue::FileChange { session_id, change } => {
+                assert_eq!(session_id, "s1");
+                assert_eq!(change.op, FileChangeKind::Modify);
+                assert_eq!(change.diff_truncated, None);
+                assert_eq!(change.path, "src/lib.rs");
+            }
+            other => panic!("expected file_change, got {other:?}"),
+        }
+
+        let add = file_change_into_wire(FileChangeArtifact {
+            path: "new.txt".into(),
+            op: FileChangeOp::Add,
+            additions: 1,
+            deletions: 0,
+            tool_call_id: None,
+            diff: None,
+            diff_truncated: false,
+        });
+        assert_eq!(add.op, FileChangeKind::Add);
+        let add_json = serde_json::to_value(&add).unwrap();
+        assert!(add_json.get("tool_call_id").is_none());
+        assert!(add_json.get("diff").is_none());
+
+        let delete = file_change_into_wire(FileChangeArtifact {
+            path: "gone.txt".into(),
+            op: FileChangeOp::Delete,
+            additions: 0,
+            deletions: 4,
+            tool_call_id: Some("c9".into()),
+            diff: None,
+            diff_truncated: true,
+        });
+        assert_eq!(delete.op, FileChangeKind::Delete);
+        let delete_json = serde_json::to_value(&delete).unwrap();
+        assert_eq!(delete_json["diff_truncated"], true, "truncation surfaced");
+    }
+
+    /// T23 AC: a run yielding todo + write artifacts must broadcast both
+    /// `$/progress` kinds to subscribers and record them once for replay.
+    #[tokio::test]
+    async fn subscriber_receives_todo_and_file_change_broadcast() {
+        let dir = temp_dir_traj("t23-artifacts");
+        let target = std::env::temp_dir().join(format!("aj-ipc-t23-{}.txt", std::process::id()));
+        std::fs::remove_file(&target).ok();
+        let path = target.to_string_lossy().into_owned();
+        let mut server = scripted_run_server_with_tools(
+            vec![
+                Ok(agentj_core::types::ModelEvent::ToolCall(
+                    agentj_core::types::ToolCall {
+                        id: "call_todo".into(),
+                        name: "todo".into(),
+                        arguments: serde_json::json!({"items": [
+                            {"content": "write tests", "status": "in_progress"},
+                            {"content": "implement", "status": "pending"}
+                        ]}),
+                    },
+                )),
+                Ok(agentj_core::types::ModelEvent::ToolCall(
+                    agentj_core::types::ToolCall {
+                        id: "call_write".into(),
+                        name: "write".into(),
+                        arguments: serde_json::json!({"path": path, "content": "a\nb\n"}),
+                    },
+                )),
+                Ok(agentj_core::types::ModelEvent::Done),
+            ],
+            |tools| {
+                tools.register(Arc::new(TodoMock));
+                tools.register(Arc::new(WriteMock));
+            },
+        );
+        server.trajectory_store = Some(wired_store(&dir));
+        let server = Arc::new(server);
+        let a = register_fake_conn(&server);
+        let b = register_fake_conn(&server);
+        let new_resp = server
+            .handle_request_from(r#"{"jsonrpc":"2.0","id":1,"method":"session/new"}"#, &a)
+            .await
+            .unwrap();
+        let sid = extract_sid(&new_resp);
+        server
+            .handle_request_from(
+                &format!(
+                    r#"{{"jsonrpc":"2.0","id":2,"method":"session/subscribe","params":{{"session_id":"{sid}"}}}}"#
+                ),
+                &b,
+            )
+            .await
+            .unwrap();
+        let run_raw = format!(
+            r#"{{"jsonrpc":"2.0","id":3,"method":"session/run","params":{{"session_id":"{sid}","content":"hi"}}}}"#
+        );
+        server.handle_request_from(&run_raw, &a).await.unwrap();
+
+        let frames: Vec<serde_json::Value> = drain_sent(&server, &b)
+            .iter()
+            .filter_map(|m| serde_json::from_str::<serde_json::Value>(m).ok())
+            .filter(|v| v["method"] == "$/progress")
+            .collect();
+        let todo = frames
+            .iter()
+            .find(|f| f["params"]["value"]["kind"] == "todo")
+            .unwrap_or_else(|| panic!("subscriber must receive a todo frame: {frames:?}"));
+        assert_eq!(todo["params"]["token"], 3, "token echoes the request id");
+        assert_eq!(todo["params"]["value"]["session_id"], sid);
+        assert_eq!(todo["params"]["value"]["revision"], 1);
+        assert_eq!(todo["params"]["value"]["items"][0]["status"], "in_progress");
+        assert_eq!(todo["params"]["value"]["items"][1]["status"], "pending");
+
+        let change = frames
+            .iter()
+            .find(|f| f["params"]["value"]["kind"] == "file_change")
+            .unwrap_or_else(|| panic!("subscriber must receive a file_change frame: {frames:?}"));
+        assert_eq!(change["params"]["token"], 3);
+        assert_eq!(change["params"]["value"]["session_id"], sid);
+        assert_eq!(change["params"]["value"]["change"]["op"], "add");
+        assert_eq!(change["params"]["value"]["change"]["path"], path);
+        assert_eq!(change["params"]["value"]["change"]["additions"], 2);
+        assert_eq!(
+            change["params"]["value"]["change"]["tool_call_id"],
+            "call_write"
+        );
+        assert!(
+            change["params"]["value"]["change"]["diff"]
+                .as_str()
+                .unwrap()
+                .contains("+b"),
+            "diff preserved: {change}"
+        );
+        assert!(
+            change["params"]["value"]["change"]
+                .get("diff_truncated")
+                .is_none(),
+            "false diff_truncated stays omitted: {change}"
+        );
+
+        let events = read_traj_events(&dir, &sid);
+        assert_eq!(
+            traj_kinds(&events),
+            vec![
+                "user",
+                "tool_call",
+                "tool_result",
+                "todo",
+                "tool_call",
+                "tool_result",
+                "file_change"
+            ],
+            "each artifact is recorded exactly once, in stream order"
+        );
+        let agentj_protocol::trajectory::TrajectoryValue::Todo { revision, items } =
+            &events[3].value
+        else {
+            panic!("todo node at index 3: {events:?}")
+        };
+        assert_eq!(*revision, 1);
+        assert_eq!(items[0].content, "write tests");
+        assert_eq!(
+            items[1].status,
+            agentj_protocol::streaming::TodoStatus::Pending
+        );
+        let agentj_protocol::trajectory::TrajectoryValue::FileChange { change } = &events[6].value
+        else {
+            panic!("file_change node at index 6: {events:?}")
+        };
+        assert_eq!(change.op, agentj_protocol::streaming::FileChangeKind::Add);
+        assert_eq!(change.path, path);
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_file(&target).ok();
     }
 
     /// BUG-004 regression: §7.2 — when the client omits `progress_token`, the
@@ -3098,9 +4324,19 @@ mod tests {
     fn scripted_run_server(
         script: Vec<Result<agentj_core::types::ModelEvent, agentj_core::error::ModelError>>,
     ) -> IpcServer {
+        scripted_run_server_with_tools(script, |_| {})
+    }
+
+    /// T23: like `scripted_run_server`, but lets the caller register test tools so
+    /// tool artifacts (todo / write) flow as real `AgentEvent`s through the bus.
+    fn scripted_run_server_with_tools(
+        script: Vec<Result<agentj_core::types::ModelEvent, agentj_core::error::ModelError>>,
+        register_tools: impl FnOnce(&ToolRegistry),
+    ) -> IpcServer {
         let store: Arc<InMemoryStore> = Arc::new(InMemoryStore::new());
         let session_dyn: Arc<dyn SessionStore> = store.clone();
         let tools = Arc::new(ToolRegistry::new());
+        register_tools(&tools);
         let providers = Arc::new(ProviderRegistry::new());
         providers.register("mock".into(), Arc::new(MockModelProvider::new(script)));
         let ctx = KernelContext {
@@ -3640,5 +4876,238 @@ mod tests {
             "nothing left behind"
         );
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Temp project root for the T21 `file/list` dispatch tests (std-only).
+    fn temp_dir_filelist(tag: &str) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("aj-ipc-filedisp-{tag}-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// One isolated session whose `project_root` is `root`.
+    fn file_list_server(root: &std::path::Path) -> (IpcServer, String) {
+        let store: Arc<InMemoryStore> = Arc::new(InMemoryStore::new());
+        let sid = store.create().unwrap();
+        store
+            .set_project_root(&sid, root.canonicalize().unwrap())
+            .unwrap();
+        let session: Arc<dyn SessionStore> = store;
+        (IpcServer::new(Kernel::new(), session), sid)
+    }
+
+    /// Dispatch one `file/list` request and return the parsed JSON-RPC response.
+    async fn file_list_call(
+        server: &IpcServer,
+        sid: &str,
+        path: Option<&str>,
+        depth: Option<u32>,
+    ) -> serde_json::Value {
+        let mut params = serde_json::json!({ "session_id": sid });
+        if let Some(p) = path {
+            params["path"] = serde_json::json!(p);
+        }
+        if let Some(d) = depth {
+            params["depth"] = serde_json::json!(d);
+        }
+        let raw = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 21,
+            "method": "file/list",
+            "params": params,
+        })
+        .to_string();
+        let resp = server.handle_request(&raw).await.unwrap();
+        serde_json::from_str(&resp).unwrap()
+    }
+
+    #[tokio::test]
+    async fn dispatch_file_list_lists_root_sorted_excluding_git() {
+        let root = temp_dir_filelist("root");
+        std::fs::create_dir(root.join("src")).unwrap();
+        std::fs::create_dir(root.join(".git")).unwrap();
+        std::fs::write(root.join("a.rs"), "hi").unwrap();
+        let (server, sid) = file_list_server(&root);
+        let v = file_list_call(&server, &sid, None, None).await;
+        assert!(v["error"].is_null(), "valid call must succeed: {v}");
+        let entries = v["result"]["entries"].as_array().unwrap();
+        let names: Vec<&str> = entries
+            .iter()
+            .map(|e| e["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, ["src", "a.rs"], "dirs first, .git excluded");
+        assert_eq!(entries[0]["kind"], "dir");
+        assert_eq!(entries[1]["kind"], "file");
+        assert_eq!(entries[1]["size"], 2);
+        assert_eq!(v["result"]["truncated"], false);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[tokio::test]
+    async fn dispatch_file_list_maps_errors_to_codes_and_data() {
+        let root = temp_dir_filelist("errors");
+        std::fs::write(root.join("file.txt"), "x").unwrap();
+        let outside = temp_dir_filelist("errors-outside");
+        let (server, sid) = file_list_server(&root);
+
+        let v = file_list_call(&server, &sid, Some("../x"), None).await;
+        assert_eq!(v["error"]["code"], -32807, "dotdot escape: {v}");
+        assert_eq!(v["error"]["data"]["path"], "../x");
+        assert_eq!(v["error"]["data"]["reason"], "outside_project_root");
+
+        let abs = outside.to_string_lossy().into_owned();
+        let v = file_list_call(&server, &sid, Some(&abs), None).await;
+        assert_eq!(v["error"]["code"], -32807, "absolute escape: {v}");
+        assert_eq!(v["error"]["data"]["path"], abs);
+
+        let v = file_list_call(&server, &sid, Some("file.txt"), None).await;
+        assert_eq!(v["error"]["code"], -32602, "file path: {v}");
+        assert_eq!(v["error"]["data"]["path"], "file.txt");
+        assert_eq!(v["error"]["data"]["reason"], "not_a_directory");
+
+        let v = file_list_call(&server, &sid, Some("nope"), None).await;
+        assert_eq!(v["error"]["code"], -32602, "missing path: {v}");
+        assert_eq!(v["error"]["data"]["path"], "nope");
+        assert_eq!(v["error"]["data"]["reason"], "not_found");
+
+        let v = file_list_call(&server, &sid, None, Some(9)).await;
+        assert_eq!(v["error"]["code"], -32602, "depth 9: {v}");
+        assert_eq!(v["error"]["data"]["reason"], "invalid_depth");
+
+        let v = file_list_call(&server, "missing-session", None, None).await;
+        assert_eq!(v["error"]["code"], -32802, "unknown session: {v}");
+
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::remove_dir_all(&outside).ok();
+    }
+
+    /// Run a git command in `root`, panicking on any failure (git is available
+    /// wherever the `git_sample` suite runs).
+    fn git_run(root: &std::path::Path, args: &[&str]) {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .output();
+        match out {
+            Ok(o) if o.status.success() => {}
+            Ok(o) => panic!(
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&o.stderr)
+            ),
+            Err(e) => panic!("git unavailable: {e}"),
+        }
+    }
+
+    /// AC: a git repo with modified / untracked / deleted files maps to M/A/D.
+    /// The deleted entry stays on disk via `git rm --cached` + `.gitignore`,
+    /// otherwise it would not be reachable through a directory listing.
+    #[tokio::test]
+    async fn dispatch_file_list_reports_git_statuses() {
+        let root = temp_dir_filelist("git");
+        git_run(&root, &["init", "-q"]);
+        std::fs::write(root.join("m.txt"), "1\n").unwrap();
+        std::fs::write(root.join("d.txt"), "1\n").unwrap();
+        git_run(&root, &["add", "m.txt", "d.txt"]);
+        git_run(
+            &root,
+            &[
+                "-c",
+                "user.name=AgentJ",
+                "-c",
+                "user.email=agentj@example.com",
+                "commit",
+                "-qm",
+                "init",
+            ],
+        );
+        std::fs::write(root.join("m.txt"), "1\n2\n").unwrap();
+        std::fs::write(root.join("a.txt"), "new\n").unwrap();
+        git_run(&root, &["rm", "--cached", "-q", "d.txt"]);
+        std::fs::write(root.join(".gitignore"), "d.txt\n").unwrap();
+        let (server, sid) = file_list_server(&root);
+        let v = file_list_call(&server, &sid, None, None).await;
+        assert!(v["error"].is_null(), "call must succeed: {v}");
+        let entry = |name: &str| -> serde_json::Value {
+            v["result"]["entries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|e| e["name"] == name)
+                .cloned()
+                .unwrap_or(serde_json::Value::Null)
+        };
+        assert_eq!(entry("m.txt")["git_status"], "M", "modified: {v}");
+        assert_eq!(entry("a.txt")["git_status"], "A", "untracked: {v}");
+        assert_eq!(entry("d.txt")["git_status"], "D", "staged delete: {v}");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Subdirectory listings keep entry paths root-relative so the git lookup
+    /// (snapshot keys are root-relative) still reports M/A/D.
+    #[tokio::test]
+    async fn dispatch_file_list_subdirectory_git_status_is_root_relative() {
+        let root = temp_dir_filelist("git-sub");
+        git_run(&root, &["init", "-q"]);
+        std::fs::create_dir(root.join("src")).unwrap();
+        std::fs::write(root.join("src/m.txt"), "1\n").unwrap();
+        git_run(&root, &["add", "src/m.txt"]);
+        git_run(
+            &root,
+            &[
+                "-c",
+                "user.name=AgentJ",
+                "-c",
+                "user.email=agentj@example.com",
+                "commit",
+                "-qm",
+                "init",
+            ],
+        );
+        std::fs::write(root.join("src/m.txt"), "1\n2\n").unwrap();
+        let (server, sid) = file_list_server(&root);
+        let v = file_list_call(&server, &sid, Some("src"), None).await;
+        assert!(v["error"].is_null(), "call must succeed: {v}");
+        let entries = v["result"]["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), 1, "one file under src: {v}");
+        assert_eq!(
+            entries[0]["path"], "src/m.txt",
+            "entry path must stay root-relative: {v}"
+        );
+        assert_eq!(
+            entries[0]["git_status"], "M",
+            "root-relative git lookup must hit: {v}"
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn dispatch_file_list_unreadable_directory_is_internal_error() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = temp_dir_filelist("unreadable");
+        let locked = root.join("locked");
+        std::fs::create_dir(&locked).unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::read_dir(&locked).is_ok() {
+            // Privileged runner: permission bits are not enforced → unexercisable here.
+            std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+            std::fs::remove_dir_all(&root).ok();
+            return;
+        }
+        let (server, sid) = file_list_server(&root);
+        let v = file_list_call(&server, &sid, Some("locked"), None).await;
+        assert_eq!(v["error"]["code"], -32603, "unreadable dir: {v}");
+        assert_eq!(v["error"]["data"]["path"], "locked");
+        assert!(
+            v["error"]["data"]["reason"]
+                .as_str()
+                .is_some_and(|r| !r.is_empty()),
+            "io reason must be carried: {v}"
+        );
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::remove_dir_all(&root).ok();
     }
 }

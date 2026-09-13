@@ -1,0 +1,10 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "FileKind",
+  "description": "Entry kind. `Unknown` tolerates forward values (serde(other)); the schema\nlists only the known values. @since 0.13.0",
+  "type": "string",
+  "enum": [
+    "file",
+    "dir"
+  ]
+}

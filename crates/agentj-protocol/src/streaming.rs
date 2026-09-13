@@ -43,6 +43,73 @@ pub enum ProgressValue {
         #[serde(skip_serializing_if = "Option::is_none")]
         session_id: Option<SessionId>, // @since 0.12.0
     },
+    /// Full TODO snapshot (design 决策 #2); revision is monotonic per session,
+    /// clients discard snapshots older than the highest seen. @since 0.13.0
+    Todo {
+        session_id: SessionId,
+        revision: u64,
+        items: Vec<TodoItem>,
+    },
+    /// Workspace file change produced by write/bash artifacts (design 决策 #3). @since 0.13.0
+    FileChange {
+        session_id: SessionId,
+        change: FileChange,
+    },
+}
+
+/// One entry of a full TODO snapshot. @since 0.13.0
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct TodoItem {
+    /// Kernel-computed stable id (content hash; duplicates disambiguated by occurrence).
+    pub id: String,
+    pub content: String,
+    pub status: TodoStatus,
+}
+
+/// Lifecycle status of a TODO item. `Unknown` tolerates forward values
+/// (serde(other)); schema lists only the known values. @since 0.13.0
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TodoStatus {
+    Pending,
+    InProgress,
+    Completed,
+    Cancelled,
+    #[serde(other)]
+    #[schemars(skip)]
+    Unknown,
+}
+
+/// A workspace file change. @since 0.13.0
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct FileChange {
+    /// Path relative to the project root.
+    pub path: String,
+    pub op: FileChangeKind,
+    pub additions: u64,
+    pub deletions: u64,
+    /// Tool call card this change belongs to; omitted when unavailable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+    /// Unified diff text; omitted when unavailable (untracked / over limit).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diff: Option<String>,
+    /// True only when the diff was truncated; omitted otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diff_truncated: Option<bool>,
+}
+
+/// Change operation of a `FileChange`. `Unknown` tolerates forward values
+/// (serde(other)); schema lists only the known values. @since 0.13.0
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum FileChangeKind {
+    Add,
+    Modify,
+    Delete,
+    #[serde(other)]
+    #[schemars(skip)]
+    Unknown,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -226,6 +293,70 @@ mod tests {
             } => {}
             other => panic!("expected Unknown decision, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn progress_todo_kind_wire_shape() {
+        let v = ProgressValue::Todo {
+            session_id: "s1".into(),
+            revision: 3,
+            items: vec![TodoItem {
+                id: "t1".into(),
+                content: "task".into(),
+                status: TodoStatus::InProgress,
+            }],
+        };
+        let j = serde_json::to_value(&v).unwrap();
+        assert_eq!(j["kind"], "todo");
+        assert_eq!(j["revision"], 3);
+        assert_eq!(j["items"][0]["status"], "in_progress");
+    }
+
+    #[test]
+    fn todo_status_unknown_tolerated() {
+        // Forward-compat: a future status string must not break parsing.
+        let status: TodoStatus = serde_json::from_str("\"blocked\"").unwrap();
+        assert_eq!(status, TodoStatus::Unknown);
+        let known: TodoStatus = serde_json::from_str("\"completed\"").unwrap();
+        assert_eq!(known, TodoStatus::Completed);
+    }
+
+    #[test]
+    fn file_change_kind_unknown_tolerated() {
+        // Forward-compat: a future op string must not break parsing.
+        let op: FileChangeKind = serde_json::from_str("\"rename\"").unwrap();
+        assert_eq!(op, FileChangeKind::Unknown);
+    }
+
+    #[test]
+    fn file_change_omits_none_diff_fields() {
+        let v = ProgressValue::FileChange {
+            session_id: "s1".into(),
+            change: FileChange {
+                path: "src/lib.rs".into(),
+                op: FileChangeKind::Modify,
+                additions: 2,
+                deletions: 1,
+                tool_call_id: None,
+                diff: None,
+                diff_truncated: None,
+            },
+        };
+        let j = serde_json::to_value(&v).unwrap();
+        assert_eq!(j["kind"], "file_change");
+        assert_eq!(j["change"]["path"], "src/lib.rs");
+        assert_eq!(j["change"]["op"], "modify");
+        assert_eq!(j["change"]["additions"], 2);
+        assert_eq!(j["change"]["deletions"], 1);
+        assert!(j["change"].get("tool_call_id").is_none());
+        assert!(
+            j["change"].get("diff").is_none(),
+            "None diff must not serialize"
+        );
+        assert!(
+            j["change"].get("diff_truncated").is_none(),
+            "None diff_truncated must not serialize"
+        );
     }
 
     #[test]

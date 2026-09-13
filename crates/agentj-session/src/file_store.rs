@@ -17,6 +17,8 @@ pub struct FileBackedStore {
     statuses: Mutex<HashMap<SessionId, SessionStatus>>,
     created: Mutex<HashMap<SessionId, u64>>,
     updated: Mutex<HashMap<SessionId, u64>>,
+    // T6/design decision #3: session-level path base, persisted inside each snapshot
+    roots: Mutex<HashMap<SessionId, PathBuf>>,
 }
 
 fn is_valid_sid(sid: &str) -> bool {
@@ -45,6 +47,7 @@ impl FileBackedStore {
         let mut statuses = HashMap::new();
         let mut created = HashMap::new();
         let mut updated = HashMap::new();
+        let mut roots = HashMap::new();
         for entry in fs::read_dir(dir).map_err(|e| persistence_err(e.to_string()))? {
             let path = entry.map_err(|e| persistence_err(e.to_string()))?.path();
             let name = path
@@ -65,6 +68,9 @@ impl FileBackedStore {
             if let Ok(raw) = fs::read_to_string(&path) {
                 match serde_json::from_str::<SessionSnapshot>(&raw) {
                     Ok(snap) => {
+                        if let Some(root) = snap.project_root {
+                            roots.insert(sid.clone(), PathBuf::from(root));
+                        }
                         sessions.insert(sid.clone(), snap.messages);
                         statuses.insert(sid.clone(), snap.status);
                         created.insert(sid.clone(), snap.created_at);
@@ -84,6 +90,7 @@ impl FileBackedStore {
             statuses: Mutex::new(statuses),
             created: Mutex::new(created),
             updated: Mutex::new(updated),
+            roots: Mutex::new(roots),
         })
     }
 
@@ -119,12 +126,16 @@ impl FileBackedStore {
             .unwrap_or_default();
         let now = now_epoch_secs();
         let created_at = lock_guard(&self.created).get(sid).copied().unwrap_or(now);
+        let project_root = lock_guard(&self.roots)
+            .get(sid)
+            .map(|p| p.to_string_lossy().to_string());
         let snap = SessionSnapshot {
             session_id: sid.clone(),
             status,
             messages,
             created_at,
             updated_at: now,
+            project_root,
         };
         let raw = serde_json::to_vec(&snap).map_err(|e| persistence_err(e.to_string()))?;
         let tmp = self
@@ -154,6 +165,15 @@ impl SessionStore for FileBackedStore {
         lock_guard(&self.created).insert(sid.clone(), now);
         self.persist(&sid)?;
         Ok(sid)
+    }
+
+    fn project_root(&self, sid: &SessionId) -> Option<PathBuf> {
+        lock_guard(&self.roots).get(sid).cloned()
+    }
+
+    fn set_project_root(&self, sid: &SessionId, root: PathBuf) -> Result<(), ModuleError> {
+        lock_guard(&self.roots).insert(sid.clone(), root);
+        self.persist(sid)
     }
 
     fn append(&self, sid: &SessionId, message: ChatMessage) -> Result<(), ModuleError> {
@@ -227,6 +247,9 @@ impl SessionStore for FileBackedStore {
             messages,
             created_at: lock_guard(&self.created).get(sid).copied().unwrap_or(now),
             updated_at: lock_guard(&self.updated).get(sid).copied().unwrap_or(now),
+            project_root: lock_guard(&self.roots)
+                .get(sid)
+                .map(|p| p.to_string_lossy().to_string()),
         })
     }
 
@@ -241,6 +264,9 @@ impl SessionStore for FileBackedStore {
         lock_guard(&self.sessions).insert(snap.session_id.clone(), snap.messages.clone());
         lock_guard(&self.created).insert(snap.session_id.clone(), snap.created_at);
         lock_guard(&self.updated).insert(snap.session_id.clone(), snap.updated_at);
+        if let Some(root) = &snap.project_root {
+            lock_guard(&self.roots).insert(snap.session_id.clone(), PathBuf::from(root));
+        }
         self.persist(&snap.session_id)
     }
 
@@ -376,6 +402,7 @@ mod tests {
             messages: vec![],
             created_at: 0,
             updated_at: 0,
+            project_root: None,
         };
         assert!(matches!(
             store.restore(&snap),
@@ -487,6 +514,41 @@ mod tests {
     use crate::InMemoryStore;
     use agentj_core::module::SessionStore as SessionStoreTrait;
     use agentj_core::types::{ChatMessage as Cm2, Role as Role2};
+
+    #[test]
+    fn file_backed_store_persists_project_root_across_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = FileBackedStore::new(dir.path()).unwrap();
+        let sid = store.create().unwrap();
+        store
+            .set_project_root(&sid, PathBuf::from("/tmp/proj"))
+            .unwrap();
+        let reopened = FileBackedStore::new(dir.path()).unwrap();
+        assert_eq!(
+            reopened.project_root(&sid),
+            Some(PathBuf::from("/tmp/proj"))
+        );
+    }
+
+    #[test]
+    fn file_backed_store_restore_populates_project_root() -> Result<(), ModuleError> {
+        let d = dir();
+        let store = FileBackedStore::new(d.path())?;
+        let snap = SessionSnapshot {
+            session_id: "restored-root".into(),
+            status: SessionStatus::Active,
+            messages: vec![],
+            created_at: 0,
+            updated_at: 0,
+            project_root: Some("/tmp/restored".into()),
+        };
+        store.restore(&snap)?;
+        assert_eq!(
+            store.project_root(&snap.session_id),
+            Some(PathBuf::from("/tmp/restored"))
+        );
+        Ok(())
+    }
 
     fn msg(content: &str) -> Cm2 {
         Cm2 {

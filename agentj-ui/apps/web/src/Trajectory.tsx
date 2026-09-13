@@ -101,14 +101,41 @@ export function historyToEntries(events: RawEvent[]): TrajNode[] {
       case "error":
         out.push({ kind: "error", seq: ev.seq, ts: ev.ts, message: typeof v.message === "string" ? v.message : "", sessionId: ev.session_id });
         break;
+      case "todo":
+      case "file_change":
+      case "ask_question":
+      case "question_answer":
+        // Replay panels rebuild from todoState/changes helpers; ask/answer QA cards live in the feed.
+        break;
     }
   }
   return out;
 }
 
+/** Ask options as `{id,label}` pairs; malformed entries are dropped (unknown id falls back to raw). */
+function parseAskOptions(raw: unknown): Array<{ id: string; label: string }> {
+  if (!Array.isArray(raw)) return [];
+  const options: Array<{ id: string; label: string }> = [];
+  for (const option of raw) {
+    if (!isRecord(option) || typeof option.id !== "string" || typeof option.label !== "string") continue;
+    options.push({ id: option.id, label: option.label });
+  }
+  return options;
+}
+
+/** Answer ids → option labels; `other:<text>` shows `<text>`; unknown ids fall back to the raw id. */
+function mapAnswerLabels(answers: string[], options: Array<{ id: string; label: string }>): string {
+  const labels = answers.map((answer) => {
+    if (answer.startsWith("other:")) return answer.slice("other:".length);
+    return options.find((o) => o.id === answer)?.label ?? answer;
+  });
+  return labels.length > 0 ? labels.join("、") : "已跳过";
+}
+
 export function historyToConversation(events: RawEvent[]): RunEntry[] {
   const entries: RunEntry[] = [];
   const pendingTools = new Map<string, number>();
+  const pendingAsk = new Map<string, { index: number; options: Array<{ id: string; label: string }> }>();
   for (const ev of events) {
     const v = ev.value;
     switch (v.kind) {
@@ -188,6 +215,31 @@ export function historyToConversation(events: RawEvent[]): RunEntry[] {
         }
         break;
       }
+      case "ask_question": {
+        const questionId = typeof v.question_id === "string" ? v.question_id : "";
+        const question = typeof v.question === "string" ? v.question : "";
+        entries.push({ kind: "qa", id: `qa-${questionId}`, question, answer: "已跳过" });
+        if (questionId) {
+          pendingAsk.set(questionId, { index: entries.length - 1, options: parseAskOptions(v.options) });
+        }
+        break;
+      }
+      case "question_answer": {
+        const questionId = typeof v.question_id === "string" ? v.question_id : "";
+        const pending = pendingAsk.get(questionId);
+        if (!pending) break;
+        const answers = Array.isArray(v.answers)
+          ? v.answers.filter((answer): answer is string => typeof answer === "string")
+          : [];
+        const answer = v.skipped === true ? "已跳过" : mapAnswerLabels(answers, pending.options);
+        const prev = entries[pending.index] as Extract<RunEntry, { kind: "qa" }>;
+        entries[pending.index] = { ...prev, answer };
+        pendingAsk.delete(questionId);
+        break;
+      }
+      case "todo":
+      case "file_change":
+        break;
     }
   }
   return entries;

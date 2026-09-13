@@ -25,8 +25,9 @@ import heroImg from "./assets/hero.png";
 import { loadCurrentProject, setCurrentProject } from "./projectStore";
 import { loadLayout, saveLayout, subscribeLayout } from "./layoutStore";
 import { isDemoEnabled, subscribeDemo, DEMO_TODOS, DEMO_CHANGES } from "./demoData";
-import { applyProgressChanges } from "./changes";
+import { applyFileChange, changesFromHistory } from "./changes";
 import type { FileChangeRow } from "./changes";
+import { EMPTY_TODO_STATE, applyTodoFrame, todosFromHistory } from "./todoState";
 
 const rawWsEnv = import.meta.env.VITE_AGENTJ_WS_URL;
 const envWsUrl = typeof rawWsEnv === "string" ? rawWsEnv : undefined;
@@ -219,23 +220,42 @@ export default function App() {
   });
   const [demo, setDemo] = useState(() => isDemoEnabled());
   const [rightCollapsed, setRightCollapsed] = useState(() => loadLayout().rightCollapsed);
-  const [derivedChanges, setDerivedChanges] = useState<FileChangeRow[]>([]);
+  const [fileChanges, setFileChanges] = useState<FileChangeRow[]>([]);
+  const [todos, setTodos] = useState(EMPTY_TODO_STATE);
+
+  const activeSessionRef = useRef<string | null>(activeSessionId);
+  useEffect(() => { activeSessionRef.current = activeSessionId; }, [activeSessionId]);
 
   useEffect(() => subscribeDemo(setDemo), []);
 
   useEffect(() => subscribeLayout((state) => setRightCollapsed(state.rightCollapsed)), []);
 
   useEffect(() => {
-    setDerivedChanges([]);
+    setFileChanges([]);
+    setTodos(EMPTY_TODO_STATE);
   }, [activeSessionId]);
 
-  // second notification handler (useSharedKernel owns the first): derive write rows
+  // second notification handler (useSharedKernel owns the first): apply file_change frames
   useEffect(() => {
     if (!sharedClient) return;
     const handler: NotificationHandler = (method, params) => {
       if (method !== METHODS.progress) return;
       const frame = parseProgress(params);
-      setDerivedChanges((prev) => applyProgressChanges(prev, frame));
+      if (frame.kind === "file_change" && frame.session_id !== activeSessionRef.current) return;
+      setFileChanges((prev) => applyFileChange(prev, frame));
+    };
+    sharedClient.setNotificationHandler(handler);
+    return () => { sharedClient.removeNotificationHandler?.(handler); };
+  }, [sharedClient]);
+
+  // third notification handler: apply `$/progress` todo snapshots for the active session
+  useEffect(() => {
+    if (!sharedClient) return;
+    const handler: NotificationHandler = (method, params) => {
+      if (method !== METHODS.progress) return;
+      const frame = parseProgress(params);
+      if (frame.kind === "todo" && frame.session_id !== activeSessionRef.current) return;
+      setTodos((prev) => applyTodoFrame(prev, frame));
     };
     sharedClient.setNotificationHandler(handler);
     return () => { sharedClient.removeNotificationHandler?.(handler); };
@@ -307,7 +327,12 @@ export default function App() {
           if (typeof next !== "number" || next <= cursor) break;
           cursor = next;
         }
-        if (!cancelled) { setHistoryEvents(all); setHistorySession(activeSessionId); }
+        if (!cancelled) {
+          setHistoryEvents(all);
+          setHistorySession(activeSessionId);
+          setTodos(todosFromHistory(all));
+          setFileChanges(changesFromHistory(all));
+        }
       } catch (err) {
         console.debug("history", err);
         if (!cancelled) setHistoryEvents([]);
@@ -419,8 +444,8 @@ export default function App() {
       <WorkspaceShell
         right={
           <RightPanel collapsed={rightCollapsed} onToggle={() => handleRightCollapsedChange(!rightCollapsed)}>
-            <TodoPanel items={demo ? DEMO_TODOS : []} />
-            <ChangeList changes={demo ? DEMO_CHANGES : derivedChanges} />
+            <TodoPanel items={demo ? DEMO_TODOS : todos.items} />
+            <ChangeList changes={demo ? DEMO_CHANGES : fileChanges} />
           </RightPanel>
         }
         rightCollapsed={rightCollapsed}

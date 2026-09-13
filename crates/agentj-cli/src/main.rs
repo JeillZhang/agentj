@@ -21,6 +21,7 @@ use agentj_core::types::TokenUsage;
 use agentj_ipc::IpcServer;
 use agentj_mcp::McpConnectionManager;
 use agentj_model::factory::ProviderFactory;
+use agentj_question::{AskTool, QuestionModule};
 use agentj_session::FileBackedStore;
 use agentj_skills::load_skills;
 use agentj_tools::builtins::register_builtins;
@@ -113,10 +114,12 @@ fn build_ipc_server(
     kernel: Kernel,
     session: Arc<dyn SessionStore>,
     permission_module: Arc<agentj_permission::PermissionModule>,
+    question_module: Arc<QuestionModule>,
     trajectory_store: Option<Arc<agentj_ipc::trajectory::TrajectoryStore>>,
 ) -> IpcServer {
     let mut ipc_server = IpcServer::new(kernel, session);
     ipc_server.permission_module = Some(permission_module);
+    ipc_server.question_module = Some(question_module);
     ipc_server.trajectory_store = trajectory_store;
     ipc_server
 }
@@ -174,26 +177,37 @@ fn spawn_tcp_signal_task(shared: Arc<IpcServer>) -> tokio::task::JoinHandle<()> 
     })
 }
 
+/// TCP listener options bundled to keep `serve_tcp` within the argument-count gate.
+struct TcpServeOptions {
+    port: u16,
+    token: Option<String>,
+    max_connections: usize,
+    trajectory_store: Option<Arc<agentj_ipc::trajectory::TrajectoryStore>>,
+}
+
 async fn serve_tcp(
     kernel: Kernel,
     session: Arc<dyn SessionStore>,
     permission_module: Arc<agentj_permission::PermissionModule>,
-    port: u16,
-    token: Option<String>,
-    max_connections: usize,
+    question_module: Arc<QuestionModule>,
+    options: TcpServeOptions,
     mcp_manager: Arc<McpConnectionManager>,
 ) -> anyhow::Result<()> {
     let mut tcp = agentj_ipc::tcp::TcpIpcServer::bind(
-        &format!("127.0.0.1:{port}"),
+        &format!("127.0.0.1:{}", options.port),
         kernel,
         session,
         Some(permission_module),
-        token,
-        max_connections,
+        Some(question_module),
+        agentj_ipc::tcp::TcpBindOptions {
+            token: options.token,
+            max_connections: options.max_connections,
+            trajectory_store: options.trajectory_store,
+        },
     )
     .await?;
     println!("listening on {}", tcp.local_addr()?);
-    println!("websocket on ws://127.0.0.1:{port}/ws");
+    println!("websocket on ws://127.0.0.1:{}/ws", options.port);
     let signal_task = spawn_tcp_signal_task(tcp.shared_server());
     // Resident mode: exits when the last client disconnects or a shutdown
     // request arrives (决策 #3 按需常驻).
@@ -271,8 +285,10 @@ async fn main() -> anyhow::Result<()> {
             command_name,
         )?;
     }
+    let question_module = Arc::new(QuestionModule::new());
     let tools = Arc::new(ToolRegistry::new());
     register_builtins(&tools);
+    tools.register(Arc::new(AskTool::new(question_module.clone())));
     let providers = Arc::new(ProviderRegistry::new());
     // Keep a concrete Arc before the ctx move: spawn_expiry_loop is NOT
     // object-safe (self: Arc<Self>) so it must be called on the concrete type.
@@ -423,6 +439,7 @@ async fn main() -> anyhow::Result<()> {
                     kernel,
                     session_for_ipc.clone(),
                     permission_module,
+                    question_module.clone(),
                     Some(Arc::clone(&trajectory_store)),
                 );
                 let signal_task = spawn_signal_task(ipc_server.kernel_sender());
@@ -454,6 +471,7 @@ async fn main() -> anyhow::Result<()> {
                 kernel,
                 session_for_ipc,
                 permission_module,
+                question_module.clone(),
                 Some(Arc::clone(&trajectory_store)),
             );
             let signal_task = spawn_signal_task(ipc_server.kernel_sender());
@@ -470,9 +488,13 @@ async fn main() -> anyhow::Result<()> {
                 kernel,
                 session_for_ipc,
                 permission_module,
-                port,
-                token,
-                max_connections,
+                question_module.clone(),
+                TcpServeOptions {
+                    port,
+                    token,
+                    max_connections,
+                    trajectory_store: Some(Arc::clone(&trajectory_store)),
+                },
                 mcp_manager.clone(),
             )
             .await?;
@@ -482,9 +504,13 @@ async fn main() -> anyhow::Result<()> {
                 kernel,
                 session_for_ipc,
                 permission_module,
-                port,
-                None,
-                16,
+                question_module.clone(),
+                TcpServeOptions {
+                    port,
+                    token: None,
+                    max_connections: 16,
+                    trajectory_store: Some(Arc::clone(&trajectory_store)),
+                },
                 mcp_manager.clone(),
             )
             .await?;
@@ -495,6 +521,7 @@ async fn main() -> anyhow::Result<()> {
                 kernel,
                 session_for_ipc,
                 permission_module,
+                question_module.clone(),
                 Some(Arc::clone(&trajectory_store)),
             );
             ipc_server.signal_shutdown()?;

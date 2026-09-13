@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TodoItem",
+  "description": "One entry of a full TODO snapshot. @since 0.13.0",
+  "type": "object",
+  "properties": {
+    "content": {
+      "type": "string"
+    },
+    "id": {
+      "description": "Kernel-computed stable id (content hash; duplicates disambiguated by occurrence).",
+      "type": "string"
+    },
+    "status": {
+      "$ref": "#/$defs/TodoStatus"
+    }
+  },
+  "required": [
+    "id",
+    "content",
+    "status"
+  ],
+  "$defs": {
+    "TodoStatus": {
+      "description": "Lifecycle status of a TODO item. `Unknown` tolerates forward values\n(serde(other)); schema lists only the known values. @since 0.13.0",
+      "type": "string",
+      "enum": [
+        "pending",
+        "in_progress",
+        "completed",
+        "cancelled"
+      ]
+    }
+  }
+}

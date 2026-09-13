@@ -61,10 +61,11 @@ impl Default for ToolPolicy {
 }
 
 /// Design 决策 #17 factory defaults: bash=Ask, write=Ask, read/glob/grep=Allow,
-/// everything else (MCP/plugin/unknown) = Ask (conservative).
+/// todo/ask=Allow (side-effect-free builtins, design 决策 #2), everything else
+/// (MCP/plugin/unknown) = Ask (conservative).
 pub fn builtin_default_mode(tool: &str) -> PermissionMode {
     match tool {
-        "read" | "glob" | "grep" => PermissionMode::Allow,
+        "read" | "glob" | "grep" | "todo" | "ask" => PermissionMode::Allow,
         _ => PermissionMode::Ask,
     }
 }
@@ -131,6 +132,8 @@ mod tests {
         assert_eq!(builtin_default_mode("read"), Allow);
         assert_eq!(builtin_default_mode("glob"), Allow);
         assert_eq!(builtin_default_mode("grep"), Allow);
+        assert_eq!(builtin_default_mode("todo"), Allow);
+        assert_eq!(builtin_default_mode("ask"), Allow);
         assert_eq!(builtin_default_mode("unknown_tool"), Ask); // conservative unknown
     }
 }

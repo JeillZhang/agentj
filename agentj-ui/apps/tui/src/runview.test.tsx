@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { act } from "react";
 import { testRender } from "@opentui/react/test-utils";
-import { rowsFromFrame, nextKey, rowGlyph, RunTranscript } from "./runview.tsx";
+import { rowsFromFrame, nextKey, rowGlyph, RunTranscript, applyTodoFrame, EMPTY_TODOS } from "./runview.tsx";
 import { ThemeProvider } from "./theme.tsx";
+import { parseProgress } from "@agentj/sdk";
 import type { ProgressFrame } from "@agentj/sdk";
 
 describe("rowsFromFrame", () => {
@@ -67,5 +68,67 @@ describe("RunTranscript", () => {
     expect(frame).toContain("bash");
     expect(frame).toContain("in=10 out=5");
     act(() => setup.renderer.destroy());
+  });
+});
+
+describe("TodoBlock", () => {
+  test("renders todo items from a frame", async () => {
+    const frame = parseProgress({
+      session_id: "s1",
+      token: 1,
+      value: {
+        kind: "todo",
+        session_id: "s1",
+        revision: 1,
+        items: [
+          { id: "t1", content: "write tests", status: "completed" },
+          { id: "t2", content: "implement block", status: "in_progress" },
+          { id: "t3", content: "verify", status: "pending" },
+        ],
+      },
+    });
+    expect(frame.kind).toBe("todo");
+    const state = frame.kind === "todo" ? applyTodoFrame(EMPTY_TODOS, frame) : EMPTY_TODOS;
+    const setup = await testRender(
+      <ThemeProvider>
+        <RunTranscript rows={[]} todos={state.items} />
+      </ThemeProvider>,
+      {},
+    );
+    await act(async () => {
+      await setup.flush();
+    });
+    const out = setup.captureCharFrame();
+    expect(out).toContain("[x] write tests");
+    expect(out).toContain("[~] implement block");
+    expect(out).toContain("[ ] verify");
+    act(() => setup.renderer.destroy());
+  });
+
+  test("ignores stale revisions", () => {
+    const rev2 = parseProgress({
+      token: 2,
+      value: {
+        kind: "todo",
+        session_id: "s1",
+        revision: 2,
+        items: [{ id: "t1", content: "second", status: "pending" }],
+      },
+    });
+    const rev1 = parseProgress({
+      token: 1,
+      value: {
+        kind: "todo",
+        session_id: "s1",
+        revision: 1,
+        items: [{ id: "t0", content: "first", status: "completed" }],
+      },
+    });
+    if (rev2.kind !== "todo" || rev1.kind !== "todo") throw new Error("expected todo frames");
+    const applied = applyTodoFrame(EMPTY_TODOS, rev2);
+    const afterStale = applyTodoFrame(applied, rev1);
+    expect(afterStale).toBe(applied);
+    expect(afterStale.items).toEqual(rev2.items);
+    expect(afterStale.revision).toBe(2);
   });
 });

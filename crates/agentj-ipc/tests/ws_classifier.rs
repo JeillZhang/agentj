@@ -1,6 +1,6 @@
 use agentj_core::kernel::Kernel;
 use agentj_core::module::SessionStore;
-use agentj_ipc::tcp::TcpIpcServer;
+use agentj_ipc::tcp::{TcpBindOptions, TcpIpcServer};
 use agentj_session::InMemoryStore;
 use futures::{SinkExt, StreamExt};
 use std::sync::Arc;
@@ -19,10 +19,20 @@ async fn bind_server(
 ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
     let kernel = Kernel::new();
     let session: Arc<dyn SessionStore> = Arc::new(InMemoryStore::new());
-    let mut server =
-        TcpIpcServer::bind("127.0.0.1:0", kernel, session, None, token, max_connections)
-            .await
-            .unwrap();
+    let mut server = TcpIpcServer::bind(
+        "127.0.0.1:0",
+        kernel,
+        session,
+        None,
+        None,
+        TcpBindOptions {
+            token,
+            max_connections,
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
     let addr = server.local_addr().unwrap();
     let handle = tokio::spawn(async move {
         let _ = server.run().await;

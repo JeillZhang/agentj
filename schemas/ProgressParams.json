@@ -15,6 +15,65 @@
     "value"
   ],
   "$defs": {
+    "FileChange": {
+      "description": "A workspace file change. @since 0.13.0",
+      "type": "object",
+      "properties": {
+        "additions": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "deletions": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "diff": {
+          "description": "Unified diff text; omitted when unavailable (untracked / over limit).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "diff_truncated": {
+          "description": "True only when the diff was truncated; omitted otherwise.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "op": {
+          "$ref": "#/$defs/FileChangeKind"
+        },
+        "path": {
+          "description": "Path relative to the project root.",
+          "type": "string"
+        },
+        "tool_call_id": {
+          "description": "Tool call card this change belongs to; omitted when unavailable.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "path",
+        "op",
+        "additions",
+        "deletions"
+      ]
+    },
+    "FileChangeKind": {
+      "description": "Change operation of a `FileChange`. `Unknown` tolerates forward values\n(serde(other)); schema lists only the known values. @since 0.13.0",
+      "type": "string",
+      "enum": [
+        "add",
+        "modify",
+        "delete"
+      ]
+    },
     "PermissionDecision": {
       "description": "Decision value in `PermissionRespondParams`. `Unknown` tolerates forward\nvalues (serde(other)); schema lists only the known values.",
       "type": "string",
@@ -138,7 +197,89 @@
             "tool",
             "decision"
           ]
+        },
+        {
+          "description": "Full TODO snapshot (design 决策 #2); revision is monotonic per session,\nclients discard snapshots older than the highest seen. @since 0.13.0",
+          "type": "object",
+          "properties": {
+            "items": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/TodoItem"
+              }
+            },
+            "kind": {
+              "type": "string",
+              "const": "todo"
+            },
+            "revision": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "session_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "session_id",
+            "revision",
+            "items"
+          ]
+        },
+        {
+          "description": "Workspace file change produced by write/bash artifacts (design 决策 #3). @since 0.13.0",
+          "type": "object",
+          "properties": {
+            "change": {
+              "$ref": "#/$defs/FileChange"
+            },
+            "kind": {
+              "type": "string",
+              "const": "file_change"
+            },
+            "session_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "session_id",
+            "change"
+          ]
         }
+      ]
+    },
+    "TodoItem": {
+      "description": "One entry of a full TODO snapshot. @since 0.13.0",
+      "type": "object",
+      "properties": {
+        "content": {
+          "type": "string"
+        },
+        "id": {
+          "description": "Kernel-computed stable id (content hash; duplicates disambiguated by occurrence).",
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/TodoStatus"
+        }
+      },
+      "required": [
+        "id",
+        "content",
+        "status"
+      ]
+    },
+    "TodoStatus": {
+      "description": "Lifecycle status of a TODO item. `Unknown` tolerates forward values\n(serde(other)); schema lists only the known values. @since 0.13.0",
+      "type": "string",
+      "enum": [
+        "pending",
+        "in_progress",
+        "completed",
+        "cancelled"
       ]
     },
     "ToolCall": {
