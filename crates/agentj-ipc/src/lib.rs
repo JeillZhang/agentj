@@ -13,8 +13,13 @@ use agentj_protocol::base::error_codes;
 use agentj_protocol::file::{FileKind, FileListParams, FileListResult};
 use agentj_protocol::lifecycle::InitializeParams;
 use agentj_protocol::permission::{PermissionRequestParams, PermissionRespondParams};
+use agentj_protocol::question::{AskQuestionParams, QuestionRespondParams, QuestionRespondResult};
 use agentj_protocol::session::{SessionIdParams, SessionNewParams, SessionSubscribeParams};
 use agentj_protocol::streaming::CancelParams;
+use agentj_question::{
+    QuestionModule, QuestionNotifier, QuestionOutcome, QuestionSettlement, RespondError,
+    RespondOutcome, SettleHook,
+};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -148,6 +153,14 @@ impl ConnectionRegistry {
     }
     pub fn session_owner(&self, session: &SessionId) -> Option<&String> {
         self.session_owner.get(session)
+    }
+    /// Sessions owned by a connection (owner-disconnect question settlement).
+    pub fn sessions_owned_by(&self, conn_id: &str) -> Vec<SessionId> {
+        self.session_owner
+            .iter()
+            .filter(|(_, owner)| owner.as_str() == conn_id)
+            .map(|(sid, _)| sid.clone())
+            .collect()
     }
     /// Record that a connection passed `initialize` auth (token-gated mode).
     pub fn mark_authorized(&mut self, conn_id: &str) {
@@ -311,6 +324,9 @@ pub struct IpcServer {
     token: std::sync::Mutex<Option<String>>,
     /// Optional PermissionModule: `permission/respond` and `$/cancelRequest` dispatch into it.
     pub permission_module: Option<Arc<PermissionModule>>,
+    /// Optional QuestionModule: `question/respond` dispatch, owner-directed
+    /// `$/askQuestion` notify and settle-on-cancel/disconnect.
+    pub question_module: Option<Arc<QuestionModule>>,
     /// Optional TrajectoryStore: run/respond recording + session/history reads.
     pub trajectory_store: Option<Arc<trajectory::TrajectoryStore>>,
 }
@@ -342,6 +358,7 @@ impl IpcServer {
             registry: Arc::new(std::sync::RwLock::new(ConnectionRegistry::new())),
             token: std::sync::Mutex::new(None),
             permission_module: None,
+            question_module: None,
             trajectory_store: None,
         }
     }
@@ -453,6 +470,7 @@ impl IpcServer {
                 "file/list" => self.dispatch_file_list(&req).await,
                 "shutdown" => self.dispatch_shutdown(),
                 "permission/respond" => self.dispatch_permission_respond(&req, conn_id).await,
+                "question/respond" => self.dispatch_question_respond(&req, conn_id),
                 "$/cancelRequest" => self.dispatch_cancel_request(&req).await,
                 other => Err(DispatchError::method_not_found(other)),
             }
@@ -1031,6 +1049,68 @@ impl IpcServer {
         Ok(serde_json::json!({}))
     }
 
+    /// Wire result for `question/respond` (design item 5): `false` is the
+    /// idempotent answer for duplicate / already-settled / unknown ids.
+    fn question_result(accepted: bool) -> Value {
+        serde_json::to_value(QuestionRespondResult { accepted }).expect("serializable")
+    }
+
+    /// `question/respond`: owner-gated, idempotent answer delivery. Check order
+    /// (design item 5): question_id shape → pending session lookup (unknown →
+    /// `{accepted:false}` without owner check) → owner gate → parameter
+    /// validation/settlement inside the module.
+    fn dispatch_question_respond(
+        &self,
+        req: &JsonRpcRequest,
+        conn_id: &str,
+    ) -> Result<Value, DispatchError> {
+        let module = self
+            .question_module
+            .clone()
+            .ok_or_else(|| DispatchError::invalid_request("no question module"))?;
+        let raw = req
+            .params
+            .as_ref()
+            .ok_or_else(|| DispatchError::invalid_params("missing params"))?;
+        let question_id = raw
+            .get("question_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| DispatchError::invalid_params("missing question_id"))?
+            .to_string();
+        let Some(session_id) = module.session_of(&question_id) else {
+            return Ok(Self::question_result(false));
+        };
+        let is_owner = self
+            .registry
+            .read()
+            .ok()
+            .and_then(|r| r.session_owner(&session_id).cloned())
+            .map(|owner| owner == conn_id)
+            .unwrap_or(false);
+        if !is_owner {
+            return Err(DispatchError {
+                code: error_codes::NOT_AUTHORIZED,
+                message: "NotAuthorized".into(),
+                data: None,
+            });
+        }
+        let params: QuestionRespondParams = serde_json::from_value(raw.clone())
+            .map_err(|e| DispatchError::invalid_params(e.to_string()))?;
+        match module.respond(&question_id, params.answers, params.skipped) {
+            Ok(RespondOutcome::Accepted(accepted)) => Ok(Self::question_result(accepted)),
+            Err(RespondError::UnknownOptions { unknown }) => {
+                Err(DispatchError::invalid_params_with_data(
+                    "unknown option ids",
+                    serde_json::json!({ "unknown_options": unknown }),
+                ))
+            }
+            Err(RespondError::TooManyAnswers) => Err(DispatchError::invalid_params_with_data(
+                "multiple answers for a single-choice question",
+                serde_json::json!({ "reason": "too_many_answers" }),
+            )),
+        }
+    }
+
     async fn dispatch_cancel_request(&self, req: &JsonRpcRequest) -> Result<Value, DispatchError> {
         let params: CancelParams =
             serde_json::from_value(req.params.clone().unwrap_or(serde_json::json!({})))
@@ -1061,6 +1141,9 @@ impl IpcServer {
         if let Some(ref sid) = session_id {
             if let Some(module) = self.permission_module.as_ref() {
                 let _ = module.cancel_session(sid, "cancelled");
+            }
+            if let Some(module) = self.question_module.as_ref() {
+                let _ = module.cancel_session(sid);
             }
             let (tx, _rx) = tokio::sync::oneshot::channel();
             let _ = self.kernel.sender().send(KernelMessage::ServiceCall {
@@ -1094,10 +1177,27 @@ impl IpcServer {
         let serve_result = Arc::clone(&self)
             .serve_connection_requests(conn, &conn_id)
             .await;
-        if let Ok(mut reg) = self.registry.write() {
-            reg.unregister(&conn_id);
-        }
+        self.cleanup_connection(&conn_id);
         serve_result
+    }
+
+    /// Unregister a closed connection and settle the pending questions of every
+    /// session it owned (design 错误处理: owner disconnect → skipped).
+    fn cleanup_connection(&self, conn_id: &str) {
+        let owned = self
+            .registry
+            .read()
+            .ok()
+            .map(|r| r.sessions_owned_by(conn_id))
+            .unwrap_or_default();
+        if let Ok(mut reg) = self.registry.write() {
+            reg.unregister(conn_id);
+        }
+        if let Some(module) = &self.question_module {
+            for sid in owned {
+                let _ = module.cancel_session(&sid);
+            }
+        }
     }
 
     /// Per-connection request loop body. The connection stays owned by this
@@ -1186,6 +1286,54 @@ impl IpcServer {
         }
     }
 
+    /// Route $/askQuestion notifications to the session owner through the
+    /// registry and record the question in the trajectory at notify time. The
+    /// settle hook records exactly one QuestionAnswer per question (the module
+    /// settles each question through a single winner). Attach once per
+    /// transport entry point.
+    pub(crate) fn attach_question_notifier(&self) {
+        if let Some(module) = &self.question_module {
+            module.set_notifier(self.question_notifier());
+            module.set_settle_hook(self.question_settle_hook());
+        }
+    }
+
+    /// Owner-directed question notifier; the returned bool is the module's
+    /// "delivered" signal (an absent owner settles the question as skipped).
+    fn question_notifier(&self) -> QuestionNotifier {
+        let registry = Arc::clone(&self.registry);
+        let trajectory = self.trajectory_store.clone();
+        Arc::new(move |p: &AskQuestionParams, session_id: &str| {
+            record_ask_question(trajectory.as_ref(), session_id, p);
+            let owner = registry
+                .read()
+                .ok()
+                .and_then(|r| r.session_owner(&session_id.to_string()).cloned());
+            let delivered = owner.is_some();
+            if let Some(owner_id) = owner {
+                let msg = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "method": "$/askQuestion",
+                    "params": serde_json::to_value(p).expect("serializable"),
+                });
+                if let Ok(r) = registry.read() {
+                    let _ = r.send_to(&owner_id, &msg.to_string());
+                }
+            }
+            delivered
+        })
+    }
+
+    /// Settlement sink: one QuestionAnswer trajectory node per settled question.
+    fn question_settle_hook(&self) -> SettleHook {
+        let trajectory = self.trajectory_store.clone();
+        Arc::new(
+            move |session_id: &str, _question_id: &str, s: &QuestionSettlement| {
+                record_question_answer(trajectory.as_ref(), session_id, s);
+            },
+        )
+    }
+
     /// Run the server in stdio mode via the unified Connection serve loop (design 决策 #2).
     /// On EOF or after a shutdown request, signal the kernel and await its graceful shutdown.
     /// The read loop is interrupted when the kernel finishes (design #13: SIGINT/SIGTERM
@@ -1202,6 +1350,7 @@ impl IpcServer {
         // Subscribe the permission notifier: $/permissionRequest is routed to
         // the session owner through the registry (决策 #5).
         self.attach_permission_notifier();
+        self.attach_question_notifier();
         // Poll the kernel handle by `&mut` (taken out so the future needs no `self` borrow
         // while the loop also reads the registry); it is restored below for await_shutdown.
         let mut kernel_handle = self.kernel_handle.take();
@@ -1288,6 +1437,52 @@ fn build_progress_frame(
         "params": { "token": token.clone(), "value": serde_json::to_value(value).expect("serializable") },
     })
     .to_string()
+}
+
+/// AskQuestion trajectory node recorded at notify time (design 决策 #10).
+fn record_ask_question(
+    store: Option<&Arc<trajectory::TrajectoryStore>>,
+    session_id: &str,
+    p: &AskQuestionParams,
+) {
+    let Some(store) = store else {
+        return;
+    };
+    let value = agentj_protocol::trajectory::TrajectoryValue::AskQuestion {
+        question_id: p.question_id.clone(),
+        question: p.question.clone(),
+        header: p.header.clone(),
+        options: p.options.clone(),
+        allow_multiple: p.allow_multiple,
+        allow_other: p.allow_other,
+    };
+    if let Err(e) = store.record(&session_id.to_string(), value) {
+        tracing::warn!("trajectory record failed for {session_id}: {e}");
+    }
+}
+
+/// QuestionAnswer trajectory node; the settle hook fires at most once per
+/// question, so exactly one node is recorded (module single-winner settle).
+fn record_question_answer(
+    store: Option<&Arc<trajectory::TrajectoryStore>>,
+    session_id: &str,
+    s: &QuestionSettlement,
+) {
+    let Some(store) = store else {
+        return;
+    };
+    let (answers, skipped) = match &s.outcome {
+        QuestionOutcome::Answered { answers } => (answers.clone(), false),
+        QuestionOutcome::Skipped => (Vec::new(), true),
+    };
+    let value = agentj_protocol::trajectory::TrajectoryValue::QuestionAnswer {
+        question_id: s.question_id.clone(),
+        answers,
+        skipped,
+    };
+    if let Err(e) = store.record(&session_id.to_string(), value) {
+        tracing::warn!("trajectory record failed for {session_id}: {e}");
+    }
 }
 
 /// Attach `git_status` to file entries from one snapshot of `root`; a non-git
@@ -1823,6 +2018,293 @@ mod tests {
         } else {
             panic!("expected Ask");
         }
+    }
+
+    /// Fixture: an IpcServer wired to a fresh QuestionModule (notifier not yet attached).
+    fn question_server() -> (IpcServer, Arc<agentj_question::QuestionModule>) {
+        let module = Arc::new(agentj_question::QuestionModule::new());
+        let mut server = IpcServer::new(Kernel::new(), stub_session());
+        server.question_module = Some(module.clone());
+        (server, module)
+    }
+
+    fn ask_params(sid: &str) -> agentj_protocol::question::AskQuestionParams {
+        use agentj_protocol::question::AskOption;
+        agentj_protocol::question::AskQuestionParams {
+            question_id: String::new(), // ask_blocking generates the real id
+            session_id: sid.to_string(),
+            question: "Pick a color".into(),
+            header: None,
+            options: vec![
+                AskOption {
+                    id: "red".into(),
+                    label: "Red".into(),
+                    hint: None,
+                },
+                AskOption {
+                    id: "blue".into(),
+                    label: "Blue".into(),
+                    hint: None,
+                },
+            ],
+            allow_multiple: false,
+            allow_other: true,
+            timeout_s: None,
+        }
+    }
+
+    fn question_id_of(msg: &str) -> String {
+        serde_json::from_str::<serde_json::Value>(msg).unwrap()["params"]["question_id"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
+    fn respond_request(qid: &str, answers: &str) -> String {
+        format!(
+            concat!(
+                r#"{{"jsonrpc":"2.0","id":3,"method":"question/respond","#,
+                r#""params":{{"question_id":"{}","answers":{}}}}}"#
+            ),
+            qid, answers
+        )
+    }
+
+    /// Wait for the owner's `$/askQuestion` notification; return the generated id.
+    async fn wait_for_ask_question(server: &Arc<IpcServer>, owner: &str) -> String {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if let Some(msg) = drain_sent(server, owner)
+                    .into_iter()
+                    .find(|m| m.contains("$/askQuestion"))
+                {
+                    return question_id_of(&msg);
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("timed out waiting for $/askQuestion")
+    }
+
+    #[tokio::test]
+    async fn question_respond_non_owner_rejected() {
+        let (server, module) = question_server();
+        let server = Arc::new(server);
+        server.attach_question_notifier();
+        let a = register_fake_conn(&server);
+        let b = register_fake_conn(&server);
+        server
+            .registry
+            .write()
+            .unwrap()
+            .set_session_owner(&"s1".to_string(), &a);
+        let m = module.clone();
+        let params = ask_params("s1");
+        let handle = std::thread::spawn(move || m.ask_blocking("s1", &params));
+        let qid = wait_for_ask_question(&server, &a).await;
+        let respond = respond_request(&qid, r#"["red"]"#);
+        let resp = server.handle_request_from(&respond, &b).await.unwrap();
+        assert!(
+            resp.contains("-32806") && resp.contains("NotAuthorized"),
+            "non-owner must be rejected with -32806: {resp}"
+        );
+        let resp = server.handle_request_from(&respond, &a).await.unwrap();
+        assert!(
+            resp.contains("\"accepted\":true"),
+            "owner must resolve: {resp}"
+        );
+        let (settled_id, outcome) = handle.join().unwrap();
+        assert_eq!(settled_id, qid);
+        assert_eq!(
+            outcome,
+            agentj_question::QuestionOutcome::Answered {
+                answers: vec!["red".into()]
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn question_respond_unknown_id_is_idempotent_false() {
+        let (server, module) = question_server();
+        let raw = concat!(
+            r#"{"jsonrpc":"2.0","id":4,"method":"question/respond","#,
+            r#""params":{"question_id":"nope","answers":[]}}"#,
+        );
+        let resp = server.handle_request_from(raw, "conn-x").await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(v["result"]["accepted"], false, "{resp}");
+        assert!(
+            v.get("error").is_none(),
+            "unknown id must not error: {resp}"
+        );
+        assert_eq!(module.pending_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn cancel_request_settles_pending_question() {
+        let (server, module) = question_server();
+        let server = Arc::new(server);
+        server.attach_question_notifier();
+        let a = register_fake_conn(&server);
+        server
+            .registry
+            .write()
+            .unwrap()
+            .set_session_owner(&"s1".to_string(), &a);
+        let m = module.clone();
+        let params = ask_params("s1");
+        let handle = std::thread::spawn(move || m.ask_blocking("s1", &params));
+        let qid = wait_for_ask_question(&server, &a).await;
+        assert_eq!(module.pending_count(), 1);
+        let raw =
+            r#"{"jsonrpc":"2.0","method":"$/cancelRequest","params":{"id":5,"session_id":"s1"}}"#;
+        let _ = server.handle_request_from(raw, &a).await.unwrap();
+        assert_eq!(
+            module.pending_count(),
+            0,
+            "cancel must settle the pending question"
+        );
+        let (settled_id, outcome) = handle.join().unwrap();
+        assert_eq!(settled_id, qid);
+        assert_eq!(outcome, agentj_question::QuestionOutcome::Skipped);
+    }
+
+    #[tokio::test]
+    async fn notifier_targets_owner_connection() {
+        let (server, module) = question_server();
+        let server = Arc::new(server);
+        server.attach_question_notifier();
+        let a = register_fake_conn(&server);
+        let b = register_fake_conn(&server);
+        server
+            .registry
+            .write()
+            .unwrap()
+            .set_session_owner(&"s1".to_string(), &a);
+        let m = module.clone();
+        let params = ask_params("s1");
+        let handle = std::thread::spawn(move || m.ask_blocking("s1", &params));
+        let qid = wait_for_ask_question(&server, &a).await;
+        let ask = drain_sent(&server, &a)
+            .into_iter()
+            .find(|m| m.contains("$/askQuestion"))
+            .expect("owner must receive $/askQuestion");
+        let v: serde_json::Value = serde_json::from_str(&ask).unwrap();
+        assert_eq!(v["method"], "$/askQuestion");
+        assert_eq!(v["params"]["question_id"], qid);
+        assert_eq!(v["params"]["session_id"], "s1");
+        assert_eq!(v["params"]["question"], "Pick a color");
+        assert_eq!(v["params"]["options"].as_array().unwrap().len(), 2);
+        let b_sent = drain_sent(&server, &b);
+        assert!(
+            !b_sent.iter().any(|m| m.contains("$/askQuestion")),
+            "non-owner must NOT receive $/askQuestion: {b_sent:?}"
+        );
+        let _ = module.cancel_session("s1");
+        assert_eq!(
+            handle.join().unwrap().1,
+            agentj_question::QuestionOutcome::Skipped
+        );
+    }
+
+    #[tokio::test]
+    async fn question_respond_maps_validation_errors_to_error_data() {
+        let (server, module) = question_server();
+        let server = Arc::new(server);
+        server.attach_question_notifier();
+        let a = register_fake_conn(&server);
+        server
+            .registry
+            .write()
+            .unwrap()
+            .set_session_owner(&"s1".to_string(), &a);
+        let m = module.clone();
+        let params = ask_params("s1");
+        let handle = std::thread::spawn(move || m.ask_blocking("s1", &params));
+        let qid = wait_for_ask_question(&server, &a).await;
+        let unknown = respond_request(&qid, r#"["purple"]"#);
+        let resp = server.handle_request_from(&unknown, &a).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(v["error"]["code"], -32602, "{resp}");
+        assert_eq!(v["error"]["data"]["unknown_options"][0], "purple", "{resp}");
+        let too_many = respond_request(&qid, r#"["red","blue"]"#);
+        let resp = server.handle_request_from(&too_many, &a).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(v["error"]["code"], -32602, "{resp}");
+        assert_eq!(v["error"]["data"]["reason"], "too_many_answers", "{resp}");
+        assert_eq!(
+            module.pending_count(),
+            1,
+            "rejected validation must leave the question pending"
+        );
+        let _ = module.cancel_session("s1");
+        handle.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn owner_disconnect_settles_pending_question_skipped() {
+        let (server, module) = question_server();
+        let server = Arc::new(server);
+        server.attach_question_notifier();
+        let (conn, log, tx) = scripted_conn("tcp-owner");
+        let s = Arc::clone(&server);
+        let task = tokio::spawn(async move { s.serve_connection(Box::new(conn), None).await });
+        tx.send(r#"{"jsonrpc":"2.0","id":1,"method":"session/new"}"#.to_string())
+            .await
+            .unwrap();
+        let new_resp = wait_for_line(&log, |m| m.contains("\"session_id\"")).await;
+        let sid = extract_sid(&new_resp);
+        let m = module.clone();
+        let params = ask_params(&sid);
+        let handle = std::thread::spawn(move || m.ask_blocking(&sid, &params));
+        let ask_line = wait_for_line(&log, |m| m.contains("$/askQuestion")).await;
+        let qid = question_id_of(&ask_line);
+        assert_eq!(module.pending_count(), 1);
+        drop(tx); // EOF -> serve_connection unregisters and settles owned sessions
+        task.await.unwrap().unwrap();
+        assert_eq!(
+            module.pending_count(),
+            0,
+            "disconnect must settle pending questions"
+        );
+        let (settled_id, outcome) = handle.join().unwrap();
+        assert_eq!(settled_id, qid);
+        assert_eq!(outcome, agentj_question::QuestionOutcome::Skipped);
+    }
+
+    #[tokio::test]
+    async fn question_settle_records_ask_and_answer_trajectory_once() {
+        let dir = temp_dir_traj("question");
+        let (mut server, module) = question_server();
+        server.trajectory_store = Some(wired_store(&dir));
+        let server = Arc::new(server);
+        server.attach_question_notifier();
+        let a = register_fake_conn(&server);
+        server
+            .registry
+            .write()
+            .unwrap()
+            .set_session_owner(&"s1".to_string(), &a);
+        let m = module.clone();
+        let params = ask_params("s1");
+        let handle = std::thread::spawn(move || m.ask_blocking("s1", &params));
+        let qid = wait_for_ask_question(&server, &a).await;
+        let respond = respond_request(&qid, r#"["red"]"#);
+        let resp = server.handle_request_from(&respond, &a).await.unwrap();
+        assert!(resp.contains("\"accepted\":true"), "{resp}");
+        assert_eq!(
+            handle.join().unwrap().1,
+            agentj_question::QuestionOutcome::Answered {
+                answers: vec!["red".into()]
+            }
+        );
+        // Duplicate respond is idempotent and must NOT record a second answer.
+        let resp = server.handle_request_from(&respond, &a).await.unwrap();
+        assert!(resp.contains("\"accepted\":false"), "{resp}");
+        let events = read_traj_events(&dir, "s1");
+        assert_eq!(traj_kinds(&events), vec!["ask_question", "question_answer"]);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// M1 regression: JSON-RPC 2.0 §2.1 — a notification (request without an

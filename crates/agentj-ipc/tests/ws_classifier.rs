@@ -19,10 +19,17 @@ async fn bind_server(
 ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
     let kernel = Kernel::new();
     let session: Arc<dyn SessionStore> = Arc::new(InMemoryStore::new());
-    let mut server =
-        TcpIpcServer::bind("127.0.0.1:0", kernel, session, None, token, max_connections)
-            .await
-            .unwrap();
+    let mut server = TcpIpcServer::bind(
+        "127.0.0.1:0",
+        kernel,
+        session,
+        None,
+        None,
+        token,
+        max_connections,
+    )
+    .await
+    .unwrap();
     let addr = server.local_addr().unwrap();
     let handle = tokio::spawn(async move {
         let _ = server.run().await;
