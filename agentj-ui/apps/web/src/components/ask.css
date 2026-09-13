@@ -1,0 +1,231 @@
+/* AskQuestionCard (T20/T21) — composer question card. Tokens only, no raw hex. */
+
+.ask {
+  border-top: 0.5px solid var(--aj-border);
+  padding-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ask-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ask-badge {
+  width: 22px;
+  height: 22px;
+  border-radius: 7px;
+  background: var(--aj-accentTint);
+  color: var(--aj-accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.ask-q {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--aj-text);
+  margin: 0;
+}
+
+.ask-col {
+  margin-left: auto;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--aj-radiusCtl);
+  border: 0.5px solid var(--aj-border);
+  background: var(--aj-panel);
+  color: var(--aj-textMuted);
+  font-size: 11px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.ask-cap {
+  font-size: 11px;
+  color: var(--aj-textCaption);
+  padding-left: 30px;
+  margin: 0;
+}
+
+.ask-opts {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.opt {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 8px;
+  border-radius: var(--aj-radiusCtl);
+  cursor: pointer;
+  transition: background 120ms ease;
+}
+
+.opt input[type="radio"] {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  flex-shrink: 0;
+  accent-color: var(--aj-accent);
+}
+
+.opt.on {
+  background: var(--aj-accentTint);
+}
+
+.opt .lb {
+  font-size: 13px;
+  color: var(--aj-text);
+}
+
+.opt .hnt {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--aj-textCaption);
+}
+
+.ask-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ask-other {
+  flex: 1;
+  min-width: 0;
+  height: 32px;
+  border-radius: var(--aj-radiusCtl);
+  border: 0.5px solid var(--aj-border);
+  background: var(--aj-panel);
+  color: var(--aj-text);
+  padding: 0 10px;
+  font-size: 12.5px;
+}
+
+.ask-other::placeholder {
+  color: var(--aj-textCaption);
+}
+
+.ask-foot button {
+  height: 32px;
+  border-radius: var(--aj-radiusCtl);
+  font-size: 13px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.btn-ghost {
+  padding: 0 12px;
+  border: 0.5px solid var(--aj-border);
+  background: transparent;
+  color: var(--aj-textMuted);
+}
+
+.btn-submit {
+  padding: 0 14px;
+  border: none;
+  background: var(--aj-accent);
+  color: var(--aj-accentOnAccent);
+  font-weight: 700;
+}
+
+.btn-submit:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.ask-collapsed {
+  width: 100%;
+  text-align: left;
+  border: 0.5px solid var(--aj-border);
+  background: var(--aj-panel);
+  color: var(--aj-textMuted);
+  border-radius: var(--aj-radiusCtl);
+  padding: 7px 10px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .opt {
+    transition: none;
+  }
+}
+
+/* Answered Q&A record (T21) — collapsed card in the conversation feed. Tokens only. */
+
+.qa {
+  background: var(--aj-panel);
+  border: 0.5px solid var(--aj-border);
+  border-radius: var(--aj-radiusCard);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.qa-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.qa-badge {
+  width: 18px;
+  height: 18px;
+  border-radius: 6px;
+  background: var(--aj-accentTint);
+  color: var(--aj-accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.qa-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--aj-textMuted);
+}
+
+.qa-fold {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--aj-textCaption);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.qa-q {
+  font-size: 13px;
+  color: var(--aj-text);
+}
+
+.qa-a {
+  align-self: flex-start;
+  font-size: 13px;
+  color: var(--aj-accent);
+  background: var(--aj-accentTint);
+  padding: 3px 9px;
+  border-radius: 999px;
+}
+
+.qa-note {
+  font-size: 11px;
+  color: var(--aj-textCaption);
+}

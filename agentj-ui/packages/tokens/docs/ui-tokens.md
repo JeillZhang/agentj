@@ -23,3 +23,22 @@ Single source: `agentj-ui/packages/tokens/src/palette.ts`. CSS: `tokens.css` (We
 | shadowRaised | 0 12px 32px rgba(0,0,0,.12) | 0 12px 32px rgba(0,0,0,.12) |
 | radiusXl | 22px | 22px |
 | textCaption | #8A8F98 | #8B8F98 |
+| radiusCtl | 8px | 8px |
+| radiusCard | 12px | 12px |
+| accentTint | rgba(65,118,230,.10) | rgba(103,158,254,.12) |
+| diffAddTint | rgba(34,197,94,.14) | rgba(34,197,94,.12) |
+| diffDelTint | rgba(236,19,19,.10) | rgba(242,90,90,.12) |
+
+## layout
+
+| key | value |
+|---|---|
+| leftWidth | 256px |
+| leftMin | 200px |
+| leftMax | 420px |
+| rightWidth | 320px |
+| rightMin | 260px |
+| rightMax | 480px |
+| splitterHit | 7px |
+| topbarH | 48px |
+| gap | 12px |

@@ -25,6 +25,20 @@ function readCss(name: string): string {
   return readFileSync(candidates[0]!, "utf8");
 }
 
+function readTokensCss(): string {
+  const candidates = [
+    // cwd = apps/web during vitest; also cover repo-root / agentj-ui invocations
+    join(process.cwd(), "..", "..", "packages/tokens/tokens.css"),
+    join(process.cwd(), "packages/tokens/tokens.css"),
+    join(process.cwd(), "agentj-ui/packages/tokens/tokens.css"),
+    "agentj-ui/packages/tokens/tokens.css",
+  ];
+  for (const p of candidates) {
+    if (existsSync(p)) return readFileSync(p, "utf8");
+  }
+  return readFileSync(candidates[0]!, "utf8");
+}
+
 const indexCss = readCss("index.css");
 const appCss = readCss("App.css");
 
@@ -48,9 +62,15 @@ describe("web theme layer", () => {
     expect(indexCss).not.toMatch(/#6b6375/i);
   });
   it("exposes radius, motion and easing design tokens", () => {
-    expect(indexCss).toContain("--aj-radius-card");
-    expect(indexCss).toContain("--aj-radius-ctl");
+    expect(indexCss).not.toContain("--aj-radius-ctl");
+    expect(indexCss).not.toContain("--aj-radius-card");
     expect(indexCss).toContain("cubic-bezier(0.4,0,0.2,1)");
+    const tokens = readTokensCss();
+    expect(tokens).toContain("--aj-radiusCtl:8px");
+    expect(tokens).toContain("--aj-radiusCard:12px");
+  });
+  it("keeps layout constants single-sourced in tokens.css", () => {
+    expect(indexCss).not.toMatch(/--aj-gap:\s*12px/);
   });
   it("has focus visibility and reduced-motion guards", () => {
     expect(indexCss).toContain(":focus-visible");
@@ -74,14 +94,13 @@ describe("web theme layer", () => {
 });
 
 describe("T0 sidebar width and density vars", () => {
-  it("defines --aj-sidebar-width and --aj-gap and shadow and bg-diff", () => {
+  it("defines --aj-sidebar-width and shadow and bg-diff", () => {
     expect(indexCss).toMatch(/--aj-sidebar-width:\s*256px/);
-    expect(indexCss).toMatch(/--aj-gap:\s*12px/);
     expect(indexCss).toMatch(/--aj-shadow-soft-sm:\s*0 4px 16px rgba\(0,0,0,\.06\)/);
     expect(indexCss).toMatch(/--aj-sidebar-bg-diff:\s*color-mix/);
   });
   it("density vars present", () => {
-    expect(indexCss).toMatch(/--aj-gap/);
+    expect(readTokensCss()).toMatch(/--aj-gap:\s*12px/);
     expect(indexCss).toMatch(/--aj-shadow-soft-sm/);
   });
 });

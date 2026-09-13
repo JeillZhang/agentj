@@ -1,9 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Check, ChevronDown, Clock, Folder, Minus, MoreHorizontal, Send, X } from "lucide-react";
+import { Check, ChevronDown, Clock, Folder, Minus, X } from "lucide-react";
 import { METHODS, parseProgress, RpcClient } from "@agentj/sdk";
 import type { ProgressFrame } from "@agentj/sdk";
+import ComposerOptions from "./components/ComposerOptions";
+import AskQuestionCard, { type AskAnswer } from "./components/AskQuestionCard";
+import { DEMO_QA_RECORD, DEMO_QUESTION, isDemoEnabled, subscribeDemo } from "./demoData";
+import { loadAskCollapsed, saveAskCollapsed } from "./layoutStore";
 import { createProject, loadCurrentProject, loadProjects, setCurrentProject } from "./projectStore";
 
 export type RunEntry =
@@ -11,6 +15,7 @@ export type RunEntry =
   | { kind: "ai"; text: string }
   | { kind: "tool"; id: string; name: string; args: unknown; state: "running" | "ok" | "denied" | "failed"; output?: string }
   | { kind: "usage"; prompt_tokens: number; completion_tokens: number }
+  | { kind: "qa"; id: string; question: string; answer: string }
   | { kind: "error"; text: string };
 
 export function reduceRunFeed(entries: RunEntry[], frame: ProgressFrame): RunEntry[] {
@@ -68,6 +73,20 @@ export function failRun(entries: RunEntry[], message: string): RunEntry[] {
 
 export function fmtDuration(ms: number): string {
   return ms < 1000 ? `${Math.round(ms)}ms` : `${(ms / 1000).toFixed(2)}s`;
+}
+
+function demoQaEntry(): Extract<RunEntry, { kind: "qa" }> {
+  return {
+    kind: "qa",
+    id: DEMO_QA_RECORD.id,
+    question: DEMO_QA_RECORD.question,
+    answer: DEMO_QA_RECORD.answer,
+  };
+}
+
+function withDemoSeed(entries: RunEntry[]): RunEntry[] {
+  if (entries.some((e) => e.kind === "qa" && e.id === DEMO_QA_RECORD.id)) return entries;
+  return [...entries, demoQaEntry()];
 }
 
 type Props = {
@@ -172,6 +191,19 @@ export function ConversationFeed({
               </div>
             );
           }
+          case "qa":
+            return (
+              <div key={i} className="qa">
+                <div className="qa-head">
+                  <span className="qa-badge" aria-hidden="true">?</span>
+                  <span className="qa-title">模型提问</span>
+                  <span className="qa-fold">已折叠 ⌄</span>
+                </div>
+                <div className="qa-q">{entry.question}</div>
+                <div className="qa-a">→ {entry.answer}</div>
+                <div className="qa-note">已按此决定继续执行。</div>
+              </div>
+            );
           case "error":
             return (
               <div key={i} className="aj-error-row" role="alert">
@@ -218,15 +250,39 @@ export default function RunPanel({
   initialEntries = [],
   pendingTool,
   model,
-  modules = [],
-  status = "connected",
-  unreachable = false,
 }: Props) {
   const [entries, setEntries] = useState<RunEntry[]>(initialEntries);
   const [elapsedMs, setElapsedMs] = useState<number | undefined>(undefined);
   const [draft, setDraft] = useState("");
   const busy = useRef(false);
   const [isBusy, setIsBusy] = useState(false);
+
+  const [demo, setDemo] = useState(isDemoEnabled);
+  const [askVisible, setAskVisible] = useState(isDemoEnabled);
+  const [askCollapsed, setAskCollapsed] = useState(loadAskCollapsed);
+  const [chosenLabel, setChosenLabel] = useState<string | undefined>(undefined);
+  const askSubmitted = useRef(false);
+  const demoRef = useRef(demo);
+  demoRef.current = demo;
+
+  useEffect(() => subscribeDemo(setDemo), []);
+
+  useEffect(() => {
+    setAskVisible(demo);
+  }, [demo]);
+
+  useEffect(() => {
+    if (initialEntries.length === 0) return;
+    setEntries((prev) => {
+      if (prev === initialEntries) return prev;
+      return demoRef.current ? withDemoSeed(initialEntries) : initialEntries;
+    });
+  }, [initialEntries]);
+
+  useEffect(() => {
+    if (!demo) return;
+    setEntries((prev) => withDemoSeed(prev));
+  }, [demo]);
 
   // composer header state
   const [projects, setProjects] = useState(() => {
@@ -238,7 +294,6 @@ export default function RunPanel({
   const currentProjectName = projects.find((p) => p.id === currentId)?.name ?? "Inbox";
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerIndex, setPickerIndex] = useState(0);
-  const [statusOpen, setStatusOpen] = useState(false);
   const [atFilter, setAtFilter] = useState<string | null>(null);
   const [atIndex, setAtIndex] = useState(0);
   const [slashOpen, setSlashOpen] = useState(false);
@@ -256,10 +311,6 @@ export default function RunPanel({
   useEffect(() => {
     try { setProjects(loadProjects()); } catch {}
   }, [pickerOpen]);
-
-  useEffect(() => {
-    if (initialEntries.length > 0) setEntries(initialEntries);
-  }, [initialEntries]);
 
   useEffect(() => {
     if (!client) return;
@@ -280,19 +331,16 @@ export default function RunPanel({
 
   // close on outside click
   useEffect(() => {
-    if (!pickerOpen && !statusOpen) return;
+    if (!pickerOpen) return;
     const onDown = (e: MouseEvent) => {
       const t = e.target as HTMLElement;
-      if (pickerOpen && pickerRef.current && !pickerRef.current.contains(t)) {
+      if (pickerRef.current && !pickerRef.current.contains(t)) {
         setPickerOpen(false);
-      }
-      if (statusOpen && !t.closest(".aj-composer__status-wrap")) {
-        setStatusOpen(false);
       }
     };
     document.addEventListener("mousedown", onDown);
     return () => document.removeEventListener("mousedown", onDown);
-  }, [pickerOpen, statusOpen]);
+  }, [pickerOpen]);
 
   function handleDraftChange(v: string) {
     setDraft(v);
@@ -328,6 +376,29 @@ export default function RunPanel({
     setAtFilter(null);
   }
 
+  function toggleAskCollapsed() {
+    const next = !askCollapsed;
+    saveAskCollapsed(next);
+    setAskCollapsed(next);
+  }
+
+  function handleAskSubmit({ optionId, other }: AskAnswer) {
+    if (askSubmitted.current) return;
+    askSubmitted.current = true;
+    const option = DEMO_QUESTION.options.find((o) => o.id === optionId);
+    const answer = option?.label ?? other;
+    setChosenLabel(answer);
+    setAskVisible(false);
+    setEntries((prev) => [
+      ...prev,
+      { kind: "qa", id: `qa-${prev.length + 1}`, question: DEMO_QUESTION.question, answer },
+    ]);
+  }
+
+  function handleAskSkip() {
+    setAskVisible(false);
+  }
+
   async function submit(text: string) {
     if (!activeSessionId || busy.current || text.trim() === "" || !client) return;
     busy.current = true;
@@ -361,8 +432,6 @@ export default function RunPanel({
       });
     }
   }
-
-  const connState = unreachable ? "unreachable" : status.startsWith("connected") ? "connected" : "connecting";
 
   return (
     <section aria-label="run" className="aj-card">
@@ -467,38 +536,18 @@ export default function RunPanel({
           {model !== undefined && model !== null && model !== "" && (
             <span className="aj-chip aj-chip--model">{model}</span>
           )}
-          <div className="aj-composer__status-wrap">
-            <button
-              type="button"
-              aria-label="status"
-              aria-expanded={statusOpen}
-              aria-haspopup="dialog"
-              className="aj-popover-trigger"
-              onClick={() => setStatusOpen((o) => !o)}
-            >
-              <MoreHorizontal size={16} aria-hidden="true" />
-            </button>
-            {statusOpen && (
-              <div className="aj-popover" role="dialog" aria-label="status">
-                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-                  <span className="aj-status-light" data-state={connState} aria-hidden="true" />
-                  <span style={{ fontSize: 12, color: "var(--aj-textMuted)" }}>{status}</span>
-                </div>
-                <ul className="aj-chips" aria-label="status">
-                  {modules.length === 0 ? (
-                    <li className="aj-chip">no modules</li>
-                  ) : (
-                    modules.map((m) => (
-                      <li key={m.id} className="aj-chip" data-state={m.state}>
-                        {m.id}: {m.state}
-                      </li>
-                    ))
-                  )}
-                </ul>
-              </div>
-            )}
-          </div>
         </div>
+
+        {askVisible && (
+          <AskQuestionCard
+            question={DEMO_QUESTION}
+            collapsed={askCollapsed}
+            selectedLabel={chosenLabel}
+            onToggleCollapsed={toggleAskCollapsed}
+            onSubmit={handleAskSubmit}
+            onSkip={handleAskSkip}
+          />
+        )}
 
         <div style={{ position: "relative" }}>
           <label htmlFor="aj-prompt" className="aj-visually-hidden">prompt</label>
@@ -610,13 +659,11 @@ export default function RunPanel({
             </ul>
           )}
         </div>
-        <div className="aj-composer__toolbar">
-          <span className="aj-chip">Plan</span>
-          {isBusy && <span className="aj-pending" aria-hidden="true" />}
+        <ComposerOptions model={model}>
           <button
             type="button"
-            className="aj-button aj-button--send"
-            aria-label="send"
+            className="send aj-button--send"
+            aria-label="发送"
             disabled={!activeSessionId || isBusy}
             onClick={() => {
               if (busy.current) return;
@@ -626,9 +673,9 @@ export default function RunPanel({
               setSlashOpen(false);
             }}
           >
-            <Send size={16} aria-hidden="true" />
+            ↑
           </button>
-        </div>
+        </ComposerOptions>
       </div>
     </section>
   );

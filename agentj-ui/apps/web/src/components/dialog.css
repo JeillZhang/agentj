@@ -42,7 +42,7 @@
   backdrop-filter: none;
   display: block;
   padding: 8px;
-  border-radius: var(--aj-radius-ctl);
+  border-radius: var(--aj-radiusCtl);
   box-shadow: var(--aj-shadowSoft);
   z-index: var(--aj-z-dialog);
   width: max-content;
