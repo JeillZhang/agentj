@@ -1,0 +1,456 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=1440">
+<title>agentj — mockup-question</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+--aj-bg:#151517;--aj-sidebar:#1B1B1C;--aj-panel:#232324;--aj-raised:#2C2C2E;
+--aj-text:#F9FAFB;--aj-textMuted:#CFD3D6;--aj-accent:#679EFE;--aj-accentOnAccent:#0A0C12;
+--aj-userBubble:#2C2C2E;--aj-border:#2E2E31;--aj-codeBg:#1B1B1C;--aj-inlineCodeBg:#292929;
+--aj-success:#22C55E;--aj-error:#F25A5A;--aj-warning:#F59E0B;--aj-textCaption:#8B8F98;
+--aj-shadowRaised:0 12px 32px rgba(0,0,0,.12);
+--aj-gap:12px;--aj-radius-ctl:8px;--aj-radius-card:12px;--aj-radiusXl:22px;
+}
+html,body{margin:0;height:900px;width:1440px;overflow:hidden}
+body{
+font-family:-apple-system,"SF Pro Text","PingFang SC","Helvetica Neue",sans-serif;
+background:var(--aj-bg);color:var(--aj-text);
+-webkit-font-smoothing:antialiased;
+display:flex;flex-direction:column;
+}
+/* topbar */
+.topbar{
+height:48px;min-height:48px;display:flex;align-items:center;justify-content:space-between;
+padding:0 16px;background:var(--aj-bg);border-bottom:0.5px solid var(--aj-border);
+}
+.topbar-left{display:flex;align-items:center;gap:10px}
+.wordmark{font-size:16px;font-weight:700;letter-spacing:-0.02em}
+.status-dot{width:8px;height:8px;border-radius:50%;background:var(--aj-success);box-shadow:0 0 0 3px rgba(34,197,94,.15)}
+.conn{font-size:12px;color:var(--aj-textMuted);font-weight:400}
+.topbar-right{display:flex;align-items:center;gap:8px}
+.pill{
+height:28px;padding:0 10px;border-radius:999px;background:var(--aj-panel);border:0.5px solid var(--aj-border);
+font-size:12px;font-weight:600;color:var(--aj-textMuted);display:flex;align-items:center;gap:6px;
+}
+.pill-dot{width:6px;height:6px;border-radius:50%;background:var(--aj-accent)}
+.icon-btn{
+width:32px;height:32px;border-radius:8px;background:var(--aj-panel);border:0.5px solid var(--aj-border);
+display:flex;align-items:center;justify-content:center;color:var(--aj-textMuted);font-size:14px;cursor:default;
+}
+/* shell */
+.shell{display:flex;flex:1;height:852px;width:1440px;overflow:hidden}
+.col-left{width:256px;min-width:256px;background:var(--aj-sidebar);border-right:0.5px solid var(--aj-border);display:flex;flex-direction:column;overflow:hidden}
+.col-center{flex:1;background:var(--aj-bg);display:flex;flex-direction:column;overflow:hidden;min-width:0}
+.col-right{width:320px;min-width:320px;background:var(--aj-sidebar);border-left:0.5px solid var(--aj-border);display:flex;flex-direction:column;overflow:hidden}
+/* splitter */
+.splitter{
+width:7px;min-width:7px;background:var(--aj-bg);display:flex;align-items:center;justify-content:center;
+cursor:col-resize;border-left:0.5px solid var(--aj-border);border-right:0.5px solid var(--aj-border);
+position:relative;flex-shrink:0;
+}
+.splitter-inner{width:1px;height:100%;background:var(--aj-border)}
+.grip{display:flex;flex-direction:column;gap:3px;position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);opacity:.6}
+.grip span{width:2px;height:2px;border-radius:50%;background:#8B8F98;display:block}
+/* left column */
+.seg{
+display:flex;gap:4px;padding:6px 8px;border-top:0.5px solid var(--aj-border);border-bottom:0.5px solid var(--aj-border);background:var(--aj-sidebar);
+}
+.seg button{
+flex:1;height:30px;border-radius:8px;border:none;font-size:13px;font-weight:600;cursor:default;
+}
+.seg .active{background:var(--aj-panel);color:var(--aj-text);border:0.5px solid var(--aj-border)}
+.seg .inactive{background:transparent;color:var(--aj-textMuted)}
+.left-body{padding:10px 8px 8px;display:flex;flex-direction:column;gap:10px;flex:1;overflow:hidden}
+.search{
+height:32px;border-radius:8px;border:0.5px solid var(--aj-border);background:var(--aj-panel);
+display:flex;align-items:center;gap:8px;padding:0 10px;color:var(--aj-textCaption);font-size:12.5px;
+}
+.search svg{opacity:.6}
+.btn-primary{
+height:34px;border-radius:8px;background:var(--aj-accent);color:var(--aj-accentOnAccent);border:none;
+font-size:13px;font-weight:700;display:flex;align-items:center;justify-content:center;gap:6px;cursor:default;
+}
+.session-list{display:flex;flex-direction:column;gap:2px}
+.sess{
+padding:8px 10px 8px 10px;border-radius:8px;display:flex;flex-direction:column;gap:2px;position:relative;
+}
+.sess.active{background:var(--aj-panel);border:0.5px solid var(--aj-border)}
+.sess.active::before{content:"";position:absolute;left:0;top:6px;bottom:6px;width:2px;background:var(--aj-accent);border-radius:2px}
+.sess-title{font-size:12px;font-weight:600;color:var(--aj-text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sess-cap{font-size:11px;color:var(--aj-textCaption)}
+.divider{height:0.5px;background:var(--aj-border);margin:2px 0}
+.section-label{font-size:11px;font-weight:600;color:var(--aj-textCaption);letter-spacing:.04em;text-transform:uppercase;padding:0 10px;margin-top:2px}
+.folder-group{padding:2px 0}
+.folder-head{display:flex;align-items:center;gap:6px;padding:4px 10px;font-size:12px;color:var(--aj-textMuted)}
+.folder-head .chev{font-size:9px;color:var(--aj-textCaption)}
+.indent{padding-left:22px;display:flex;flex-direction:column;gap:2px}
+.sess.small{padding:6px 10px}
+.left-footer{margin-top:auto;padding:8px;border-top:0.5px solid var(--aj-border);display:flex;align-items:center;gap:6px;color:var(--aj-textMuted);font-size:12px}
+.left-footer .plus{width:18px;height:18px;border-radius:4px;border:0.5px solid var(--aj-border);display:flex;align-items:center;justify-content:center;font-size:11px}
+/* center */
+.viewtabs{
+height:36px;display:flex;gap:18px;align-items:center;padding:0 16px;border-bottom:0.5px solid var(--aj-border);flex-shrink:0;
+}
+.viewtabs span{font-size:13px;font-weight:600;padding:8px 0 7px;border-bottom:2px solid transparent;cursor:default}
+.viewtabs .on{color:var(--aj-text);border-bottom-color:var(--aj-accent)}
+.viewtabs .off{color:var(--aj-textCaption)}
+.feed{
+flex:1;overflow:hidden;padding:14px 20px 0;display:flex;flex-direction:column;gap:14px;align-items:center;
+}
+.feed-inner{width:100%;max-width:720px;display:flex;flex-direction:column;gap:14px}
+.user-row{display:flex;justify-content:flex-end}
+.user-bubble{
+max-width:78%;background:var(--aj-userBubble);border-radius:22px;border-bottom-right-radius:4px;
+padding:10px 14px;font-size:13px;line-height:1.55;color:var(--aj-text);
+}
+.ai-block{
+border-left:2px solid var(--aj-accent);padding-left:12px;font-size:13px;line-height:1.7;color:var(--aj-text);
+}
+.ai-block p{margin:0}
+.inline-code{
+font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:11.5px;background:var(--aj-inlineCodeBg);
+padding:1px 6px;border-radius:4px;border:0.5px solid var(--aj-border);color:var(--aj-text);
+}
+.code-block{
+background:var(--aj-codeBg);border:0.5px solid var(--aj-border);border-radius:6px;padding:10px 12px;
+font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:12px;line-height:1.6;color:var(--aj-textMuted);margin-top:8px;
+}
+.code-block .kw{color:var(--aj-accent)}
+.tool-card{
+background:var(--aj-raised);border:0.5px solid var(--aj-border);border-radius:12px;
+padding:6px 10px;display:flex;align-items:center;gap:10px;font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:12px;
+}
+.tool-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.tool-name{font-weight:700;color:var(--aj-text);font-family:"SF Mono",ui-monospace,Menlo,monospace}
+.tool-arg{color:var(--aj-textMuted);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tool-right{margin-left:auto;display:flex;align-items:center;gap:8px;color:var(--aj-textCaption);font-size:11.5px;flex-shrink:0}
+.tool-glyph{font-size:11px;width:14px;text-align:center}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+.pulsing{animation:pulse 1.2s ease-in-out infinite}
+.error-preview{
+margin-top:4px;background:var(--aj-codeBg);border:0.5px solid var(--aj-border);border-radius:6px;
+padding:6px 10px;font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:11px;color:var(--aj-error);
+}
+.meta{font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:12px;color:var(--aj-textMuted)}
+/* QA record card */
+.qa{background:var(--aj-panel);border:0.5px solid var(--aj-border);border-radius:12px;padding:10px 12px;display:flex;flex-direction:column;gap:6px}
+.qa-head{display:flex;align-items:center;gap:8px}
+.qa-badge{width:18px;height:18px;border-radius:6px;background:rgba(103,158,254,.14);color:var(--aj-accent);display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;flex-shrink:0}
+.qa-title{font-size:12px;font-weight:600;color:var(--aj-textMuted)}
+.qa-fold{margin-left:auto;font-size:11px;color:var(--aj-textCaption);display:flex;align-items:center;gap:4px}
+.qa-q{font-size:13px;color:var(--aj-text)}
+.qa-a{align-self:flex-start;font-size:13px;color:var(--aj-accent);background:rgba(103,158,254,.10);padding:3px 9px;border-radius:999px}
+.qa-note{font-size:11px;color:var(--aj-textCaption)}
+/* composer */
+.composer-wrap{padding:10px 16px 12px;flex-shrink:0;position:relative;z-index:5}
+.composer{
+background:var(--aj-panel);border:0.5px solid var(--aj-border);border-radius:22px;box-shadow:var(--aj-shadowRaised);
+padding:10px 12px;display:flex;flex-direction:column;gap:8px;
+}
+.comp-head{display:flex;align-items:center;gap:8px}
+.proj-btn{
+height:26px;padding:0 10px;border-radius:999px;background:var(--aj-raised);border:0.5px solid var(--aj-border);
+font-size:13px;font-weight:600;color:var(--aj-text);display:flex;align-items:center;gap:6px;
+}
+.model-chip{font-size:11px;color:var(--aj-textCaption);background:var(--aj-raised);border:0.5px solid var(--aj-border);padding:2px 7px;border-radius:999px}
+.comp-input{
+min-height:36px;border-radius:12px;background:var(--aj-raised);border:0.5px solid var(--aj-border);
+display:flex;align-items:center;justify-content:space-between;padding:8px 10px 8px 12px;
+}
+.comp-input span{font-size:13px;color:var(--aj-textCaption)}
+.send{width:32px;height:32px;border-radius:50%;background:var(--aj-accent);display:flex;align-items:center;justify-content:center;color:var(--aj-accentOnAccent);font-size:14px;flex-shrink:0}
+/* question card */
+.ask{border-top:0.5px solid var(--aj-border);padding-top:10px;display:flex;flex-direction:column;gap:8px}
+.ask-head{display:flex;align-items:center;gap:8px}
+.ask-badge{width:22px;height:22px;border-radius:7px;background:rgba(103,158,254,.14);color:var(--aj-accent);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;flex-shrink:0}
+.ask-q{font-size:13px;font-weight:600;color:var(--aj-text)}
+.ask-col{margin-left:auto;width:24px;height:24px;border-radius:6px;border:0.5px solid var(--aj-border);background:var(--aj-panel);display:flex;align-items:center;justify-content:center;font-size:11px;color:var(--aj-textMuted)}
+.ask-cap{font-size:11px;color:var(--aj-textCaption);padding-left:30px}
+.opt{display:flex;align-items:center;gap:9px;padding:7px 8px;border-radius:8px}
+.opt .radio{width:16px;height:16px;border-radius:50%;border:1.5px solid var(--aj-textCaption);flex-shrink:0;position:relative}
+.opt.on{background:rgba(103,158,254,.10)}
+.opt.on .radio{border-color:var(--aj-accent);background:var(--aj-accent)}
+.opt.on .radio::after{content:"";position:absolute;left:50%;top:50%;width:6px;height:6px;border-radius:50%;background:#fff;transform:translate(-50%,-50%)}
+.opt .lb{font-size:13px;color:var(--aj-text)}
+.opt .hnt{margin-left:auto;font-size:11px;color:var(--aj-textCaption)}
+.ask-foot{display:flex;align-items:center;gap:8px}
+.ask-other{flex:1;height:32px;border-radius:8px;border:0.5px solid var(--aj-border);background:var(--aj-panel);display:flex;align-items:center;padding:0 10px;font-size:12.5px;color:var(--aj-textCaption)}
+.btn-ghost{height:32px;padding:0 12px;border-radius:8px;border:0.5px solid var(--aj-border);background:transparent;color:var(--aj-textMuted);font-size:13px;display:flex;align-items:center}
+.btn-submit{height:32px;padding:0 14px;border-radius:8px;background:var(--aj-accent);color:var(--aj-accentOnAccent);font-size:13px;font-weight:700;display:flex;align-items:center}
+/* composer option selectors */
+.comp-tools{display:flex;align-items:center;gap:6px;position:relative}
+.sel{
+height:26px;padding:0 9px;border-radius:999px;background:var(--aj-panel);border:0.5px solid var(--aj-border);
+display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--aj-textMuted);white-space:nowrap;
+}
+.sel .g{font-size:12px;color:var(--aj-textMuted)}
+.sel .cv{font-size:9px;color:var(--aj-textCaption)}
+.spacer{flex:1}
+/* right */
+.right-head{
+height:44px;display:flex;align-items:center;justify-content:space-between;padding:0 12px;border-bottom:0.5px solid var(--aj-border);flex-shrink:0;
+}
+.right-title{font-size:14px;font-weight:600}
+.collapse{
+width:32px;height:32px;border-radius:8px;border:0.5px solid var(--aj-border);background:var(--aj-panel);
+display:flex;align-items:center;justify-content:center;color:var(--aj-textMuted);font-size:14px;
+}
+.right-body{flex:1;overflow:hidden;display:flex;flex-direction:column}
+.right-section{padding:10px 12px}
+.right-section + .right-section{border-top:0.5px solid var(--aj-border)}
+.sec-head{font-size:11px;font-weight:600;letter-spacing:.06em;color:var(--aj-textCaption);text-transform:uppercase;margin-bottom:8px;display:flex;align-items:center;justify-content:space-between}
+.count{font-size:11px;color:var(--aj-textCaption);background:var(--aj-panel);border:0.5px solid var(--aj-border);padding:1px 6px;border-radius:999px}
+.todo-list{display:flex;flex-direction:column;gap:8px}
+.todo{ display:flex;align-items:center;gap:9px}
+.cb{
+width:16px;height:16px;border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:10px;flex-shrink:0;
+}
+.cb.done{background:var(--aj-success);color:#fff;border:1px solid var(--aj-success)}
+.cb.prog{border:1.5px solid var(--aj-accent);color:var(--aj-accent);background:transparent;position:relative}
+.cb.prog::after{content:"";position:absolute;width:6px;height:6px;background:var(--aj-accent);border-radius:50%;animation:pulse 1.1s infinite}
+.cb.pending{border:1.5px solid var(--aj-border);background:transparent;color:transparent}
+.todo-label{font-size:13px;color:var(--aj-text);line-height:1.2;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.todo-label.muted{color:var(--aj-textMuted)}
+.pill-st{
+font-size:11px;padding:1px 7px;border-radius:999px;border:0.5px solid var(--aj-border);font-weight:600;flex-shrink:0;
+}
+.pill-st.done{background:rgba(34,197,94,.12);color:var(--aj-success);border-color:rgba(34,197,94,.22)}
+.pill-st.prog{background:rgba(103,158,254,.12);color:var(--aj-accent);border-color:rgba(103,158,254,.22)}
+.pill-st.todo{background:transparent;color:var(--aj-textCaption)}
+.file-changes{display:flex;flex-direction:column;gap:7px}
+.fc{ display:flex;align-items:center;gap:8px;background:var(--aj-panel);border:0.5px solid var(--aj-border);border-radius:8px;padding:7px 9px}
+.fc-icon{width:22px;height:22px;border-radius:6px;background:var(--aj-raised);border:0.5px solid var(--aj-border);display:flex;align-items:center;justify-content:center;font-size:11px;color:var(--aj-textMuted);flex-shrink:0}
+.fc-path{font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:12.5px;color:var(--aj-text);flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.fc-counts{font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:11px;display:flex;gap:6px;flex-shrink:0}
+.add{color:var(--aj-success)} .del{color:var(--aj-error)}
+.badge{font-size:10px;font-weight:700;padding:2px 6px;border-radius:999px;flex-shrink:0}
+.badge-new{background:rgba(34,197,94,.14);color:var(--aj-success)}
+.badge-mod{background:rgba(103,158,254,.14);color:var(--aj-accent)}
+</style>
+</head>
+<body>
+<div class="topbar">
+  <div class="topbar-left">
+    <div class="wordmark">agentj</div>
+    <div class="status-dot"></div>
+    <div class="conn">已连接 ws://127.0.0.1:4096</div>
+  </div>
+  <div class="topbar-right">
+    <div class="pill"><span class="pill-dot"></span> deepseek-chat</div>
+    <div class="icon-btn">⋯</div>
+    <div class="icon-btn">☾</div>
+  </div>
+</div>
+
+<div class="shell">
+  <!-- LEFT -->
+  <div class="col-left">
+    <div class="seg">
+      <button class="active">会话</button>
+      <button class="inactive">文件</button>
+    </div>
+    <div class="left-body">
+      <div class="search">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#8B8F98" stroke-width="1.8"><circle cx="11" cy="11" r="7"/><path d="M20 20L16 16"/></svg>
+        搜索会话…
+      </div>
+      <button class="btn-primary">+ 新建会话</button>
+
+      <div class="session-list">
+        <div class="sess active">
+          <div class="sess-title">三栏布局与可拖拽实现</div>
+          <div class="sess-cap">今天 10:42 · agentj-ui</div>
+        </div>
+        <div class="sess">
+          <div class="sess-title">设计令牌 palette 同步</div>
+          <div class="sess-cap">昨天 18:20 · agentj-ui</div>
+        </div>
+        <div class="sess">
+          <div class="sess-title">Composer 圆角与阴影调优</div>
+          <div class="sess-cap">昨天 09:11 · agentj</div>
+        </div>
+        <div class="sess">
+          <div class="sess-title">工具卡片错误态重试</div>
+          <div class="sess-cap">09-11 16:03 · crates</div>
+        </div>
+        <div class="sess">
+          <div class="sess-title">会话持久化与恢复</div>
+          <div class="sess-cap">09-10 22:47 · desktop</div>
+        </div>
+      </div>
+
+      <div class="divider"></div>
+      <div class="section-label">项目</div>
+      <div class="folder-group">
+        <div class="folder-head"><span class="chev">▾</span> 📁 agentj</div>
+        <div class="indent">
+          <div class="sess small">
+            <div class="sess-title" style="font-weight:500">修复侧边栏滚动</div>
+            <div class="sess-cap">09-09 14:02</div>
+          </div>
+          <div class="sess small">
+            <div class="sess-title" style="font-weight:500">接入 deepseek-chat</div>
+            <div class="sess-cap">09-08 20:15</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="left-footer"><span class="plus">+</span> 添加项目</div>
+    </div>
+  </div>
+
+  <div class="splitter"><div class="splitter-inner"></div><div class="grip"><span></span><span></span><span></span></div></div>
+
+  <!-- CENTER -->
+  <div class="col-center">
+    <div class="viewtabs"><span class="on">对话</span><span class="off">轨迹</span></div>
+    <div class="feed">
+      <div class="feed-inner">
+        <div class="user-row"><div class="user-bubble">帮我在 agentj-ui 里加上三栏布局，左右两栏宽度可以拖拽调整。</div></div>
+
+        <div class="ai-block">
+          <p>收到。计划把布局拆成 <span class="inline-code">SplitPane</span> + 三栏 shell，两侧分隔条支持拖拽，宽度持久化到 localStorage。开始前先确认一下范围。</p>
+        </div>
+
+        <div class="tool-card">
+          <span class="tool-dot" style="background:var(--aj-success)"></span>
+          <span class="tool-glyph" style="color:var(--aj-success)">✓</span>
+          <span class="tool-name">read</span>
+          <span class="tool-arg">src/App.tsx</span>
+          <span class="tool-right">展开 ▸</span>
+        </div>
+
+        <div class="tool-card">
+          <span class="tool-dot pulsing" style="background:var(--aj-accent)"></span>
+          <span class="tool-glyph" style="color:var(--aj-textMuted)">◷</span>
+          <span class="tool-name">write</span>
+          <span class="tool-arg">components/SplitPane.tsx</span>
+          <span class="tool-right" style="color:var(--aj-accent)">运行中…</span>
+        </div>
+
+        <div>
+          <div class="tool-card" style="border-color:rgba(242,90,90,.35)">
+            <span class="tool-dot" style="background:var(--aj-error)"></span>
+            <span class="tool-glyph" style="color:var(--aj-error)">✕</span>
+            <span class="tool-name">bash</span>
+            <span class="tool-arg">npm test</span>
+            <span class="tool-right">重试</span>
+          </div>
+          <div class="error-preview">× FAIL  SplitPane › 拖拽后宽度未持久化  — expected localStorage.getItem('aj:layout')</div>
+        </div>
+
+        <div class="meta">1,204 prompt · 386 completion · 1.42s</div>
+
+        <!-- answered Q&A record -->
+        <div class="qa">
+          <div class="qa-head">
+            <span class="qa-badge">?</span>
+            <span class="qa-title">模型提问</span>
+            <span class="qa-fold">已折叠 ⌄</span>
+          </div>
+          <div class="qa-q">是否同时更新 TUI？</div>
+          <div class="qa-a">→ 暂时不动 TUI</div>
+          <div class="qa-note">已按此决定继续执行。</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="composer-wrap">
+      <div class="composer">
+        <div class="comp-head">
+          <div class="proj-btn">📁 agentj</div>
+          <span class="model-chip">deepseek-chat</span>
+        </div>
+
+        <!-- question card (expanded) -->
+        <div class="ask">
+          <div class="ask-head">
+            <span class="ask-badge">?</span>
+            <span class="ask-q">请选择本次重构的范围？</span>
+            <span class="ask-col">⌄</span>
+          </div>
+          <div class="ask-cap">模型需要你确认后再继续。</div>
+          <div class="opt">
+            <span class="radio"></span>
+            <span class="lb">仅前端三栏布局</span>
+          </div>
+          <div class="opt on">
+            <span class="radio"></span>
+            <span class="lb">三栏 + 协议扩展</span>
+            <span class="hnt">推荐</span>
+          </div>
+          <div class="opt">
+            <span class="radio"></span>
+            <span class="lb">全部（含 TUI）</span>
+            <span class="hnt">范围较大</span>
+          </div>
+          <div class="ask-foot">
+            <div class="ask-other">其他…</div>
+            <div class="btn-ghost">跳过</div>
+            <div class="btn-submit">提交</div>
+          </div>
+        </div>
+
+        <div class="comp-input">
+          <span>输入消息，@ 引用文件，/ 调用命令…</span>
+        </div>
+        <div class="comp-tools">
+          <div class="sel"><span class="g">◆</span>deepseek-chat<span class="cv">⌄</span></div>
+          <div class="sel"><span class="g">⚙</span>Build<span class="cv">⌄</span></div>
+          <div class="sel"><span class="g">∿</span>均衡<span class="cv">⌄</span></div>
+          <div class="spacer"></div>
+          <div class="send">↑</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="splitter"><div class="splitter-inner"></div><div class="grip"><span></span><span></span><span></span></div></div>
+
+  <!-- RIGHT -->
+  <div class="col-right">
+    <div class="right-head">
+      <div class="right-title">运行详情</div>
+      <div class="collapse">»</div>
+    </div>
+    <div class="right-body">
+      <div class="right-section">
+        <div class="sec-head"><span>任务</span><span class="count">2 / 4</span></div>
+        <div class="todo-list">
+          <div class="todo"><span class="cb done">✓</span><span class="todo-label muted">解析现有 App 布局</span><span class="pill-st done">已完成</span></div>
+          <div class="todo"><span class="cb done">✓</span><span class="todo-label muted">定义三栏 grid 与宽度 token</span><span class="pill-st done">已完成</span></div>
+          <div class="todo"><span class="cb prog"></span><span class="todo-label">实现 SplitPane 拖拽与持久化</span><span class="pill-st prog">进行中</span></div>
+          <div class="todo"><span class="cb pending"></span><span class="todo-label" style="color:var(--aj-textMuted)">补充响应式与键盘可达性</span><span class="pill-st todo">待办</span></div>
+        </div>
+      </div>
+      <div class="right-section">
+        <div class="sec-head"><span>文件变更</span><span class="count">3</span></div>
+        <div class="file-changes">
+          <div class="fc">
+            <span class="fc-icon">TS</span>
+            <span class="fc-path">SplitPane.tsx</span>
+            <span class="fc-counts"><span class="add">+86</span></span>
+            <span class="badge badge-new">新增</span>
+          </div>
+          <div class="fc">
+            <span class="fc-icon">TS</span>
+            <span class="fc-path">App.tsx</span>
+            <span class="fc-counts"><span class="add">+24</span><span class="del">-6</span></span>
+            <span class="badge badge-mod">修改</span>
+          </div>
+          <div class="fc">
+            <span class="fc-icon">TS</span>
+            <span class="fc-path">tokens/palette.ts</span>
+            <span class="fc-counts"><span class="add">+3</span><span class="del">-1</span></span>
+            <span class="badge badge-mod">修改</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

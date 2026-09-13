@@ -357,4 +357,4 @@ flowchart TD
 ## 版本与文档同步
 
 - 版本：`0.8.0` → `0.9.0`（feature，minor；AGENTS.md 规则）。
-- 阶段完成后自动同步 `AGENTS.md` / `README.md` / `.claude/summary/summary_and_next.md`（G5/G6 完成态 + 差距档案状态行更新为「✅ 已实现」附本设计链接）。
+- 阶段完成后自动同步 `AGENTS.md` / `README.md` / `.agents/summary/summary_and_next.md`（G5/G6 完成态 + 差距档案状态行更新为「✅ 已实现」附本设计链接）。

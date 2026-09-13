@@ -585,7 +585,7 @@
   files:
     - AGENTS.md
     - README.md
-    - .claude/summary/summary_and_next.md
+    - .agents/summary/summary_and_next.md
   depends_on: [T3, T4, T5, T6, T8, T9]
   breaking: false
   ac:
@@ -596,7 +596,7 @@
       when: "inspect AGENTS.md and README.md"
       then: "version is 0.13.0 and architecture section mentions UnifiedSidebar 256px"
     - given: "summary updated"
-      when: "read .claude/summary/summary_and_next.md"
+      when: "read .agents/summary/summary_and_next.md"
       then: "current feature is Visual 2.2 0.13.0 with TODO checklist all checked"
   regression:
     - "cargo test --workspace -- --skip permission_request_notified"
@@ -613,7 +613,7 @@
   impl_code: |
     // AGENTS.md — update Project Status to v0.13.0 Visual 2.2 UnifiedSidebar 256px + local Project + composer enhance
     // README.md — bump version badge and Features list add Visual 2.2
-    // .claude/summary/summary_and_next.md — replace current feature with Visual 2.2 progress table, mark T0-T8 completed, set next to v0.13.0 tag & PR
+    // .agents/summary/summary_and_next.md — replace current feature with Visual 2.2 progress table, mark T0-T8 completed, set next to v0.13.0 tag & PR
     // Run gates: cargo test --workspace, cargo clippy --workspace --all-targets -- -D warnings, cargo test -p agentj-protocol -- drift, npm --prefix agentj-ui test --workspace=@agentj/sdk, npm --prefix agentj-ui test --workspace=@agentj/web, bun --cwd agentj-ui/apps/tui test, ./scripts/check-version.sh, ./agentj-ui/apps/desktop/check-desktop-ui.mjs
   verify:
     - "cargo test --workspace -- --skip permission_request_notified"
