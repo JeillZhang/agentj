@@ -3,7 +3,7 @@ name: jskill-feature-dev
 description: Use when an implementation plan has been approved and development needs to begin. Triggers on "start development", "execute the plan", "begin implementation", or after plan approval. Covers the full development cycle from plan intake validation through feature branch, TDD execution, code review, verification, doc sync, branch finishing, and automatic hand-off to test acceptance (which creates the PR on pass).
 ---
 
-# JCMD Feature Development
+# JSkill Feature Development
 
 Orchestrates the full Superpowers development cycle: **plan intake validation** → feature branch → TDD → subagent execution → code review → system verification → version bump + doc auto-sync → branch finishing → **automatic hand-off to test acceptance** (which creates the PR when acceptance passes).
 
@@ -46,7 +46,7 @@ flowchart TB
 
 Read the plan file at `plan-path`. If the file does not exist, abort and ask the user to run `/jskill-feature-plan docs/superpowers/specs/<spec-file>.md` first.
 
-Read the project summary file (per AGENTS.md, e.g. `.claude/summary/summary_and_next.md`) for current state and version — AGENTS.md requires reading it before developing.
+Read the project summary file (per AGENTS.md, e.g. `.agents/summary/summary_and_next.md`) for current state and version — AGENTS.md requires reading it before developing.
 
 **Validate the plan against the Task Template Specification (defined in `jskill-feature-plan`):**
 
@@ -240,7 +240,7 @@ Run this **before** presenting any finish options. The doc sync commits must be 
 
 1. Update `AGENTS.md` — sync version, migrations count, new API routes, architecture notes, config vars, crate/module boundaries — any structural change introduced in the phase.
 2. Update `README.md` — sync version tagline, features checklist, project structure tree, API endpoint tables, migrations count, config var table — any user-facing change.
-3. Update the project summary file (per AGENTS.md, e.g. `.claude/summary/summary_and_next.md`). **REPLACE, don't append:** rewrite it to retain ONLY the currently-developing feature's content — write a "## {phase}: {title} ✅ (本次完成)" section documenting what was built and verification results, list remaining issues and next steps, and update the "## 待实施" table. Remove any content belonging to previously completed or non-current features. Do NOT accumulate old feature sections.
+3. Update the project summary file (per AGENTS.md, e.g. `.agents/summary/summary_and_next.md`). **REPLACE, don't append:** rewrite it to retain ONLY the currently-developing feature's content — write a "## {phase}: {title} ✅ (本次完成)" section documenting what was built and verification results, list remaining issues and next steps, and update the "## 待实施" table. Remove any content belonging to previously completed or non-current features. Do NOT accumulate old feature sections.
 4. Update the target spec doc in `docs/superpowers/specs/` — refresh its TODO list to reflect this phase's completion (per AGENTS.md: "Update docs/superpowers/specs target spec doc TODO list after each phase").
 5. Commit the four files together: `docs: auto-sync AGENTS.md, README.md, summary, spec TODO after {phase} completion`.
 6. Do NOT skip this step — it is mandatory before proceeding to finish options.
@@ -266,7 +266,7 @@ Run this **before** presenting any finish options. The doc sync commits must be 
 
 1. Output the development summary (branch, result).
 2. **REQUIRED SUB-SKILL:** Load `jskill-test-acceptance` via the Skill tool — this automatically starts the acceptance loop (tester → bug-fixer → regression) on the current feature branch and creates the PR on PASS. No user prompt needed; the hand-off is automatic.
-3. If the user chose **Merge / Keep as-is / Discard** in Phase 9 (explicit opt-out): do NOT hand off. Output the skip note and remind them `/jcmd-test-acceptance` remains available manually.
+3. If the user chose **Merge / Keep as-is / Discard** in Phase 9 (explicit opt-out): do NOT hand off. Output the skip note and remind them `/jskill-test-acceptance` remains available manually.
 
 ```
 ✅ Feature development complete.
@@ -274,7 +274,7 @@ Run this **before** presenting any finish options. The doc sync commits must be 
    Result: <auto-handoff to acceptance / merged / kept / discarded>
 
 默认路径：自动启动测试验收（jskill-test-acceptance）→ 验收通过后自动创建 PR。
-若在 Phase 9 显式选择 合并/保留/丢弃：已跳过自动验收，可随时手动运行 /jcmd-test-acceptance。
+若在 Phase 9 显式选择 合并/保留/丢弃：已跳过自动验收，可随时手动运行 /jskill-test-acceptance。
 ```
 
 `jskill-feature-dev` 是功能管线（design → plan → dev）的终点；测试验收（`jskill-test-acceptance`）在 Phase 10 **自动衔接**，验收通过后自动创建 PR。仅当用户在 Phase 9 显式选择 合并/保留/丢弃 时跳过自动验收。

@@ -3,7 +3,7 @@ name: jskill-feature-next
 description: Use to identify the next pending feature from the project summary and orchestrate the design→plan pipeline for it. Triggers on "what's next", "next feature", "continue the roadmap", "下一个功能", "接下来做什么", or after a feature phase completes.
 ---
 
-# JCMD Feature Next — Feature Entry Point
+# JSkill Feature Next — Feature Entry Point
 
 You are the **feature entry point**. Read the project's current state, identify the next feature to implement from the pending list, present it to the user, and on confirmation orchestrate the sequential pipeline: `jskill-feature-design` → `jskill-feature-plan` → (user runs `jskill-feature-dev` → 自动衔接 `jskill-test-acceptance` → 验收 PASS 后自动创建 PR)。
 
@@ -34,7 +34,7 @@ flowchart TB
 
 Read these files in parallel:
 
-1. The project summary file (per AGENTS.md, e.g. `.claude/summary/summary_and_next.md`) — extract:
+1. The project summary file (per AGENTS.md, e.g. `.agents/summary/summary_and_next.md`) — extract:
    - The "## 待实施" (Pending) table: phase, title, dependencies for each row.
    - The "## 下一步" (Next Step) hint if present.
    - The most recent completed phase (marked ✅).

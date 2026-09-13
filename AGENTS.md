@@ -131,15 +131,15 @@ Desktop：Tauri v2 壳套 `apps/web` 产物，四件套 deb/AppImage/dmg/msi，
 - Commit messages in English. `docs/superpowers/specs/` docs in Chinese.
 - Docs under `docs/` are tracked deliverables — commit them.
 - Bump version on every feature (`0.1.0` → `0.2.0`) and bugfix (`0.1.0` → `0.1.1`).
-- Before planning/developing, read `.claude/summary/summary_and_next.md` and `docs/superpowers/` first.
+- Before planning/developing, read `.agents/summary/summary_and_next.md` and `docs/superpowers/` first.
 - All diagrams in spec docs under `docs/superpowers/specs/` must use UML or Mermaid.
 - Update `docs/superpowers/specs` target spec docs TODO list after each phase.
-- `.claude/summary/summary_and_next.md` only retains currently developing feature:
+- `.agents/summary/summary_and_next.md` only retains currently developing feature:
   progress, remaining issues, next steps. Replace, don't append.
 - After each plan completes, update summary with current feature's progress,
   remaining issues, next plan/next steps.
 - After each feature phase completes AND `cargo test` + `clippy` pass, auto:
-  - Update `AGENTS.md` / `README.md` / `.claude/summary/summary_and_next.md`
+  - Update `AGENTS.md` / `README.md` / `.agents/summary/summary_and_next.md`
   - Commit as `docs: auto-sync AGENTS.md, README.md, summary after {phase}`.
   - Do NOT wait for user — mandatory post-phase step.
 - Clean up temp files, Docker containers after each phase.

@@ -55,7 +55,7 @@
 ### 下一步
 
 - 合并 `feature/agentj-opencode-redesign` → `main`，打 `v0.13.0` tag，发布。
-- 运行 `/jcmd-test-acceptance` 自动验收 → 验收 PASS 后自动创建 PR（含验收修复 + patch bump）。
+- 运行 `/jskill-test-acceptance` 自动验收 → 验收 PASS 后自动创建 PR（含验收修复 + patch bump）。
 - PR 合并后清理 acceptance 产物（如有）。
 
 ### Spec TODO 更新

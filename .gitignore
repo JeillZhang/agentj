@@ -26,9 +26,19 @@ Desktop.ini
 # CodeGraph index — a symlink to a machine-local cache. Never commit.
 .codegraph
 
-# ── Claude Code ──────────────────────────────────────────────
-# NOTE: `.claude/summary/summary_and_next.md` IS a tracked deliverable
-# (see AGENTS.md) — do not ignore `.claude/` wholesale. Only local settings.
+# ── Agent skills / subagents (.agents) ───────────────────────
+# Cross-tool home for skills + subagents (OpenCode / Codex / Pi / AgentJ) —
+# `.agents/skills` is discovered natively by all of them. `.agents/summary/
+# summary_and_next.md` IS a tracked deliverable (see AGENTS.md). Only
+# project-authored `jskill-*` skills are versioned; every other skill is a
+# machine-local install — never commit it.
+.agents/skills/*
+!.agents/skills/jskill-*/
+
+# ── Claude Code (compat shim) ────────────────────────────────
+# `.claude/agents` is a tracked symlink → `.agents/agents` (OpenCode/omo only
+# auto-discovers project subagents from `.claude/agents` or `.opencode/agents`).
+# Local permission settings stay machine-local, not a tracked deliverable.
 .claude/settings.local.json
 
 # ── VS Code ─────────────────────────────────────────────────
@@ -119,9 +129,3 @@ docker-compose.override.yml
 .remember/
 
 .superpowers
-
-# ── Pi coding agent ──────────────────────────────────────────
-# NOTE: `.pi/settings.json` IS a tracked deliverable (shared skills mapping)
-# — do not ignore `.pi/` wholesale. Only local state is ignored.
-.pi/*.log
-.pi/cache/

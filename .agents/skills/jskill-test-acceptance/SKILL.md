@@ -3,9 +3,9 @@ name: jskill-test-acceptance
 description: 测试验收流程编排。在需求开发命令结束后触发（feature-dev 默认路径自动衔接），驱动「测试 agent 发现 Bug → Bug-fix agent 修复 → 测试 agent 回归验证」循环直至所有 Bug 修复完成；验收通过后自动创建 PR（用户负责合并）。每 Bug 一提交，禁止一提交多 Bug。Triggers on "test acceptance", "验收", "run acceptance", "测试验收", "验收测试".
 ---
 
-# JCMD Test Acceptance
+# JSkill Test Acceptance
 
-在需求开发（`/jcmd-feature-dev`）结束后，编排测试验收循环：测试 agent（`ajteam-tester`）发现 Bug → Bug-fix agent（`ajteam-bug-fixer`）修复 Bug → 测试 agent 回归验证，直至发现的所有 Bug 修复完成。
+在需求开发（`/jskill-feature-dev`）结束后，编排测试验收循环：测试 agent（`ajteam-tester`）发现 Bug → Bug-fix agent（`ajteam-bug-fixer`）修复 Bug → 测试 agent 回归验证，直至发现的所有 Bug 修复完成。
 
 ## Parameters
 
@@ -17,7 +17,7 @@ description: 测试验收流程编排。在需求开发命令结束后触发（f
 
 ```mermaid
 flowchart TB
-    A["/jcmd-test-acceptance（或 feature-dev 自动衔接）"] --> B["Phase 0: 初始化/恢复 Bug 清单"]
+    A["/jskill-test-acceptance（或 feature-dev 自动衔接）"] --> B["Phase 0: 初始化/恢复 Bug 清单"]
     B --> C["Phase 1: 测试阶段（ajteam-tester）"]
     C --> D{"发现新 Bug?"}
     D -- "零 Bug" --> Z["验收通过 ✅"]

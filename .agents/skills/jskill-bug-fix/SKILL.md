@@ -3,7 +3,7 @@ name: jskill-bug-fix
 description: Use when debugging and fixing bugs, crashes, silent failures, or unexpected behavior. Triggers on "X is broken", "fix this bug", "debug this", "why is Y happening", error reports, or regression issues. Enforces hypothesis-driven debugging with TDD fix cycle.
 ---
 
-# JCMD Bug Fix
+# JSkill Bug Fix
 
 Orchestrates the Superpowers debugging and fix workflow: fix branch, hypothesis-driven root cause analysis, TDD-gated minimal fix, verification with regression guard, version bump, code review, and branch finishing.
 

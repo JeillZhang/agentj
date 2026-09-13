@@ -3,7 +3,7 @@ name: jskill-feature-design
 description: Use when starting a new feature, requesting creative work, or before any implementation. Triggers on "I want to build X", "design a feature", "add Y functionality", feature ideation, or product design requests.
 ---
 
-# JCMD Feature Design
+# JSkill Feature Design
 
 Orchestrates the Superpowers brainstorming workflow for feature ideation and design refinement. Pure design phase — no plans, no code, no implementation.
 
@@ -43,7 +43,7 @@ flowchart TB
 
 ### Phase 0: Intake & Classify
 
-1. Read the project summary file (per AGENTS.md, e.g. `.claude/summary/summary_and_next.md`) to understand current project state and pending features.
+1. Read the project summary file (per AGENTS.md, e.g. `.agents/summary/summary_and_next.md`) to understand current project state and pending features.
 2. Read `docs/superpowers/specs/` for any relevant existing design docs.
 3. Restate the feature request in your own words. **Classify its size:**
 

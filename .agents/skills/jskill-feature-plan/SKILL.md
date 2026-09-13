@@ -3,7 +3,7 @@ name: jskill-feature-plan
 description: Use when a feature design has been approved and a detailed implementation plan with TDD task breakdown is needed. Triggers on "write implementation plan", "break this into tasks", "create a plan", or after design approval.
 ---
 
-# JCMD Feature Plan
+# JSkill Feature Plan
 
 Orchestrates the Superpowers planning workflow with a **Plan Validation Gate** — a `momus` review step that audits the plan for design gaps, missing edge cases, and architectural concerns before implementation begins.
 
@@ -96,7 +96,7 @@ Every task in the implementation plan MUST use this schema. This is the **single
 **REQUIRED SUB-SKILL:** Load `superpowers:writing-plans` and follow it exactly.
 
 1. Read the approved design spec from `spec-path` (e.g. `docs/superpowers/specs/*-design.md`).
-2. Read the project summary file (per AGENTS.md, e.g. `.claude/summary/summary_and_next.md`) for current state and version.
+2. Read the project summary file (per AGENTS.md, e.g. `.agents/summary/summary_and_next.md`) for current state and version.
 3. Write a detailed implementation plan:
    - Every task conforms to the **Task Template Specification above** (all fields, no placeholders)
    - Ordered task breakdown with explicit `depends_on` chains
