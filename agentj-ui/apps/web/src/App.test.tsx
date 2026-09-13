@@ -255,12 +255,15 @@ describe("App with mocked SDK transport", () => {
     ).toBeInTheDocument();
   });
 
-  it("shows unreachable hint with dashboard start command", async () => {
+  it("omits the standalone dashboard hint line when unreachable", async () => {
     shared.shouldFail.value = true;
     render(<App />);
-    expect(
-      await screen.findByText(/agentj dashboard --port/i),
-    ).toBeInTheDocument();
+    await waitFor(() =>
+      expect(
+        document.querySelector(".aj-status-light")?.getAttribute("data-state"),
+      ).toBe("unreachable"),
+    );
+    expect(screen.queryByText(/agentj dashboard --port/i)).toBeNull();
   });
 
   it("new session becomes active and favorited", async () => {
@@ -524,11 +527,15 @@ describe("App shell + history rebuild", () => {
     expect(light()).not.toBeNull();
     expect(light().dataset.state).toBe("connected");
   });
-  it("lights unreachable orange while the hint text stays untouched", async () => {
+  it("lights unreachable orange while no standalone hint line renders", async () => {
     shared.shouldFail.value = true;
     render(<App />);
-    await screen.findByText(/agentj dashboard --port/i);
-    expect(document.querySelector<HTMLElement>(".aj-status-light")?.dataset.state).toBe("unreachable");
+    await waitFor(() =>
+      expect(
+        document.querySelector<HTMLElement>(".aj-status-light")?.dataset.state,
+      ).toBe("unreachable"),
+    );
+    expect(screen.queryByText(/agentj dashboard --port/i)).toBeNull();
   });
   it("renders the version-mismatch banner with its semantic state", async () => {
     shared.initVersion.value = "0.9.0";

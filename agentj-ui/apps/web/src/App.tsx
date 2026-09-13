@@ -416,9 +416,6 @@ export default function App() {
         />
       )}
       {banner && <p role="alert" className="aj-banner" data-state="mismatch">{banner}</p>}
-      {unreachable && (
-        <p>{`agentj dashboard --port ${new URL(resolveWsUrl({ envUrl: envWsUrl })).port || new URL(resolveWsUrl({})).port}`}</p>
-      )}
       <WorkspaceShell
         right={
           <RightPanel collapsed={rightCollapsed} onToggle={() => handleRightCollapsedChange(!rightCollapsed)}>
