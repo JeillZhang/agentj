@@ -175,6 +175,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "agentj-question"
+version = "0.14.6"
+dependencies = [
+ "agentj-core",
+ "agentj-protocol",
+ "serde",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
 name = "agentj-session"
 version = "0.14.6"
 dependencies = [
