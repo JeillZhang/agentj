@@ -10,6 +10,7 @@ test("renders counter, pill states and rows", () => {
     { id: "4", content: "补充响应式与键盘可达性", status: "pending" as const },
   ];
   const { container } = render(<TodoPanel items={items} />);
+  expect(container.querySelector(".right-section")).not.toBeNull();
   expect(screen.getByText("2 / 4")).toBeInTheDocument();
   expect(screen.getAllByText("已完成").length).toBe(2);
   expect(screen.getByText("进行中")).toBeInTheDocument();
