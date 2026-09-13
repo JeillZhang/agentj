@@ -15,6 +15,7 @@ agentj-context = { path = "../agentj-context" }
 agentj-ipc = { path = "../agentj-ipc" }
 agentj-model = { path = "../agentj-model" }
 agentj-permission = { path = "../agentj-permission" }
+agentj-question = { path = "../agentj-question" }
 agentj-session = { path = "../agentj-session" }
 agentj-stats = { path = "../agentj-stats" }
 agentj-tools = { path = "../agentj-tools" }
