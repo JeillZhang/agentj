@@ -9,6 +9,7 @@ pub mod module;
 pub mod permission;
 pub mod resolver;
 pub mod tool_executor;
+pub mod tool_paths;
 pub mod turn_runner;
 pub mod types;
 
