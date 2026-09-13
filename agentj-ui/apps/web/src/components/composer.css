@@ -15,6 +15,13 @@
   z-index: 2;
 }
 
+/* BUG-003 — short viewports: let the expanded ask card shrink & scroll inside
+   the composer so .comp-tools + send stay visible and its popovers aren't clipped. */
+.aj-composer-card > .ask {
+  min-height: 0;
+  overflow-y: auto;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .aj-composer-card,
   .aj-composer-card *,
