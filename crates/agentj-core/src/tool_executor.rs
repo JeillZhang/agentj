@@ -1,4 +1,4 @@
-use crate::artifacts::{TurnArtifact, write_change};
+use crate::artifacts::{TurnArtifact, todo_snapshot_from_args, write_change};
 use crate::error::ModuleError;
 use crate::git_sample;
 use crate::module::{
@@ -148,6 +148,14 @@ async fn execute_tool(
     let mut artifacts = write_artifacts(target.as_deref(), &workspace_root, tool_call, pre).await;
     if let Some(before) = git_before.as_ref() {
         artifacts.extend(bash_artifacts(before, &workspace_root, &tool_call.id).await);
+    }
+    if tool_call.name == "todo" {
+        match todo_snapshot_from_args(&tool_call.arguments) {
+            Ok(snapshot) => artifacts.push(TurnArtifact::Todo(snapshot)),
+            Err(err) => {
+                tracing::debug!(call = %tool_call.id, error = %err, "todo artifact skipped: unparsable args");
+            }
+        }
     }
     Ok(ToolExecutionOutcome { result, artifacts })
 }
@@ -1052,5 +1060,135 @@ mod tests {
             "post-read failure skips the artifact"
         );
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    struct TodoMock {
+        reject: bool,
+    }
+
+    impl Tool for TodoMock {
+        fn name(&self) -> &str {
+            "todo"
+        }
+
+        fn description(&self) -> &str {
+            ""
+        }
+
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({})
+        }
+
+        fn execute(&self, input: serde_json::Value) -> Result<serde_json::Value, ToolError> {
+            let items = input["items"].as_array().cloned().unwrap_or_default();
+            if self.reject {
+                return Err(ToolError::ExecutionFailed {
+                    name: "todo".into(),
+                    reason: "items[0].content must be a non-empty string".into(),
+                });
+            }
+            Ok(serde_json::json!({"ok": true, "count": items.len()}))
+        }
+    }
+
+    fn todo_call(id: &str, args: serde_json::Value) -> ToolCall {
+        ToolCall {
+            id: id.into(),
+            name: "todo".into(),
+            arguments: args,
+        }
+    }
+
+    fn todo_ctx(reject: bool) -> KernelContext {
+        write_executor_ctx(
+            Arc::new(AllowAll),
+            Arc::new(MockSession { root: None }),
+            Arc::new(TodoMock { reject }),
+        )
+    }
+
+    #[tokio::test]
+    async fn todo_tool_call_yields_snapshot_artifact() {
+        use crate::artifacts::TodoStatusArtifact;
+        let ctx = todo_ctx(false);
+        let outcome = run_tool_call(
+            &ctx,
+            todo_call(
+                "c1",
+                serde_json::json!({
+                    "items": [
+                        {"content": "first", "status": "in_progress"},
+                        {"content": "second", "status": "completed"}
+                    ]
+                }),
+            ),
+        )
+        .await
+        .expect("todo tool succeeds");
+        assert_eq!(outcome.result["count"], 2);
+        assert_eq!(outcome.artifacts.len(), 1, "one todo snapshot artifact");
+        match &outcome.artifacts[0] {
+            TurnArtifact::Todo(snapshot) => {
+                assert_eq!(snapshot.items.len(), 2, "two ids for two items");
+                assert_eq!(snapshot.items[0].content, "first");
+                assert_eq!(snapshot.items[0].status, TodoStatusArtifact::InProgress);
+                assert_eq!(snapshot.items[1].content, "second");
+                assert_eq!(snapshot.items[1].status, TodoStatusArtifact::Completed);
+                assert!(
+                    snapshot.items[0].id.starts_with('t'),
+                    "id is content-derived: {}",
+                    snapshot.items[0].id
+                );
+                assert_ne!(snapshot.items[0].id, snapshot.items[1].id);
+            }
+            other => panic!("expected Todo artifact, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn todo_tool_rejection_yields_no_artifacts() {
+        let ctx = todo_ctx(true);
+        let reply = run_tool_call(
+            &ctx,
+            todo_call("c1", serde_json::json!({"items": [{"content": ""}]})),
+        )
+        .await;
+        assert!(
+            matches!(reply, Err(ToolError::ExecutionFailed { .. })),
+            "rejected todo keeps its error and carries no artifacts: {reply:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn invalid_todo_args_on_ok_result_skip_artifact() {
+        let ctx = todo_ctx(false);
+        let outcome = run_tool_call(
+            &ctx,
+            todo_call(
+                "c1",
+                serde_json::json!({"items": [{"content": "ok", "status": "doing"}]}),
+            ),
+        )
+        .await
+        .expect("tool Ok is preserved even when the snapshot cannot be derived");
+        assert_eq!(outcome.result["ok"], true, "tool result is untouched");
+        assert!(
+            outcome.artifacts.is_empty(),
+            "unparsable todo args skip the artifact"
+        );
+    }
+
+    #[tokio::test]
+    async fn todo_clear_emits_empty_snapshot_artifact() {
+        let ctx = todo_ctx(false);
+        let outcome = run_tool_call(&ctx, todo_call("c1", serde_json::json!({"items": []})))
+            .await
+            .expect("empty todo clear succeeds");
+        match &outcome.artifacts[0] {
+            TurnArtifact::Todo(snapshot) => {
+                assert!(snapshot.items.is_empty(), "[] is a legal clear snapshot");
+            }
+            other => panic!("expected Todo artifact, got {other:?}"),
+        }
     }
 }
