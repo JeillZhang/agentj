@@ -4,10 +4,11 @@ AI 编码代理工具（Rust）——Linux 内核式「内核调度 + 可插拔�
 内核通过统一的 JSON-RPC 2.0 协议（stdio / TCP / WebSocket）对外暴露能力；
 CLI、TUI、Web、Desktop 均通过 `agentj-ui` 协议消费者接入，任意语言可开发前端。
 
-> 当前版本：**v0.14.3**——agentj-ui 三栏工作台（Sessions/Files 侧栏 + 会话中栏 + 运行详情右栏 + composer 模型/Agent/熵变选择器 + 模型提问卡片 + demo 模式）
+> 当前版本：**v0.14.4**——agentj-ui 三栏工作台（Sessions/Files 侧栏 + 会话中栏 + 运行详情右栏 + composer 模型/Agent/熵变选择器 + 模型提问卡片 + demo 模式）
 > （v0.14.2 验收修复 3 bugs：短视口 composer 裁剪 / 右分栏折叠态锁定 / 提问卡折叠态摘要；
 > 评审反馈修复：移除三栏间 standalone dashboard 提示行；
-> v0.14.3 评审反馈修复 3 项：右栏始终满高 / 任务与文件变更标题点击折叠 / `.sec-head` 标题风格统一）
+> v0.14.3 评审反馈修复 3 项：右栏始终满高 / 任务与文件变更标题点击折叠 / `.sec-head` 标题风格统一；
+> v0.14.4 评审反馈修复 1 项：顶栏连接/继续弹窗 portal 至 body 窗口居中 + 遮罩点击关闭）
 > （Web / TUI / Desktop + SDK + tokens，16 crate + npm workspaces monorepo，
 > 共享 `packages/sdk` + `packages/protocol` + `packages/tokens`，后端零改造，frontend stays in-repo）
 
@@ -53,7 +54,7 @@ CLI、TUI、Web、Desktop 均通过 `agentj-ui` 协议消费者接入，任意�
 - [x] **Visual 2.1 refine（v0.12.3）**：`packages/tokens` 扩展至 19 keys（shadowSoft/shadowRaised/radiusXl/textCaption + spacing/font/z/motion/icon vars）
   + Web 精细化：App Shell 居中列 + 抽屉 scrim / 悬浮胶囊 Composer（22px + shadow + sticky）/ 卡片化 ConnectionBar 与 SessionPanel / 气泡与 timeline 工具卡 / Trajectory timeline / Hero 空状态与 dashed trigger / Dialog 固定遮罩 + lucide 替换 emoji
 - [x] **Visual 2.2 Opencode redesign（v0.13.0）**：UnifiedSidebar 256px（Threads + Project 文件夹 + 底栏）+ local Project（localStorage）+ Composer 增强（Project picker + model chip + status popover + @/slash）+ 密度收紧（conversation gap 8px）+ TUI 32char 侧栏 + a11y/CLS/虚拟化 + Desktop 同步
-- [x] **三栏工作台（v0.14.3）**：`WorkspaceShell` 三栏布局（Sessions/Files 左栏 + 会话中栏 + 运行详情右栏 `TodoPanel`/`ChangeList` unified diff）+ `SplitPane` 拖拽/键盘/双击与宽度持久化 + `<1024` 右抽屉 + 右栏满高 + 任务/文件变更标题点击折叠 + composer 模型/Agent/熵变选择器（互斥 + 持久化）+ `AskQuestionCard` 模型提问卡片 + `TopbarMenu` 顶栏化（含 demo 开关 + `demoData` 驱动 TODO/文件树/变更/提问卡）+ tokens 24 keys + `LAYOUT` 常量
+- [x] **三栏工作台（v0.14.4）**：`WorkspaceShell` 三栏布局（Sessions/Files 左栏 + 会话中栏 + 运行详情右栏 `TodoPanel`/`ChangeList` unified diff）+ `SplitPane` 拖拽/键盘/双击与宽度持久化 + `<1024` 右抽屉 + 右栏满高 + 任务/文件变更标题点击折叠 + composer 模型/Agent/熵变选择器（互斥 + 持久化）+ `AskQuestionCard` 模型提问卡片 + `TopbarMenu` 顶栏化（含 demo 开关 + `demoData` 驱动 TODO/文件树/变更/提问卡）+ tokens 24 keys + `LAYOUT` 常量
 
 ## Project Structure
 
@@ -83,7 +84,7 @@ agentj-ui/                 # 前端 monorepo（npm workspaces，frontend stays i
       src/
         client.ts          # RpcClient
         router.ts          # ResponseRouter + RpcTransport
-        config.ts          # VERSION="0.14.3" + PROTOCOL_VERSION="0.12.1" + resolveWsUrl
+        config.ts          # VERSION="0.14.4" + PROTOCOL_VERSION="0.12.1" + resolveWsUrl
         methods.ts         # METHODS 常量（由 methods.json 生成）
         transports/
           websocket.ts     # WebSocketTransport（浏览器）
@@ -100,7 +101,7 @@ docs/superpowers/          # 设计文档 + 实现计划（中文）
 ```
 
 > 前端不拆独立仓：`agentj-ui` 保留在 `crates/` 同级 monorepo 内，
-> 与 Rust workspace 共享版本 `0.14.3`（`VERSION` + 单一 `PROTOCOL_VERSION 0.12.1` 来源 `sdk/config.ts`）。
+> 与 Rust workspace 共享版本 `0.14.4`（`VERSION` + 单一 `PROTOCOL_VERSION 0.12.1` 来源 `sdk/config.ts`）。
 
 ## Usage
 
@@ -192,7 +193,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo bench -p agentj-model       # 模型流式基准
 cargo run -p agentj-protocol --bin gen_schemas   # 重新生成 schemas/*.json
 cargo test -p agentj-protocol -- drift          # 漂移门禁（33 schemas 无漂移）
-./scripts/check-version.sh        # 版本一致性：Cargo.toml + sdk/config.ts + desktop 均为 0.14.3（PROTOCOL_VERSION 0.12.1）
+./scripts/check-version.sh        # 版本一致性：Cargo.toml + sdk/config.ts + desktop 均为 0.14.4（PROTOCOL_VERSION 0.12.1）
 
 # 前端 monorepo（npm workspaces，根为 agentj-ui/）
 npm --prefix agentj-ui install                           # 安装（agentj-ui workspaces）
