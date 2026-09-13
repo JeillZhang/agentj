@@ -14,6 +14,9 @@ import "./layout.css";
 const CENTER_MIN = 480;
 const SPLITTER_HIT = 7;
 const COLUMN_GAP = 12;
+const RIGHT_RAIL = 40; // matches .aj-workspace--right-collapsed rail width in layout.css
+
+const noop = (): void => {};
 
 export type WorkspaceShellProps = {
   children: [ReactNode, ReactNode];
@@ -125,13 +128,14 @@ export default function WorkspaceShell({
       <main className="aj-shell__center">{center}</main>
       <SplitPane
         side="right"
-        width={rightWidth}
-        min={LAYOUT_LIMITS.rightMin}
-        max={rightMax}
+        width={rightCollapsed ? RIGHT_RAIL : rightWidth}
+        min={rightCollapsed ? RIGHT_RAIL : LAYOUT_LIMITS.rightMin}
+        max={rightCollapsed ? RIGHT_RAIL : rightMax}
         defaultWidth={LAYOUT_DEFAULTS.rightWidth}
-        onResize={handleRightResize}
-        onCommit={handleRightCommit}
-        onReset={handleRightReset}
+        collapsed={rightCollapsed}
+        onResize={rightCollapsed ? noop : handleRightResize}
+        onCommit={rightCollapsed ? noop : handleRightCommit}
+        onReset={rightCollapsed ? noop : handleRightReset}
         onToggleCollapse={handleRightToggleCollapse}
       />
       <div className="aj-shell__right">{right}</div>
