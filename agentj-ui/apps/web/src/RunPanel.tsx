@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Check, ChevronDown, Clock, Folder, Minus, MoreHorizontal, Send, X } from "lucide-react";
+import { Check, ChevronDown, Clock, Folder, Minus, X } from "lucide-react";
 import { METHODS, parseProgress, RpcClient } from "@agentj/sdk";
 import type { ProgressFrame } from "@agentj/sdk";
+import ComposerOptions from "./components/ComposerOptions";
 import { createProject, loadCurrentProject, loadProjects, setCurrentProject } from "./projectStore";
 
 export type RunEntry =
@@ -218,9 +219,6 @@ export default function RunPanel({
   initialEntries = [],
   pendingTool,
   model,
-  modules = [],
-  status = "connected",
-  unreachable = false,
 }: Props) {
   const [entries, setEntries] = useState<RunEntry[]>(initialEntries);
   const [elapsedMs, setElapsedMs] = useState<number | undefined>(undefined);
@@ -238,7 +236,6 @@ export default function RunPanel({
   const currentProjectName = projects.find((p) => p.id === currentId)?.name ?? "Inbox";
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerIndex, setPickerIndex] = useState(0);
-  const [statusOpen, setStatusOpen] = useState(false);
   const [atFilter, setAtFilter] = useState<string | null>(null);
   const [atIndex, setAtIndex] = useState(0);
   const [slashOpen, setSlashOpen] = useState(false);
@@ -280,19 +277,16 @@ export default function RunPanel({
 
   // close on outside click
   useEffect(() => {
-    if (!pickerOpen && !statusOpen) return;
+    if (!pickerOpen) return;
     const onDown = (e: MouseEvent) => {
       const t = e.target as HTMLElement;
-      if (pickerOpen && pickerRef.current && !pickerRef.current.contains(t)) {
+      if (pickerRef.current && !pickerRef.current.contains(t)) {
         setPickerOpen(false);
-      }
-      if (statusOpen && !t.closest(".aj-composer__status-wrap")) {
-        setStatusOpen(false);
       }
     };
     document.addEventListener("mousedown", onDown);
     return () => document.removeEventListener("mousedown", onDown);
-  }, [pickerOpen, statusOpen]);
+  }, [pickerOpen]);
 
   function handleDraftChange(v: string) {
     setDraft(v);
@@ -361,8 +355,6 @@ export default function RunPanel({
       });
     }
   }
-
-  const connState = unreachable ? "unreachable" : status.startsWith("connected") ? "connected" : "connecting";
 
   return (
     <section aria-label="run" className="aj-card">
@@ -467,37 +459,6 @@ export default function RunPanel({
           {model !== undefined && model !== null && model !== "" && (
             <span className="aj-chip aj-chip--model">{model}</span>
           )}
-          <div className="aj-composer__status-wrap">
-            <button
-              type="button"
-              aria-label="status"
-              aria-expanded={statusOpen}
-              aria-haspopup="dialog"
-              className="aj-popover-trigger"
-              onClick={() => setStatusOpen((o) => !o)}
-            >
-              <MoreHorizontal size={16} aria-hidden="true" />
-            </button>
-            {statusOpen && (
-              <div className="aj-popover" role="dialog" aria-label="status">
-                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-                  <span className="aj-status-light" data-state={connState} aria-hidden="true" />
-                  <span style={{ fontSize: 12, color: "var(--aj-textMuted)" }}>{status}</span>
-                </div>
-                <ul className="aj-chips" aria-label="status">
-                  {modules.length === 0 ? (
-                    <li className="aj-chip">no modules</li>
-                  ) : (
-                    modules.map((m) => (
-                      <li key={m.id} className="aj-chip" data-state={m.state}>
-                        {m.id}: {m.state}
-                      </li>
-                    ))
-                  )}
-                </ul>
-              </div>
-            )}
-          </div>
         </div>
 
         <div style={{ position: "relative" }}>
@@ -610,13 +571,11 @@ export default function RunPanel({
             </ul>
           )}
         </div>
-        <div className="aj-composer__toolbar">
-          <span className="aj-chip">Plan</span>
-          {isBusy && <span className="aj-pending" aria-hidden="true" />}
+        <ComposerOptions model={model}>
           <button
             type="button"
-            className="aj-button aj-button--send"
-            aria-label="send"
+            className="send aj-button--send"
+            aria-label="发送"
             disabled={!activeSessionId || isBusy}
             onClick={() => {
               if (busy.current) return;
@@ -626,9 +585,9 @@ export default function RunPanel({
               setSlashOpen(false);
             }}
           >
-            <Send size={16} aria-hidden="true" />
+            ↑
           </button>
-        </div>
+        </ComposerOptions>
       </div>
     </section>
   );

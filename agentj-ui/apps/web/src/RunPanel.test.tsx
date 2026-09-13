@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom/vitest";
 import { beforeEach, describe, expect, it } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, within } from "@testing-library/react";
 import RunPanel, { ConversationFeed, failRun, fmtDuration, reduceRunFeed, type RunEntry } from "./RunPanel.tsx";
 import UnifiedSidebar from "./components/UnifiedSidebar";
 import type { ProgressFrame } from "@agentj/sdk";
@@ -227,54 +227,15 @@ describe("ConversationFeed rendering", () => {
   });
 });
 
-describe("RunPanel composer status popover wiring", () => {
-  it("renders the real modules passed as props instead of the no-modules default", () => {
-    render(
-      <RunPanel
-        client={noopClient}
-        activeSessionId="s1"
-        modules={[{ id: "mcp-filesystem", state: "running" }]}
-        status="connected"
-        unreachable={false}
-      />,
-    );
-    fireEvent.click(screen.getByRole("button", { name: /status/i }));
-    expect(screen.getByRole("dialog", { name: "status" })).toBeInTheDocument();
-    expect(screen.getByText("mcp-filesystem: running")).toBeInTheDocument();
-    expect(screen.queryByText("no modules")).not.toBeInTheDocument();
-  });
-
-  it("shows connected status text and a connected light when unreachable is false", () => {
-    render(
-      <RunPanel
-        client={noopClient}
-        activeSessionId="s1"
-        modules={[]}
-        status="connected"
-        unreachable={false}
-      />,
-    );
-    fireEvent.click(screen.getByRole("button", { name: /status/i }));
-    const dialog = screen.getByRole("dialog", { name: "status" });
-    expect(dialog.querySelector(".aj-status-light")?.getAttribute("data-state")).toBe("connected");
-    expect(screen.getByText("connected")).toBeInTheDocument();
-    expect(screen.getByText("no modules")).toBeInTheDocument();
-  });
-
-  it("turns the status light unreachable and shows kernel unreachable status when unreachable is true", () => {
-    render(
-      <RunPanel
-        client={noopClient}
-        activeSessionId="s1"
-        modules={[]}
-        status="kernel unreachable on ws://x"
-        unreachable={true}
-      />,
-    );
-    fireEvent.click(screen.getByRole("button", { name: /status/i }));
-    const dialog = screen.getByRole("dialog", { name: "status" });
-    expect(dialog.querySelector(".aj-status-light")?.getAttribute("data-state")).toBe("unreachable");
-    expect(screen.getByText("kernel unreachable on ws://x")).toBeInTheDocument();
+describe("RunPanel composer toolbar", () => {
+  it("toolbar hosts selectors and send, no status popover", () => {
+    render(<RunPanel client={noopClient} activeSessionId="s1" model="deepseek-chat" />);
+    const toolbar = document.querySelector(".comp-tools") as HTMLElement;
+    expect(toolbar.textContent).toContain("deepseek-chat");
+    expect(toolbar.textContent).toContain("Build");
+    expect(toolbar.textContent).toContain("均衡");
+    expect(within(toolbar).getByRole("button", { name: /发送|send/i })).toBeInTheDocument();
+    expect(screen.queryByLabelText("status")).toBeNull();
   });
 });
 
