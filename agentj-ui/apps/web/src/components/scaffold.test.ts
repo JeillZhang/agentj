@@ -94,8 +94,15 @@ describe("T0 scaffold density and hairline", () => {
     expect(palette).toMatch(/SEMANTIC_KEYS/);
     const keysMatch = palette.match(/SEMANTIC_KEYS\s*=\s*\[/s);
     expect(keysMatch).not.toBeNull();
-    const count = (palette.match(/"bg"|"sidebar"|"panel"|"raised"|"text"|"textMuted"|"accent"|"accentOnAccent"|"userBubble"|"border"|"codeBg"|"inlineCodeBg"|"success"|"error"|"warning"|"shadowSoft"|"shadowRaised"|"radiusXl"|"textCaption"/g) ?? []).length;
-    expect(count).toBe(19);
+    const keys = [
+      "bg", "sidebar", "panel", "raised", "text", "textMuted", "accent", "accentOnAccent",
+      "userBubble", "border", "codeBg", "inlineCodeBg", "success", "error", "warning",
+      "shadowSoft", "shadowRaised", "radiusXl", "textCaption",
+      "radiusCtl", "radiusCard", "accentTint", "diffAddTint", "diffDelTint",
+    ];
+    const quoted = keys.map((k) => `"${k}"`).join("|");
+    const count = (palette.match(new RegExp(quoted, "g")) ?? []).length;
+    expect(count).toBe(24);
     const compDir = join(webRoot, "src/components");
     const sidebarCandidates = [
       join(compDir, "sidebar.css"),
