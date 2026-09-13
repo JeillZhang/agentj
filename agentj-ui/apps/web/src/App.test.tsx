@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor, fireEvent, act, within } from "@testing-library/react";
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
@@ -543,7 +543,7 @@ describe("App shell + history rebuild", () => {
     shared.sessionListResult.value = { sessions: [{ session_id: "s1", state: "active", preview: "hi" }] };
     render(<App />);
     fireEvent.click(await screen.findByRole("button", { name: /connect/i }));
-    const header = screen.getByRole("banner");
+    const header = document.querySelector(".aj-topbar") as HTMLElement;
     expect(await within(header).findByText("deepseek-chat")).toBeInTheDocument();
     expect(within(header).getByLabelText("model")).toBeInTheDocument();
     const list = await screen.findByRole("list", { name: "session list" });
@@ -596,6 +596,36 @@ describe("App shell + history rebuild", () => {
     fireEvent.click(toggle);
     expect(toggle.getAttribute("aria-expanded")).toBe("false");
     expect(app().dataset.drawer).toBe("closed");
+  });
+});
+
+describe("T12 workspace shell + right panel", () => {
+  beforeEach(() => {
+    shared.initVersion.value = "0.12.1";
+    shared.shouldFail.value = false;
+    shared.historyResult.value = { events: [] as never[], next_cursor: null };
+    localStorage.clear();
+    document.documentElement.removeAttribute("data-theme");
+  });
+  afterEach(() => localStorage.clear());
+
+  it("shell + right panel render", () => {
+    render(<App />);
+    expect(document.querySelector(".aj-workspace")).not.toBeNull();
+    expect(document.querySelector(".aj-sidebar")).not.toBeNull();
+    expect(document.querySelector(".aj-shell__center")).not.toBeNull();
+    expect(document.querySelector(".aj-right")).not.toBeNull();
+    expect(screen.getByText("运行详情")).toBeInTheDocument();
+    expect(screen.getByText("文件变更")).toBeInTheDocument();
+    expect(screen.getAllByText("待协议支持").length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("demo fixtures light up the right panel", () => {
+    localStorage.setItem("agentj.demo", "1");
+    render(<App />);
+    expect(screen.getByText("任务")).toBeInTheDocument();
+    expect(screen.getByText("2 / 4")).toBeInTheDocument();
+    expect(screen.getByText("+86")).toBeInTheDocument();
   });
 });
 

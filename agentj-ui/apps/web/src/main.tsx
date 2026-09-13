@@ -4,6 +4,8 @@ import "@agentj/tokens/tokens.css";
 import "./index.css";
 import "./App.css";
 import "./components/layout.css";
+import "./components/split.css";
+import "./components/rightpanel.css";
 import "./components/sidebar.css";
 import "./components/connection.css";
 import "./components/session.css";

@@ -6,6 +6,7 @@ import {
   RpcClient,
   WebSocketTransport,
   resolveWsUrl,
+  parseProgress,
 } from "@agentj/sdk";
 import type { NotificationHandler } from "@agentj/sdk";
 import { MoreHorizontal, Moon, Sun, Monitor, Menu } from "lucide-react";
@@ -13,10 +14,18 @@ import ApprovalDialog from "./ApprovalDialog";
 import type { ApprovalRequest } from "./ApprovalDialog";
 import RunPanel from "./RunPanel";
 import UnifiedSidebar from "./components/UnifiedSidebar";
+import WorkspaceShell from "./components/WorkspaceShell";
+import RightPanel from "./components/RightPanel";
+import TodoPanel from "./components/TodoPanel";
+import ChangeList from "./components/ChangeList";
 import { Trajectory, historyToConversation } from "./Trajectory";
 import type { RawEvent } from "./Trajectory";
 import heroImg from "./assets/hero.png";
 import { loadCurrentProject, setCurrentProject } from "./projectStore";
+import { loadLayout, saveLayout, subscribeLayout } from "./layoutStore";
+import { isDemoEnabled, subscribeDemo, DEMO_TODOS, DEMO_CHANGES } from "./demoData";
+import { applyProgressChanges } from "./changes";
+import type { FileChangeRow } from "./changes";
 
 const rawWsEnv = import.meta.env.VITE_AGENTJ_WS_URL;
 const envWsUrl = typeof rawWsEnv === "string" ? rawWsEnv : undefined;
@@ -207,6 +216,34 @@ export default function App() {
   const [currentProjectId, setCurrentProjectIdState] = useState<string>(() => {
     try { return loadCurrentProject(); } catch { return "default"; }
   });
+  const [demo, setDemo] = useState(() => isDemoEnabled());
+  const [rightCollapsed, setRightCollapsed] = useState(() => loadLayout().rightCollapsed);
+  const [derivedChanges, setDerivedChanges] = useState<FileChangeRow[]>([]);
+
+  useEffect(() => subscribeDemo(setDemo), []);
+
+  useEffect(() => subscribeLayout((state) => setRightCollapsed(state.rightCollapsed)), []);
+
+  useEffect(() => {
+    setDerivedChanges([]);
+  }, [activeSessionId]);
+
+  // second notification handler (useSharedKernel owns the first): derive write rows
+  useEffect(() => {
+    if (!sharedClient) return;
+    const handler: NotificationHandler = (method, params) => {
+      if (method !== METHODS.progress) return;
+      const frame = parseProgress(params);
+      setDerivedChanges((prev) => applyProgressChanges(prev, frame));
+    };
+    sharedClient.setNotificationHandler(handler);
+    return () => { sharedClient.removeNotificationHandler?.(handler); };
+  }, [sharedClient]);
+
+  const handleRightCollapsedChange = useCallback((collapsed: boolean) => {
+    saveLayout({ rightCollapsed: collapsed });
+    setRightCollapsed(collapsed);
+  }, []);
 
   // stale currentProject fallback + cleanup
   useEffect(() => {
@@ -365,7 +402,16 @@ export default function App() {
       {unreachable && (
         <p>{`agentj dashboard --port ${new URL(resolveWsUrl({ envUrl: envWsUrl })).port || new URL(resolveWsUrl({})).port}`}</p>
       )}
-      <div className="aj-layout">
+      <WorkspaceShell
+        right={
+          <RightPanel collapsed={rightCollapsed} onToggle={() => handleRightCollapsedChange(!rightCollapsed)}>
+            <TodoPanel items={demo ? DEMO_TODOS : []} />
+            <ChangeList changes={demo ? DEMO_CHANGES : derivedChanges} />
+          </RightPanel>
+        }
+        rightCollapsed={rightCollapsed}
+        onRightCollapsedChange={handleRightCollapsedChange}
+      >
         <UnifiedSidebar
           wsUrl={wsUrl}
           client={sharedClient}
@@ -374,7 +420,7 @@ export default function App() {
           onConnect={handleConnect}
           unreachable={unreachable}
         />
-        <main className="aj-main">
+        <div className="aj-main">
           <div role="tablist" aria-label="views">
             <button role="tab" aria-selected={tab === "conversation"} className="aj-tab" onClick={() => setTab("conversation")}>Conversation</button>
             <button role="tab" aria-selected={tab === "trajectory"} className="aj-tab" onClick={() => setTab("trajectory")}>Trajectory</button>
@@ -408,8 +454,8 @@ export default function App() {
           ) : (
             <p className="aj-empty">Select a session to inspect its trajectory.</p>
           )}
-        </main>
-      </div>
+        </div>
+      </WorkspaceShell>
       {pending && <ApprovalDialog request={pending} error={approvalError} onRespond={respond} onClose={close} />}
     </div>
   );
