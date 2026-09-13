@@ -18,8 +18,11 @@ describe("config", () => {
     expect(resolveWsUrl({ envUrl: "ws://host:1/ws" })).toBe("ws://host:1/ws");
   });
 
-  it("methods cover the 16-method registry", () => {
+  it("methods cover the 21-method registry", () => {
     expect(METHODS.kernelStatus).toBe("kernel/status");
-    expect(Object.keys(METHODS)).toHaveLength(18);
+    expect(Object.keys(METHODS)).toHaveLength(21);
+    expect(METHODS.fileList).toBe("file/list");
+    expect(METHODS.askQuestion).toBe("$/askQuestion");
+    expect(METHODS.questionRespond).toBe("question/respond");
   });
 });

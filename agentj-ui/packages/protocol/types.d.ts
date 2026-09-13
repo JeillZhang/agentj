@@ -1,3 +1,47 @@
+/**
+ * One selectable answer option. @since 0.13.0
+ */
+export interface AskOption {
+  /**
+   * Optional hint rendered with the option. @since 0.13.0
+   */
+  hint?: string | null;
+  id: string;
+  label: string;
+  [k: string]: unknown;
+}
+
+/**
+ * `$/askQuestion` params (server → owner client, 2–8 options). @since 0.13.0
+ */
+export interface AskQuestionParams {
+  /**
+   * Always serialized; omitted on the wire means false. @since 0.13.0
+   */
+  allow_multiple?: boolean;
+  /**
+   * Always serialized; omitted on the wire means true. @since 0.13.0
+   */
+  allow_other?: boolean;
+  /**
+   * Optional short header for the question card. @since 0.13.0
+   */
+  header?: string | null;
+  options: AskOption[];
+  question: string;
+  question_id: string;
+  session_id: string;
+  /**
+   * Timeout in seconds; `None` = no timeout (timeout settles as skipped).
+   * @since 0.13.0
+   */
+  timeout_s?: number | null;
+  [k: string]: unknown;
+}
+/**
+ * One selectable answer option. @since 0.13.0
+ */
+
 export interface Attachment {
   content?: string | null;
   mime?: string | null;
@@ -49,6 +93,129 @@ export interface ErrorObject {
   message: string;
   [k: string]: unknown;
 }
+
+/**
+ * Change operation of a `FileChange`. `Unknown` tolerates forward values
+ * (serde(other)); schema lists only the known values. @since 0.13.0
+ */
+export type FileChangeKind = "add" | "modify" | "delete";
+
+/**
+ * A workspace file change. @since 0.13.0
+ */
+export interface FileChange {
+  additions: number;
+  deletions: number;
+  /**
+   * Unified diff text; omitted when unavailable (untracked / over limit).
+   */
+  diff?: string | null;
+  /**
+   * True only when the diff was truncated; omitted otherwise.
+   */
+  diff_truncated?: boolean | null;
+  op: FileChangeKind;
+  /**
+   * Path relative to the project root.
+   */
+  path: string;
+  /**
+   * Tool call card this change belongs to; omitted when unavailable.
+   */
+  tool_call_id?: string | null;
+  [k: string]: unknown;
+}
+
+/**
+ * Change operation of a `FileChange`. `Unknown` tolerates forward values
+ * (serde(other)); schema lists only the known values. @since 0.13.0
+ */
+
+/**
+ * Porcelain single-letter git status (M/A/U/D). `Unknown` tolerates forward
+ * values (serde(other)); the schema lists only the known letters. @since 0.13.0
+ */
+export type GitFileStatus = "M" | "A" | "U" | "D";
+/**
+ * Entry kind. `Unknown` tolerates forward values (serde(other)); the schema
+ * lists only the known values. @since 0.13.0
+ */
+export type FileKind = "file" | "dir";
+
+/**
+ * One directory entry (`path` relative to the project root, no `./` prefix).
+ * @since 0.13.0
+ */
+export interface FileEntry {
+  /**
+   * Porcelain single-letter status; `None` = clean / not a git repo.
+   * @since 0.13.0
+   */
+  git_status?: GitFileStatus | null;
+  kind: FileKind;
+  /**
+   * Modification time in epoch milliseconds. @since 0.13.0
+   */
+  mtime_ms?: number | null;
+  /**
+   * Entry name without separators.
+   */
+  name: string;
+  /**
+   * Path relative to the project root.
+   */
+  path: string;
+  /**
+   * File size in bytes; `None` for directories. @since 0.13.0
+   */
+  size?: number | null;
+  [k: string]: unknown;
+}
+
+/**
+ * Entry kind. `Unknown` tolerates forward values (serde(other)); the schema
+ * lists only the known values. @since 0.13.0
+ */
+
+/**
+ * `file/list` params — enumerate a directory relative to the session
+ * `project_root`. @since 0.13.0
+ */
+export interface FileListParams {
+  /**
+   * Enumeration depth 1..=8 (default 1, server-validated). @since 0.13.0
+   */
+  depth?: number | null;
+  /**
+   * Directory path relative to the project root; absent = root.
+   */
+  path?: string | null;
+  session_id: string;
+  [k: string]: unknown;
+}
+
+/**
+ * Porcelain single-letter git status (M/A/U/D). `Unknown` tolerates forward
+ * values (serde(other)); the schema lists only the known letters. @since 0.13.0
+ */
+/**
+ * Entry kind. `Unknown` tolerates forward values (serde(other)); the schema
+ * lists only the known values. @since 0.13.0
+ */
+
+/**
+ * `file/list` result — entries capped at 2000; `truncated` flags the cap.
+ * @since 0.13.0
+ */
+export interface FileListResult {
+  entries: FileEntry[];
+  truncated: boolean;
+  [k: string]: unknown;
+}
+/**
+ * One directory entry (`path` relative to the project root, no `./` prefix).
+ * @since 0.13.0
+ */
 
 /**
  * JSON-RPC 2.0 request/notification id. `Null` is used only in error responses
@@ -222,10 +389,32 @@ export type ProgressValue =
       session_id?: string | null;
       tool: string;
       [k: string]: unknown;
+    }
+  | {
+      items: TodoItem[];
+      kind: "todo";
+      revision: number;
+      session_id: string;
+      [k: string]: unknown;
+    }
+  | {
+      change: FileChange;
+      kind: "file_change";
+      session_id: string;
+      [k: string]: unknown;
     };
 /**
  * Decision value in `PermissionRespondParams`. `Unknown` tolerates forward
  * values (serde(other)); schema lists only the known values.
+ */
+/**
+ * Lifecycle status of a TODO item. `Unknown` tolerates forward values
+ * (serde(other)); schema lists only the known values. @since 0.13.0
+ */
+export type TodoStatus = "pending" | "in_progress" | "completed" | "cancelled";
+/**
+ * Change operation of a `FileChange`. `Unknown` tolerates forward values
+ * (serde(other)); schema lists only the known values. @since 0.13.0
  */
 
 export interface ProgressParams {
@@ -238,6 +427,21 @@ export interface UsageInfo {
   prompt_tokens: number;
   [k: string]: unknown;
 }
+/**
+ * One entry of a full TODO snapshot. @since 0.13.0
+ */
+export interface TodoItem {
+  content: string;
+  /**
+   * Kernel-computed stable id (content hash; duplicates disambiguated by occurrence).
+   */
+  id: string;
+  status: TodoStatus;
+  [k: string]: unknown;
+}
+/**
+ * A workspace file change. @since 0.13.0
+ */
 
 /**
  * Streaming progress token — independent of the request id (design 决策 #3).
@@ -252,7 +456,44 @@ export interface UsageInfo {
  * Decision value in `PermissionRespondParams`. `Unknown` tolerates forward
  * values (serde(other)); schema lists only the known values.
  */
+/**
+ * Lifecycle status of a TODO item. `Unknown` tolerates forward values
+ * (serde(other)); schema lists only the known values. @since 0.13.0
+ */
+/**
+ * Change operation of a `FileChange`. `Unknown` tolerates forward values
+ * (serde(other)); schema lists only the known values. @since 0.13.0
+ */
 
+/**
+ * One entry of a full TODO snapshot. @since 0.13.0
+ */
+/**
+ * A workspace file change. @since 0.13.0
+ */
+
+/**
+ * `question/respond` params (`answers` are option ids or `other:`-prefixed
+ * free text). @since 0.13.0
+ */
+export interface QuestionRespondParams {
+  answers: string[];
+  question_id: string;
+  /**
+   * Omitted on the wire means false. @since 0.13.0
+   */
+  skipped?: boolean;
+  [k: string]: unknown;
+}
+
+/**
+ * `question/respond` result — `false` for duplicate/unknown/settled ids.
+ * @since 0.13.0
+ */
+export interface QuestionRespondResult {
+  accepted: boolean;
+  [k: string]: unknown;
+}
 
 /**
  * JSON-RPC 2.0 request/notification id. `Null` is used only in error responses
@@ -345,10 +586,46 @@ export type TrajectoryValue =
       kind: "error";
       message: string;
       [k: string]: unknown;
+    }
+  | {
+      items: TodoItem[];
+      kind: "todo";
+      revision: number;
+      [k: string]: unknown;
+    }
+  | {
+      change: FileChange;
+      kind: "file_change";
+      [k: string]: unknown;
+    }
+  | {
+      allow_multiple: boolean;
+      allow_other: boolean;
+      header?: string | null;
+      kind: "ask_question";
+      options: AskOption[];
+      question: string;
+      question_id: string;
+      [k: string]: unknown;
+    }
+  | {
+      answers: string[];
+      kind: "question_answer";
+      question_id: string;
+      skipped: boolean;
+      [k: string]: unknown;
     };
 /**
  * Decision value in `PermissionRespondParams`. `Unknown` tolerates forward
  * values (serde(other)); schema lists only the known values.
+ */
+/**
+ * Lifecycle status of a TODO item. `Unknown` tolerates forward values
+ * (serde(other)); schema lists only the known values. @since 0.13.0
+ */
+/**
+ * Change operation of a `FileChange`. `Unknown` tolerates forward values
+ * (serde(other)); schema lists only the known values. @since 0.13.0
  */
 
 /**
@@ -372,6 +649,15 @@ export interface TrajectoryEvent {
   value: TrajectoryValue;
   [k: string]: unknown;
 }
+/**
+ * One entry of a full TODO snapshot. @since 0.13.0
+ */
+/**
+ * A workspace file change. @since 0.13.0
+ */
+/**
+ * One selectable answer option. @since 0.13.0
+ */
 
 export interface SessionIdParams {
   session_id: string;
@@ -402,6 +688,15 @@ export interface SessionSummary {
   session_id: string;
   state: SessionStatus;
   updated_at: number;
+  [k: string]: unknown;
+}
+
+/**
+ * `session/new` params. `project_root` is an absolute directory; when omitted
+ * the session defaults to the process CWD. @since 0.13.0
+ */
+export interface SessionNewParams {
+  project_root?: string | null;
   [k: string]: unknown;
 }
 
@@ -453,6 +748,20 @@ export interface SessionSubscribeParams {
 
 /**
  * One row of `session/list`. @since 0.12.0
+ */
+
+/**
+ * Lifecycle status of a TODO item. `Unknown` tolerates forward values
+ * (serde(other)); schema lists only the known values. @since 0.13.0
+ */
+
+/**
+ * One entry of a full TODO snapshot. @since 0.13.0
+ */
+
+/**
+ * Lifecycle status of a TODO item. `Unknown` tolerates forward values
+ * (serde(other)); schema lists only the known values. @since 0.13.0
  */
 
 
