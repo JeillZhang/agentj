@@ -1,18 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import {
-  ArrowUpDown,
-  ChevronDown,
-  ChevronRight,
-  Filter,
-  Folder,
-  FolderOpen,
-  HelpCircle,
-  LayoutGrid,
-  Plus,
-  Search,
-  Settings,
-  Star,
-} from "lucide-react";
+import { ChevronDown, ChevronRight, Folder, FolderOpen, Search, Star } from "lucide-react";
 import {
   METHODS,
   ResponseRouter,
@@ -22,6 +9,7 @@ import {
 import {
   assignSession,
   createProject,
+  getProjectForSession,
   groupSessionsByProject,
   loadCollapsed,
   loadCurrentProject,
@@ -30,7 +18,10 @@ import {
   setCurrentProject,
 } from "../projectStore";
 import type { Project } from "../projectStore";
-import ConnectionBar from "../ConnectionBar";
+import { loadFavorites, loadLayout, saveLayout, toggleFavorite } from "../layoutStore";
+import { DEMO_FILE_TREE, isDemoEnabled, subscribeDemo } from "../demoData";
+import SidebarTabs from "./SidebarTabs";
+import FileTree from "./FileTree";
 import "./sidebar.css";
 import "./session.css";
 
@@ -39,10 +30,48 @@ type ListRow = {
   preview?: string;
   state?: string;
   updatedAt?: string | number | null;
+  createdAt?: string | number | null;
 };
 
-const SUBGROUP_TITLES: Array<"Today" | "Previous 7 days" | "Older"> = ["Today", "Previous 7 days", "Older"];
+type SidebarSort = "updated" | "created";
+type SidebarFilter = "all" | "favorites";
 
+const SUBGROUP_TITLES: Array<"Today" | "Previous 7 days" | "Older"> = ["Today", "Previous 7 days", "Older"];
+const VIRTUAL_PAGE = 50;
+
+function toMs(ts: unknown): number | null {
+  if (ts == null || ts === "") return null;
+  if (typeof ts === "number") {
+    if (Number.isNaN(ts)) return null;
+    return ts < 1e12 ? ts * 1000 : ts;
+  }
+  if (typeof ts === "string") {
+    if (/^\d+$/.test(ts)) {
+      const n = Number(ts);
+      return Number.isNaN(n) ? null : n < 1e12 ? n * 1000 : n;
+    }
+    const parsed = Date.parse(ts);
+    return Number.isNaN(parsed) ? null : parsed;
+  }
+  return null;
+}
+
+/** `今天 10:42` / `昨天 18:20` / `09-11 16:03` per the mockup meta line. */
+function formatTime(ts: unknown): string {
+  const ms = toMs(ts);
+  if (ms == null) return "";
+  const d = new Date(ms);
+  const now = new Date();
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const clock = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  if (d.toDateString() === now.toDateString()) return `今天 ${clock}`;
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  if (d.toDateString() === yesterday.toDateString()) return `昨天 ${clock}`;
+  return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${clock}`;
+}
+
+/** Grouped project rows show the id (the flat recent list owns the preview title). */
 function SessionListItem({
   row,
   activeSessionId,
@@ -69,65 +98,31 @@ function SessionListItem({
       >
         <span className="aj-session-state" data-state={row.state} />
         <span className="aj-session-id">{row.id}</span>
-        {row.preview !== undefined && <span className="aj-session-preview">{row.preview}</span>}
       </button>
     </li>
   );
 }
 
-function rowsFromList(
-  sessions: Array<Record<string, unknown>>,
-): ListRow[] {
+function rowsFromList(sessions: Array<Record<string, unknown>>): ListRow[] {
   return (sessions ?? []).map((s) => {
     const sid = String((s as { session_id?: string; id?: string }).session_id ?? (s as { id?: string }).id ?? "");
     const preview = (s as { preview?: string | null }).preview;
     const state = (s as { state?: string }).state ?? "active";
     const updatedAt = ((s as Record<string, unknown>).updated_at ??
       (s as Record<string, unknown>).updatedAt ??
-      (s as Record<string, unknown>).created_at ??
-      (s as Record<string, unknown>).createdAt ??
       (s as Record<string, unknown>).timestamp ??
+      null) as string | number | null;
+    const createdAt = ((s as Record<string, unknown>).created_at ??
+      (s as Record<string, unknown>).createdAt ??
       null) as string | number | null;
     return {
       id: sid,
       state,
       preview: preview == null ? undefined : String(preview),
       updatedAt,
+      createdAt,
     };
   });
-}
-
-function loadFavorites(): string[] {
-  try {
-    const raw = localStorage.getItem("agentj.favorites");
-    const arr = raw ? (JSON.parse(raw) as unknown) : [];
-    return Array.isArray(arr) ? arr.filter((v) => typeof v === "string") : [];
-  } catch {
-    return [];
-  }
-}
-
-function persistFavorites(ids: string[]): void {
-  try {
-    localStorage.setItem("agentj.favorites", JSON.stringify(ids));
-  } catch {}
-}
-
-const STALE_KEY = "agentj.favorites.stale";
-function loadStale(): Set<string> {
-  try {
-    const raw = localStorage.getItem(STALE_KEY);
-    const arr = raw ? (JSON.parse(raw) as unknown) : [];
-    if (!Array.isArray(arr)) return new Set();
-    return new Set(arr.filter((v) => typeof v === "string"));
-  } catch {
-    return new Set();
-  }
-}
-function persistStale(ids: Set<string>): void {
-  try {
-    localStorage.setItem(STALE_KEY, JSON.stringify([...ids]));
-  } catch {}
 }
 
 function openOpClient(wsUrl: string) {
@@ -137,73 +132,35 @@ function openOpClient(wsUrl: string) {
   return { transport, client };
 }
 
-function ContinueField({
-  activeSessionId,
-  onContinue,
-  onNew,
-  busy,
-}: {
-  activeSessionId: string | null;
-  onContinue: (id: string) => void;
-  onNew: () => void;
-  busy: boolean;
-}) {
-  const [input, setInput] = useState(activeSessionId ?? "");
-  useEffect(() => {
-    if (activeSessionId) setInput(activeSessionId);
-  }, [activeSessionId]);
-  return (
-    <>
-      <div className="aj-session-actions">
-        <button type="button" className="aj-button" onClick={onNew} disabled={busy}>
-          New session
-        </button>
-      </div>
-      <div className="aj-field">
-        <label htmlFor="aj-session-id" className="aj-label">
-          session id
-        </label>
-        <input
-          id="aj-session-id"
-          className="aj-input"
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          placeholder="session id"
-        />
-        <button
-          type="button"
-          className="aj-button aj-button--ghost"
-          onClick={() => onContinue(input.trim())}
-          disabled={busy}
-        >
-          Continue
-        </button>
-      </div>
-    </>
-  );
-}
-
 type Props = {
   wsUrl: string;
   client: unknown;
   activeSessionId: string | null;
   onActiveChange: (id: string) => void;
+  /** @deprecated sidebar no longer owns connect UI; removed by the final App pass. */
   onConnect?: (host: string, port: string, token: string) => void;
   unreachable?: boolean;
 };
 
-const VIRTUAL_PAGE = 50;
-
-export default function UnifiedSidebar({ wsUrl, client, activeSessionId, onActiveChange, onConnect, unreachable = false }: Props) {
+export default function UnifiedSidebar({ wsUrl, client, activeSessionId, onActiveChange, unreachable = false }: Props) {
   const [projects, setProjects] = useState<Project[]>(() => loadProjects());
   const [collapsed, setCollapsedState] = useState<Record<string, boolean>>(() => loadCollapsed());
   const [query, setQuery] = useState("");
   const [listRows, setListRows] = useState<ListRow[]>([]);
   const [favorites, setFavorites] = useState<string[]>(() => loadFavorites());
-  const [stale, setStale] = useState<Set<string>>(() => loadStale());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [currentProjectId, setCurrentProjectId] = useState<string>(() => loadCurrentProject());
+  const [tab, setTab] = useState<"sessions" | "files">(() => loadLayout().leftTab);
+  const [demo, setDemo] = useState<boolean>(() => isDemoEnabled());
+  const [prefs, setPrefs] = useState<{ sort: SidebarSort; filter: SidebarFilter }>({
+    sort: "updated",
+    filter: "all",
+  });
+  const [visibleCounts, setVisibleCounts] = useState<Record<string, number>>({});
+  const [flatVisible, setFlatVisible] = useState(VIRTUAL_PAGE);
+
+  useEffect(() => subscribeDemo(setDemo), []);
 
   useEffect(() => {
     const handler = () => {
@@ -211,7 +168,6 @@ export default function UnifiedSidebar({ wsUrl, client, activeSessionId, onActiv
         setProjects(loadProjects());
         setCollapsedState(loadCollapsed());
         setFavorites(loadFavorites());
-        setStale(loadStale());
         setCurrentProjectId(loadCurrentProject());
       } catch {}
     };
@@ -221,6 +177,20 @@ export default function UnifiedSidebar({ wsUrl, client, activeSessionId, onActiv
       window.removeEventListener("storage", handler);
       window.removeEventListener("agentj:projects-updated", handler as EventListener);
     };
+  }, []);
+
+  useEffect(() => {
+    const onPrefs = (event: Event) => {
+      const detail = (event as CustomEvent<{ sort?: string; filter?: string }>).detail ?? {};
+      setPrefs((prev) => {
+        const next = { ...prev };
+        if (detail.sort === "created" || detail.sort === "updated") next.sort = detail.sort;
+        if (detail.filter === "all" || detail.filter === "favorites") next.filter = detail.filter;
+        return next;
+      });
+    };
+    window.addEventListener("agentj:sidebar-prefs", onPrefs as EventListener);
+    return () => window.removeEventListener("agentj:sidebar-prefs", onPrefs as EventListener);
   }, []);
 
   useEffect(() => {
@@ -240,15 +210,48 @@ export default function UnifiedSidebar({ wsUrl, client, activeSessionId, onActiv
     return () => window.removeEventListener("agentj:add-project", onAdd as EventListener);
   }, []);
 
-  // handle hero New session dispatch
+  const handleNewSession = useCallback(
+    async (targetProjectId: string) => {
+      setBusy(true);
+      setError(null);
+      try {
+        let sid = "";
+        const rpc = client as RpcClient | null;
+        if (rpc && typeof (rpc as unknown as { request?: unknown }).request === "function") {
+          const res = (await (rpc as RpcClient).request(METHODS.sessionNew, {})) as { session_id: string };
+          sid = res.session_id;
+        } else {
+          const { transport, client: tmp } = openOpClient(wsUrl);
+          try {
+            const res = (await tmp.request(METHODS.sessionNew, {})) as { session_id: string };
+            sid = res.session_id;
+          } finally {
+            (transport as unknown as { close?: () => void }).close?.();
+          }
+        }
+        if (sid) {
+          assignSession(sid, targetProjectId);
+          const current = loadFavorites();
+          if (!current.includes(sid)) setFavorites(toggleFavorite(sid));
+          onActiveChange(sid);
+        }
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      } finally {
+        setBusy(false);
+      }
+    },
+    [wsUrl, client, onActiveChange],
+  );
+
+  // hero New session dispatch + legacy sidebar handlers
   useEffect(() => {
     const onNew = () => {
       void handleNewSession(currentProjectId);
     };
     window.addEventListener("agentj:new-session", onNew as EventListener);
     return () => window.removeEventListener("agentj:new-session", onNew as EventListener);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [wsUrl, client, currentProjectId]);
+  }, [handleNewSession, currentProjectId]);
 
   // fetch session/list
   useEffect(() => {
@@ -286,6 +289,10 @@ export default function UnifiedSidebar({ wsUrl, client, activeSessionId, onActiv
     };
   }, [wsUrl, client]);
 
+  useEffect(() => {
+    setFlatVisible(VIRTUAL_PAGE);
+  }, [query, prefs]);
+
   const toggleCollapsed = useCallback((projectId: string) => {
     setCollapsedState((prev) => {
       const next = { ...prev, [projectId]: !prev[projectId] };
@@ -293,44 +300,6 @@ export default function UnifiedSidebar({ wsUrl, client, activeSessionId, onActiv
       return next;
     });
   }, []);
-
-  const handleNewSession = useCallback(
-    async (targetProjectId: string) => {
-      setBusy(true);
-      setError(null);
-      try {
-        let sid = "";
-        const rpc = client as RpcClient | null;
-        if (rpc && typeof (rpc as unknown as { request?: unknown }).request === "function") {
-          const res = (await (rpc as RpcClient).request(METHODS.sessionNew, {})) as { session_id: string };
-          sid = res.session_id;
-        } else {
-          const { transport, client: tmp } = openOpClient(wsUrl);
-          try {
-            const res = (await tmp.request(METHODS.sessionNew, {})) as { session_id: string };
-            sid = res.session_id;
-          } finally {
-            (transport as unknown as { close?: () => void }).close?.();
-          }
-        }
-        if (sid) {
-          assignSession(sid, targetProjectId);
-          setFavorites((prev) => {
-            if (prev.includes(sid)) return prev;
-            const next = [...prev, sid];
-            persistFavorites(next);
-            return next;
-          });
-          onActiveChange(sid);
-        }
-      } catch (e) {
-        setError(e instanceof Error ? e.message : String(e));
-      } finally {
-        setBusy(false);
-      }
-    },
-    [wsUrl, client, onActiveChange],
-  );
 
   const handleContinue = useCallback(
     async (sid: string) => {
@@ -351,35 +320,14 @@ export default function UnifiedSidebar({ wsUrl, client, activeSessionId, onActiv
           }
         }
         setError(null);
-        setFavorites((prev) => {
-          if (prev.includes(trimmed)) return prev;
-          const next = [...prev, trimmed];
-          persistFavorites(next);
-          return next;
-        });
-        setStale((prev) => {
-          if (!prev.has(trimmed)) return prev;
-          const next = new Set(prev);
-          next.delete(trimmed);
-          persistStale(next);
-          return next;
-        });
+        const current = loadFavorites();
+        if (!current.includes(trimmed)) setFavorites(toggleFavorite(trimmed));
         onActiveChange(trimmed);
       } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        setError(msg);
-        if (favorites.includes(trimmed)) {
-          setStale((prev) => {
-            if (prev.has(trimmed)) return prev;
-            const next = new Set(prev);
-            next.add(trimmed);
-            persistStale(next);
-            return next;
-          });
-        }
+        setError(e instanceof Error ? e.message : String(e));
       }
     },
-    [wsUrl, client, onActiveChange, favorites],
+    [wsUrl, client, onActiveChange],
   );
 
   const grouped = useMemo(() => {
@@ -399,6 +347,31 @@ export default function UnifiedSidebar({ wsUrl, client, activeSessionId, onActiv
     return map;
   }, [grouped]);
 
+  const projectsById = useMemo(() => new Map(projects.map((p) => [p.id, p])), [projects]);
+
+  const metaFor = useCallback(
+    (row: ListRow): string => {
+      const name = projectsById.get(getProjectForSession(row.id))?.name ?? "";
+      return [formatTime(row.updatedAt), name].filter(Boolean).join(" · ");
+    },
+    [projectsById],
+  );
+
+  const flatRows = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    let rows = listRows.slice();
+    if (q) {
+      rows = rows.filter((r) => r.id.toLowerCase().includes(q) || (r.preview ?? "").toLowerCase().includes(q));
+    }
+    if (prefs.filter === "favorites") rows = rows.filter((r) => favorites.includes(r.id));
+    const key = prefs.sort === "created" ? "createdAt" : "updatedAt";
+    rows.sort((a, b) => (toMs(b[key]) ?? 0) - (toMs(a[key]) ?? 0));
+    return rows;
+  }, [listRows, query, prefs, favorites]);
+
+  const visibleFlat = flatRows.slice(0, flatVisible);
+  const hasMoreFlat = flatRows.length > visibleFlat.length;
+
   const filteredForProject = useCallback(
     (projectId: string): ListRow[] => {
       const g = (grouped as Record<string, { sessions: ListRow[] }>)[projectId];
@@ -410,14 +383,6 @@ export default function UnifiedSidebar({ wsUrl, client, activeSessionId, onActiv
     [grouped, query],
   );
 
-  const favoriteFiltered = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    if (!q) return favorites;
-    return favorites.filter((id) => id.toLowerCase().includes(q));
-  }, [favorites, query]);
-
-  const [visibleCounts, setVisibleCounts] = useState<Record<string, number>>({});
-
   const onAddProject = () => {
     window.dispatchEvent(new CustomEvent("agentj:add-project"));
   };
@@ -426,6 +391,114 @@ export default function UnifiedSidebar({ wsUrl, client, activeSessionId, onActiv
     setVisibleCounts((prev) => ({ ...prev, [projectId]: (prev[projectId] ?? VIRTUAL_PAGE) + VIRTUAL_PAGE }));
   }, []);
 
+  const renderProjectGroups = () =>
+    projects.map((project) => {
+      const isCollapsed = !!collapsed[project.id];
+      const rows = filteredForProject(project.id);
+      const visible = visibleCounts[project.id] ?? VIRTUAL_PAGE;
+      const sliced = rows.length > VIRTUAL_PAGE ? rows.slice(0, visible) : rows;
+      const hasMore = rows.length > sliced.length;
+      const count = rows.length;
+      const bodyId = `aj-project-body-${project.id}`;
+      return (
+        <div key={project.id} className="aj-project-group">
+          <button
+            type="button"
+            className="aj-project-row"
+            aria-expanded={!isCollapsed}
+            aria-controls={bodyId}
+            aria-label={`${project.name} folder`}
+            tabIndex={0}
+            onClick={() => toggleCollapsed(project.id)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                toggleCollapsed(project.id);
+              }
+            }}
+          >
+            <span className="aj-project-row__chevron" aria-hidden="true">
+              {isCollapsed ? <ChevronRight size={16} /> : <ChevronDown size={16} />}
+            </span>
+            <span className="aj-project-row__icon" aria-hidden="true">
+              {isCollapsed ? <Folder size={16} /> : <FolderOpen size={16} />}
+            </span>
+            <span className="aj-project-row__name">{project.name}</span>
+            <span className="aj-project-row__count">{count}</span>
+          </button>
+          {!isCollapsed && (
+            <div className="aj-project-group__body" id={bodyId}>
+              {rows.length === 0 ? (
+                <div className="aj-project-empty">
+                  <p className="aj-empty">No sessions yet</p>
+                  <button
+                    type="button"
+                    className="aj-button aj-button--ghost"
+                    onClick={() => void handleNewSession(project.id)}
+                    disabled={busy}
+                  >
+                    New session
+                  </button>
+                </div>
+              ) : (
+                <>
+                  {project.id === "default" ? (
+                    <ul className="aj-session-list" aria-label="session list">
+                      {SUBGROUP_TITLES.flatMap((title) => {
+                        const bucketRows = sliced.filter((r) => (defaultSubgroupIndex.get(r.id) ?? "Today") === title);
+                        if (bucketRows.length === 0) return [];
+                        return [
+                          <li key={`${title}-header`} className="aj-sidebar__subgroup">
+                            <h4 className="aj-sidebar__subgroup-title">{title}</h4>
+                          </li>,
+                          ...bucketRows.map((r) => (
+                            <SessionListItem
+                              key={r.id}
+                              row={r}
+                              activeSessionId={activeSessionId}
+                              onContinue={handleContinue}
+                            />
+                          )),
+                        ];
+                      })}
+                    </ul>
+                  ) : (
+                    <ul aria-label={`sessions for ${project.name}`} className="aj-session-list">
+                      {sliced.map((r) => (
+                        <SessionListItem
+                          key={r.id}
+                          row={r}
+                          activeSessionId={activeSessionId}
+                          onContinue={handleContinue}
+                        />
+                      ))}
+                    </ul>
+                  )}
+                  {hasMore && (
+                    <button
+                      type="button"
+                      className="aj-button aj-button--ghost aj-project-more"
+                      onClick={() => showMore(project.id)}
+                    >
+                      显示更多
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className="aj-button aj-button--ghost aj-project-new"
+                    onClick={() => void handleNewSession(project.id)}
+                    disabled={busy}
+                  >
+                    New session
+                  </button>
+                </>
+              )}
+            </div>
+          )}
+        </div>
+      );
+    });
+
   return (
     <section
       aria-label="sidebar"
@@ -433,178 +506,112 @@ export default function UnifiedSidebar({ wsUrl, client, activeSessionId, onActiv
       id="aj-sidebar"
       data-unreachable={unreachable ? "true" : undefined}
     >
-      <div className="aj-sidebar__threads">
-        <h2>Threads</h2>
-        <div className="aj-sidebar__toolbar">
-          <button type="button" aria-label="Filter">
-            <Filter size={16} aria-hidden="true" />
-          </button>
-          <button type="button" aria-label="Sort">
-            <ArrowUpDown size={16} aria-hidden="true" />
-          </button>
-          <button type="button" aria-label="View">
-            <LayoutGrid size={16} aria-hidden="true" />
-          </button>
-          <button type="button" aria-label="Add Project" onClick={onAddProject}>
-            <Plus size={16} aria-hidden="true" /> Add Project
-          </button>
-        </div>
-        <div className="aj-sidebar__search">
-          <Search size={16} aria-hidden="true" />
-          <input aria-label="Search sessions" placeholder="Search sessions" value={query} onChange={(e) => setQuery(e.target.value)} />
-        </div>
-      </div>
-      <div className="aj-sidebar__body">
-        {onConnect && (
-          <div className="aj-sidebar__connection">
-            <ConnectionBar onConnect={onConnect} />
+      <SidebarTabs
+        tab={tab}
+        onChange={(t) => {
+          saveLayout({ leftTab: t });
+          setTab(t);
+        }}
+      />
+      {tab === "sessions" ? (
+        <div className="aj-sidebar__body">
+          <div className="aj-sidebar__search">
+            <Search size={14} aria-hidden="true" />
+            <input
+              aria-label="搜索会话"
+              placeholder="搜索会话…"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+            />
           </div>
-        )}
-        <ContinueField
-          activeSessionId={activeSessionId}
-          onContinue={(id) => void handleContinue(id)}
-          onNew={() => void handleNewSession(currentProjectId)}
-          busy={busy}
-        />
-        {error && (
-          <div role="alert" className="aj-error" style={{ fontSize: 12 }}>
-            <p>{error}</p>
-            <button type="button" className="aj-button--ghost" onClick={() => void handleNewSession(currentProjectId)}>
-              New
-            </button>
-          </div>
-        )}
-        {activeSessionId && (
-          <p className="aj-chip aj-chip--model" aria-label="active session">
-            active: {activeSessionId}
-          </p>
-        )}
-        {favorites.length > 0 && (
-          <div className="aj-project-group">
-            <h3 className="aj-project-group__header">
-              <Star size={14} aria-hidden="true" /> Favorites
-            </h3>
-            <ul aria-label="favorites" className="aj-session-list">
-              {favoriteFiltered.map((id) => (
-                <li key={id}>
-                  <button
-                    type="button"
-                    tabIndex={0}
-                    aria-selected={id === activeSessionId}
-                    className={`aj-session-row${stale.has(id) ? " aj-session-row--stale" : ""}${id === activeSessionId ? " aj-session-row--active" : ""}`}
-                    onClick={() => void handleContinue(id)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" || e.key === " ") {
-                        e.preventDefault();
-                        void handleContinue(id);
-                      }
-                    }}
-                  >
-                    {stale.has(id) ? `${id} (stale)` : id}
-                  </button>
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-        {/* Project groups */}
-        {projects.map((project) => {
-          const isCollapsed = !!collapsed[project.id];
-          const rows = filteredForProject(project.id);
-          const visible = visibleCounts[project.id] ?? VIRTUAL_PAGE;
-          const sliced = rows.length > VIRTUAL_PAGE ? rows.slice(0, visible) : rows;
-          const hasMore = rows.length > sliced.length;
-          const count = rows.length;
-          const bodyId = `aj-project-body-${project.id}`;
-          return (
-            <div key={project.id} className="aj-project-group">
+          <button
+            type="button"
+            className="btn-primary"
+            onClick={() => void handleNewSession(currentProjectId)}
+            disabled={busy}
+          >
+            + 新建会话
+          </button>
+          {error && (
+            <div role="alert" className="aj-error">
+              <p>{error}</p>
               <button
                 type="button"
-                className="aj-project-row"
-                aria-expanded={!isCollapsed}
-                aria-controls={bodyId}
-                aria-label={`${project.name} folder`}
-                tabIndex={0}
-                onClick={() => toggleCollapsed(project.id)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" || e.key === " ") {
-                    e.preventDefault();
-                    toggleCollapsed(project.id);
-                  }
-                }}
+                className="aj-button--ghost"
+                onClick={() => void handleNewSession(currentProjectId)}
               >
-                <span className="aj-project-row__chevron" aria-hidden="true">
-                  {isCollapsed ? <ChevronRight size={16} /> : <ChevronDown size={16} />}
-                </span>
-                <span className="aj-project-row__icon" aria-hidden="true">
-                  {isCollapsed ? <Folder size={16} /> : <FolderOpen size={16} />}
-                </span>
-                <span className="aj-project-row__name">{project.name}</span>
-                <span className="aj-project-row__count">{count}</span>
+                New
               </button>
-              {!isCollapsed && (
-                <div className="aj-project-group__body" id={bodyId}>
-                  {rows.length === 0 ? (
-                    <div className="aj-project-empty">
-                      <p className="aj-empty">No sessions yet</p>
-                      <button type="button" className="aj-button aj-button--ghost" onClick={() => void handleNewSession(project.id)} disabled={busy}>
-                        New session
-                      </button>
-                    </div>
-                  ) : (
-                    <>
-                      {project.id === "default" ? (
-                        <ul className="aj-session-list" aria-label="session list">
-                          {SUBGROUP_TITLES.flatMap((title) => {
-                            const bucketRows = sliced.filter((r) => (defaultSubgroupIndex.get(r.id) ?? "Today") === title);
-                            if (bucketRows.length === 0) return [];
-                            return [
-                              <li key={`${title}-header`} className="aj-sidebar__subgroup">
-                                <h4 className="aj-sidebar__subgroup-title">{title}</h4>
-                              </li>,
-                              ...bucketRows.map((r) => (
-                                <SessionListItem key={r.id} row={r} activeSessionId={activeSessionId} onContinue={handleContinue} />
-                              )),
-                            ];
-                          })}
-                        </ul>
-                      ) : (
-                        <ul aria-label={`sessions for ${project.name}`} className="aj-session-list">
-                          {sliced.map((r) => (
-                            <SessionListItem key={r.id} row={r} activeSessionId={activeSessionId} onContinue={handleContinue} />
-                          ))}
-                        </ul>
-                      )}
-                      {hasMore && (
-                        <button type="button" className="aj-button aj-button--ghost aj-project-more" onClick={() => showMore(project.id)}>
-                          Show more ({rows.length - sliced.length} more)
-                        </button>
-                      )}
-                      <button type="button" className="aj-button aj-button--ghost aj-project-new" onClick={() => void handleNewSession(project.id)} disabled={busy}>
-                        New session
-                      </button>
-                    </>
-                  )}
-                </div>
-              )}
             </div>
-          );
-        })}
-        {projects.length === 0 && (
-          <div className="aj-project-empty">
-            <p className="aj-empty">No sessions yet</p>
-            <button type="button" className="aj-button" onClick={() => void handleNewSession(currentProjectId)} disabled={busy}>
-              New session
+          )}
+          <ul className="aj-session-list" aria-label="最近会话">
+            {visibleFlat.map((r) => (
+              <li key={r.id}>
+                <div
+                  role="button"
+                  tabIndex={0}
+                  aria-selected={r.id === activeSessionId}
+                  className={`aj-sess${r.id === activeSessionId ? " aj-sess--active" : ""}`}
+                  onClick={() => void handleContinue(r.id)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      void handleContinue(r.id);
+                    }
+                  }}
+                >
+                  <span className="aj-sess__title">{r.preview ?? r.id}</span>
+                  <span className="aj-sess__meta">{metaFor(r)}</span>
+                  <button
+                    type="button"
+                    className="aj-star"
+                    aria-label="收藏"
+                    aria-pressed={favorites.includes(r.id)}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setFavorites(toggleFavorite(r.id));
+                    }}
+                  >
+                    <Star size={14} aria-hidden="true" />
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+          {hasMoreFlat && (
+            <button
+              type="button"
+              className="aj-button aj-button--ghost aj-flat-more"
+              onClick={() => setFlatVisible((v) => v + VIRTUAL_PAGE)}
+            >
+              显示更多
             </button>
-          </div>
-        )}
-      </div>
+          )}
+          <div className="divider" />
+          <div className="section-label">项目</div>
+          {renderProjectGroups()}
+          {projects.length === 0 && (
+            <div className="aj-project-empty">
+              <p className="aj-empty">No sessions yet</p>
+              <button
+                type="button"
+                className="aj-button"
+                onClick={() => void handleNewSession(currentProjectId)}
+                disabled={busy}
+              >
+                New session
+              </button>
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="aj-sidebar__body" aria-label="文件">
+          <FileTree nodes={demo ? DEMO_FILE_TREE : []} />
+        </div>
+      )}
       <div className="aj-sidebar__footer">
-        <button type="button" aria-label="Settings">
-          <Settings size={16} aria-hidden="true" /> Settings
-        </button>
-        <button type="button" aria-label="Help">
-          <HelpCircle size={16} aria-hidden="true" /> Help
+        <button type="button" onClick={onAddProject}>
+          + 添加项目
         </button>
       </div>
     </section>

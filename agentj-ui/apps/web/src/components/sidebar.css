@@ -12,65 +12,13 @@
   overflow: hidden;
 }
 
-.aj-sidebar__threads {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  padding: 12px 12px 8px;
-  border-bottom: 0.5px solid var(--aj-border);
-  background: var(--aj-sidebar);
-  box-shadow: 0 0.5px 0 var(--aj-border);
-}
-
-.aj-sidebar__threads h2 {
-  margin: 0;
-  font-size: var(--aj-font-md);
-  font-weight: 600;
-  color: var(--aj-text);
-  line-height: 1.4;
-}
-
-.aj-sidebar__toolbar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.aj-sidebar__toolbar button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-  min-height: 28px;
-  padding: 4px 6px;
-  border: 0.5px solid var(--aj-border);
-  border-radius: var(--aj-radius-ctl);
-  background: var(--aj-panel);
-  color: var(--aj-textMuted);
-  cursor: pointer;
-  font: inherit;
-  font-size: var(--aj-font-sm);
-  line-height: 1;
-}
-
-.aj-sidebar__toolbar button:hover {
-  background: var(--aj-raised);
-  color: var(--aj-text);
-}
-
-.aj-sidebar__toolbar button[aria-label="Add Project"] {
-  margin-left: auto;
-  color: var(--aj-text);
-  background: var(--aj-panel);
-}
-
 .aj-sidebar__search {
   display: flex;
   align-items: center;
   gap: 8px;
   padding: 6px 8px;
   border: 0.5px solid var(--aj-border);
-  border-radius: var(--aj-radius-ctl);
+  border-radius: var(--aj-radiusCtl);
   background: var(--aj-panel);
   color: var(--aj-textMuted);
   box-shadow: 0 0 0 0.5px var(--aj-border);
@@ -89,6 +37,134 @@
 
 .aj-sidebar__search input::placeholder {
   color: var(--aj-textMuted);
+}
+
+.btn-primary {
+  height: 34px;
+  border: none;
+  border-radius: var(--aj-radiusCtl);
+  background: var(--aj-accent);
+  color: var(--aj-accentOnAccent);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.btn-primary:hover {
+  filter: brightness(1.05);
+}
+
+.btn-primary:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.divider {
+  height: 0.5px;
+  background: var(--aj-border);
+  margin: 2px 0;
+}
+
+.section-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--aj-textCaption);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 0 10px;
+  margin-top: 2px;
+}
+
+.aj-sess {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 30px 8px 10px;
+  border: 0.5px solid transparent;
+  border-radius: var(--aj-radiusCtl);
+  background: transparent;
+  color: var(--aj-text);
+  cursor: pointer;
+}
+
+.aj-sess:hover {
+  background: var(--aj-raised);
+}
+
+.aj-sess--active {
+  background: var(--aj-panel);
+  border-color: var(--aj-border);
+}
+
+.aj-sess--active::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 6px;
+  bottom: 6px;
+  width: 2px;
+  border-radius: 2px;
+  background: var(--aj-accent);
+}
+
+.aj-sess__title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--aj-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.aj-sess__meta {
+  font-size: 11px;
+  color: var(--aj-textCaption);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.aj-star {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: var(--aj-radiusCtl);
+  background: transparent;
+  color: var(--aj-textCaption);
+  cursor: pointer;
+  opacity: 0;
+}
+
+.aj-sess:hover .aj-star,
+.aj-star:focus-visible,
+.aj-star[aria-pressed="true"] {
+  opacity: 1;
+}
+
+.aj-star[aria-pressed="true"] {
+  color: var(--aj-accent);
+}
+
+.aj-star:hover {
+  background: var(--aj-raised);
+  color: var(--aj-text);
+}
+
+.aj-flat-more {
+  align-self: flex-start;
 }
 
 .aj-sidebar__body {
@@ -123,7 +199,7 @@
   font: inherit;
   font-size: var(--aj-font-sm);
   padding: 4px 6px;
-  border-radius: var(--aj-radius-ctl);
+  border-radius: var(--aj-radiusCtl);
 }
 
 .aj-sidebar__footer button:hover {
@@ -155,7 +231,7 @@
   height: 36px;
   padding: 8px 10px;
   border: 0.5px solid transparent;
-  border-radius: var(--aj-radius-ctl);
+  border-radius: var(--aj-radiusCtl);
   background: transparent;
   color: var(--aj-text);
   cursor: pointer;
