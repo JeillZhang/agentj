@@ -33,3 +33,15 @@ test("keyboard navigation selects an option", () => {
   fireEvent.keyDown(pop, { key: "Enter" });
   expect(localStorage.getItem("agentj.composer.agent")).toBe("plan");
 });
+test("each popover anchors inside its own sel-wrap", () => {
+  render(<ComposerOptions model="deepseek-chat" />);
+  fireEvent.click(screen.getByRole("button", { name: /deepseek-chat/ }));
+  expect(screen.getByRole("button", { name: /deepseek-chat/ }).closest(".sel-wrap")?.querySelector(".pop-model"))
+    .not.toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: /Build/ }));
+  expect(screen.getByRole("button", { name: /Build/ }).closest(".sel-wrap")?.querySelector(".pop-agent"))
+    .not.toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: /均衡/ }));
+  expect(screen.getByRole("button", { name: /均衡/ }).closest(".sel-wrap")?.querySelector(".pop-ent"))
+    .not.toBeNull();
+});

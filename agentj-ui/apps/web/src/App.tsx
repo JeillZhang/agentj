@@ -48,6 +48,21 @@ export function connectionLight(status: string, unreachable: boolean): "connecte
   return status.startsWith("connected") ? "connected" : "connecting";
 }
 
+const SEMVER_RE = /^(\d+)\.(\d+)(?:\.(\d+))?(?:-[0-9A-Za-z.-]+)?$/;
+
+/**
+ * Protocol-version compatibility per docs/specs/ipc-protocol.md §4.3:
+ * `protocol_version` is semver where only a major change is breaking, so minor/patch
+ * drift in either direction is compatible after a successful `initialize`.
+ * Unparsable input is treated as incompatible (defensive banner).
+ */
+export function isProtocolCompatible(clientVersion: string, serverVersion: string): boolean {
+  const client = SEMVER_RE.exec(clientVersion);
+  const server = SEMVER_RE.exec(serverVersion);
+  if (!client || !server) return false;
+  return Number(client[1]) === Number(server[1]);
+}
+
 let patched = false;
 const handlerMap = new WeakMap<RpcClient, NotificationHandler[]>();
 
@@ -127,8 +142,10 @@ function useSharedKernel(wsUrl: string, seq: number) {
       .initialize(PROTOCOL_VERSION)
       .then((res) => {
         if (cancelled) return;
-        if (res.protocol_version !== PROTOCOL_VERSION) {
+        if (!isProtocolCompatible(PROTOCOL_VERSION, res.protocol_version)) {
           setBanner(`expected ${PROTOCOL_VERSION}, got ${res.protocol_version}`);
+        } else if (res.protocol_version !== PROTOCOL_VERSION) {
+          console.debug(`[agentj] protocol drift: expected ${PROTOCOL_VERSION}, got ${res.protocol_version}`);
         }
       })
       .catch(() => {})
@@ -397,9 +414,6 @@ export default function App() {
         </div>
         <div className="aj-topbar__center" aria-hidden="true" />
         <div className="aj-topbar__actions">
-          {modelName !== null && (
-            <span className="aj-chip aj-chip--model" aria-label="model">{modelName}</span>
-          )}
           <TopbarMenu
             model={modelName}
             connectionLabel={connState === "connected" ? `已连接 ${wsUrl}` : "未连接"}
@@ -457,6 +471,7 @@ export default function App() {
           client={sharedClient}
           activeSessionId={activeSessionId}
           onActiveChange={(id) => { setActiveSessionId(id); handleProjectChange(loadCurrentProject()); setDrawerOpen(false); }}
+          onSessionRemoved={(id) => { if (activeSessionRef.current === id) setActiveSessionId(null); }}
           unreachable={unreachable}
         />
         <div className="aj-main">

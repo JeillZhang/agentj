@@ -1,6 +1,9 @@
 .aj-session-panel { display: flex; flex-direction: column; gap: var(--aj-space-3); }
+.aj-session-item {
+  position: relative;
+}
 .aj-session-row {
-  padding: 10px 12px;
+  padding: 10px 12px 10px 34px;
   border-radius: 8px;
   display: flex;
   align-items: center;
@@ -13,9 +16,16 @@
   font: inherit;
   color: var(--aj-text);
   border-left: 2px solid transparent;
+  transition:
+    background-color var(--aj-motion-fast) var(--aj-ease),
+    border-color var(--aj-motion-fast) var(--aj-ease);
 }
 .aj-session-row:hover {
   background: var(--aj-raised);
+}
+.aj-session-row:focus-visible {
+  outline: 2px solid var(--aj-accent);
+  outline-offset: 1px;
 }
 .aj-session-row--active {
   border-left: 2px solid var(--aj-accent);

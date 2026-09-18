@@ -17,7 +17,9 @@ use agentj_protocol::file::{FileKind, FileListParams, FileListResult};
 use agentj_protocol::lifecycle::InitializeParams;
 use agentj_protocol::permission::{PermissionRequestParams, PermissionRespondParams};
 use agentj_protocol::question::{AskQuestionParams, QuestionRespondParams, QuestionRespondResult};
-use agentj_protocol::session::{SessionIdParams, SessionNewParams, SessionSubscribeParams};
+use agentj_protocol::session::{
+    SessionIdParams, SessionNewParams, SessionStatusResult, SessionSubscribeParams,
+};
 use agentj_protocol::streaming::CancelParams;
 use agentj_question::{
     QuestionModule, QuestionNotifier, QuestionOutcome, QuestionSettlement, RespondError,
@@ -470,6 +472,9 @@ impl IpcServer {
                 "kernel/status" => self.dispatch_kernel_status(),
                 "session/list" => self.dispatch_session_list(),
                 "session/history" => self.dispatch_session_history(&req),
+                "session/status" => self.dispatch_session_status(&req),
+                "session/archive" => self.dispatch_session_archive(&req),
+                "session/delete" => self.dispatch_session_delete(&req),
                 "file/list" => self.dispatch_file_list(&req).await,
                 "shutdown" => self.dispatch_shutdown(),
                 "permission/respond" => self.dispatch_permission_respond(&req, conn_id).await,
@@ -950,6 +955,101 @@ impl IpcServer {
             })
             .collect();
         Ok(serde_json::json!({ "sessions": sessions }))
+    }
+
+    /// Wire mapping shared by `session/status` / `archive` / `delete`.
+    fn wire_session_status(
+        status: agentj_core::module::SessionStatus,
+    ) -> agentj_protocol::types::SessionStatus {
+        use agentj_protocol::types::SessionStatus as WireStatus;
+
+        match status {
+            agentj_core::module::SessionStatus::Active => WireStatus::Active,
+            agentj_core::module::SessionStatus::Archived => WireStatus::Archived,
+            agentj_core::module::SessionStatus::Deleted => WireStatus::Deleted,
+        }
+    }
+
+    /// Shared existence probe: unknown sessions map to `-32802 SessionNotFound`.
+    fn require_session_status(
+        &self,
+        session_id: &SessionId,
+    ) -> Result<agentj_core::module::SessionStatus, DispatchError> {
+        self.session_store
+            .status(session_id)
+            .map_err(|_| DispatchError {
+                code: error_codes::SESSION_NOT_FOUND,
+                message: "SessionNotFound".into(),
+                data: Some(serde_json::json!({ "session_id": session_id })),
+            })
+    }
+
+    /// `-32803 SessionInactive` with the offending `{session_id, status}` data.
+    fn session_inactive(
+        session_id: &SessionId,
+        status: agentj_core::module::SessionStatus,
+    ) -> DispatchError {
+        DispatchError {
+            code: error_codes::SESSION_INACTIVE,
+            message: "SessionInactive".into(),
+            data: Some(serde_json::json!({
+                "session_id": session_id,
+                "status": Self::wire_session_status(status),
+            })),
+        }
+    }
+
+    /// `session/status` (spec §8.8): the existence probe clients fire before
+    /// `session/subscribe`.
+    fn dispatch_session_status(&self, req: &JsonRpcRequest) -> Result<Value, DispatchError> {
+        let params: SessionIdParams = serde_json::from_value(
+            req.params
+                .clone()
+                .ok_or_else(|| DispatchError::invalid_params("missing params"))?,
+        )
+        .map_err(|e| DispatchError::invalid_params(e.to_string()))?;
+        let status = self.require_session_status(&params.session_id)?;
+        let result = SessionStatusResult {
+            status: Self::wire_session_status(status),
+        };
+        Ok(serde_json::to_value(result).expect("serializable"))
+    }
+
+    /// `session/archive` (spec §8.9): only an active session may be archived.
+    fn dispatch_session_archive(&self, req: &JsonRpcRequest) -> Result<Value, DispatchError> {
+        let params: SessionIdParams = serde_json::from_value(
+            req.params
+                .clone()
+                .ok_or_else(|| DispatchError::invalid_params("missing params"))?,
+        )
+        .map_err(|e| DispatchError::invalid_params(e.to_string()))?;
+        let status = self.require_session_status(&params.session_id)?;
+        if status != agentj_core::module::SessionStatus::Active {
+            return Err(Self::session_inactive(&params.session_id, status));
+        }
+        self.session_store
+            .archive(&params.session_id)
+            .map_err(|e| DispatchError::internal(e.to_string()))?;
+        Ok(Value::Null)
+    }
+
+    /// `session/delete` (spec §8.10): archived sessions may be deleted;
+    /// deleting a deleted session is `-32803 SessionInactive`.
+    fn dispatch_session_delete(&self, req: &JsonRpcRequest) -> Result<Value, DispatchError> {
+        let params: SessionIdParams = serde_json::from_value(
+            req.params
+                .clone()
+                .ok_or_else(|| DispatchError::invalid_params("missing params"))?,
+        )
+        .map_err(|e| DispatchError::invalid_params(e.to_string()))?;
+        let status = self.require_session_status(&params.session_id)?;
+        if status == agentj_core::module::SessionStatus::Deleted {
+            return Err(Self::session_inactive(&params.session_id, status));
+        }
+        self.session_store
+            .delete(&params.session_id)
+            .map_err(|e| DispatchError::internal(e.to_string()))?;
+        Ok(Value::Null)
     }
 
     fn dispatch_session_history(&self, req: &JsonRpcRequest) -> Result<Value, DispatchError> {
@@ -4755,6 +4855,141 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
         assert_eq!(v["result"]["sessions"][0]["state"], "archived");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Regression guard: `session/status` is declared in the registry, schema,
+    /// SDK and spec (§8.8) and is the existence probe every client fires
+    /// before `session/subscribe`. It must be dispatched — falling through to
+    /// `-32601 method not found` breaks every session click in Web/TUI.
+    #[tokio::test]
+    async fn session_status_returns_store_status() {
+        let store = stub_session();
+        let server = IpcServer::new(Kernel::new(), store.clone());
+        let sid = store.create().unwrap();
+        let raw = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 12,
+            "method": "session/status",
+            "params": { "session_id": sid.as_str() },
+        })
+        .to_string();
+        let resp = server.handle_request(&raw).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert!(
+            v["error"].is_null(),
+            "session/status must be implemented, not -32601: {resp}"
+        );
+        assert_eq!(v["result"]["status"], "active");
+        store.archive(&sid).unwrap();
+        let resp = server.handle_request(&raw).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(v["result"]["status"], "archived");
+    }
+
+    /// Unknown session id maps to the documented `-32802 SessionNotFound`
+    /// with `error.data.session_id` (§8.8), never the generic `-32601`.
+    #[tokio::test]
+    async fn session_status_unknown_session_returns_32802() {
+        let server = IpcServer::new(Kernel::new(), stub_session());
+        let raw =
+            r#"{"jsonrpc":"2.0","id":13,"method":"session/status","params":{"session_id":"nope"}}"#;
+        let resp = server.handle_request(raw).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(
+            v["error"]["code"], -32802,
+            "unknown session must be SessionNotFound: {resp}"
+        );
+        assert_eq!(v["error"]["data"]["session_id"], "nope");
+    }
+
+    /// Regression guard: `session/archive` is declared in the registry/spec
+    /// §8.9 and exported by the TUI session hook; it must be dispatched.
+    /// Only active sessions may be archived — repeats are `-32803`.
+    #[tokio::test]
+    async fn session_archive_transitions_and_rejects_inactive() {
+        let store = stub_session();
+        let server = IpcServer::new(Kernel::new(), store.clone());
+        let sid = store.create().unwrap();
+        let archive = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 14,
+            "method": "session/archive",
+            "params": { "session_id": sid.as_str() },
+        })
+        .to_string();
+        let resp = server.handle_request(&archive).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert!(
+            v["error"].is_null(),
+            "session/archive must be implemented, not -32601: {resp}"
+        );
+        assert!(v["result"].is_null(), "archive result is null: {resp}");
+        let status = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 15,
+            "method": "session/status",
+            "params": { "session_id": sid.as_str() },
+        })
+        .to_string();
+        let resp = server.handle_request(&status).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(v["result"]["status"], "archived");
+        let resp = server.handle_request(&archive).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(
+            v["error"]["code"], -32803,
+            "repeat archive must be SessionInactive: {resp}"
+        );
+        assert_eq!(v["error"]["data"]["status"], "archived");
+        let unknown = r#"{"jsonrpc":"2.0","id":16,"method":"session/archive","params":{"session_id":"nope"}}"#;
+        let resp = server.handle_request(unknown).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(v["error"]["code"], -32802, "unknown archive: {resp}");
+    }
+
+    /// Regression guard: `session/delete` (§8.10) must be dispatched;
+    /// deleting a deleted session is `-32803 SessionInactive`.
+    #[tokio::test]
+    async fn session_delete_transitions_and_rejects_deleted() {
+        let store = stub_session();
+        let server = IpcServer::new(Kernel::new(), store.clone());
+        let sid = store.create().unwrap();
+        let delete = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 17,
+            "method": "session/delete",
+            "params": { "session_id": sid.as_str() },
+        })
+        .to_string();
+        let resp = server.handle_request(&delete).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert!(
+            v["error"].is_null(),
+            "session/delete must be implemented, not -32601: {resp}"
+        );
+        assert!(v["result"].is_null(), "delete result is null: {resp}");
+        let status = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 18,
+            "method": "session/status",
+            "params": { "session_id": sid.as_str() },
+        })
+        .to_string();
+        let resp = server.handle_request(&status).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(v["result"]["status"], "deleted");
+        let resp = server.handle_request(&delete).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(
+            v["error"]["code"], -32803,
+            "repeat delete must be SessionInactive: {resp}"
+        );
+        assert_eq!(v["error"]["data"]["status"], "deleted");
+        let unknown =
+            r#"{"jsonrpc":"2.0","id":19,"method":"session/delete","params":{"session_id":"nope"}}"#;
+        let resp = server.handle_request(unknown).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(v["error"]["code"], -32802, "unknown delete: {resp}");
     }
 
     #[tokio::test]
