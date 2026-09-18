@@ -352,8 +352,6 @@ export default function UnifiedSidebar({
           }
         }
         setError(null);
-        const current = loadFavorites();
-        if (!current.includes(trimmed)) setFavorites(toggleFavorite(trimmed));
         onActiveChange(trimmed);
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));

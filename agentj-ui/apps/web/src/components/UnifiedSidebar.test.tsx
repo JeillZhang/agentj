@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { test, expect } from "vitest";
+import { test, expect, vi } from "vitest";
 import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import UnifiedSidebar from "./UnifiedSidebar";
 
@@ -60,6 +60,24 @@ test("flat list renders sessions and star toggle persists", async () => {
   expect(within(grouped).getByText("hi")).toBeInTheDocument();
   fireEvent.click(container.querySelector(".aj-star") as HTMLElement);
   expect(JSON.parse(localStorage.getItem("agentj.favorites") ?? "[]")).toContain("s1");
+});
+
+test("clicking a session row leaves favorites untouched; only the star favorites it", async () => {
+  localStorage.clear();
+  const onActive = vi.fn();
+  const { container } = render(
+    <UnifiedSidebar wsUrl="ws://x" client={client as never} activeSessionId={null} onActiveChange={onActive} />,
+  );
+  const flat = container.querySelector('[aria-label="最近会话"]') as HTMLElement;
+  const title = await within(flat).findByText("hi");
+  fireEvent.click(title);
+  await waitFor(() => expect(onActive).toHaveBeenCalledWith("s1"));
+  expect(JSON.parse(localStorage.getItem("agentj.favorites") ?? "[]")).toEqual([]);
+  expect(flat.querySelector(".aj-star")).toHaveAttribute("aria-pressed", "false");
+
+  fireEvent.click(flat.querySelector(".aj-star") as HTMLElement);
+  expect(JSON.parse(localStorage.getItem("agentj.favorites") ?? "[]")).toEqual(["s1"]);
+  localStorage.clear();
 });
 
 test("add-project dialog creates a project from the footer button", async () => {
