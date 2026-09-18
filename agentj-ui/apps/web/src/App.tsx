@@ -414,9 +414,6 @@ export default function App() {
         </div>
         <div className="aj-topbar__center" aria-hidden="true" />
         <div className="aj-topbar__actions">
-          {modelName !== null && (
-            <span className="aj-chip aj-chip--model" aria-label="model">{modelName}</span>
-          )}
           <TopbarMenu
             model={modelName}
             connectionLabel={connState === "connected" ? `已连接 ${wsUrl}` : "未连接"}

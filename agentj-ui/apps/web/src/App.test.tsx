@@ -611,13 +611,13 @@ describe("App shell + history rebuild", () => {
     expect(document.documentElement.dataset.theme).toBeUndefined();
     expect(localStorage.getItem("agentj.theme-mode")).toBe("system");
   });
-  it("shows the kernel/status model chip and feeds the meta row 模型 segment", async () => {
+  it("drops the topbar model chip and feeds the meta row 模型 segment", async () => {
     shared.historyResult.value = { events: WIRE_CORPUS, next_cursor: null };
     shared.sessionListResult.value = { sessions: [{ session_id: "s1", state: "active", preview: "hi" }] };
     render(<App />);
     const header = document.querySelector(".aj-topbar") as HTMLElement;
-    expect(await within(header).findByText("deepseek-chat")).toBeInTheDocument();
-    expect(within(header).getByLabelText("model")).toBeInTheDocument();
+    expect(within(header).queryByLabelText("model")).toBeNull();
+    expect(within(header).queryByText("deepseek-chat")).toBeNull();
     const list = await screen.findByRole("list", { name: "session list" });
     fireEvent.click(await within(list).findByText(/hi/));
     await screen.findByText("hello world");
