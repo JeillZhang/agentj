@@ -51,7 +51,7 @@ describe("@agentj/tokens palette", () => {
     expect(palettes.dark.userBubble).toBe("#2C2C2E");
     expect(palettes.light.error).toBe("#EC1313");
     expect(palettes.dark.error).toBe("#F25A5A");
-    expect(palettes.light.border).toBe("#E4E7EA");
+    expect(palettes.light.border).toBe("#CBD2DB");
     expect(palettes.dark.border).toBe("#2E2E31");
   });
   it("agrees with tokens.css custom properties", () => {
