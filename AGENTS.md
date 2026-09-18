@@ -15,9 +15,9 @@
 > desktop-ui。
 > 验收（v0.15.1）：发现并修复 2 bugs（BUG-005 TCP/dashboard trajectory 接线；
 > BUG-006 initialize `protocol_version` 常量），回归 verified，门禁全绿（cargo 549 tests）。
-> v0.15.2 bugfix：`session/status` 协议已声明但 IPC dispatch 未实现（-32601 致
-> Web/TUI 会话点击失败），补齐 dispatch（未知会话 `-32802 SessionNotFound` + error.data），
-> 回归 2 tests（cargo 551 tests）。
+> v0.15.2 bugfix：session 生命周期方法协议已声明但 IPC dispatch 未实现（-32601）——
+> `session/status`（Web/TUI 会话点击失败）+ `session/archive`（TUI 已导出）/`session/delete`，
+> 补齐 dispatch（`-32802` / `-32803 SessionInactive` + error.data），回归 4 tests（cargo 553 tests）。
 > (17 crates + agentj-ui monorepo：Web / TUI / Desktop + SDK + tokens，
 > npm workspaces `apps/*`+`packages/*`，共享 SDK + protocol + tokens，
 > WebSocket 网关同端口复用，后端零改造，frontend stays in-repo)

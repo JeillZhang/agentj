@@ -4,7 +4,7 @@ AI 编码代理工具（Rust）——Linux 内核式「内核调度 + 可插拔�
 内核通过统一的 JSON-RPC 2.0 协议（stdio / TCP / WebSocket）对外暴露能力；
 CLI、TUI、Web、Desktop 均通过 `agentj-ui` 协议消费者接入，任意语言可开发前端。
 
-> 当前版本：**v0.15.2**——bugfix：`session/status` dispatch 补齐（会话点击 -32601 修复）；协议扩展：三栏工作台真实数据源
+> 当前版本：**v0.15.2**——bugfix：session/status/archive/delete dispatch 补齐（-32601 修复）；协议扩展：三栏工作台真实数据源
 > （`file/list` 目录懒加载 + git 状态点；`$/progress` 新增 `kind:"todo"`
 > 全量快照 + 会话内单调 `revision` 与 `kind:"file_change"` unified diff；
 > `$/askQuestion` + `question/respond` owner 定向提问；会话级 `project_root`；
@@ -13,7 +13,8 @@ CLI、TUI、Web、Desktop 均通过 `agentj-ui` 协议消费者接入，任意�
 > composer 模型/Agent/熵变选择器 + 模型提问卡片 + demo 模式；
 > Web / TUI / Desktop + SDK + tokens，17 crate + npm workspaces monorepo，
 > 共享 `packages/sdk` + `packages/protocol` + `packages/tokens`，后端零改造，frontend stays in-repo）
-> v0.15.2 修复：session/status dispatch 缺失（Web/TUI 会话点击 -32601 修复）。
+> v0.15.2 修复：session 生命周期方法 dispatch 缺失（-32601）：session/status（Web/TUI 会话点击）
+> + session/archive / session/delete 补齐（-32802 / -32803 SessionInactive + error.data）。
 > v0.15.1 验收修复 2 bugs：serve --port/dashboard trajectory 接线 / initialize protocol_version 0.13.0。
 
 ## Features

@@ -41,15 +41,21 @@
 
 ## Bugfix（v0.15.2）✅
 
-- 🐛 **BUG-007**（high，分支 `fix/session-status-not-found`）：`session/status` 在协议层全面声明
+- 🐛 **BUG-007**（high，提交 `30691ad`）：`session/status` 在协议层全面声明
   （`protocol/methods.json` / schemas / SDK `METHODS` / 规范 §8.8 / 注册表测试）但 `agentj-ipc`
   dispatch 从未实现 → 落入 catch-all 返回 `-32601 method not found`；Web/TUI 左栏会话点击
   （status 存在性探针 → `session/subscribe`）全部失败。修复：新增 dispatch arm +
   `dispatch_session_status`（`session_store.status()` 查询 + 未知会话 `-32802 SessionNotFound`
   + `error.data.session_id`）。
-- ✅ 回归守卫：`agentj-ipc` 新增 2 测试（active/archived 状态映射、未知会话 -32802），
-  修复前 RED（精确复现 `-32601`）→ 修复后 GREEN。
-- ✅ 门禁全绿：cargo fmt / 551 Rust tests / clippy 零警告 / drift 2 / sdk 37 / web 219 /
+- 🐛 **BUG-008**（high，同类审计，提交 `001b0ed`/`8319680`）：同批排查发现 `session/archive`
+  （规范 §8.9，TUI session hook 已导出调用）与 `session/delete`（§8.10）同样"已声明未实现"
+  → `-32601`；补齐两个 dispatch（仅 active 可 archive、重复归档/重复删除 →
+  `-32803 SessionInactive` + `error.data {session_id,status}`；archived 可 delete；
+  未知会话 `-32802`）。
+- ✅ 回归守卫：`agentj-ipc` 新增 4 测试（status active/archived + 未知 -32802；
+  archive/delete 状态转移 + 重复 -32803 + 未知 -32802），修复前 RED（精确复现 `-32601`）
+  → 修复后 GREEN。
+- ✅ 门禁全绿：cargo fmt / 553 Rust tests / clippy 零警告 / drift 2 / sdk 37 / web 219 /
   tui 71 / check-version 0.15.2 / desktop-ui。
 - ✅ 版本 bump 0.15.1 → 0.15.2（`PROTOCOL_VERSION` 保持 0.13.0，无 wire 变更）。
 
