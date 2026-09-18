@@ -474,6 +474,7 @@ impl IpcServer {
                 "session/history" => self.dispatch_session_history(&req),
                 "session/status" => self.dispatch_session_status(&req),
                 "session/archive" => self.dispatch_session_archive(&req),
+                "session/delete" => self.dispatch_session_delete(&req),
                 "file/list" => self.dispatch_file_list(&req).await,
                 "shutdown" => self.dispatch_shutdown(),
                 "permission/respond" => self.dispatch_permission_respond(&req, conn_id).await,
@@ -1028,6 +1029,25 @@ impl IpcServer {
         }
         self.session_store
             .archive(&params.session_id)
+            .map_err(|e| DispatchError::internal(e.to_string()))?;
+        Ok(Value::Null)
+    }
+
+    /// `session/delete` (spec §8.10): archived sessions may be deleted;
+    /// deleting a deleted session is `-32803 SessionInactive`.
+    fn dispatch_session_delete(&self, req: &JsonRpcRequest) -> Result<Value, DispatchError> {
+        let params: SessionIdParams = serde_json::from_value(
+            req.params
+                .clone()
+                .ok_or_else(|| DispatchError::invalid_params("missing params"))?,
+        )
+        .map_err(|e| DispatchError::invalid_params(e.to_string()))?;
+        let status = self.require_session_status(&params.session_id)?;
+        if status == agentj_core::module::SessionStatus::Deleted {
+            return Err(Self::session_inactive(&params.session_id, status));
+        }
+        self.session_store
+            .delete(&params.session_id)
             .map_err(|e| DispatchError::internal(e.to_string()))?;
         Ok(Value::Null)
     }
@@ -4925,6 +4945,51 @@ mod tests {
         let resp = server.handle_request(unknown).await.unwrap();
         let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
         assert_eq!(v["error"]["code"], -32802, "unknown archive: {resp}");
+    }
+
+    /// Regression guard: `session/delete` (§8.10) must be dispatched;
+    /// deleting a deleted session is `-32803 SessionInactive`.
+    #[tokio::test]
+    async fn session_delete_transitions_and_rejects_deleted() {
+        let store = stub_session();
+        let server = IpcServer::new(Kernel::new(), store.clone());
+        let sid = store.create().unwrap();
+        let delete = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 17,
+            "method": "session/delete",
+            "params": { "session_id": sid.as_str() },
+        })
+        .to_string();
+        let resp = server.handle_request(&delete).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert!(
+            v["error"].is_null(),
+            "session/delete must be implemented, not -32601: {resp}"
+        );
+        assert!(v["result"].is_null(), "delete result is null: {resp}");
+        let status = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 18,
+            "method": "session/status",
+            "params": { "session_id": sid.as_str() },
+        })
+        .to_string();
+        let resp = server.handle_request(&status).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(v["result"]["status"], "deleted");
+        let resp = server.handle_request(&delete).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(
+            v["error"]["code"], -32803,
+            "repeat delete must be SessionInactive: {resp}"
+        );
+        assert_eq!(v["error"]["data"]["status"], "deleted");
+        let unknown =
+            r#"{"jsonrpc":"2.0","id":19,"method":"session/delete","params":{"session_id":"nope"}}"#;
+        let resp = server.handle_request(unknown).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(v["error"]["code"], -32802, "unknown delete: {resp}");
     }
 
     #[tokio::test]
