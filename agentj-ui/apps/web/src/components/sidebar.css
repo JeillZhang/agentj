@@ -84,8 +84,10 @@
   position: relative;
   display: flex;
   flex-direction: column;
+  justify-content: center;
   gap: 2px;
-  padding: 8px 30px 8px 34px;
+  min-height: 56px;
+  padding: 8px 30px 8px 10px;
   border: 0.5px solid transparent;
   border-radius: var(--aj-radiusCtl);
   background: transparent;
@@ -232,6 +234,15 @@
 .aj-session-del:disabled {
   opacity: 0.4;
   cursor: default;
+}
+
+/* Flat rows: the delete action stacks under the favorite star on the right rail. */
+.aj-session-del.aj-sess__del {
+  left: auto;
+  right: 6px;
+  top: 30px;
+  bottom: auto;
+  margin: 0;
 }
 
 .aj-dialog__body {
