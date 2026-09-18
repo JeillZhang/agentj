@@ -473,6 +473,7 @@ impl IpcServer {
                 "session/list" => self.dispatch_session_list(),
                 "session/history" => self.dispatch_session_history(&req),
                 "session/status" => self.dispatch_session_status(&req),
+                "session/archive" => self.dispatch_session_archive(&req),
                 "file/list" => self.dispatch_file_list(&req).await,
                 "shutdown" => self.dispatch_shutdown(),
                 "permission/respond" => self.dispatch_permission_respond(&req, conn_id).await,
@@ -955,32 +956,80 @@ impl IpcServer {
         Ok(serde_json::json!({ "sessions": sessions }))
     }
 
-    /// `session/status` (spec §8.8): the existence probe clients fire before
-    /// `session/subscribe`; unknown sessions map to `-32802 SessionNotFound`.
-    fn dispatch_session_status(&self, req: &JsonRpcRequest) -> Result<Value, DispatchError> {
+    /// Wire mapping shared by `session/status` / `archive` / `delete`.
+    fn wire_session_status(
+        status: agentj_core::module::SessionStatus,
+    ) -> agentj_protocol::types::SessionStatus {
         use agentj_protocol::types::SessionStatus as WireStatus;
 
+        match status {
+            agentj_core::module::SessionStatus::Active => WireStatus::Active,
+            agentj_core::module::SessionStatus::Archived => WireStatus::Archived,
+            agentj_core::module::SessionStatus::Deleted => WireStatus::Deleted,
+        }
+    }
+
+    /// Shared existence probe: unknown sessions map to `-32802 SessionNotFound`.
+    fn require_session_status(
+        &self,
+        session_id: &SessionId,
+    ) -> Result<agentj_core::module::SessionStatus, DispatchError> {
+        self.session_store
+            .status(session_id)
+            .map_err(|_| DispatchError {
+                code: error_codes::SESSION_NOT_FOUND,
+                message: "SessionNotFound".into(),
+                data: Some(serde_json::json!({ "session_id": session_id })),
+            })
+    }
+
+    /// `-32803 SessionInactive` with the offending `{session_id, status}` data.
+    fn session_inactive(
+        session_id: &SessionId,
+        status: agentj_core::module::SessionStatus,
+    ) -> DispatchError {
+        DispatchError {
+            code: error_codes::SESSION_INACTIVE,
+            message: "SessionInactive".into(),
+            data: Some(serde_json::json!({
+                "session_id": session_id,
+                "status": Self::wire_session_status(status),
+            })),
+        }
+    }
+
+    /// `session/status` (spec §8.8): the existence probe clients fire before
+    /// `session/subscribe`.
+    fn dispatch_session_status(&self, req: &JsonRpcRequest) -> Result<Value, DispatchError> {
         let params: SessionIdParams = serde_json::from_value(
             req.params
                 .clone()
                 .ok_or_else(|| DispatchError::invalid_params("missing params"))?,
         )
         .map_err(|e| DispatchError::invalid_params(e.to_string()))?;
-        let status = self
-            .session_store
-            .status(&params.session_id)
-            .map_err(|_| DispatchError {
-                code: error_codes::SESSION_NOT_FOUND,
-                message: "SessionNotFound".into(),
-                data: Some(serde_json::json!({ "session_id": params.session_id })),
-            })?;
-        let status = match status {
-            agentj_core::module::SessionStatus::Active => WireStatus::Active,
-            agentj_core::module::SessionStatus::Archived => WireStatus::Archived,
-            agentj_core::module::SessionStatus::Deleted => WireStatus::Deleted,
+        let status = self.require_session_status(&params.session_id)?;
+        let result = SessionStatusResult {
+            status: Self::wire_session_status(status),
         };
-        let result = SessionStatusResult { status };
         Ok(serde_json::to_value(result).expect("serializable"))
+    }
+
+    /// `session/archive` (spec §8.9): only an active session may be archived.
+    fn dispatch_session_archive(&self, req: &JsonRpcRequest) -> Result<Value, DispatchError> {
+        let params: SessionIdParams = serde_json::from_value(
+            req.params
+                .clone()
+                .ok_or_else(|| DispatchError::invalid_params("missing params"))?,
+        )
+        .map_err(|e| DispatchError::invalid_params(e.to_string()))?;
+        let status = self.require_session_status(&params.session_id)?;
+        if status != agentj_core::module::SessionStatus::Active {
+            return Err(Self::session_inactive(&params.session_id, status));
+        }
+        self.session_store
+            .archive(&params.session_id)
+            .map_err(|e| DispatchError::internal(e.to_string()))?;
+        Ok(Value::Null)
     }
 
     fn dispatch_session_history(&self, req: &JsonRpcRequest) -> Result<Value, DispatchError> {
@@ -4831,6 +4880,51 @@ mod tests {
             "unknown session must be SessionNotFound: {resp}"
         );
         assert_eq!(v["error"]["data"]["session_id"], "nope");
+    }
+
+    /// Regression guard: `session/archive` is declared in the registry/spec
+    /// §8.9 and exported by the TUI session hook; it must be dispatched.
+    /// Only active sessions may be archived — repeats are `-32803`.
+    #[tokio::test]
+    async fn session_archive_transitions_and_rejects_inactive() {
+        let store = stub_session();
+        let server = IpcServer::new(Kernel::new(), store.clone());
+        let sid = store.create().unwrap();
+        let archive = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 14,
+            "method": "session/archive",
+            "params": { "session_id": sid.as_str() },
+        })
+        .to_string();
+        let resp = server.handle_request(&archive).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert!(
+            v["error"].is_null(),
+            "session/archive must be implemented, not -32601: {resp}"
+        );
+        assert!(v["result"].is_null(), "archive result is null: {resp}");
+        let status = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 15,
+            "method": "session/status",
+            "params": { "session_id": sid.as_str() },
+        })
+        .to_string();
+        let resp = server.handle_request(&status).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(v["result"]["status"], "archived");
+        let resp = server.handle_request(&archive).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(
+            v["error"]["code"], -32803,
+            "repeat archive must be SessionInactive: {resp}"
+        );
+        assert_eq!(v["error"]["data"]["status"], "archived");
+        let unknown = r#"{"jsonrpc":"2.0","id":16,"method":"session/archive","params":{"session_id":"nope"}}"#;
+        let resp = server.handle_request(unknown).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(v["error"]["code"], -32802, "unknown archive: {resp}");
     }
 
     #[tokio::test]
