@@ -132,152 +132,158 @@ export default function ComposerOptions({ model = null, children }: ComposerOpti
 
   return (
     <div className="comp-tools" ref={toolsRef}>
-      <button
-        type="button"
-        id="composer-model-trigger"
-        ref={modelRef}
-        className="sel"
-        aria-haspopup="listbox"
-        aria-expanded={openId === "model"}
-        onClick={() => openPanel("model", modelName ? MODEL_LIST.findIndex((e) => e.name === modelName) : 0)}
-      >
-        <span className="g">◆</span>
-        {modelName ?? "模型"}
-        <span className="cv">⌄</span>
-      </button>
-      <button
-        type="button"
-        id="composer-agent-trigger"
-        ref={agentRef}
-        className="sel"
-        aria-haspopup="listbox"
-        aria-expanded={openId === "agent"}
-        onClick={() => openPanel("agent", agentIndex(prefs.agent))}
-      >
-        <span className="g">⚙</span>
-        {AGENTS[agentIndex(prefs.agent)].label}
-        <span className="cv">⌄</span>
-      </button>
-      <button
-        type="button"
-        id="composer-entropy-trigger"
-        ref={entropyRef}
-        className="sel"
-        aria-haspopup="listbox"
-        aria-expanded={openId === "entropy"}
-        onClick={() => openPanel("entropy", entropyIndex(prefs.entropy))}
-      >
-        <span className="g">∿</span>
-        {entropyShortLabel(prefs.entropy)}
-        <span className="cv">⌄</span>
-      </button>
+      <div className="sel-wrap">
+        <button
+          type="button"
+          id="composer-model-trigger"
+          ref={modelRef}
+          className="sel"
+          aria-haspopup="listbox"
+          aria-expanded={openId === "model"}
+          onClick={() => openPanel("model", modelName ? MODEL_LIST.findIndex((e) => e.name === modelName) : 0)}
+        >
+          <span className="g">◆</span>
+          {modelName ?? "模型"}
+          <span className="cv">⌄</span>
+        </button>
+        <OptionPopover
+          open={openId === "model"}
+          onClose={() => closePopover("model")}
+          className="pop pop-left pop-model"
+          labelledBy="composer-model-title"
+          role="listbox"
+          tabIndex={-1}
+          onKeyDown={handleKeyDown}
+        >
+          <div className="pop-title" id="composer-model-title">选择模型</div>
+          {MODEL_LIST.map((entry, index) => {
+            const selected = modelName === entry.name;
+            return (
+              <div
+                key={entry.name}
+                role="option"
+                aria-selected={selected}
+                className={`pop-item${selected ? " sel-item" : ""}${highlight === index ? " hl" : ""}`}
+                onClick={() => selectOption("model", index)}
+              >
+                <div>
+                  <div className="nm">{entry.name}</div>
+                  <div className="cap">{entry.cap}</div>
+                </div>
+                {selected && <span className="tick">✓</span>}
+              </div>
+            );
+          })}
+        </OptionPopover>
+      </div>
+
+      <div className="sel-wrap">
+        <button
+          type="button"
+          id="composer-agent-trigger"
+          ref={agentRef}
+          className="sel"
+          aria-haspopup="listbox"
+          aria-expanded={openId === "agent"}
+          onClick={() => openPanel("agent", agentIndex(prefs.agent))}
+        >
+          <span className="g">⚙</span>
+          {AGENTS[agentIndex(prefs.agent)].label}
+          <span className="cv">⌄</span>
+        </button>
+        <OptionPopover
+          open={openId === "agent"}
+          onClose={() => closePopover("agent")}
+          className="pop pop-left pop-agent"
+          labelledBy="composer-agent-title"
+          role="listbox"
+          tabIndex={-1}
+          onKeyDown={handleKeyDown}
+        >
+          <div className="pop-title" id="composer-agent-title">选择 Agent</div>
+          {AGENTS.map((entry, index) => {
+            const selected = prefs.agent === entry.id;
+            return (
+              <div
+                key={entry.id}
+                role="option"
+                aria-selected={selected}
+                className={`pop-item${selected ? " sel-item" : ""}${highlight === index ? " hl" : ""}`}
+                onClick={() => selectOption("agent", index)}
+              >
+                <div>
+                  <div className="nm">{entry.label}</div>
+                  <div className="cap">{entry.cap}</div>
+                </div>
+                {selected && <span className="tick">✓</span>}
+              </div>
+            );
+          })}
+          <div className="pop-hint">Agent 决定可用工具与权限范围。</div>
+        </OptionPopover>
+      </div>
+
+      <div className="sel-wrap">
+        <button
+          type="button"
+          id="composer-entropy-trigger"
+          ref={entropyRef}
+          className="sel"
+          aria-haspopup="listbox"
+          aria-expanded={openId === "entropy"}
+          onClick={() => openPanel("entropy", entropyIndex(prefs.entropy))}
+        >
+          <span className="g">∿</span>
+          {entropyShortLabel(prefs.entropy)}
+          <span className="cv">⌄</span>
+        </button>
+        <OptionPopover
+          open={openId === "entropy"}
+          onClose={() => closePopover("entropy")}
+          className="pop pop-right pop-ent"
+          labelledBy="composer-entropy-title"
+          role="listbox"
+          tabIndex={-1}
+          onKeyDown={handleKeyDown}
+        >
+          <div className="pop-title" id="composer-entropy-title">熵变</div>
+          {ENTROPY_PRESETS.map((preset, index) => {
+            const selected = entropyMatches(preset, prefs.entropy);
+            return (
+              <div
+                key={preset.value}
+                role="option"
+                aria-selected={selected}
+                className={`pop-row${selected ? " sel-item" : ""}${highlight === index ? " hl" : ""}`}
+                onClick={() => selectOption("entropy", index)}
+              >
+                <span className="nm2">{preset.label}</span>
+                <span className="v">{preset.value.toFixed(1)}</span>
+                {selected && <span className="tick">✓</span>}
+              </div>
+            );
+          })}
+          <div className="pop-sep" />
+          <div className="pop-row">
+            <span className="nm2">自定义</span>
+            <span className="v">{prefs.entropy.toFixed(1)}</span>
+          </div>
+          <input
+            type="range"
+            className="slider"
+            aria-label="自定义熵值"
+            min={0}
+            max={2}
+            step={0.1}
+            value={prefs.entropy}
+            onChange={handleSlider}
+          />
+          <div className="pop-hint">数值越高输出越发散，越低越确定。</div>
+        </OptionPopover>
+      </div>
+
       <span className="spacer" />
       {children}
-
-      <OptionPopover
-        open={openId === "model"}
-        onClose={() => closePopover("model")}
-        className="pop pop-left pop-model"
-        labelledBy="composer-model-title"
-        role="listbox"
-        tabIndex={-1}
-        onKeyDown={handleKeyDown}
-      >
-        <div className="pop-title" id="composer-model-title">选择模型</div>
-        {MODEL_LIST.map((entry, index) => {
-          const selected = modelName === entry.name;
-          return (
-            <div
-              key={entry.name}
-              role="option"
-              aria-selected={selected}
-              className={`pop-item${selected ? " sel-item" : ""}${highlight === index ? " hl" : ""}`}
-              onClick={() => selectOption("model", index)}
-            >
-              <div>
-                <div className="nm">{entry.name}</div>
-                <div className="cap">{entry.cap}</div>
-              </div>
-              {selected && <span className="tick">✓</span>}
-            </div>
-          );
-        })}
-      </OptionPopover>
-
-      <OptionPopover
-        open={openId === "agent"}
-        onClose={() => closePopover("agent")}
-        className="pop pop-left pop-agent"
-        labelledBy="composer-agent-title"
-        role="listbox"
-        tabIndex={-1}
-        onKeyDown={handleKeyDown}
-      >
-        <div className="pop-title" id="composer-agent-title">选择 Agent</div>
-        {AGENTS.map((entry, index) => {
-          const selected = prefs.agent === entry.id;
-          return (
-            <div
-              key={entry.id}
-              role="option"
-              aria-selected={selected}
-              className={`pop-item${selected ? " sel-item" : ""}${highlight === index ? " hl" : ""}`}
-              onClick={() => selectOption("agent", index)}
-            >
-              <div>
-                <div className="nm">{entry.label}</div>
-                <div className="cap">{entry.cap}</div>
-              </div>
-              {selected && <span className="tick">✓</span>}
-            </div>
-          );
-        })}
-        <div className="pop-hint">Agent 决定可用工具与权限范围。</div>
-      </OptionPopover>
-
-      <OptionPopover
-        open={openId === "entropy"}
-        onClose={() => closePopover("entropy")}
-        className="pop pop-right pop-ent"
-        labelledBy="composer-entropy-title"
-        role="listbox"
-        tabIndex={-1}
-        onKeyDown={handleKeyDown}
-      >
-        <div className="pop-title" id="composer-entropy-title">熵变</div>
-        {ENTROPY_PRESETS.map((preset, index) => {
-          const selected = entropyMatches(preset, prefs.entropy);
-          return (
-            <div
-              key={preset.value}
-              role="option"
-              aria-selected={selected}
-              className={`pop-row${selected ? " sel-item" : ""}${highlight === index ? " hl" : ""}`}
-              onClick={() => selectOption("entropy", index)}
-            >
-              <span className="nm2">{preset.label}</span>
-              <span className="v">{preset.value.toFixed(1)}</span>
-              {selected && <span className="tick">✓</span>}
-            </div>
-          );
-        })}
-        <div className="pop-sep" />
-        <div className="pop-row">
-          <span className="nm2">自定义</span>
-          <span className="v">{prefs.entropy.toFixed(1)}</span>
-        </div>
-        <input
-          type="range"
-          className="slider"
-          aria-label="自定义熵值"
-          min={0}
-          max={2}
-          step={0.1}
-          value={prefs.entropy}
-          onChange={handleSlider}
-        />
-        <div className="pop-hint">数值越高输出越发散，越低越确定。</div>
-      </OptionPopover>
     </div>
   );
 }
