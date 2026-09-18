@@ -17,7 +17,9 @@ use agentj_protocol::file::{FileKind, FileListParams, FileListResult};
 use agentj_protocol::lifecycle::InitializeParams;
 use agentj_protocol::permission::{PermissionRequestParams, PermissionRespondParams};
 use agentj_protocol::question::{AskQuestionParams, QuestionRespondParams, QuestionRespondResult};
-use agentj_protocol::session::{SessionIdParams, SessionNewParams, SessionSubscribeParams};
+use agentj_protocol::session::{
+    SessionIdParams, SessionNewParams, SessionStatusResult, SessionSubscribeParams,
+};
 use agentj_protocol::streaming::CancelParams;
 use agentj_question::{
     QuestionModule, QuestionNotifier, QuestionOutcome, QuestionSettlement, RespondError,
@@ -470,6 +472,7 @@ impl IpcServer {
                 "kernel/status" => self.dispatch_kernel_status(),
                 "session/list" => self.dispatch_session_list(),
                 "session/history" => self.dispatch_session_history(&req),
+                "session/status" => self.dispatch_session_status(&req),
                 "file/list" => self.dispatch_file_list(&req).await,
                 "shutdown" => self.dispatch_shutdown(),
                 "permission/respond" => self.dispatch_permission_respond(&req, conn_id).await,
@@ -950,6 +953,34 @@ impl IpcServer {
             })
             .collect();
         Ok(serde_json::json!({ "sessions": sessions }))
+    }
+
+    /// `session/status` (spec §8.8): the existence probe clients fire before
+    /// `session/subscribe`; unknown sessions map to `-32802 SessionNotFound`.
+    fn dispatch_session_status(&self, req: &JsonRpcRequest) -> Result<Value, DispatchError> {
+        use agentj_protocol::types::SessionStatus as WireStatus;
+
+        let params: SessionIdParams = serde_json::from_value(
+            req.params
+                .clone()
+                .ok_or_else(|| DispatchError::invalid_params("missing params"))?,
+        )
+        .map_err(|e| DispatchError::invalid_params(e.to_string()))?;
+        let status = self
+            .session_store
+            .status(&params.session_id)
+            .map_err(|_| DispatchError {
+                code: error_codes::SESSION_NOT_FOUND,
+                message: "SessionNotFound".into(),
+                data: Some(serde_json::json!({ "session_id": params.session_id })),
+            })?;
+        let status = match status {
+            agentj_core::module::SessionStatus::Active => WireStatus::Active,
+            agentj_core::module::SessionStatus::Archived => WireStatus::Archived,
+            agentj_core::module::SessionStatus::Deleted => WireStatus::Deleted,
+        };
+        let result = SessionStatusResult { status };
+        Ok(serde_json::to_value(result).expect("serializable"))
     }
 
     fn dispatch_session_history(&self, req: &JsonRpcRequest) -> Result<Value, DispatchError> {
@@ -4755,6 +4786,51 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
         assert_eq!(v["result"]["sessions"][0]["state"], "archived");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Regression guard: `session/status` is declared in the registry, schema,
+    /// SDK and spec (§8.8) and is the existence probe every client fires
+    /// before `session/subscribe`. It must be dispatched — falling through to
+    /// `-32601 method not found` breaks every session click in Web/TUI.
+    #[tokio::test]
+    async fn session_status_returns_store_status() {
+        let store = stub_session();
+        let server = IpcServer::new(Kernel::new(), store.clone());
+        let sid = store.create().unwrap();
+        let raw = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 12,
+            "method": "session/status",
+            "params": { "session_id": sid.as_str() },
+        })
+        .to_string();
+        let resp = server.handle_request(&raw).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert!(
+            v["error"].is_null(),
+            "session/status must be implemented, not -32601: {resp}"
+        );
+        assert_eq!(v["result"]["status"], "active");
+        store.archive(&sid).unwrap();
+        let resp = server.handle_request(&raw).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(v["result"]["status"], "archived");
+    }
+
+    /// Unknown session id maps to the documented `-32802 SessionNotFound`
+    /// with `error.data.session_id` (§8.8), never the generic `-32601`.
+    #[tokio::test]
+    async fn session_status_unknown_session_returns_32802() {
+        let server = IpcServer::new(Kernel::new(), stub_session());
+        let raw =
+            r#"{"jsonrpc":"2.0","id":13,"method":"session/status","params":{"session_id":"nope"}}"#;
+        let resp = server.handle_request(raw).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(
+            v["error"]["code"], -32802,
+            "unknown session must be SessionNotFound: {resp}"
+        );
+        assert_eq!(v["error"]["data"]["session_id"], "nope");
     }
 
     #[tokio::test]
