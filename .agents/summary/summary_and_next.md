@@ -39,6 +39,20 @@
 - ✅ 修复后门禁全绿（10 gates：cargo fmt / 549 Rust tests / clippy 零警告 / drift / sdk 37 / web 219 / web build / tui 71 / check-version / desktop-ui）。
 - ✅ 版本 bump 0.15.0 → 0.15.1（Cargo workspace + Cargo.lock + SDK `VERSION` + Desktop 三件套 + `check-version.sh`；`PROTOCOL_VERSION` 保持 0.13.0）。
 
+## Bugfix（v0.15.2）✅
+
+- 🐛 **BUG-007**（high，分支 `fix/session-status-not-found`）：`session/status` 在协议层全面声明
+  （`protocol/methods.json` / schemas / SDK `METHODS` / 规范 §8.8 / 注册表测试）但 `agentj-ipc`
+  dispatch 从未实现 → 落入 catch-all 返回 `-32601 method not found`；Web/TUI 左栏会话点击
+  （status 存在性探针 → `session/subscribe`）全部失败。修复：新增 dispatch arm +
+  `dispatch_session_status`（`session_store.status()` 查询 + 未知会话 `-32802 SessionNotFound`
+  + `error.data.session_id`）。
+- ✅ 回归守卫：`agentj-ipc` 新增 2 测试（active/archived 状态映射、未知会话 -32802），
+  修复前 RED（精确复现 `-32601`）→ 修复后 GREEN。
+- ✅ 门禁全绿：cargo fmt / 551 Rust tests / clippy 零警告 / drift 2 / sdk 37 / web 219 /
+  tui 71 / check-version 0.15.2 / desktop-ui。
+- ✅ 版本 bump 0.15.1 → 0.15.2（`PROTOCOL_VERSION` 保持 0.13.0，无 wire 变更）。
+
 ## 遗留问题 / 已知限制
 
 - **T7 遗留 → final review 已修复（2026-09-14）**：glob 重定基会让 `find -name` 对 `*.rs` 等模式静默返回空（回归），已改为 **glob pattern 不再改写**、`GlobTool`/`GrepTool` 以会话根为 cwd 执行（新增回归测试）；含 `/` 的 glob 模式仍不支持（`find -name` basename 语义），见设计文档「实现已知限制（v0.15.0）」。
@@ -47,9 +61,9 @@
 - **T35 遗留（minor）**：`RunPanel` 的 `pendingQuestion` 在 `activeSessionId` 切换 / demo 开关时不清理，可能残留上一条会话的提问卡（会话切换场景）。
 - **Desktop `src-tauri/Cargo.lock` 历史遗留**：仍停留在旧版本 `agentj-ui 0.11.0`（非本次 bump 范围）。
 - **E2E 本地预存在风险（环境性）**：`e2e_permission` 硬编码会话 id `s1` 且未设置 `[session] dir`，会写 `$HOME/.local/share/agentj/sessions/s1.json`；若该文件处于过期/归档态，本地运行会挂起（CI 全新 HOME 不受影响）。本次 T42 门禁工作区干净、测试 60.24s 内正常通过；如遇本地挂起，先清理该残留文件。
-- 协议观察项（非本特性范围）：`session/status` 对未知会话返回 `-32601`；protocol-version banner 与 `PROTOCOL_VERSION` 展示一致性。
+- 协议观察项（非本特性范围）：protocol-version banner 与 `PROTOCOL_VERSION` 展示一致性。（`session/status` 未知会话 `-32601` 观察项已于 v0.15.2 修复，见上。）
 
 ## 下一步
 
-- push 分支 `feature/agentj-protocol-extension` + 创建 PR（用户负责合并）。
-- 合并后打 `v0.15.1` tag 并清理 acceptance 产物与临时文件。
+- push 分支 `fix/session-status-not-found` + 创建 PR（用户负责合并）。
+- 合并后打 `v0.15.2` tag 并清理临时文件。
