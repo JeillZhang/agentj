@@ -137,13 +137,13 @@ TUI 用 OpenCode 的贴底消息流/行式工具/footer composer，Desktop 视�
 |---|---|---|---|
 | bg（页面底） | `#FFFFFF` | `#151517` | |
 | sidebar-fill | `#F9FAFB` | `#1B1B1C` | 左会话栏底 |
-| layer（抬升层） | `#FFFFFF`/`#F9FAFB` | `#232324`/`#2C2C2E` | 卡片/浮层底（浮层加 shadow，不再深一档色） |
+| layer（抬升层） | `#FFFFFF`/`#E9EDF1` | `#232324`/`#2C2C2E` | 卡片/浮层底（浮层加 shadow，不再深一档色） |
 | text（主文字） | `#0F1115` | `#F9FAFB` | |
 | text-muted | `#61666B` | `#CFD3D6` | 次级/时间/元信息 |
 | accent（主蓝，链接/焦点/选中） | `#4176E6` | `#679EFE` | D2/D8 |
 | 主按钮填充（CTA） | `#4176E6` | `#679EFE` | P2 决策（非 P1 反色） |
 | 用户气泡底 | `#EAF1FE` | `#2C2C2E` | dsh `#EDF3FE` 的蓝 tint 调整 |
-| 边框（hairline 0.5px） | `#E4E7EA` | `#2E2E31` | 状态色边框才 1px 实线 |
+| 边框（hairline 0.5px） | `#CBD2DB` | `#2E2E31` | 状态色边框才 1px 实线 |
 | 成功 / 错误 / 警告 | `#22C55E` / `#EC1313` / `#F59E0B` | 同（错误 `#F25A5A`） | |
 | 代码块底 / 行内代码底 | `#F9FAFB` / `#FAFAFA`\* | `#1B1B1C` / `#292929`\* | |
 

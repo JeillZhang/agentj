@@ -14,9 +14,9 @@ export type Palette = Record<SemanticKey, string>;
 
 const deepsuite = {
   light: {
-    bg: "#FFFFFF", sidebar: "#F9FAFB", panel: "#FFFFFF", raised: "#F9FAFB",
+    bg: "#FFFFFF", sidebar: "#F9FAFB", panel: "#FFFFFF", raised: "#E9EDF1",
     text: "#0F1115", textMuted: "#61666B", accent: "#4176E6",
-    accentOnAccent: "#FFFFFF", userBubble: "#EAF1FE", border: "#E4E7EA",
+    accentOnAccent: "#FFFFFF", userBubble: "#EAF1FE", border: "#CBD2DB",
     codeBg: "#F9FAFB", inlineCodeBg: "#FAFAFA", success: "#22C55E",
     error: "#EC1313", warning: "#F59E0B",
     shadowSoft: "0 8px 24px rgba(0,0,0,.08)",

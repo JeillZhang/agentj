@@ -43,6 +43,7 @@
   font-size: 13px;
   color: var(--aj-text);
   font-weight: 600;
+  transition: color var(--aj-motion-fast) var(--aj-ease);
 }
 
 .pop-item .cap {
@@ -70,9 +71,25 @@
   background: var(--aj-accentTint);
 }
 
+.pop-item,
+.pop-row {
+  transition: background var(--aj-motion-fast) var(--aj-ease);
+}
+
+.pop-item:hover:not(.sel-item),
+.pop-row:hover:not(.sel-item) {
+  background: var(--aj-raised);
+}
+
+.pop-item:hover:not(.sel-item) .nm,
+.pop-row:hover:not(.sel-item) .nm2 {
+  color: var(--aj-accent);
+}
+
 .nm2 {
   font-size: 13px;
   color: var(--aj-text);
+  transition: color var(--aj-motion-fast) var(--aj-ease);
 }
 
 .v {
@@ -140,6 +157,12 @@
   position: relative;
 }
 
+/* Per-trigger positioning context so each popover anchors to its own chip. */
+.sel-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
 .sel {
   height: 26px;
   padding: 0 9px;
@@ -153,6 +176,20 @@
   color: var(--aj-textMuted);
   white-space: nowrap;
   cursor: pointer;
+  transition: background var(--aj-motion-fast) var(--aj-ease),
+    color var(--aj-motion-fast) var(--aj-ease),
+    border-color var(--aj-motion-fast) var(--aj-ease);
+}
+
+.sel:hover,
+.sel:focus-visible {
+  background: var(--aj-raised);
+  color: var(--aj-text);
+}
+
+.sel:focus-visible {
+  outline: 2px solid var(--aj-accent);
+  outline-offset: 1px;
 }
 
 .sel .g {
@@ -198,6 +235,10 @@ input.slider {
 }
 
 @media (max-width: 1023px) {
+  .sel-wrap {
+    position: static;
+  }
+
   .pop {
     left: 8px;
     right: 8px;

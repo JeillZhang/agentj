@@ -167,7 +167,7 @@ vi.mock("@agentj/sdk", () => {
   };
 });
 
-import App, { connectionLight } from "./App";
+import App, { connectionLight, isProtocolCompatible } from "./App";
 import { historyToEntries, historyToConversation, filterNodes } from "./Trajectory";
 import { Trajectory } from "./Trajectory";
 
@@ -272,12 +272,19 @@ describe("App with mocked SDK transport", () => {
     );
   });
 
-  it("shows version mismatch banner expected 0.12.1 got 0.9.0", async () => {
-    shared.initVersion.value = "0.9.0";
+  it("shows version mismatch banner on major drift expected 0.12.1 got 1.9.0", async () => {
+    shared.initVersion.value = "1.9.0";
     render(<App />);
     expect(
-      await screen.findByText(/expected 0\.12\.1, got 0\.9\.0/i),
+      await screen.findByText(/expected 0\.12\.1, got 1\.9\.0/i),
     ).toBeInTheDocument();
+  });
+
+  it("does not banner on compatible minor drift (client 0.12.1 vs server 0.13.0)", async () => {
+    shared.initVersion.value = "0.13.0";
+    render(<App />);
+    await screen.findByText("connected");
+    expect(document.querySelector(".aj-banner")).toBeNull();
   });
 
   it("omits the standalone dashboard hint line when unreachable", async () => {
@@ -604,13 +611,13 @@ describe("App shell + history rebuild", () => {
     expect(document.documentElement.dataset.theme).toBeUndefined();
     expect(localStorage.getItem("agentj.theme-mode")).toBe("system");
   });
-  it("shows the kernel/status model chip and feeds the meta row 模型 segment", async () => {
+  it("drops the topbar model chip and feeds the meta row 模型 segment", async () => {
     shared.historyResult.value = { events: WIRE_CORPUS, next_cursor: null };
     shared.sessionListResult.value = { sessions: [{ session_id: "s1", state: "active", preview: "hi" }] };
     render(<App />);
     const header = document.querySelector(".aj-topbar") as HTMLElement;
-    expect(await within(header).findByText("deepseek-chat")).toBeInTheDocument();
-    expect(within(header).getByLabelText("model")).toBeInTheDocument();
+    expect(within(header).queryByLabelText("model")).toBeNull();
+    expect(within(header).queryByText("deepseek-chat")).toBeNull();
     const list = await screen.findByRole("list", { name: "session list" });
     fireEvent.click(await within(list).findByText(/hi/));
     await screen.findByText("hello world");
@@ -637,10 +644,10 @@ describe("App shell + history rebuild", () => {
     expect(screen.queryByText(/agentj dashboard --port/i)).toBeNull();
   });
   it("renders the version-mismatch banner with its semantic state", async () => {
-    shared.initVersion.value = "0.9.0";
+    shared.initVersion.value = "1.9.0";
     render(<App />);
     const banner = await waitFor(() => screen.getByRole("alert"), { timeout: 3000 });
-    expect(banner.textContent).toMatch(/expected 0\.12\.1, got 0\.9\.0/i);
+    expect(banner.textContent).toMatch(/expected 0\.12\.1, got 1\.9\.0/i);
     expect(banner.className).toContain("aj-banner");
     expect(banner.getAttribute("data-state")).toBe("mismatch");
   });
@@ -662,6 +669,36 @@ describe("App shell + history rebuild", () => {
     fireEvent.click(toggle);
     expect(toggle.getAttribute("aria-expanded")).toBe("false");
     expect(app().dataset.drawer).toBe("closed");
+  });
+});
+
+describe("isProtocolCompatible (semver additive discipline)", () => {
+  it("accepts minor drift in either direction", () => {
+    expect(isProtocolCompatible("0.12.1", "0.13.0")).toBe(true);
+    expect(isProtocolCompatible("0.13.0", "0.12.1")).toBe(true);
+  });
+
+  it("accepts patch drift in either direction", () => {
+    expect(isProtocolCompatible("0.13.0", "0.13.2")).toBe(true);
+    expect(isProtocolCompatible("0.13.2", "0.13.0")).toBe(true);
+  });
+
+  it("rejects a differing major", () => {
+    expect(isProtocolCompatible("0.13.0", "1.0.0")).toBe(false);
+    expect(isProtocolCompatible("1.0.0", "0.13.0")).toBe(false);
+  });
+
+  it("rejects malformed input defensively", () => {
+    expect(isProtocolCompatible("", "0.13.0")).toBe(false);
+    expect(isProtocolCompatible("0.13.0", "not-a-version")).toBe(false);
+    expect(isProtocolCompatible("x.y.z", "0.13.0")).toBe(false);
+    expect(isProtocolCompatible("0.13.0", "1")).toBe(false);
+  });
+
+  it("accepts a missing patch segment and pre-release suffixes", () => {
+    expect(isProtocolCompatible("0.13", "0.13.0")).toBe(true);
+    expect(isProtocolCompatible("0.13.0", "0.12")).toBe(true);
+    expect(isProtocolCompatible("0.13.0-rc.1", "0.13.0")).toBe(true);
   });
 });
 
