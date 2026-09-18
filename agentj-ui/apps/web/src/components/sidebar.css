@@ -85,12 +85,20 @@
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding: 8px 30px 8px 10px;
+  padding: 8px 30px 8px 34px;
   border: 0.5px solid transparent;
   border-radius: var(--aj-radiusCtl);
   background: transparent;
   color: var(--aj-text);
   cursor: pointer;
+  transition:
+    background-color var(--aj-motion-fast) var(--aj-ease),
+    border-color var(--aj-motion-fast) var(--aj-ease);
+}
+
+.aj-sess:focus-visible {
+  outline: 2px solid var(--aj-accent);
+  outline-offset: 1px;
 }
 
 .aj-sess:hover {
@@ -161,6 +169,76 @@
 .aj-star:hover {
   background: var(--aj-raised);
   color: var(--aj-text);
+}
+
+.aj-sidebar__actions {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.aj-sidebar__actions .btn-primary {
+  flex: 1;
+}
+
+.aj-sidebar__cleanup {
+  flex: 0 0 auto;
+  padding: 0 12px;
+}
+
+.aj-session-del {
+  position: absolute;
+  left: 6px;
+  top: 0;
+  bottom: 0;
+  margin: auto;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: var(--aj-radiusCtl);
+  background: transparent;
+  color: var(--aj-textCaption);
+  cursor: pointer;
+  opacity: 0;
+  transition:
+    opacity var(--aj-motion-fast) var(--aj-ease),
+    background var(--aj-motion-fast) var(--aj-ease),
+    color var(--aj-motion-fast) var(--aj-ease);
+}
+
+.aj-sess:hover .aj-session-del,
+.aj-sess:focus-within .aj-session-del,
+.aj-session-item:hover .aj-session-del,
+.aj-session-item:focus-within .aj-session-del,
+.aj-session-del:focus-visible {
+  opacity: 1;
+}
+
+.aj-session-del:hover {
+  background: var(--aj-raised);
+  color: var(--aj-error);
+}
+
+.aj-session-del:focus-visible {
+  outline: 2px solid var(--aj-accent);
+  outline-offset: 1px;
+}
+
+.aj-session-del:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.aj-dialog__body {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--aj-textMuted);
 }
 
 .aj-flat-more {
