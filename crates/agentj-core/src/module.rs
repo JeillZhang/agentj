@@ -1,3 +1,4 @@
+use crate::artifacts::TurnArtifact;
 use crate::error::{ModelError, ModuleError, ToolError};
 use crate::resolver::ServiceRegistry;
 use crate::types::*;
@@ -6,15 +7,35 @@ use futures::stream::BoxStream;
 use parking_lot::RwLock;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 // ---- Traits ----
+
+/// Per-call tool execution context (design 2026-09-13 决策 #3): the session
+/// that triggered the call and the workspace root relative paths resolve
+/// against.
+#[derive(Debug, Clone)]
+pub struct ToolCallContext {
+    pub session_id: SessionId,
+    pub workspace_root: PathBuf,
+}
 
 pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
     fn description(&self) -> &str;
     fn input_schema(&self) -> serde_json::Value;
     fn execute(&self, input: serde_json::Value) -> Result<serde_json::Value, ToolError>;
+
+    /// Execute with per-call context. Default delegates to `execute` so existing
+    /// tools (including the MCP bridge) compile unchanged. @since 0.13.0
+    fn execute_with_context(
+        &self,
+        input: serde_json::Value,
+        _ctx: &ToolCallContext,
+    ) -> Result<serde_json::Value, ToolError> {
+        self.execute(input)
+    }
 }
 
 #[async_trait]
@@ -408,7 +429,12 @@ impl ToolRegistry {
         let tool = self
             .get(name)
             .ok_or_else(|| ToolError::ToolNotFound { name: name.into() })?;
-        tokio::task::spawn_blocking(move || tool.execute(args))
+        let ctx = ToolCallContext {
+            session_id: perm_ctx.session_id.clone(),
+            workspace_root: perm_ctx.workspace_root.clone(),
+        };
+        let args = crate::tool_paths::rebase_tool_args(name, args, &ctx.workspace_root);
+        tokio::task::spawn_blocking(move || tool.execute_with_context(args, &ctx))
             .await
             .map_err(|e| ToolError::ExecutionFailed {
                 name: name.into(),
@@ -478,6 +504,16 @@ pub trait SessionStore: Send + Sync {
     fn get(&self, session: &SessionId) -> Result<Vec<ChatMessage>, ModuleError>;
     fn estimate_tokens(&self, session: &SessionId) -> Result<usize, ModuleError>;
 
+    /// Session-level path base for tools; default returns None (unset). @since 0.13.0
+    fn project_root(&self, _session: &SessionId) -> Option<PathBuf> {
+        None
+    }
+
+    /// Store the session-level path base; default is a no-op. @since 0.13.0
+    fn set_project_root(&self, _session: &SessionId, _root: PathBuf) -> Result<(), ModuleError> {
+        Ok(())
+    }
+
     // v0.1 contract-first: default impls keep existing stores compiling;
     // real archive/delete semantics land in T17 (agentj-session).
     fn status(&self, _session: &SessionId) -> Result<SessionStatus, ModuleError> {
@@ -504,6 +540,7 @@ pub trait SessionStore: Send + Sync {
             messages,
             created_at: now,
             updated_at: now,
+            project_root: None,
         })
     }
 
@@ -608,10 +645,19 @@ impl KernelContext {
 
 // ---- Kernel Message ----
 
+/// Structured tool execution result: the tool's JSON output plus any artifacts
+/// (file changes, todo snapshots) it produced. Artifacts are only ever present
+/// on `Ok` — failures stay plain `ToolError`. @since 0.15.0
+#[derive(Debug, Clone, PartialEq)]
+pub struct ToolExecutionOutcome {
+    pub result: serde_json::Value,
+    pub artifacts: Vec<TurnArtifact>,
+}
+
 /// Oneshot result channel for ToolCallRequest — mirrors ServiceCallReply.
 pub type ToolCallReply = Arc<
     std::sync::Mutex<
-        Option<tokio::sync::oneshot::Sender<Result<serde_json::Value, crate::error::ToolError>>>,
+        Option<tokio::sync::oneshot::Sender<Result<ToolExecutionOutcome, crate::error::ToolError>>>,
     >,
 >;
 
@@ -856,6 +902,19 @@ mod tests {
         assert!(store.delete(&"s1".into()).is_err());
     }
 
+    #[test]
+    fn default_store_project_root_is_none() {
+        let store = ContractOnlyStore;
+        let sid: SessionId = "s1".into();
+        assert_eq!(store.project_root(&sid), None);
+        assert!(
+            store
+                .set_project_root(&sid, std::path::PathBuf::from("/tmp/p"))
+                .is_ok()
+        );
+        assert_eq!(store.project_root(&sid), None);
+    }
+
     // ---- T6: permission-gated tool execution ----
     use crate::permission::{
         PermissionChecker, PermissionContext, PermissionDecision, PermissionRequestId,
@@ -1055,5 +1114,73 @@ mod tests {
             )
             .unwrap();
         assert_eq!(n, 0);
+    }
+
+    // ---- T7: ToolCallContext + relative-path rebasing ----
+
+    #[test]
+    fn default_execute_with_context_delegates() {
+        let tool = DummyTool;
+        let ctx = ToolCallContext {
+            session_id: "s1".into(),
+            workspace_root: PathBuf::from("/ws"),
+        };
+        let input = serde_json::json!({"path": "src/main.rs"});
+        let via_ctx = tool.execute_with_context(input.clone(), &ctx).unwrap();
+        let direct = tool.execute(input).unwrap();
+        assert_eq!(via_ctx, direct);
+        assert_eq!(via_ctx, serde_json::Value::String("ok".into()));
+    }
+
+    // Overrides execute_with_context *and* rejects execute(), proving
+    // execute_async dispatches through the context-aware path.
+    struct EchoTool;
+    impl Tool for EchoTool {
+        fn name(&self) -> &str {
+            "read"
+        }
+        fn description(&self) -> &str {
+            ""
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({})
+        }
+        fn execute(&self, _input: serde_json::Value) -> Result<serde_json::Value, ToolError> {
+            Err(ToolError::ExecutionFailed {
+                name: "read".into(),
+                reason: "execute() must not be called".into(),
+            })
+        }
+        fn execute_with_context(
+            &self,
+            input: serde_json::Value,
+            ctx: &ToolCallContext,
+        ) -> Result<serde_json::Value, ToolError> {
+            Ok(serde_json::json!({
+                "path": input["path"],
+                "session_id": ctx.session_id,
+                "workspace_root": ctx.workspace_root.to_string_lossy(),
+            }))
+        }
+    }
+
+    #[tokio::test]
+    async fn execute_async_rebases_args_and_passes_context() {
+        let registry = ToolRegistry::new();
+        registry.register(Arc::new(EchoTool));
+        let perm = PermissionContext {
+            session_id: "s42".into(),
+            tool: "read".into(),
+            source: ToolSource::Builtin,
+            args: serde_json::json!({}),
+            workspace_root: PathBuf::from("/ws"),
+        };
+        let out = registry
+            .execute_async("read", serde_json::json!({"path": "src/lib.rs"}), &perm)
+            .await
+            .unwrap();
+        assert_eq!(out["path"], "/ws/src/lib.rs");
+        assert_eq!(out["session_id"], "s42");
+        assert_eq!(out["workspace_root"], "/ws");
     }
 }

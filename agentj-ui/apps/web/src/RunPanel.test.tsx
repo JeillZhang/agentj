@@ -1,10 +1,10 @@
 import "@testing-library/jest-dom/vitest";
 import { beforeEach, describe, expect, it } from "vitest";
-import { render, screen, fireEvent, within, act } from "@testing-library/react";
+import { render, screen, fireEvent, within, act, waitFor } from "@testing-library/react";
 import RunPanel, { ConversationFeed, failRun, fmtDuration, reduceRunFeed, type RunEntry } from "./RunPanel.tsx";
 import UnifiedSidebar from "./components/UnifiedSidebar";
 import { setDemoEnabled } from "./demoData";
-import type { ProgressFrame } from "@agentj/sdk";
+import { METHODS, type ProgressFrame } from "@agentj/sdk";
 
 beforeEach(() => localStorage.clear());
 
@@ -281,6 +281,89 @@ describe("RunPanel demo ask card → QA record", () => {
     act(() => setDemoEnabled(false));
     expect(document.querySelector(".ask")).toBeNull();
     localStorage.clear();
+  });
+});
+
+type AskNotify = (method: string, params: unknown) => void;
+
+function makeAskClient(result: unknown = { accepted: true }) {
+  let handler: AskNotify | null = null;
+  const calls: { method: string; params: Record<string, unknown> }[] = [];
+  const client = {
+    setNotificationHandler: (h: AskNotify) => { handler = h; },
+    removeNotificationHandler: () => { handler = null; },
+    request: async (method: string, params: Record<string, unknown>) => {
+      calls.push({ method, params });
+      return result;
+    },
+  } as unknown as Parameters<typeof RunPanel>[0]["client"];
+  return { client, calls, notify: (method: string, params: unknown) => handler?.(method, params) };
+}
+
+function realAskParams() {
+  return {
+    question_id: "q1",
+    session_id: "s1",
+    question: "请选择本次重构的范围？",
+    header: "确认范围",
+    options: [
+      { id: "ui", label: "仅前端三栏布局" },
+      { id: "full", label: "三栏 + 协议扩展", hint: "推荐" },
+    ],
+    allow_multiple: false,
+    allow_other: true,
+  };
+}
+
+describe("RunPanel real $/askQuestion → question/respond", () => {
+  it("renders a real question and responds", async () => {
+    const { client, calls, notify } = makeAskClient();
+    render(<RunPanel client={client} activeSessionId="s1" />);
+    act(() => notify(METHODS.askQuestion, realAskParams()));
+    expect(screen.getByText("请选择本次重构的范围？")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("仅前端三栏布局"));
+    fireEvent.change(screen.getByLabelText("其他回答"), { target: { value: "补充说明" } });
+    fireEvent.click(screen.getByRole("button", { name: "提交" }));
+    await waitFor(() => expect(calls).toHaveLength(1));
+    expect(calls[0]).toEqual({
+      method: METHODS.questionRespond,
+      params: {
+        question_id: "q1",
+        answers: ["ui", "other:补充说明"],
+        skipped: false,
+      },
+    });
+  });
+
+  it("ignores other-session questions", () => {
+    const { client, notify } = makeAskClient();
+    render(<RunPanel client={client} activeSessionId="s1" />);
+    act(() => notify(METHODS.askQuestion, { ...realAskParams(), session_id: "s2" }));
+    expect(screen.queryByText("请选择本次重构的范围？")).toBeNull();
+  });
+
+  it("appends a QA record after submit", async () => {
+    const { client, notify } = makeAskClient();
+    const { container } = render(<RunPanel client={client} activeSessionId="s1" />);
+    act(() => notify(METHODS.askQuestion, realAskParams()));
+    fireEvent.click(screen.getByText("三栏 + 协议扩展"));
+    fireEvent.click(screen.getByRole("button", { name: "提交" }));
+    await waitFor(() => expect(container.querySelectorAll(".qa").length).toBe(1));
+    const record = container.querySelector<HTMLElement>(".qa")!;
+    expect(record.textContent).toContain("请选择本次重构的范围？");
+    expect(record.textContent).toContain("三栏 + 协议扩展");
+    expect(container.querySelector(".ask")).toBeNull();
+  });
+
+  it("skip sends skipped:true and records 已跳过", async () => {
+    const { client, calls, notify } = makeAskClient();
+    const { container } = render(<RunPanel client={client} activeSessionId="s1" />);
+    act(() => notify(METHODS.askQuestion, realAskParams()));
+    fireEvent.click(screen.getByRole("button", { name: "跳过" }));
+    await waitFor(() => expect(calls).toHaveLength(1));
+    expect(calls[0].params).toEqual({ question_id: "q1", answers: [], skipped: true });
+    await waitFor(() => expect(container.querySelector(".qa")?.textContent).toContain("已跳过"));
+    expect(container.querySelector(".ask")).toBeNull();
   });
 });
 

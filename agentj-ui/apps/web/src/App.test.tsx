@@ -181,6 +181,31 @@ const WIRE_CORPUS = [
   { session_id: "s1", seq: 7, ts: 106, value: { kind: "error", message: "boom" } },
 ] as Array<Record<string, unknown>>;
 
+const ASK_CORPUS = [
+  {
+    session_id: "s1",
+    seq: 1,
+    ts: 1,
+    value: {
+      kind: "ask_question",
+      question_id: "q1",
+      question: "请选择版面布局？",
+      options: [
+        { id: "a", label: "三栏" },
+        { id: "b", label: "两栏" },
+      ],
+      allow_multiple: false,
+      allow_other: true,
+    },
+  },
+  {
+    session_id: "s1",
+    seq: 2,
+    ts: 2,
+    value: { kind: "question_answer", question_id: "q1", answers: ["a"], skipped: false },
+  },
+] as Array<Record<string, unknown>>;
+
 async function createActiveSession(): Promise<void> {
   fireEvent.click(screen.getAllByRole("button", { name: /new session/i })[0]);
   await waitFor(() => expect(screen.getByLabelText(/prompt/i)).not.toBeDisabled());
@@ -436,6 +461,80 @@ describe("Trajectory mappers", () => {
     const nodes = historyToEntries(WIRE_CORPUS as never);
     expect(filterNodes(nodes, "auth", []).map((n) => n.kind)).toEqual(["tool"]);
     expect(filterNodes(nodes, "", ["error"]).map((n) => n.kind)).toEqual(["error"]);
+  });
+  it("maps ask+answer into a QA record", () => {
+    const entries = historyToConversation(ASK_CORPUS as never);
+    expect(entries).toEqual([{ kind: "qa", id: "qa-q1", question: "请选择版面布局？", answer: "三栏" }]);
+  });
+  it("maps other-prefixed text and unknown ids when rebuilding a QA record", () => {
+    const corpus = [
+      {
+        session_id: "s1",
+        seq: 1,
+        ts: 1,
+        value: {
+          kind: "ask_question",
+          question_id: "q3",
+          question: "哪些范围？",
+          options: [{ id: "a", label: "三栏" }],
+          allow_multiple: true,
+          allow_other: true,
+        },
+      },
+      {
+        session_id: "s1",
+        seq: 2,
+        ts: 2,
+        value: {
+          kind: "question_answer", question_id: "q3", answers: ["a", "other:自定义", "ghost"], skipped: false,
+        },
+      },
+    ] as Array<Record<string, unknown>>;
+    const entries = historyToConversation(corpus as never);
+    expect(entries[0]).toMatchObject({ kind: "qa", answer: "三栏、自定义、ghost" });
+  });
+  it("maps unanswered ask to skipped record", () => {
+    const corpus = [ASK_CORPUS[0]] as Array<Record<string, unknown>>;
+    const entries = historyToConversation(corpus as never);
+    expect(entries).toEqual([
+      { kind: "qa", id: "qa-q1", question: "请选择版面布局？", answer: "已跳过" },
+    ]);
+  });
+  it("maps skipped question_answer to 已跳过", () => {
+    const corpus = [
+      ASK_CORPUS[0],
+      {
+        session_id: "s1",
+        seq: 2,
+        ts: 2,
+        value: { kind: "question_answer", question_id: "q1", answers: [], skipped: true },
+      },
+    ] as Array<Record<string, unknown>>;
+    const entries = historyToConversation(corpus as never);
+    expect(entries).toEqual([
+      { kind: "qa", id: "qa-q1", question: "请选择版面布局？", answer: "已跳过" },
+    ]);
+  });
+  it("produces no feed entries for todo and file_change events", () => {
+    const corpus = [
+      {
+        session_id: "s1",
+        seq: 1,
+        ts: 1,
+        value: { kind: "todo", revision: 0, items: [{ id: "t1", content: "do", status: "pending" }] },
+      },
+      {
+        session_id: "s1",
+        seq: 2,
+        ts: 2,
+        value: {
+          kind: "file_change",
+          change: { path: "a.rs", op: "modify", additions: 1, deletions: 0, diff: null },
+        },
+      },
+    ] as Array<Record<string, unknown>>;
+    expect(historyToConversation(corpus as never)).toEqual([]);
+    expect(historyToEntries(corpus as never)).toEqual([]);
   });
 });
 

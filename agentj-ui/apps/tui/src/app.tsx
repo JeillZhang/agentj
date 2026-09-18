@@ -6,8 +6,8 @@ import { METHODS, ResponseRouter, RpcClient, WebSocketTransport, parseProgress }
 import type { NotificationHandler, ProgressFrame, TransportStatus } from "@agentj/sdk";
 import { resolveWsUrl } from "@agentj/sdk";
 import { Composer } from "./composer.tsx";
-import { nextKey, rowsFromFrame, RunTranscript } from "./runview.tsx";
-import type { TranscriptRow } from "./runview.tsx";
+import { applyTodoFrame, EMPTY_TODOS, nextKey, rowsFromFrame, RunTranscript } from "./runview.tsx";
+import type { TodoState, TranscriptRow } from "./runview.tsx";
 import { restoreTerminal, setupGracefulShutdown } from "./connection.ts";
 import {
   SessionList,
@@ -347,14 +347,21 @@ function AppInner({ url, createTransport, backoffBaseMs = 1000 }: AppProps) {
   const statusLine = getStatusLine(authError, status);
   const modelConfig = useModelConfig(client);
   const [transcriptRows, setTranscriptRows] = useState<TranscriptRow[]>([]);
+  const [todos, setTodos] = useState<TodoState>(EMPTY_TODOS);
   useEffect(() => {
     setTranscriptRows([]);
+    setTodos(EMPTY_TODOS);
   }, [st.activeId]);
   useEffect(() => {
     if (!client) return;
     const handler: NotificationHandler = (method, params) => {
       if (method !== METHODS.progress) return;
-      setTranscriptRows((prev) => rowsFromFrame(prev, parseProgress(params)));
+      const frame = parseProgress(params);
+      if (frame.kind === "todo") {
+        setTodos((prev) => applyTodoFrame(prev, frame));
+        return;
+      }
+      setTranscriptRows((prev) => rowsFromFrame(prev, frame));
     };
     client.setNotificationHandler(handler);
   }, [client]);
@@ -482,7 +489,7 @@ function AppInner({ url, createTransport, backoffBaseMs = 1000 }: AppProps) {
             <box flexDirection="column" flexGrow={1}>
               <text style={{ fg: palette.textMuted }}>session: {st.activeId}</text>
               {st.info ? <text style={{ fg: palette.textMuted }}>{st.info}</text> : null}
-              <RunTranscript rows={transcriptRows} />
+              <RunTranscript rows={transcriptRows} todos={todos.items} />
               {!permReq && !paletteCtrl.modelOpen && paletteCtrl.paletteQuery === null ? (
                 <Composer onSubmit={handleSubmit} placeholder="send a message" />
               ) : null}

@@ -1,0 +1,12 @@
+[package]
+name = "agentj-question"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+agentj-core = { path = "../agentj-core" }
+agentj-protocol = { path = "../agentj-protocol" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4"] }

@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "FileEntry",
+  "description": "One directory entry (`path` relative to the project root, no `./` prefix).\n@since 0.13.0",
+  "type": "object",
+  "properties": {
+    "git_status": {
+      "description": "Porcelain single-letter status; `None` = clean / not a git repo.\n@since 0.13.0",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/GitFileStatus"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "kind": {
+      "$ref": "#/$defs/FileKind"
+    },
+    "mtime_ms": {
+      "description": "Modification time in epoch milliseconds. @since 0.13.0",
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint64",
+      "minimum": 0
+    },
+    "name": {
+      "description": "Entry name without separators.",
+      "type": "string"
+    },
+    "path": {
+      "description": "Path relative to the project root.",
+      "type": "string"
+    },
+    "size": {
+      "description": "File size in bytes; `None` for directories. @since 0.13.0",
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint64",
+      "minimum": 0
+    }
+  },
+  "required": [
+    "name",
+    "path",
+    "kind"
+  ],
+  "$defs": {
+    "FileKind": {
+      "description": "Entry kind. `Unknown` tolerates forward values (serde(other)); the schema\nlists only the known values. @since 0.13.0",
+      "type": "string",
+      "enum": [
+        "file",
+        "dir"
+      ]
+    },
+    "GitFileStatus": {
+      "description": "Porcelain single-letter git status (M/A/U/D). `Unknown` tolerates forward\nvalues (serde(other)); the schema lists only the known letters. @since 0.13.0",
+      "type": "string",
+      "enum": [
+        "M",
+        "A",
+        "U",
+        "D"
+      ]
+    }
+  }
+}

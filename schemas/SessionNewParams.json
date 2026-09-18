@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SessionNewParams",
+  "description": "`session/new` params. `project_root` is an absolute directory; when omitted\nthe session defaults to the process CWD. @since 0.13.0",
+  "type": "object",
+  "properties": {
+    "project_root": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  }
+}

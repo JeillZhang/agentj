@@ -7,17 +7,20 @@ use std::collections::BTreeMap;
 use crate::base::{
     ErrorObject, Id, NotificationMessage, ProgressToken, RequestMessage, ResponseMessage,
 };
+use crate::file::{FileEntry, FileKind, FileListParams, FileListResult};
 use crate::lifecycle::{ClientInfo, InitializeParams, InitializeResult, ServerInfo};
 use crate::permission::{
     PermissionDecision, PermissionRequestParams, PermissionRespondParams, PermissionRespondResult,
 };
+use crate::question::{AskOption, AskQuestionParams, QuestionRespondParams, QuestionRespondResult};
 use crate::session::{
     SessionHistoryParams, SessionHistoryResult, SessionIdParams, SessionListParams,
-    SessionListResult, SessionNewResult, SessionRunParams, SessionRunResult, SessionStatusResult,
-    SessionSubscribeParams, SessionSummary, UsageInfo,
+    SessionListResult, SessionNewParams, SessionNewResult, SessionRunParams, SessionRunResult,
+    SessionStatusResult, SessionSubscribeParams, SessionSummary, UsageInfo,
 };
 use crate::streaming::{
-    CancelParams, KernelStatusResult, ModuleInfo, ProgressParams, ProgressValue,
+    CancelParams, FileChange, FileChangeKind, KernelStatusResult, ModuleInfo, ProgressParams,
+    ProgressValue, TodoItem, TodoStatus,
 };
 use crate::types::{
     Attachment, ChatMessage, ModuleState, Role, SessionStatus, ToolCall, ToolDefinition,
@@ -47,6 +50,7 @@ pub fn generate_schemas() -> BTreeMap<String, Schema> {
     m.insert("InitializeParams".into(), schema_for!(InitializeParams));
     m.insert("InitializeResult".into(), schema_for!(InitializeResult));
     m.insert("SessionNewResult".into(), schema_for!(SessionNewResult));
+    m.insert("SessionNewParams".into(), schema_for!(SessionNewParams));
     m.insert("SessionRunParams".into(), schema_for!(SessionRunParams));
     m.insert("SessionRunResult".into(), schema_for!(SessionRunResult));
     m.insert("UsageInfo".into(), schema_for!(UsageInfo));
@@ -88,6 +92,24 @@ pub fn generate_schemas() -> BTreeMap<String, Schema> {
         schema_for!(PermissionRespondResult),
     );
     m.insert("PermissionDecision".into(), schema_for!(PermissionDecision));
+    m.insert("FileListParams".into(), schema_for!(FileListParams));
+    m.insert("FileListResult".into(), schema_for!(FileListResult));
+    m.insert("FileEntry".into(), schema_for!(FileEntry));
+    m.insert("FileKind".into(), schema_for!(FileKind));
+    m.insert("AskQuestionParams".into(), schema_for!(AskQuestionParams));
+    m.insert("AskOption".into(), schema_for!(AskOption));
+    m.insert(
+        "QuestionRespondParams".into(),
+        schema_for!(QuestionRespondParams),
+    );
+    m.insert(
+        "QuestionRespondResult".into(),
+        schema_for!(QuestionRespondResult),
+    );
+    m.insert("TodoItem".into(), schema_for!(TodoItem));
+    m.insert("TodoStatus".into(), schema_for!(TodoStatus));
+    m.insert("FileChange".into(), schema_for!(FileChange));
+    m.insert("FileChangeKind".into(), schema_for!(FileChangeKind));
     m
 }
 

@@ -1,8 +1,8 @@
 import { useState } from "react";
-import type { TodoItem } from "../demoData";
+import type { TodoView } from "../todoState";
 
 export type TodoPanelProps = {
-  items: TodoItem[];
+  items: TodoView[];
 };
 
 type StatusMeta = {
@@ -13,7 +13,7 @@ type StatusMeta = {
 };
 
 /** Protocol may add statuses; cancelled falls back to pending styling + 已取消. */
-const STATUS_META: Record<TodoItem["status"], StatusMeta> = {
+const STATUS_META: Record<TodoView["status"], StatusMeta> = {
   completed: { cb: "done", pill: "done", label: "已完成", done: true },
   in_progress: { cb: "prog", pill: "prog", label: "进行中", done: false },
   pending: { cb: "pending", pill: "todo", label: "待办", done: false },
@@ -45,7 +45,7 @@ export default function TodoPanel({ items }: TodoPanelProps) {
             {open && (
               <div className="todo-list">
                 {items.map((item) => {
-                  const meta = STATUS_META[item.status];
+                  const meta = STATUS_META[item.status] ?? STATUS_META.pending;
                   return (
                     <div className="aj-todo" key={item.id}>
                       <span className={`cb ${meta.cb}`}>{meta.done ? "✓" : ""}</span>

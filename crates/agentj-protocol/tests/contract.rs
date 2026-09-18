@@ -2,8 +2,12 @@
 use agentj_protocol::base::{
     Id, NotificationMessage, ProgressToken, RequestMessage, ResponseMessage,
 };
+use agentj_protocol::file::FileListParams;
 use agentj_protocol::lifecycle::{ClientInfo, InitializeParams, InitializeResult, ServerInfo};
 use agentj_protocol::permission::PermissionRequestParams;
+use agentj_protocol::question::{
+    AskOption, AskQuestionParams, QuestionRespondParams, QuestionRespondResult,
+};
 use agentj_protocol::session::{
     SessionNewResult, SessionRunParams, SessionRunResult, SessionSubscribeParams, UsageInfo,
 };
@@ -214,4 +218,95 @@ fn permission_request_notification_wire_shape_with_origin_client() {
     assert_eq!(json["method"], "$/permissionRequest");
     assert_eq!(json["params"]["origin_client"], "conn-a");
     assert_eq!(json["params"]["session_id"], "s-1");
+}
+
+#[test]
+fn file_list_request_wire_shape() {
+    let req = RequestMessage {
+        jsonrpc: "2.0".into(),
+        id: Id::Number(1),
+        method: "file/list".into(),
+        params: Some(
+            serde_json::to_value(FileListParams {
+                session_id: "s1".into(),
+                path: Some("src".into()),
+                depth: Some(1),
+            })
+            .unwrap(),
+        ),
+    };
+    let json = serde_json::to_value(req).unwrap();
+    assert_eq!(json["method"], "file/list");
+    assert_eq!(json["params"]["session_id"], "s1");
+    assert_eq!(json["params"]["path"], "src");
+    assert_eq!(json["params"]["depth"], 1);
+}
+
+#[test]
+fn ask_question_notification_wire_shape() {
+    let n = NotificationMessage {
+        jsonrpc: "2.0".into(),
+        method: "$/askQuestion".into(),
+        params: Some(
+            serde_json::to_value(AskQuestionParams {
+                question_id: "q-1".into(),
+                session_id: "s1".into(),
+                question: "Which color?".into(),
+                header: None,
+                options: vec![
+                    AskOption {
+                        id: "red".into(),
+                        label: "Red".into(),
+                        hint: None,
+                    },
+                    AskOption {
+                        id: "blue".into(),
+                        label: "Blue".into(),
+                        hint: Some("cool".into()),
+                    },
+                ],
+                allow_multiple: false,
+                allow_other: true,
+                timeout_s: None,
+            })
+            .unwrap(),
+        ),
+    };
+    let json = serde_json::to_value(n).unwrap();
+    assert_eq!(json["jsonrpc"], "2.0");
+    assert_eq!(json["method"], "$/askQuestion");
+    assert_eq!(json["params"]["options"].as_array().unwrap().len(), 2);
+    assert_eq!(json["params"]["allow_multiple"], false);
+    assert_eq!(json["params"]["allow_other"], true);
+    assert!(json["params"].get("header").is_none());
+    assert!(json["params"].get("timeout_s").is_none());
+}
+
+#[test]
+fn question_respond_result_wire_shape() {
+    let req = RequestMessage {
+        jsonrpc: "2.0".into(),
+        id: Id::Number(3),
+        method: "question/respond".into(),
+        params: Some(
+            serde_json::to_value(QuestionRespondParams {
+                question_id: "q-1".into(),
+                answers: vec!["red".into()],
+                skipped: false,
+            })
+            .unwrap(),
+        ),
+    };
+    let req_json = serde_json::to_value(req).unwrap();
+    assert_eq!(req_json["method"], "question/respond");
+    assert_eq!(req_json["params"]["question_id"], "q-1");
+    assert_eq!(req_json["params"]["answers"][0], "red");
+
+    let resp = ResponseMessage::Success {
+        jsonrpc: "2.0".into(),
+        id: Id::Number(3),
+        result: serde_json::to_value(QuestionRespondResult { accepted: true }).unwrap(),
+    };
+    let json = serde_json::to_value(resp).unwrap();
+    assert_eq!(json["result"]["accepted"], true);
 }

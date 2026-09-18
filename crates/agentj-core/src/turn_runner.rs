@@ -4,9 +4,10 @@ use std::sync::{Arc, Mutex};
 use futures::StreamExt;
 use tokio::sync::mpsc;
 
+use crate::artifacts::TurnArtifact;
 use crate::error::ModuleError;
 use crate::kernel::KernelSender;
-use crate::module::{ContextPipeline, KernelContext, KernelMessage};
+use crate::module::{ContextPipeline, KernelContext, KernelMessage, ToolExecutionOutcome};
 use crate::types::{
     AgentEvent, ChatMessage, ModelEvent, ModelOptions, ModuleId, SessionId, TokenUsage, ToolCall,
 };
@@ -26,6 +27,7 @@ pub struct TurnRunner {
     sender: KernelSender,
     tool_executor_id: ModuleId,
     turns: Arc<Mutex<HashMap<SessionId, TurnHandle>>>,
+    todo_revisions: Arc<Mutex<HashMap<SessionId, u64>>>,
 }
 
 impl TurnRunner {
@@ -55,6 +57,7 @@ impl TurnRunner {
             sender,
             tool_executor_id,
             turns: Arc::new(Mutex::new(HashMap::new())),
+            todo_revisions: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -109,6 +112,7 @@ impl TurnRunner {
         let sender = self.sender.clone();
         let tool_executor_id = self.tool_executor_id.clone();
         let turns = Arc::clone(&self.turns);
+        let todo_revisions = Arc::clone(&self.todo_revisions);
         {
             let mut map = self
                 .turns
@@ -132,6 +136,7 @@ impl TurnRunner {
                 reply.clone(),
                 sender,
                 tool_executor_id,
+                todo_revisions,
                 cancel_rx,
                 on_done.clone(),
             )
@@ -157,6 +162,7 @@ impl TurnRunner {
         reply: mpsc::Sender<AgentEvent>,
         sender: KernelSender,
         tool_executor_id: ModuleId,
+        todo_revisions: Arc<Mutex<HashMap<SessionId, u64>>>,
         mut cancel_rx: tokio::sync::oneshot::Receiver<()>,
         on_done: Option<Arc<dyn Fn(&SessionId, Option<TokenUsage>) + Send + Sync>>,
     ) -> Result<(), String> {
@@ -268,13 +274,17 @@ impl TurnRunner {
                     }
                     return Ok(());
                 }
-                let tool_result = tokio::select! {
+                let (tool_result, artifacts) = tokio::select! {
                     r = &mut tool_rx => match r {
-                        Ok(Ok(val)) => val
-                            .as_str()
-                            .map(String::from)
-                            .unwrap_or_else(|| val.to_string()),
-                        Ok(Err(e)) => format!("Error: {e}"),
+                        Ok(Ok(outcome)) => {
+                            let ToolExecutionOutcome { result, artifacts } = outcome;
+                            let text = result
+                                .as_str()
+                                .map(String::from)
+                                .unwrap_or_else(|| result.to_string());
+                            (text, artifacts)
+                        }
+                        Ok(Err(e)) => (format!("Error: {e}"), Vec::new()),
                         Err(_) => {
                             if reply
                                 .send(AgentEvent::Error("tool executor dropped".into()))
@@ -301,6 +311,9 @@ impl TurnRunner {
                 {
                     return Ok(());
                 }
+                if !Self::forward_artifacts(&reply, artifacts, &session_id, &todo_revisions).await {
+                    return Ok(());
+                }
                 pipeline.reflux(&mut messages, &tc, tool_result);
             }
             if cancelled {
@@ -324,15 +337,46 @@ impl TurnRunner {
         }
         Ok(())
     }
+
+    async fn forward_artifacts(
+        reply: &mpsc::Sender<AgentEvent>,
+        artifacts: Vec<TurnArtifact>,
+        session_id: &SessionId,
+        revisions: &Mutex<HashMap<SessionId, u64>>,
+    ) -> bool {
+        for artifact in artifacts {
+            let event = match artifact {
+                TurnArtifact::Todo(snapshot) => AgentEvent::Todo {
+                    revision: next_todo_revision(revisions, session_id),
+                    snapshot,
+                },
+                TurnArtifact::FileChange(change) => AgentEvent::FileChange(change),
+            };
+            if reply.send(event).await.is_err() {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+fn next_todo_revision(revisions: &Mutex<HashMap<SessionId, u64>>, session_id: &SessionId) -> u64 {
+    let mut map = revisions
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let next = map.entry(session_id.clone()).or_insert(0);
+    *next += 1;
+    *next
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::artifacts::{TodoSnapshot, TurnArtifact, todo_snapshot_from_args, write_change};
     use crate::error::{ModelError, ModuleError};
     use crate::module::{
         ConfigProvider, KernelModule, Module, ModuleMetadata, ModuleRegister, ProviderRegistry,
-        SessionStore, ToolRegistry,
+        SessionStore, ToolExecutionOutcome, ToolRegistry,
     };
     use crate::types::{ChatMessage, Role, ToolDefinition};
     use async_trait::async_trait;
@@ -470,7 +514,10 @@ mod tests {
                 let reply = reply.clone();
                 let mut guard = reply.lock().unwrap();
                 if let Some(tx) = guard.take() {
-                    let _ = tx.send(Ok(serde_json::json!({"result": "ok"})));
+                    let _ = tx.send(Ok(ToolExecutionOutcome {
+                        result: serde_json::json!({"result": "ok"}),
+                        artifacts: vec![],
+                    }));
                 }
             }
             Ok(crate::module::KernelResponse::Handled)
@@ -580,6 +627,8 @@ mod tests {
                 }
                 AgentEvent::ToolCall(_) => kinds.push("tool_call".to_string()),
                 AgentEvent::ToolResult { .. } => kinds.push("tool_result".to_string()),
+                AgentEvent::Todo { .. } => kinds.push("todo".to_string()),
+                AgentEvent::FileChange(_) => kinds.push("file_change".to_string()),
                 AgentEvent::Done { .. } => {
                     kinds.push("done".to_string());
                     break;
@@ -847,6 +896,182 @@ mod tests {
                 completion_tokens: 20
             })
         );
+        kernel.sender().send(KernelMessage::Shutdown).unwrap();
+    }
+
+    fn todo_snapshot(content: &str) -> TodoSnapshot {
+        todo_snapshot_from_args(&serde_json::json!({"items": [{"content": content}]}))
+            .expect("valid todo args")
+    }
+
+    struct ArtifactSpy {
+        artifacts: Vec<TurnArtifact>,
+    }
+
+    impl Module for ArtifactSpy {
+        fn id(&self) -> ModuleId {
+            "tool_spy".into()
+        }
+        fn metadata(&self) -> ModuleMetadata {
+            ModuleMetadata {
+                id: "tool_spy".into(),
+                name: "artifact_spy".into(),
+                version: "0.1".into(),
+                description: "".into(),
+                author: "".into(),
+            }
+        }
+        fn init(&mut self, _c: &KernelContext, _r: &mut ModuleRegister) -> Result<(), ModuleError> {
+            Ok(())
+        }
+        fn shutdown(&mut self) -> Result<(), ModuleError> {
+            Ok(())
+        }
+    }
+
+    impl KernelModule for ArtifactSpy {
+        fn handle(
+            &mut self,
+            msg: &KernelMessage,
+        ) -> Result<crate::module::KernelResponse, ModuleError> {
+            if let KernelMessage::ToolCallRequest { reply, .. } = msg {
+                let reply = reply.clone();
+                let mut guard = reply.lock().unwrap();
+                if let Some(tx) = guard.take() {
+                    let _ = tx.send(Ok(ToolExecutionOutcome {
+                        result: serde_json::json!({"result": "ok"}),
+                        artifacts: self.artifacts.clone(),
+                    }));
+                }
+            }
+            Ok(crate::module::KernelResponse::Handled)
+        }
+    }
+
+    #[tokio::test]
+    async fn turn_runner_emits_todo_with_incrementing_revision() {
+        let first = todo_snapshot("first");
+        let second = todo_snapshot("second");
+        let (kernel, sender) = spy_kernel_with(ArtifactSpy {
+            artifacts: vec![
+                TurnArtifact::Todo(first.clone()),
+                TurnArtifact::Todo(second.clone()),
+            ],
+        });
+        let ctx = loop_test_ctx();
+        let providers = ctx.providers.clone();
+        providers.register(
+            "mock".into(),
+            Arc::new(ScriptedProvider {
+                calls: Arc::new(AtomicUsize::new(0)),
+                tool: tc(),
+            }),
+        );
+        let runner = TurnRunner::new(
+            ctx.clone(),
+            Arc::new(MockPipeline),
+            "sys".into(),
+            sender,
+            "tool_spy".into(),
+        );
+        let sid = runner.create_session().unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+        runner
+            .spawn_turn(sid.clone(), "hi".into(), None, tx)
+            .unwrap();
+        let mut kinds: Vec<String> = vec![];
+        let mut todos: Vec<(u64, TodoSnapshot)> = vec![];
+        while let Some(ev) = rx.recv().await {
+            match ev {
+                AgentEvent::Delta(_) => kinds.push("delta".into()),
+                AgentEvent::ToolCall(_) => kinds.push("tool_call".into()),
+                AgentEvent::ToolResult { .. } => kinds.push("tool_result".into()),
+                AgentEvent::Todo { revision, snapshot } => {
+                    kinds.push(format!("todo#{revision}"));
+                    todos.push((revision, snapshot));
+                }
+                AgentEvent::FileChange(_) => kinds.push("file_change".into()),
+                AgentEvent::Done { .. } => {
+                    kinds.push("done".into());
+                    break;
+                }
+                AgentEvent::Error(e) => panic!("turn error: {e}"),
+            }
+        }
+        assert_eq!(
+            kinds,
+            vec![
+                "delta",
+                "tool_call",
+                "tool_result",
+                "todo#1",
+                "todo#2",
+                "delta",
+                "done"
+            ]
+        );
+        assert_eq!(todos, vec![(1, first), (2, second)]);
+        kernel.sender().send(KernelMessage::Shutdown).unwrap();
+    }
+
+    #[tokio::test]
+    async fn turn_runner_emits_file_change_after_tool_result() {
+        let change = write_change("src/a.rs", None, "x\n", Some("c1"));
+        let (kernel, sender) = spy_kernel_with(ArtifactSpy {
+            artifacts: vec![TurnArtifact::FileChange(change.clone())],
+        });
+        let ctx = loop_test_ctx();
+        let providers = ctx.providers.clone();
+        providers.register(
+            "mock".into(),
+            Arc::new(ScriptedProvider {
+                calls: Arc::new(AtomicUsize::new(0)),
+                tool: tc(),
+            }),
+        );
+        let runner = TurnRunner::new(
+            ctx.clone(),
+            Arc::new(MockPipeline),
+            "sys".into(),
+            sender,
+            "tool_spy".into(),
+        );
+        let sid = runner.create_session().unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+        runner
+            .spawn_turn(sid.clone(), "hi".into(), None, tx)
+            .unwrap();
+        let mut kinds: Vec<String> = vec![];
+        let mut received = None;
+        while let Some(ev) = rx.recv().await {
+            match ev {
+                AgentEvent::Delta(_) => kinds.push("delta".into()),
+                AgentEvent::ToolCall(_) => kinds.push("tool_call".into()),
+                AgentEvent::ToolResult { .. } => kinds.push("tool_result".into()),
+                AgentEvent::Todo { .. } => kinds.push("todo".into()),
+                AgentEvent::FileChange(artifact) => {
+                    kinds.push("file_change".into());
+                    received = Some(artifact);
+                }
+                AgentEvent::Done { .. } => {
+                    kinds.push("done".into());
+                    break;
+                }
+                AgentEvent::Error(e) => panic!("turn error: {e}"),
+            }
+        }
+        assert_eq!(
+            kinds,
+            vec![
+                "delta",
+                "tool_call",
+                "tool_result",
+                "file_change",
+                "delta",
+                "done"
+            ]
+        );
+        assert_eq!(received, Some(change));
         kernel.sender().send(KernelMessage::Shutdown).unwrap();
     }
 }

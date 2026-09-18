@@ -4,24 +4,26 @@ AI 编码代理工具（Rust）——Linux 内核式「内核调度 + 可插拔�
 内核通过统一的 JSON-RPC 2.0 协议（stdio / TCP / WebSocket）对外暴露能力；
 CLI、TUI、Web、Desktop 均通过 `agentj-ui` 协议消费者接入，任意语言可开发前端。
 
-> 当前版本：**v0.14.6**——agentj-ui 三栏工作台（Sessions/Files 侧栏 + 会话中栏 + 运行详情右栏 + composer 模型/Agent/熵变选择器 + 模型提问卡片 + demo 模式）
-> （v0.14.2 验收修复 3 bugs：短视口 composer 裁剪 / 右分栏折叠态锁定 / 提问卡折叠态摘要；
-> 评审反馈修复：移除三栏间 standalone dashboard 提示行；
-> v0.14.3 评审反馈修复 3 项：右栏始终满高 / 任务与文件变更标题点击折叠 / `.sec-head` 标题风格统一；
-> v0.14.4 评审反馈修复 1 项：顶栏连接/继续弹窗 portal 至 body 窗口居中 + 遮罩点击关闭；
-> v0.14.5 评审反馈修复 1 项：抽共享 ModalDialog，添加项目弹窗与连接设置/继续会话统一；
-> v0.14.6 评审反馈修复 1 项：`.aj-button--ghost` 自足化（取消按钮不再原生）+ 顶栏主题钮统一 `.aj-icon-btn`）
-> （Web / TUI / Desktop + SDK + tokens，16 crate + npm workspaces monorepo，
+> 当前版本：**v0.15.1**——协议扩展：三栏工作台真实数据源
+> （`file/list` 目录懒加载 + git 状态点；`$/progress` 新增 `kind:"todo"`
+> 全量快照 + 会话内单调 `revision` 与 `kind:"file_change"` unified diff；
+> `$/askQuestion` + `question/respond` owner 定向提问；会话级 `project_root`；
+> 新 crate `agentj-question`，21 方法 / 51 schemas / PROTOCOL_VERSION 0.13.0）
+> （v0.14.6 三栏工作台：Sessions/Files 侧栏 + 会话中栏 + 运行详情右栏 +
+> composer 模型/Agent/熵变选择器 + 模型提问卡片 + demo 模式；
+> Web / TUI / Desktop + SDK + tokens，17 crate + npm workspaces monorepo，
 > 共享 `packages/sdk` + `packages/protocol` + `packages/tokens`，后端零改造，frontend stays in-repo）
+> v0.15.1 验收修复 2 bugs：serve --port/dashboard trajectory 接线 / initialize protocol_version 0.13.0。
 
 ## Features
 
-- [x] **IPC 协议契约**：JSON-RPC 2.0 信封 + 错误码 + 16 方法
-  （lifecycle 4 / session 7 含 subscribe/unsubscribe / kernel/status 1 /
-  `$/cancelRequest` `$/progress` 通知 2 + `permission/*` 2）
+- [x] **IPC 协议契约**：JSON-RPC 2.0 信封 + 错误码 + 21 方法
+  （lifecycle 4 / session 9 含 subscribe/unsubscribe 与 list/history /
+  kernel/status 1 / 通知 4（`$/cancelRequest` `$/progress` `$/permissionRequest`
+  `$/askQuestion`） / `permission/respond` + `file/list` + `question/respond`）
 - [x] **权限审批系统**：`$/permissionRequest` + `permission/respond`
   + 60s 超时自动 Deny + allow_always 会话级 + 取消即拒绝
-- [x] **JSON Schema**：33 Schema（schemars 生成，提交件 + 漂移门禁）
+- [x] **JSON Schema**：51 Schema（schemars 生成，提交件 + 漂移门禁）
 - [x] **方法注册表** `protocol/methods.json`（method ↔ schema/方向/类型）
 - [x] **人类可读协议规范** `docs/specs/ipc-protocol.md`（11 节）
 - [x] **跨语言验证**：TS 绑定 `agentj-ui/packages/protocol`（类型生成 + tsc）
@@ -29,7 +31,7 @@ CLI、TUI、Web、Desktop 均通过 `agentj-ui` 协议消费者接入，任意�
   + `ToolCallReply` + `AsyncKernelService` + `ServiceRegistry`
 - [x] **Agent 循环（流式）**：`TurnRunner` 总线化编排 + `AgentLoopModule`
   + `ToolExecutorModule` + `SubAgentService`
-- [x] **内置工具**：bash / glob / grep / read / write + ToolExecutor
+- [x] **内置工具**：bash / glob / grep / read / write + todo + ToolExecutor
 - [x] **MCP 桥**：子进程 MCP 客户端 + McpConnectionManager 长驻连接
 - [x] **JSON-RPC IPC**：stdio + TCP 多客户端 + WebSocket 网关
   + per-session 路由 + 权限属主门控
@@ -57,17 +59,19 @@ CLI、TUI、Web、Desktop 均通过 `agentj-ui` 协议消费者接入，任意�
   + Web 精细化：App Shell 居中列 + 抽屉 scrim / 悬浮胶囊 Composer（22px + shadow + sticky）/ 卡片化 ConnectionBar 与 SessionPanel / 气泡与 timeline 工具卡 / Trajectory timeline / Hero 空状态与 dashed trigger / Dialog 固定遮罩 + lucide 替换 emoji
 - [x] **Visual 2.2 Opencode redesign（v0.13.0）**：UnifiedSidebar 256px（Threads + Project 文件夹 + 底栏）+ local Project（localStorage）+ Composer 增强（Project picker + model chip + status popover + @/slash）+ 密度收紧（conversation gap 8px）+ TUI 32char 侧栏 + a11y/CLS/虚拟化 + Desktop 同步
 - [x] **三栏工作台（v0.14.6）**：`WorkspaceShell` 三栏布局（Sessions/Files 左栏 + 会话中栏 + 运行详情右栏 `TodoPanel`/`ChangeList` unified diff）+ `SplitPane` 拖拽/键盘/双击与宽度持久化 + `<1024` 右抽屉 + 右栏满高 + 任务/文件变更标题点击折叠 + composer 模型/Agent/熵变选择器（互斥 + 持久化）+ `AskQuestionCard` 模型提问卡片 + `TopbarMenu` 顶栏化（含 demo 开关 + `demoData` 驱动 TODO/文件树/变更/提问卡）+ tokens 24 keys + `LAYOUT` 常量 + 共享 `ModalDialog`（连接设置/继续会话/添加项目统一）
+- [x] **协议扩展（v0.15.0）**：`file/list` 沙箱化目录懒加载 + git 状态点（M/A/U/D）；`$/progress` 新增 `kind:"todo"`（全量快照 + 会话内单调 `revision`）与 `kind:"file_change"`（write 自研行级 diff / bash git 前后采样，unified diff ≤64 KiB）；`$/askQuestion` + `question/respond` owner 定向提问（重复响应幂等、超时/取消/owner 断开按 skip 结算）；会话级 `project_root`（路径基准五处同源）+ 新错误码 `-32807 PathNotAllowed`；`session/history` 回放重建 TODO/变更/Q&A；新 crate `agentj-question`（17 crates）；Web 三栏工作台 `TodoPanel`/`ChangeList`/`FileTree`/`AskQuestionCard` 切换真实协议驱动（`deriveChanges` 半推导退役，demo 模式保留为可切换预览通道）+ TUI runview 只读 TODO 区块
 
 ## Project Structure
 
 ```
-crates/                    # 16 个 workspace crate（统一目录）
+crates/                    # 17 个 workspace crate（统一目录）
   agentj-protocol/         # IPC 协议契约（wire 类型 + schema 生成）
-  agentj-core/             # 内核调度 + 事件总线（含重入防护）+ TurnRunner
+  agentj-core/             # 内核调度 + 事件总线（含重入防护）+ TurnRunner + TurnArtifact（diff）
   agentj-config/           # TOML 配置（[model]/[permission]/[session]/[license]/[[mcp.servers]]）
-  agentj-session/          # 会话生命周期（FileBackedStore + 过期清理）
+  agentj-session/          # 会话生命周期（FileBackedStore + 过期清理 + 会话级 project_root）
+  agentj-question/         # 提问通道（QuestionModule + AskTool，镜像 permission 归属）
   agentj-model/            # 模型提供方（DeepSeek/opencode-go/Ollama/Mock）
-  agentj-tools/            # 内置工具（bash/glob/grep/read/write）
+  agentj-tools/            # 内置工具（bash/glob/grep/read/write + todo）
   agentj-permission/       # 权限系统
   agentj-context/          # 上下文管线
   agentj-stats/            # 用量统计 UsageCollector
@@ -75,7 +79,7 @@ crates/                    # 16 个 workspace crate（统一目录）
   agentj-mcp/              # MCP 客户端 + McpConnectionManager
   agentj-skills/           # skills 加载器
   agentj-plugin/           # 插件系统 + libloading
-  agentj-ipc/              # JSON-RPC IPC（stdio/TCP/WS + 连接分类器 + WsConnection）
+  agentj-ipc/              # JSON-RPC IPC（stdio/TCP/WS + 连接分类器 + file/list + 提问接线）
   agentj-cli/              # agentj 二进制（run/serve/dashboard）
   agentj-plugin-fixture/   # 插件 cdylib 测试夹具（dev-only）
 agentj-ui/                 # 前端 monorepo（npm workspaces，frontend stays in-repo）
@@ -86,24 +90,24 @@ agentj-ui/                 # 前端 monorepo（npm workspaces，frontend stays i
       src/
         client.ts          # RpcClient
         router.ts          # ResponseRouter + RpcTransport
-        config.ts          # VERSION="0.14.6" + PROTOCOL_VERSION="0.12.1" + resolveWsUrl
+        config.ts          # VERSION="0.15.1" + PROTOCOL_VERSION="0.13.0" + resolveWsUrl
         methods.ts         # METHODS 常量（由 methods.json 生成）
         transports/
           websocket.ts     # WebSocketTransport（浏览器）
           tcp.ts           # TcpTransport（Node 直连预留）
     tokens/                # 共享 tokens（palette.ts 24 keys + LAYOUT 常量 + tokens.css/json/md 生成）
   apps/
-    web/                   # Web 三栏工作台（Vite + React + TS，WorkspaceShell/RightPanel/ComposerOptions/AskQuestionCard；消费 @agentj/sdk + @agentj/tokens + lucide-react；components/*.css 模块化）
-    tui/                   # TUI（Bun + @opentui/react，全功能）
+    web/                   # Web 三栏工作台（真实协议驱动：WorkspaceShell/RightPanel/TodoPanel/ChangeList/FileTree/AskQuestionCard；消费 @agentj/sdk + @agentj/tokens + lucide-react；components/*.css 模块化）
+    tui/                   # TUI（Bun + @opentui/react，全功能 + runview 只读 TODO 区块）
     desktop/               # Tauri 壳（套 web/dist，输出安装包）
 models/                    # models/opencode-go.json
-schemas/                   # 33 JSON Schema（机器事实来源）
+schemas/                   # 51 JSON Schema（机器事实来源）
 protocol/                  # methods.json 方法注册表
 docs/superpowers/          # 设计文档 + 实现计划（中文）
 ```
 
 > 前端不拆独立仓：`agentj-ui` 保留在 `crates/` 同级 monorepo 内，
-> 与 Rust workspace 共享版本 `0.14.6`（`VERSION` + 单一 `PROTOCOL_VERSION 0.12.1` 来源 `sdk/config.ts`）。
+> 与 Rust workspace 共享版本 `0.15.1`（`VERSION` + 单一 `PROTOCOL_VERSION 0.13.0` 来源 `sdk/config.ts`）。
 
 ## Usage
 
@@ -177,13 +181,14 @@ env = { FOO = "bar" }
 ## Protocol
 
 - 规范：`docs/specs/ipc-protocol.md`
-- Schema：`schemas/*.json`（33 个）
-- 方法注册表：`protocol/methods.json`（16 方法）
+- Schema：`schemas/*.json`（51 个）
+- 方法注册表：`protocol/methods.json`（21 方法，protocol_version 0.13.0）
 - 方法面：`initialize` / `initialized` / `shutdown` / `exit` /
   `session/new` / `session/run` / `session/status` / `session/archive` /
   `session/delete` / `session/subscribe` / `session/unsubscribe` /
-  `kernel/status` / `$/cancelRequest` / `$/progress` /
-  `permission/respond` / `$/permissionRequest`
+  `session/list` / `session/history` / `kernel/status` /
+  `$/cancelRequest` / `$/progress` / `$/askQuestion` / `$/permissionRequest` /
+  `permission/respond` / `file/list` / `question/respond`
 - 传输：stdio（单客户端） + TCP（NDJSON 多客户端） + WebSocket `/ws`
   （同端口分类器，`?token=` + `initialize.token` 双通道鉴权）
 
@@ -194,8 +199,8 @@ cargo test --workspace            # 全量 Rust 测试（含 e2e_cli/e2e_permiss
 cargo clippy --workspace --all-targets -- -D warnings
 cargo bench -p agentj-model       # 模型流式基准
 cargo run -p agentj-protocol --bin gen_schemas   # 重新生成 schemas/*.json
-cargo test -p agentj-protocol -- drift          # 漂移门禁（33 schemas 无漂移）
-./scripts/check-version.sh        # 版本一致性：Cargo.toml + sdk/config.ts + desktop 均为 0.14.6（PROTOCOL_VERSION 0.12.1）
+cargo test -p agentj-protocol -- drift          # 漂移门禁（51 schemas 无漂移）
+./scripts/check-version.sh        # 版本一致性：Cargo.toml + sdk/config.ts + desktop 均为 0.15.1（PROTOCOL_VERSION 0.13.0）
 
 # 前端 monorepo（npm workspaces，根为 agentj-ui/）
 npm --prefix agentj-ui install                           # 安装（agentj-ui workspaces）
@@ -205,4 +210,5 @@ npm --prefix agentj-ui test --workspace=@agentj/web                # Web 单测 
 npm --prefix agentj-ui run build --workspace=@agentj/web
 bun --cwd agentj-ui/apps/tui test           # TUI 单测（含 mock WS e2e）
 ./agentj-ui/apps/desktop/check-artifacts.sh linux  # Desktop 产物校验
+node agentj-ui/apps/desktop/check-desktop-ui.mjs    # Desktop 前端产物/配置一致性校验
 ```

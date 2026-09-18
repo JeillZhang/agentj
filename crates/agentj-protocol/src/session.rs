@@ -7,6 +7,14 @@ use crate::base::ProgressToken;
 use crate::trajectory::TrajectoryEvent;
 use crate::types::{Attachment, SessionId, SessionStatus, ToolCall};
 
+/// `session/new` params. `project_root` is an absolute directory; when omitted
+/// the session defaults to the process CWD. @since 0.13.0
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SessionNewParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_root: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SessionNewResult {
     pub session_id: SessionId,
@@ -172,6 +180,27 @@ mod tests {
         };
         let json = serde_json::to_value(&more).unwrap();
         assert_eq!(json["next_cursor"], 9);
+    }
+
+    #[test]
+    fn session_new_params_project_root_roundtrip() {
+        let p = SessionNewParams {
+            project_root: Some("/tmp/proj".into()),
+        };
+        let json = serde_json::to_value(&p).unwrap();
+        assert_eq!(json["project_root"], "/tmp/proj");
+        let back: SessionNewParams = serde_json::from_value(json).unwrap();
+        assert_eq!(back.project_root.as_deref(), Some("/tmp/proj"));
+
+        let none = SessionNewParams { project_root: None };
+        let json = serde_json::to_value(&none).unwrap();
+        assert!(
+            json.get("project_root").is_none(),
+            "None project_root must be omitted"
+        );
+        let empty: SessionNewParams =
+            serde_json::from_str(r#"{}"#).expect("empty params must deserialize");
+        assert!(empty.project_root.is_none());
     }
 
     #[test]
