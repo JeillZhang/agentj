@@ -163,11 +163,12 @@
   position: relative;
 }
 
+/* Full-bleed center column: conversation + composer stretch to the side panels. */
 .aj-shell__center .aj-conv,
 .aj-shell__center .aj-composer-card {
   width: 100%;
-  max-width: 720px;
-  margin: 0 auto;
+  max-width: none;
+  margin: 0;
 }
 
 .aj-shell__right {

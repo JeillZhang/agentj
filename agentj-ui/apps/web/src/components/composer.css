@@ -1,6 +1,4 @@
 .aj-composer-card {
-  max-width: var(--aj-composer-max);
-  margin: 0 auto;
   border-radius: var(--aj-radiusXl);
   background: var(--aj-panel);
   box-shadow: var(--aj-shadowRaised), 0 0 0 1px var(--aj-border);
