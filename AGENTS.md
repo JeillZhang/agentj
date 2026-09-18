@@ -1,6 +1,6 @@
 # AGENTS.md
 
-> Updated 2026-09-18 — v0.15.1 协议扩展（三栏工作台真实数据源）+ v0.15.2 session/status dispatch 修复
+> Updated 2026-09-18 — v0.15.1 协议扩展（三栏工作台真实数据源）+ v0.15.2 session/status dispatch 修复 + v0.16.0 Web 工作台体验修复
 > `file/list` 沙箱化目录懒加载 + git 状态点；`$/progress` 新增 `kind:"todo"`
 > （全量快照 + 会话内单调 `revision`）与 `kind:"file_change"`（write 自研行级
 > diff / bash git 前后采样，unified diff ≤64 KiB）；`$/askQuestion` +
@@ -18,6 +18,12 @@
 > v0.15.2 bugfix：session 生命周期方法协议已声明但 IPC dispatch 未实现（-32601）——
 > `session/status`（Web/TUI 会话点击失败）+ `session/archive`（TUI 已导出）/`session/delete`，
 > 补齐 dispatch（`-32802` / `-32803 SessionInactive` + error.data），回归 4 tests（cargo 553 tests）。
+> v0.16.0 Web 工作台体验修复（六项，无协议变更）：协议版本 semver 兼容语义（major
+> 相同即兼容，仅 major 不匹配才显示 banner；0.12.1 client vs 0.13.0 server 不再误报）；
+> composer 选项弹层逐触发器锚定（`.sel-wrap`）；选项/会话行 hover 反馈；light 主题
+> 对比度（`--aj-border #E4E7EA→#CBD2DB`、`--aj-raised #F9FAFB→#E9EDF1`）；左栏会话管理
+> （逐行删除 + 一键清理，`session/delete` 幂等容忍）；对话区/composer 全宽拉伸。
+> Web 219 → 230 tests；PROTOCOL_VERSION 保持 0.13.0；工作区 0.15.2 → 0.16.0。
 > (17 crates + agentj-ui monorepo：Web / TUI / Desktop + SDK + tokens，
 > npm workspaces `apps/*`+`packages/*`，共享 SDK + protocol + tokens，
 > WebSocket 网关同端口复用，后端零改造，frontend stays in-repo)
@@ -25,6 +31,16 @@
 ## Project Status
 
 AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + 可插拔模块」架构。
+v0.16 已落地：**Web 工作台体验修复（六项，无协议变更）**
+（(1) 协议版本 semver 兼容语义：major 相同即兼容，仅 major 不匹配才显示 banner，
+0.12.1 client vs 0.13.0 server 不再误报；(2) composer 选项弹层逐触发器锚定
+（`.sel-wrap`），不再偏移到发送按钮附近；(3) 选项/会话行 hover 反馈
+（背景 + accent + 过渡）；(4) light 主题对比度
+（`--aj-border #E4E7EA→#CBD2DB`、`--aj-raised #F9FAFB→#E9EDF1`）；
+(5) 左栏会话管理：逐行左侧删除 + 一键清理（`session/delete`，排除当前会话，
+-32802/-32803 幂等容忍，`session/list` 过滤 deleted）；(6) 中栏对话区/composer
+移除 720px 居中上限、全宽拉伸；Web 219 → 230 tests；PROTOCOL_VERSION 保持 0.13.0；
+工作区 0.15.2 → 0.16.0）。
 v0.15 已落地：**协议扩展 —— 三栏工作台真实数据源（后端 + 三端前端）**
 （`file/list` 沙箱化目录懒加载 + git 状态点（M/A/U/D）；`$/progress`
 `kind:"todo"` 全量快照 + 会话内单调 `revision`、`kind:"file_change"`
@@ -93,7 +109,7 @@ Desktop：Tauri v2 壳套 `apps/web` 产物，四件套 deb/AppImage/dmg/msi，
 - `bun --cwd agentj-ui/apps/tui test` — TUI 单测（含 mock WS e2e）
 - `./agentj-ui/apps/desktop/check-artifacts.sh linux` — Desktop 产物校验
 - `node agentj-ui/apps/desktop/check-desktop-ui.mjs` — Desktop 前端产物/配置一致性校验
-- `./scripts/check-version.sh` — 版本一致性（Cargo + sdk VERSION + desktop 均为 0.15.2，
+- `./scripts/check-version.sh` — 版本一致性（Cargo + sdk VERSION + desktop 均为 0.16.0，
   PROTOCOL_VERSION 0.13.0 + `protocol/methods.json` 版本 0.13.0）
 
 ### CI Pipelines (GitHub Actions)
@@ -155,7 +171,7 @@ Desktop：Tauri v2 壳套 `apps/web` 产物，四件套 deb/AppImage/dmg/msi，
   为 drift 门禁后第一门）。
 - `agentj-ui/packages/sdk`：共享 SDK（`src/client.ts` RpcClient +
   `src/router.ts` ResponseRouter/RpcTransport + `src/config.ts`
-   `VERSION="0.15.2"` + `PROTOCOL_VERSION="0.13.0"` + `resolveWsUrl` + `src/methods.ts` METHODS
+   `VERSION="0.16.0"` + `PROTOCOL_VERSION="0.13.0"` + `resolveWsUrl` + `src/methods.ts` METHODS
   + `transports/websocket.ts` WebSocketTransport
   + `transports/tcp.ts` TcpTransport；被 Web/TUI/Desktop 同源消费）。
 - `agentj-ui/packages/tokens`：共享语义 tokens（`palette.ts` 24 keys × dark/light + `SEMANTIC_KEYS` + `LAYOUT` 常量块（left/right 宽度/splitter/topbar/gap），`tokens.css/tokens.json/docs/ui-tokens.md` 生成，radius 类 keys kebab→camel 迁移，三端约束）。
@@ -175,9 +191,9 @@ Desktop：Tauri v2 壳套 `apps/web` 产物，四件套 deb/AppImage/dmg/msi，
   completion/theme/usage + runview 只读 TODO 区块（revision 门控） +
   mock WS e2e + sidebar 文本版 UnifiedSidebar 32char；`testRender` 快照）。
 - `agentj-ui/apps/desktop`：Desktop 壳（Tauri v2，`frontendDist` →
-   `../../web/dist`，与 workspace 版本同源 `0.15.2`，四件套打包）。
+   `../../web/dist`，与 workspace 版本同源 `0.16.0`，四件套打包）。
 - `agentj-ui/` 根：`package.json` workspaces `["apps/*","packages/*"]`
-  （frontend stays in-repo，前端不拆独立仓，与 Rust 共享 0.15.2）。
+  （frontend stays in-repo，前端不拆独立仓，与 Rust 共享 0.16.0）。
 - **守护内核（v0.4 已实现）**：统一 Connection 抽象 + `serve --port`
   常驻多客户端 + `run --attach` + `dashboard`（见 daemon-kernel 设计文档）。
 

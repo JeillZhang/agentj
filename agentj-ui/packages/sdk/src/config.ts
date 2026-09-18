@@ -1,4 +1,4 @@
-export const VERSION = "0.15.2";
+export const VERSION = "0.16.0";
 export const PROTOCOL_VERSION = "0.13.0";
 
 export function resolveWsUrl(opts: { envUrl?: string; host?: string; port?: number; token?: string }): string {

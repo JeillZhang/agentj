@@ -4,7 +4,7 @@ AI 编码代理工具（Rust）——Linux 内核式「内核调度 + 可插拔�
 内核通过统一的 JSON-RPC 2.0 协议（stdio / TCP / WebSocket）对外暴露能力；
 CLI、TUI、Web、Desktop 均通过 `agentj-ui` 协议消费者接入，任意语言可开发前端。
 
-> 当前版本：**v0.15.2**——bugfix：session/status/archive/delete dispatch 补齐（-32601 修复）；协议扩展：三栏工作台真实数据源
+> 当前版本：**v0.16.0**——Web 工作台体验修复（六项）：协议版本 semver 兼容 + composer 弹层锚定 + hover/主题对比度 + 会话管理 + 全宽拉伸；协议扩展：三栏工作台真实数据源
 > （`file/list` 目录懒加载 + git 状态点；`$/progress` 新增 `kind:"todo"`
 > 全量快照 + 会话内单调 `revision` 与 `kind:"file_change"` unified diff；
 > `$/askQuestion` + `question/respond` owner 定向提问；会话级 `project_root`；
@@ -13,6 +13,9 @@ CLI、TUI、Web、Desktop 均通过 `agentj-ui` 协议消费者接入，任意�
 > composer 模型/Agent/熵变选择器 + 模型提问卡片 + demo 模式；
 > Web / TUI / Desktop + SDK + tokens，17 crate + npm workspaces monorepo，
 > 共享 `packages/sdk` + `packages/protocol` + `packages/tokens`，后端零改造，frontend stays in-repo）
+> v0.16.0 修复：协议版本 banner 误报（semver major 兼容，0.12.1 client vs 0.13.0 server）/
+> composer 选项弹层偏移 / 选项与会话行 hover / light 主题对比度 /
+> 左栏会话管理（逐行删除 + 一键清理，`session/delete` 幂等）/ 对话区/composer 全宽拉伸。
 > v0.15.2 修复：session 生命周期方法 dispatch 缺失（-32601）：session/status（Web/TUI 会话点击）
 > + session/archive / session/delete 补齐（-32802 / -32803 SessionInactive + error.data）。
 > v0.15.1 验收修复 2 bugs：serve --port/dashboard trajectory 接线 / initialize protocol_version 0.13.0。
@@ -62,6 +65,7 @@ CLI、TUI、Web、Desktop 均通过 `agentj-ui` 协议消费者接入，任意�
 - [x] **Visual 2.2 Opencode redesign（v0.13.0）**：UnifiedSidebar 256px（Threads + Project 文件夹 + 底栏）+ local Project（localStorage）+ Composer 增强（Project picker + model chip + status popover + @/slash）+ 密度收紧（conversation gap 8px）+ TUI 32char 侧栏 + a11y/CLS/虚拟化 + Desktop 同步
 - [x] **三栏工作台（v0.14.6）**：`WorkspaceShell` 三栏布局（Sessions/Files 左栏 + 会话中栏 + 运行详情右栏 `TodoPanel`/`ChangeList` unified diff）+ `SplitPane` 拖拽/键盘/双击与宽度持久化 + `<1024` 右抽屉 + 右栏满高 + 任务/文件变更标题点击折叠 + composer 模型/Agent/熵变选择器（互斥 + 持久化）+ `AskQuestionCard` 模型提问卡片 + `TopbarMenu` 顶栏化（含 demo 开关 + `demoData` 驱动 TODO/文件树/变更/提问卡）+ tokens 24 keys + `LAYOUT` 常量 + 共享 `ModalDialog`（连接设置/继续会话/添加项目统一）
 - [x] **协议扩展（v0.15.0）**：`file/list` 沙箱化目录懒加载 + git 状态点（M/A/U/D）；`$/progress` 新增 `kind:"todo"`（全量快照 + 会话内单调 `revision`）与 `kind:"file_change"`（write 自研行级 diff / bash git 前后采样，unified diff ≤64 KiB）；`$/askQuestion` + `question/respond` owner 定向提问（重复响应幂等、超时/取消/owner 断开按 skip 结算）；会话级 `project_root`（路径基准五处同源）+ 新错误码 `-32807 PathNotAllowed`；`session/history` 回放重建 TODO/变更/Q&A；新 crate `agentj-question`（17 crates）；Web 三栏工作台 `TodoPanel`/`ChangeList`/`FileTree`/`AskQuestionCard` 切换真实协议驱动（`deriveChanges` 半推导退役，demo 模式保留为可切换预览通道）+ TUI runview 只读 TODO 区块
+- [x] **Web 工作台体验修复（v0.16.0）**：六项修复 —— 协议版本 semver 兼容语义（major 相同即兼容，仅 major 不匹配才显示 banner，0.12.1 client vs 0.13.0 server 不再误报）；composer 选项弹层逐触发器锚定（`.sel-wrap`），不再偏移到发送按钮附近；选项/会话行 hover 反馈（背景 + accent + 过渡）；light 主题对比度（`--aj-border #E4E7EA→#CBD2DB`、`--aj-raised #F9FAFB→#E9EDF1`）；左栏会话管理（逐行左侧删除 + 一键清理，`session/delete` 排除当前会话、-32802/-32803 幂等容忍、`session/list` 过滤 deleted）；中栏对话区/composer 移除 720px 居中上限、全宽拉伸。Web 219 → 230 tests，PROTOCOL_VERSION 保持 0.13.0，工作区 0.15.2 → 0.16.0
 
 ## Project Structure
 
@@ -92,7 +96,7 @@ agentj-ui/                 # 前端 monorepo（npm workspaces，frontend stays i
       src/
         client.ts          # RpcClient
         router.ts          # ResponseRouter + RpcTransport
-        config.ts          # VERSION="0.15.2" + PROTOCOL_VERSION="0.13.0" + resolveWsUrl
+        config.ts          # VERSION="0.16.0" + PROTOCOL_VERSION="0.13.0" + resolveWsUrl
         methods.ts         # METHODS 常量（由 methods.json 生成）
         transports/
           websocket.ts     # WebSocketTransport（浏览器）
@@ -109,7 +113,7 @@ docs/superpowers/          # 设计文档 + 实现计划（中文）
 ```
 
 > 前端不拆独立仓：`agentj-ui` 保留在 `crates/` 同级 monorepo 内，
-> 与 Rust workspace 共享版本 `0.15.2`（`VERSION` + 单一 `PROTOCOL_VERSION 0.13.0` 来源 `sdk/config.ts`）。
+> 与 Rust workspace 共享版本 `0.16.0`（`VERSION` + 单一 `PROTOCOL_VERSION 0.13.0` 来源 `sdk/config.ts`）。
 
 ## Usage
 
@@ -202,7 +206,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo bench -p agentj-model       # 模型流式基准
 cargo run -p agentj-protocol --bin gen_schemas   # 重新生成 schemas/*.json
 cargo test -p agentj-protocol -- drift          # 漂移门禁（51 schemas 无漂移）
-./scripts/check-version.sh        # 版本一致性：Cargo.toml + sdk/config.ts + desktop 均为 0.15.2（PROTOCOL_VERSION 0.13.0）
+./scripts/check-version.sh        # 版本一致性：Cargo.toml + sdk/config.ts + desktop 均为 0.16.0（PROTOCOL_VERSION 0.13.0）
 
 # 前端 monorepo（npm workspaces，根为 agentj-ui/）
 npm --prefix agentj-ui install                           # 安装（agentj-ui workspaces）
