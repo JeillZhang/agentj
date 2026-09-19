@@ -27,6 +27,12 @@ describe("SessionListMenu", () => {
     expect(menu.closest(".aj-sidebar")).toBeNull();
   });
 
+  it("moves focus into the first menu item when the menu opens", () => {
+    render(<SessionListMenu deletableCount={1} onCleanup={() => {}} />);
+    open();
+    expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: "清理所有会话…" }));
+  });
+
   it("opens and runs the cleanup action", () => {
     const onCleanup = vi.fn();
     render(<SessionListMenu deletableCount={3} onCleanup={onCleanup} />);

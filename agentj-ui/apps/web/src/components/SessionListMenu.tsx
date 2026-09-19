@@ -106,7 +106,13 @@ export default function SessionListMenu({ deletableCount, busy, onCleanup }: Pro
   }, []);
 
   useLayoutEffect(() => {
-    if (open) updateMenuPos();
+    if (!open) return;
+    updateMenuPos();
+    if (document.activeElement === triggerRef.current) {
+      menuRef.current
+        ?.querySelector<HTMLElement>('[role="menuitem"]')
+        ?.focus({ preventScroll: true });
+    }
   }, [open, updateMenuPos]);
 
   useEffect(() => {
@@ -145,8 +151,9 @@ export default function SessionListMenu({ deletableCount, busy, onCleanup }: Pro
     cancelClose();
     setPrefs(loadSidebarPrefs());
     setFlyout(null);
+    if (!open) triggerRef.current?.focus();
     setOpen((v) => !v);
-  }, [cancelClose]);
+  }, [cancelClose, open]);
 
   const cleanupDisabled = deletableCount === 0 || busy === true;
 
