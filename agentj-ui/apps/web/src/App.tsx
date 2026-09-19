@@ -42,11 +42,19 @@ const pageLocation =
  * host or port is given, fall back to the env URL, then the page origin, then
  * loopback (see `resolveWsUrl`).
  */
+function parsePort(port: string): number | undefined {
+  if (!port.trim()) return undefined;
+  const parsed = Number(port);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
 function resolveConnection(host: string, port: string, token: string): string {
-  if (host || port) {
+  const trimmedHost = host.trim();
+  const portNumber = parsePort(port);
+  if (trimmedHost || portNumber !== undefined) {
     return resolveWsUrl({
-      host: host || undefined,
-      port: port ? Number(port) : undefined,
+      host: trimmedHost || undefined,
+      port: portNumber,
       token: token || undefined,
       location: pageLocation,
     });
@@ -54,9 +62,19 @@ function resolveConnection(host: string, port: string, token: string): string {
   return resolveWsUrl({ envUrl: envWsUrl, token: token || undefined, location: pageLocation });
 }
 
+/** Malformed endpoints (e.g. a host with an embedded port) would make `new WebSocket` throw at mount. */
+function safeWsUrl(candidate: string): string {
+  try {
+    new URL(candidate);
+    return candidate;
+  } catch {
+    return resolveConnection("", "", "");
+  }
+}
+
 function initialWsUrl(): string {
   const stored = loadConnection();
-  return resolveConnection(stored?.host ?? "", stored?.port ?? "", stored?.token ?? "");
+  return safeWsUrl(resolveConnection(stored?.host ?? "", stored?.port ?? "", stored?.token ?? ""));
 }
 
 type ThemeMode = "dark" | "light" | "system";
@@ -391,7 +409,7 @@ export default function App() {
 
   const handleConnect = useCallback((host: string, port: string, token: string) => {
     saveConnection({ host, port, token });
-    setWsUrl(resolveConnection(host, port, token));
+    setWsUrl(safeWsUrl(resolveConnection(host, port, token)));
     setConnectSeq((n) => n + 1);
     setDrawerOpen(false);
   }, []);

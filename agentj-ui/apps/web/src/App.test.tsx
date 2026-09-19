@@ -893,4 +893,26 @@ describe("connection settings persistence", () => {
       expect.objectContaining({ host: "192.168.3.31" }),
     );
   });
+
+  it("trims a stored host and drops a non-numeric port", () => {
+    localStorage.setItem(
+      "agentj.connection",
+      JSON.stringify({ host: " 1.2.3.4 ", port: "abc", token: "" }),
+    );
+    render(<App />);
+    expect(vi.mocked(resolveWsUrl)).toHaveBeenCalledWith(
+      expect.objectContaining({ host: "1.2.3.4" }),
+    );
+    expect(shared.lastWsUrl.value).not.toContain("NaN");
+  });
+
+  it("falls back instead of bricking when the stored host embeds a port", () => {
+    localStorage.setItem(
+      "agentj.connection",
+      JSON.stringify({ host: "192.168.3.31:4096", port: "4096", token: "" }),
+    );
+    render(<App />);
+    expect(() => new URL(shared.lastWsUrl.value)).not.toThrow();
+    expect(shared.lastWsUrl.value).not.toContain(":4096:4096");
+  });
 });
