@@ -1,7 +1,7 @@
 import "@testing-library/jest-dom/vitest";
 import { beforeEach, expect, test } from "vitest";
 import { act, render, screen, fireEvent } from "@testing-library/react";
-import ComposerOptions, { formatTokenTotal } from "./ComposerOptions";
+import ComposerOptions from "./ComposerOptions";
 import { createProject, setCurrentProject, updateProject } from "../projectStore";
 import { saveComposerPrefs } from "../layoutStore";
 beforeEach(() => localStorage.clear());
@@ -151,28 +151,4 @@ test("permission popover keyboard navigation selects a mode", () => {
   fireEvent.keyDown(pop, { key: "ArrowDown" });
   fireEvent.keyDown(pop, { key: "Enter" });
   expect(localStorage.getItem("agentj.composer.permissionMode")).toBe("bypass");
-});
-
-test("usage readout renders the session token total", () => {
-  render(<ComposerOptions model="deepseek-chat" usageTotal={{ prompt: 1200, completion: 345 }} />);
-  expect(screen.getByText("Σ 1.5k")).toBeInTheDocument();
-});
-
-test("usage readout is absent for null or zero totals", () => {
-  const { rerender } = render(<ComposerOptions model="deepseek-chat" usageTotal={null} />);
-  expect(document.querySelector(".comp-usage")).toBeNull();
-  rerender(<ComposerOptions model="deepseek-chat" usageTotal={{ prompt: 0, completion: 0 }} />);
-  expect(document.querySelector(".comp-usage")).toBeNull();
-});
-
-test("formatTokenTotal boundaries", () => {
-  expect(formatTokenTotal(0)).toBe("0");
-  expect(formatTokenTotal(999)).toBe("999");
-  expect(formatTokenTotal(1000)).toBe("1k");
-  expect(formatTokenTotal(12345)).toBe("12.3k");
-  expect(formatTokenTotal(999949)).toBe("999.9k");
-  expect(formatTokenTotal(999950)).toBe("1M");
-  expect(formatTokenTotal(999999)).toBe("1M");
-  expect(formatTokenTotal(1000000)).toBe("1M");
-  expect(formatTokenTotal(1234567)).toBe("1.2M");
 });

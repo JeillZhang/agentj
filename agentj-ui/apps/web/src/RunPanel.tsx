@@ -13,6 +13,7 @@ import { DEMO_QA_RECORD, DEMO_QUESTION, isDemoEnabled, subscribeDemo } from "./d
 import { loadAskCollapsed, saveAskCollapsed } from "./layoutStore";
 import { createProject, loadCurrentProject, loadProjects, setCurrentProject } from "./projectStore";
 import type { Project } from "./projectStore";
+import { formatUsageSummary, formatUsageTitle } from "./tokenUsage";
 
 export type RunEntry =
   | { kind: "user"; text: string }
@@ -582,6 +583,10 @@ export default function RunPanel({
     return found ? { prompt, completion } : null;
   }, [entries]);
 
+  const usageReadout =
+    usageTotal != null && usageTotal.prompt + usageTotal.completion > 0 ? usageTotal : null;
+  const usageText = usageReadout ? formatUsageTitle(usageReadout) : "";
+
   return (
     <section ref={cardRef} aria-label="run" className="aj-card">
       <ConversationFeed
@@ -700,9 +705,16 @@ export default function RunPanel({
               onSaved={() => setProjects(loadProjects())}
             />
           )}
-          {model !== undefined && model !== null && model !== "" && (
-            <span className="aj-chip aj-chip--model">{model}</span>
-          )}
+          <div className="aj-composer__header-meta">
+            {model !== undefined && model !== null && model !== "" && (
+              <span className="aj-chip aj-chip--model">{model}</span>
+            )}
+            {usageReadout && (
+              <span className="aj-composer__usage" title={usageText} aria-label={usageText}>
+                {formatUsageSummary(usageReadout)}
+              </span>
+            )}
+          </div>
         </div>
 
         {askVisible && (
@@ -836,7 +848,7 @@ export default function RunPanel({
             </ul>
           )}
         </div>
-        <ComposerOptions model={model} usageTotal={usageTotal}>
+        <ComposerOptions model={model}>
           <button
             type="button"
             className="send aj-button--send"

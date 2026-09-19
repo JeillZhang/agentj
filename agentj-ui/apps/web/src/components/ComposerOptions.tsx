@@ -34,7 +34,6 @@ export const PERMISSION_MODES: PermissionEntry[] = [
 
 export type ComposerOptionsProps = {
   model?: string | null;
-  usageTotal?: { prompt: number; completion: number } | null;
   children?: ReactNode;
 };
 
@@ -62,25 +61,13 @@ function permissionIndex(mode: ComposerPermission): number {
   return index < 0 ? 0 : index;
 }
 
-/** `< 1000` verbatim; below the 999.95k rounding edge as one-decimal kilo (`.0` trimmed); otherwise one-decimal mega. */
-export function formatTokenTotal(n: number): string {
-  if (n < 1000) return String(n);
-  const k = n / 1000;
-  if (k < 999.95) return `${trimTrailingZero(k.toFixed(1))}k`;
-  return `${trimTrailingZero((n / 1_000_000).toFixed(1))}M`;
-}
-
-function trimTrailingZero(value: string): string {
-  return value.endsWith(".0") ? value.slice(0, -2) : value;
-}
-
 /**
  * Composer toolbar: model / agent / entropy / permission selectors with exactly
  * one popover open at a time. Preferences persist through layoutStore and the trigger label
  * updates immediately. `children` is the right-aligned slot (RunPanel sends the
  * circular send button in T19).
  */
-export default function ComposerOptions({ model = null, usageTotal = null, children }: ComposerOptionsProps) {
+export default function ComposerOptions({ model = null, children }: ComposerOptionsProps) {
   const [prefs, setPrefs] = useState<ComposerPrefs>(() => loadComposerPrefs());
   const [openId, setOpenId] = useState<OpenId>(null);
   const [highlight, setHighlight] = useState(0);
@@ -250,16 +237,6 @@ export default function ComposerOptions({ model = null, usageTotal = null, child
           })}
         </OptionPopover>
       </div>
-
-      {usageTotal != null && usageTotal.prompt + usageTotal.completion > 0 && (
-        <span
-          className="comp-usage"
-          title={`本会话累计：输入 ${usageTotal.prompt.toLocaleString()} · 输出 ${usageTotal.completion.toLocaleString()}`}
-          aria-label="本会话累计 token"
-        >
-          Σ {formatTokenTotal(usageTotal.prompt + usageTotal.completion)}
-        </span>
-      )}
 
       <div className="sel-wrap">
         <button

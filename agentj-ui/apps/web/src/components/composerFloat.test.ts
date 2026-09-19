@@ -60,6 +60,26 @@ describe("floating composer layout", () => {
     expect(body).toMatch(/flex-wrap:\s*wrap/);
   });
 
+  test("composer.css right-aligns the header-meta group beside the model chip", () => {
+    const css = readCss("composer.css");
+    const header = ruleBody(css, ".aj-composer__header");
+    expect(header).toMatch(/flex-wrap:\s*wrap/);
+    expect(header).toMatch(/justify-content:\s*space-between/);
+    const meta = ruleBody(css, ".aj-composer__header-meta");
+    expect(meta).toMatch(/margin-left:\s*auto/);
+    expect(meta).toMatch(/gap:\s*8px/);
+    expect(meta).toMatch(/flex-wrap:\s*wrap/);
+    expect(meta).toMatch(/justify-content:\s*flex-end/);
+    const usage = ruleBody(css, ".aj-composer__usage");
+    expect(usage).toMatch(/white-space:\s*nowrap/);
+    expect(usage).toMatch(/font-size:\s*12px/);
+    expect(usage).toMatch(/font-variant-numeric:\s*tabular-nums/);
+  });
+
+  test("options.css no longer defines the retired .comp-usage rule", () => {
+    expect(readCss("options.css")).not.toContain(".comp-usage");
+  });
+
   test("App.css keeps the .aj-card containing block + clipping dependency", () => {
     const app = readFileSync(join(import.meta.dirname, "..", "App.css"), "utf8");
     const card = ruleBody(app, ".aj-card");

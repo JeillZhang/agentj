@@ -60,11 +60,30 @@
 
 .aj-composer__header {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
+  row-gap: 6px;
   align-items: center;
   justify-content: space-between;
   padding-bottom: 8px;
   border-bottom: 0.5px solid var(--aj-border);
+}
+
+.aj-composer__header-meta {
+  display: inline-flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  min-width: 0;
+}
+
+.aj-composer__usage {
+  font-size: 12px;
+  color: var(--aj-textMuted);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
 
 .aj-composer__picker-wrap {

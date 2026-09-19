@@ -214,13 +214,6 @@
   color: var(--aj-text);
 }
 
-.comp-usage {
-  font-size: 12px;
-  color: var(--aj-textMuted);
-  white-space: nowrap;
-  font-variant-numeric: tabular-nums;
-}
-
 .spacer {
   flex: 1;
 }

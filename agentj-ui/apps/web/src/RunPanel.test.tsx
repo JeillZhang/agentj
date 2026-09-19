@@ -4,6 +4,7 @@ import { render, screen, fireEvent, within, act, waitFor } from "@testing-librar
 import RunPanel, { ConversationFeed, failRun, fmtDuration, reduceRunFeed, type RunEntry } from "./RunPanel.tsx";
 import { createProject, setCurrentProject } from "./projectStore";
 import { setDemoEnabled } from "./demoData";
+import { formatUsageTitle } from "./tokenUsage";
 import { METHODS, type ProgressFrame } from "@agentj/sdk";
 
 beforeEach(() => localStorage.clear());
@@ -263,9 +264,60 @@ describe("RunPanel usage double-count guard", () => {
         value: { kind: "usage", usage: { prompt_tokens: 300, completion_tokens: 200 } },
       });
     });
-    await waitFor(() => expect(screen.getByText("Σ 500")).toBeInTheDocument());
-    await waitFor(() => expect(container.querySelectorAll(".comp-usage").length).toBe(1));
-    expect(screen.getAllByText("Σ 500").length).toBe(1);
+    await waitFor(() => expect(container.querySelectorAll(".aj-composer__usage").length).toBe(1));
+    const readout = container.querySelector(".aj-composer__usage") as HTMLElement;
+    expect(readout).toHaveTextContent("Σ 500 · 输入 300 · 输出 200");
+    expect(container.querySelectorAll(".aj-composer__usage").length).toBe(1);
+  });
+});
+
+describe("RunPanel usage readout placement", () => {
+  it("renders the readout inside the composer header, after the model chip", () => {
+    const entries: RunEntry[] = [
+      user("hi"),
+      ai("hello"),
+      { kind: "usage", prompt_tokens: 300, completion_tokens: 200 },
+    ];
+    const { container } = render(
+      <RunPanel client={noopClient} activeSessionId="s1" model="deepseek-chat" initialEntries={entries} />,
+    );
+    const header = container.querySelector(".aj-composer__header") as HTMLElement;
+    const chip = header.querySelector(".aj-chip--model") as HTMLElement;
+    const readout = header.querySelector(".aj-composer__usage") as HTMLElement;
+    expect(chip).not.toBeNull();
+    expect(readout).not.toBeNull();
+    expect(readout).toHaveTextContent("Σ 500 · 输入 300 · 输出 200");
+    expect(readout).toHaveAttribute("aria-label", formatUsageTitle({ prompt: 300, completion: 200 }));
+    const ordered = header.querySelectorAll(".aj-chip--model, .aj-composer__usage");
+    expect(ordered.length).toBe(2);
+    expect(ordered[0]).toBe(chip);
+    expect(ordered[1]).toBe(readout);
+    expect(container.querySelector(".comp-tools .aj-composer__usage")).toBeNull();
+  });
+
+  it("omits the readout when there are no usage entries", () => {
+    const { container } = render(
+      <RunPanel client={noopClient} activeSessionId="s1" model="deepseek-chat" />,
+    );
+    expect(container.querySelector(".aj-composer__usage")).toBeNull();
+  });
+
+  it("omits the readout for a zero-total usage entry", () => {
+    const entries: RunEntry[] = [{ kind: "usage", prompt_tokens: 0, completion_tokens: 0 }];
+    const { container } = render(
+      <RunPanel client={noopClient} activeSessionId="s1" model="deepseek-chat" initialEntries={entries} />,
+    );
+    expect(container.querySelector(".aj-composer__usage")).toBeNull();
+  });
+
+  it("renders the readout alone in the header when no model is provided", () => {
+    const entries: RunEntry[] = [{ kind: "usage", prompt_tokens: 300, completion_tokens: 200 }];
+    const { container } = render(
+      <RunPanel client={noopClient} activeSessionId="s1" initialEntries={entries} />,
+    );
+    const header = container.querySelector(".aj-composer__header") as HTMLElement;
+    expect(header.querySelector(".aj-composer__usage")).not.toBeNull();
+    expect(header.querySelector(".aj-chip--model")).toBeNull();
   });
 });
 
