@@ -324,13 +324,13 @@ describe("App with mocked SDK transport", () => {
     expect(screen.queryByText(/agentj dashboard --port/i)).toBeNull();
   });
 
-  it("new session becomes active and favorited", async () => {
+  it("new session becomes active but not favorited", async () => {
     shared.newSessionId.value = "s9";
     render(<App />);
     await createActiveSession();
     expect(
       JSON.parse(localStorage.getItem("agentj.favorites") ?? "[]"),
-    ).toContain("s9");
+    ).not.toContain("s9");
   });
 
   it("continue dialog continues via status+subscribe", async () => {

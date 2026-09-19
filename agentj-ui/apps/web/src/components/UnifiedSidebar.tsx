@@ -207,8 +207,6 @@ export default function UnifiedSidebar({
         }
         if (sid) {
           assignSession(sid, targetProjectId);
-          const current = loadFavorites();
-          if (!current.includes(sid)) setFavorites(toggleFavorite(sid));
           onActiveChange(sid);
         }
       } catch (e) {
