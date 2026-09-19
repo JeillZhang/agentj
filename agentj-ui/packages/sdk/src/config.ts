@@ -16,6 +16,8 @@ function deriveHost(location?: WsLocation): string | undefined {
 }
 
 function deriveScheme(location?: WsLocation): "ws" | "wss" {
+  // The desktop build stays on plaintext loopback even if it ever serves over https.
+  if (location?.hostname === "tauri.localhost") return "ws";
   return location?.protocol === "https:" ? "wss" : "ws";
 }
 

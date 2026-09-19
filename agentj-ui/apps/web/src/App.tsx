@@ -23,6 +23,7 @@ import { Trajectory, historyToConversation } from "./Trajectory";
 import type { RawEvent } from "./Trajectory";
 import heroImg from "./assets/hero.png";
 import { loadCurrentProject, setCurrentProject } from "./projectStore";
+import { loadConnection, saveConnection } from "./connectionStore";
 import { loadLayout, saveLayout, subscribeLayout } from "./layoutStore";
 import { isDemoEnabled, subscribeDemo, DEMO_TODOS, DEMO_CHANGES } from "./demoData";
 import { applyFileChange, changesFromHistory } from "./changes";
@@ -35,6 +36,28 @@ const pageLocation =
   typeof window === "undefined"
     ? undefined
     : { hostname: window.location.hostname, protocol: window.location.protocol };
+
+/**
+ * Manual settings (dialog / stored) win over the build-time env URL; when no
+ * host or port is given, fall back to the env URL, then the page origin, then
+ * loopback (see `resolveWsUrl`).
+ */
+function resolveConnection(host: string, port: string, token: string): string {
+  if (host || port) {
+    return resolveWsUrl({
+      host: host || undefined,
+      port: port ? Number(port) : undefined,
+      token: token || undefined,
+      location: pageLocation,
+    });
+  }
+  return resolveWsUrl({ envUrl: envWsUrl, token: token || undefined, location: pageLocation });
+}
+
+function initialWsUrl(): string {
+  const stored = loadConnection();
+  return resolveConnection(stored?.host ?? "", stored?.port ?? "", stored?.token ?? "");
+}
 
 type ThemeMode = "dark" | "light" | "system";
 const THEME_CYCLE: Record<ThemeMode, ThemeMode> = { dark: "light", light: "system", system: "dark" };
@@ -225,7 +248,7 @@ function useApproval(client: RpcClient | null, activeSessionId: string | null) {
 }
 
 export default function App() {
-  const [wsUrl, setWsUrl] = useState(() => resolveWsUrl({ envUrl: envWsUrl, location: pageLocation }));
+  const [wsUrl, setWsUrl] = useState(initialWsUrl);
   const [connectSeq, setConnectSeq] = useState(0);
   const { client: sharedClient, modules, status, banner, unreachable, modelName } = useSharedKernel(wsUrl, connectSeq);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
@@ -367,15 +390,8 @@ export default function App() {
   const connState = connectionLight(status, unreachable);
 
   const handleConnect = useCallback((host: string, port: string, token: string) => {
-    const p = port ? Number(port) : undefined;
-    const next = resolveWsUrl({
-      envUrl: envWsUrl,
-      host: host || undefined,
-      port: p,
-      token: token || undefined,
-      location: pageLocation,
-    });
-    setWsUrl(next);
+    saveConnection({ host, port, token });
+    setWsUrl(resolveConnection(host, port, token));
     setConnectSeq((n) => n + 1);
     setDrawerOpen(false);
   }, []);

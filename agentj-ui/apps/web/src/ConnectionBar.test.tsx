@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import "@testing-library/jest-dom/vitest";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import ConnectionBar from "./ConnectionBar.tsx";
 
@@ -60,5 +60,21 @@ describe("ConnectionBar card + form polish (T3)", () => {
     const icons = container.querySelectorAll("svg[aria-hidden='true']");
     expect(icons.length).toBeGreaterThanOrEqual(3);
     expect(container.textContent).not.toMatch(/[✓🔌🔗🗝]/);
+  });
+});
+
+describe("ConnectionBar stored prefill", () => {
+  beforeEach(() => localStorage.clear());
+  afterEach(() => localStorage.clear());
+
+  it("prefills the last saved connection", () => {
+    localStorage.setItem(
+      "agentj.connection",
+      JSON.stringify({ host: "192.168.3.31", port: "5000", token: "sek" }),
+    );
+    render(<ConnectionBar onConnect={() => {}} />);
+    expect(screen.getByLabelText(/^host$/i)).toHaveValue("192.168.3.31");
+    expect(screen.getByLabelText(/^port$/i)).toHaveValue("5000");
+    expect(screen.getByLabelText(/^token$/i)).toHaveValue("sek");
   });
 });

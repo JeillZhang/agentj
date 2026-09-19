@@ -108,10 +108,19 @@ vi.mock("@agentj/sdk", () => {
         token?: string;
         location?: { hostname: string; protocol: string };
       }) => {
-        if (o?.envUrl) return o.envUrl;
+        if (o?.envUrl) {
+          if (!o.token) return o.envUrl;
+          const sep = o.envUrl.includes("?") ? "&" : "?";
+          return `${o.envUrl}${sep}token=${encodeURIComponent(o.token)}`;
+        }
         const host = o?.host ?? derivePageHost(o?.location) ?? "127.0.0.1";
         const port = o?.port ?? 4096;
-        const scheme = o?.location?.protocol === "https:" ? "wss" : "ws";
+        const scheme =
+          o?.location?.hostname === "tauri.localhost"
+            ? "ws"
+            : o?.location?.protocol === "https:"
+              ? "wss"
+              : "ws";
         const base = `${scheme}://${host}:${port}/ws`;
         return o?.token ? `${base}?token=${o.token}` : base;
       },
@@ -177,6 +186,7 @@ vi.mock("@agentj/sdk", () => {
 });
 
 import { resolveWsUrl } from "@agentj/sdk";
+import { loadConnection } from "./connectionStore";
 import App, { connectionLight, isProtocolCompatible } from "./App";
 import { historyToEntries, historyToConversation, filterNodes } from "./Trajectory";
 import { Trajectory } from "./Trajectory";
@@ -845,6 +855,42 @@ describe("remote WebSocket origin", () => {
           }),
         }),
       ),
+    );
+  });
+});
+
+describe("connection settings persistence", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    vi.mocked(resolveWsUrl).mockClear();
+  });
+  afterEach(() => localStorage.clear());
+
+  it("restores the last manual connection on a fresh mount", () => {
+    localStorage.setItem(
+      "agentj.connection",
+      JSON.stringify({ host: "192.168.3.31", port: "4096", token: "s3cret" }),
+    );
+    render(<App />);
+    expect(vi.mocked(resolveWsUrl)).toHaveBeenCalledWith(
+      expect.objectContaining({ host: "192.168.3.31", port: 4096, token: "s3cret" }),
+    );
+  });
+
+  it("persists manual connect settings so a reload keeps them", () => {
+    const first = render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "更多" }));
+    fireEvent.click(screen.getByText("连接设置…"));
+    const bar = screen.getByLabelText("connection");
+    fireEvent.change(within(bar).getByLabelText("Host"), { target: { value: "192.168.3.31" } });
+    fireEvent.change(within(bar).getByLabelText("Port"), { target: { value: "4096" } });
+    fireEvent.click(within(bar).getByRole("button", { name: /connect/i }));
+    expect(loadConnection()).toEqual({ host: "192.168.3.31", port: "4096", token: "" });
+    first.unmount();
+    vi.mocked(resolveWsUrl).mockClear();
+    render(<App />);
+    expect(vi.mocked(resolveWsUrl)).toHaveBeenCalledWith(
+      expect.objectContaining({ host: "192.168.3.31" }),
     );
   });
 });

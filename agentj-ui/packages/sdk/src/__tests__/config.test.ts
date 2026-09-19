@@ -59,4 +59,10 @@ describe("config", () => {
       "ws://127.0.0.1:4096/ws",
     );
   });
+
+  it("resolveWsUrl keeps the Tauri desktop on plaintext loopback for https pages", () => {
+    expect(resolveWsUrl({ location: { hostname: "tauri.localhost", protocol: "https:" } })).toBe(
+      "ws://127.0.0.1:4096/ws",
+    );
+  });
 });
