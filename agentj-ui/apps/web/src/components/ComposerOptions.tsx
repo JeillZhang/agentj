@@ -149,6 +149,7 @@ export default function ComposerOptions({ model = null, children }: ComposerOpti
         <OptionPopover
           open={openId === "model"}
           onClose={() => closePopover("model")}
+          anchorRef={modelRef}
           className="pop pop-left pop-model"
           labelledBy="composer-model-title"
           role="listbox"
@@ -194,6 +195,7 @@ export default function ComposerOptions({ model = null, children }: ComposerOpti
         <OptionPopover
           open={openId === "agent"}
           onClose={() => closePopover("agent")}
+          anchorRef={agentRef}
           className="pop pop-left pop-agent"
           labelledBy="composer-agent-title"
           role="listbox"
@@ -240,6 +242,7 @@ export default function ComposerOptions({ model = null, children }: ComposerOpti
         <OptionPopover
           open={openId === "entropy"}
           onClose={() => closePopover("entropy")}
+          anchorRef={entropyRef}
           className="pop pop-right pop-ent"
           labelledBy="composer-entropy-title"
           role="listbox"
