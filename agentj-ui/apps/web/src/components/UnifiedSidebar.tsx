@@ -14,6 +14,8 @@ import {
 } from "../projectStore";
 import type { Project } from "../projectStore";
 import { loadFavorites, loadLayout, saveLayout, toggleFavorite } from "../layoutStore";
+import { loadSidebarPrefs, subscribeSidebarPrefs } from "../sidebarPrefsStore";
+import type { SidebarPrefs } from "../sidebarPrefsStore";
 import { isDemoEnabled, subscribeDemo } from "../demoData";
 import SidebarTabs from "./SidebarTabs";
 import FileTree from "./FileTree";
@@ -28,9 +30,6 @@ type ListRow = {
   updatedAt?: string | number | null;
   createdAt?: string | number | null;
 };
-
-type SidebarSort = "updated" | "created";
-type SidebarFilter = "all" | "favorites";
 
 const VIRTUAL_PAGE = 50;
 
@@ -145,10 +144,7 @@ export default function UnifiedSidebar({
   const [currentProjectId, setCurrentProjectId] = useState<string>(() => loadCurrentProject());
   const [tab, setTab] = useState<"sessions" | "files">(() => loadLayout().leftTab);
   const [demo, setDemo] = useState<boolean>(() => isDemoEnabled());
-  const [prefs, setPrefs] = useState<{ sort: SidebarSort; filter: SidebarFilter }>({
-    sort: "updated",
-    filter: "all",
-  });
+  const [prefs, setPrefs] = useState<SidebarPrefs>(loadSidebarPrefs);
   const [flatVisible, setFlatVisible] = useState(VIRTUAL_PAGE);
   const [deleteTarget, setDeleteTarget] = useState<{ ids: string[]; mode: "one" | "all" } | null>(null);
 
@@ -172,19 +168,7 @@ export default function UnifiedSidebar({
     };
   }, []);
 
-  useEffect(() => {
-    const onPrefs = (event: Event) => {
-      const detail = (event as CustomEvent<{ sort?: string; filter?: string }>).detail ?? {};
-      setPrefs((prev) => {
-        const next = { ...prev };
-        if (detail.sort === "created" || detail.sort === "updated") next.sort = detail.sort;
-        if (detail.filter === "all" || detail.filter === "favorites") next.filter = detail.filter;
-        return next;
-      });
-    };
-    window.addEventListener("agentj:sidebar-prefs", onPrefs as EventListener);
-    return () => window.removeEventListener("agentj:sidebar-prefs", onPrefs as EventListener);
-  }, []);
+  useEffect(() => subscribeSidebarPrefs(setPrefs), []);
 
   const handleNewSession = useCallback(
     async (targetProjectId: string) => {
