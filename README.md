@@ -4,7 +4,7 @@ AI 编码代理工具（Rust）——Linux 内核式「内核调度 + 可插拔�
 内核通过统一的 JSON-RPC 2.0 协议（stdio / TCP / WebSocket）对外暴露能力；
 CLI、TUI、Web、Desktop 均通过 `agentj-ui` 协议消费者接入，任意语言可开发前端。
 
-> 当前版本：**v0.16.1**——Web 工作台跟随修复（三项）：会话删除移至星标下方 + 顶栏模型 chip 移除 + 单击不再自动收藏；v0.16.0 六项修复：协议版本 semver 兼容 + composer 弹层锚定 + hover/主题对比度 + 会话管理 + 全宽拉伸；协议扩展：三栏工作台真实数据源
+> 当前版本：**v0.16.2**——远程访问修复：内核 `--host` 绑定（默认仍 127.0.0.1，`0.0.0.0` 可局域网/远程直连）+ `dashboard --token` + Web 页面地址派生与连接设置持久化（修复远程访问误连 `ws://127.0.0.1:4096/ws`、刷新丢失指定 IP）；v0.16.1 三项修复：会话删除移至星标下方 + 顶栏模型 chip 移除 + 单击不再自动收藏；v0.16.0 六项修复：协议版本 semver 兼容 + composer 弹层锚定 + hover/主题对比度 + 会话管理 + 全宽拉伸；协议扩展：三栏工作台真实数据源
 > （`file/list` 目录懒加载 + git 状态点；`$/progress` 新增 `kind:"todo"`
 > 全量快照 + 会话内单调 `revision` 与 `kind:"file_change"` unified diff；
 > `$/askQuestion` + `question/respond` owner 定向提问；会话级 `project_root`；
@@ -13,6 +13,9 @@ CLI、TUI、Web、Desktop 均通过 `agentj-ui` 协议消费者接入，任意�
 > composer 模型/Agent/熵变选择器 + 模型提问卡片 + demo 模式；
 > Web / TUI / Desktop + SDK + tokens，17 crate + npm workspaces monorepo，
 > 共享 `packages/sdk` + `packages/protocol` + `packages/tokens`，后端零改造，frontend stays in-repo）
+> v0.16.2 修复：`serve`/`dashboard` 新增 `--host`（默认 127.0.0.1 本机信任，0.0.0.0 局域网/远程）
+> / `dashboard --token` / 非回环无有效 `--token` 告警 / Web 默认 WS 地址按页面来源派生
+> （https → wss，Tauri 桌面保持明文回环）/ 连接设置持久化（刷新自动恢复重连、弹窗回填）。
 > v0.16.1 修复：左栏会话删除按钮移至收藏星标下方（右栏堆叠、行高 56px）/
 > 右上角模型 chip 移除（composer 与 usage meta 行已展示）/
 > 会话单击不再自动收藏（仅星标按钮触发，回归测试锁定）。
@@ -52,7 +55,8 @@ CLI、TUI、Web、Desktop 均通过 `agentj-ui` 协议消费者接入，任意�
 - [x] **子代理 / Skills / 插件 / 会话持久化 / 守护内核 / 用量统计 / License**：
   均已落地（见 AGENTS.md 架构节）
 - [x] **WebSocket 网关**：`ws://127.0.0.1:<port>/ws`（axum + hyper-util
-  + `?token=` 403 + `initialize.token` -32806 双通道，WS 不参与全局关闭）
+  + `?token=` 403 + `initialize.token` -32806 双通道，WS 不参与全局关闭；
+  v0.16.2 起 `serve/dashboard --host` 可绑定局域网/远程地址）
 - [x] **agentj-ui SDK**：`packages/sdk`（RpcClient + ResponseRouter
   + WebSocketTransport + TcpTransport + resolveWsUrl + METHODS + PROTOCOL_VERSION）
 - [x] **agentj-ui Web**：`apps/web`（Vite + React 19，对齐项：常量化方法名、
@@ -69,6 +73,7 @@ CLI、TUI、Web、Desktop 均通过 `agentj-ui` 协议消费者接入，任意�
 - [x] **三栏工作台（v0.14.6）**：`WorkspaceShell` 三栏布局（Sessions/Files 左栏 + 会话中栏 + 运行详情右栏 `TodoPanel`/`ChangeList` unified diff）+ `SplitPane` 拖拽/键盘/双击与宽度持久化 + `<1024` 右抽屉 + 右栏满高 + 任务/文件变更标题点击折叠 + composer 模型/Agent/熵变选择器（互斥 + 持久化）+ `AskQuestionCard` 模型提问卡片 + `TopbarMenu` 顶栏化（含 demo 开关 + `demoData` 驱动 TODO/文件树/变更/提问卡）+ tokens 24 keys + `LAYOUT` 常量 + 共享 `ModalDialog`（连接设置/继续会话/添加项目统一）
 - [x] **协议扩展（v0.15.0）**：`file/list` 沙箱化目录懒加载 + git 状态点（M/A/U/D）；`$/progress` 新增 `kind:"todo"`（全量快照 + 会话内单调 `revision`）与 `kind:"file_change"`（write 自研行级 diff / bash git 前后采样，unified diff ≤64 KiB）；`$/askQuestion` + `question/respond` owner 定向提问（重复响应幂等、超时/取消/owner 断开按 skip 结算）；会话级 `project_root`（路径基准五处同源）+ 新错误码 `-32807 PathNotAllowed`；`session/history` 回放重建 TODO/变更/Q&A；新 crate `agentj-question`（17 crates）；Web 三栏工作台 `TodoPanel`/`ChangeList`/`FileTree`/`AskQuestionCard` 切换真实协议驱动（`deriveChanges` 半推导退役，demo 模式保留为可切换预览通道）+ TUI runview 只读 TODO 区块
 - [x] **Web 工作台体验修复（v0.16.0）**：六项修复 —— 协议版本 semver 兼容语义（major 相同即兼容，仅 major 不匹配才显示 banner，0.12.1 client vs 0.13.0 server 不再误报）；composer 选项弹层逐触发器锚定（`.sel-wrap`），不再偏移到发送按钮附近；选项/会话行 hover 反馈（背景 + accent + 过渡）；light 主题对比度（`--aj-border #E4E7EA→#CBD2DB`、`--aj-raised #F9FAFB→#E9EDF1`）；左栏会话管理（逐行左侧删除 + 一键清理，`session/delete` 排除当前会话、-32802/-32803 幂等容忍、`session/list` 过滤 deleted）；中栏对话区/composer 移除 720px 居中上限、全宽拉伸。Web 219 → 230 tests，PROTOCOL_VERSION 保持 0.13.0，工作区 0.15.2 → 0.16.0
+- [x] **远程访问修复（v0.16.2）**：内核 `serve`/`dashboard` 新增 `--host`（默认 127.0.0.1；`0.0.0.0` 局域网/远程直连；`dashboard` 补 `--token`；非回环无有效 token 告警；IPv6/实际端口打印修正）；Web `resolveWsUrl` 页面地址派生（无 `VITE_AGENTJ_WS_URL` 时取页面 host:4096，https → wss，Tauri 桌面保持明文回环）+ 连接设置持久化（`agentj.connection`：刷新自动恢复重连、弹窗回填）。Rust 560 / sdk 43 / web 239 tests，PROTOCOL_VERSION 保持 0.13.0，工作区 0.16.1 → 0.16.2
 - [x] **Web 工作台跟随修复（v0.16.1）**：左栏会话删除按钮移至收藏星标下方（右栏堆叠、行高 56px）；右上角模型 chip 移除（模型仍由 composer 与 usage meta 行展示）；会话单击不再自动收藏（仅星标按钮触发，回归测试锁定）。Web 230 → 231 tests，PROTOCOL_VERSION 保持 0.13.0，工作区 0.16.0 → 0.16.1
 
 ## Project Structure
@@ -100,7 +105,7 @@ agentj-ui/                 # 前端 monorepo（npm workspaces，frontend stays i
       src/
         client.ts          # RpcClient
         router.ts          # ResponseRouter + RpcTransport
-        config.ts          # VERSION="0.16.1" + PROTOCOL_VERSION="0.13.0" + resolveWsUrl
+        config.ts          # VERSION="0.16.2" + PROTOCOL_VERSION="0.13.0" + resolveWsUrl
         methods.ts         # METHODS 常量（由 methods.json 生成）
         transports/
           websocket.ts     # WebSocketTransport（浏览器）
@@ -117,15 +122,17 @@ docs/superpowers/          # 设计文档 + 实现计划（中文）
 ```
 
 > 前端不拆独立仓：`agentj-ui` 保留在 `crates/` 同级 monorepo 内，
-> 与 Rust workspace 共享版本 `0.16.1`（`VERSION` + 单一 `PROTOCOL_VERSION 0.13.0` 来源 `sdk/config.ts`）。
+> 与 Rust workspace 共享版本 `0.16.2`（`VERSION` + 单一 `PROTOCOL_VERSION 0.13.0` 来源 `sdk/config.ts`）。
 
 ## Usage
 
 ```bash
 # 后端常驻内核（Web/TUI/Desktop 均连此端点）
 agentj serve --port 4096
+agentj serve --port 4096 --host 0.0.0.0 --token SECRET  # 局域网/远程直连（建议配 --token）
 agentj serve --port 4096 --token SECRET   # 鉴权：?token= 或 initialize.token
 agentj dashboard --port 4096              # 同款协议入口（无 token 最简）
+agentj dashboard --port 4096 --token SECRET  # dashboard 远程访问鉴权（v0.16.2）
 
 # 单轮运行 / 附着运行
 agentj run "explain this codebase"
@@ -210,7 +217,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo bench -p agentj-model       # 模型流式基准
 cargo run -p agentj-protocol --bin gen_schemas   # 重新生成 schemas/*.json
 cargo test -p agentj-protocol -- drift          # 漂移门禁（51 schemas 无漂移）
-./scripts/check-version.sh        # 版本一致性：Cargo.toml + sdk/config.ts + desktop 均为 0.16.1（PROTOCOL_VERSION 0.13.0）
+./scripts/check-version.sh        # 版本一致性：Cargo.toml + sdk/config.ts + desktop 均为 0.16.2（PROTOCOL_VERSION 0.13.0）
 
 # 前端 monorepo（npm workspaces，根为 agentj-ui/）
 npm --prefix agentj-ui install                           # 安装（agentj-ui workspaces）

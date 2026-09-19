@@ -1,6 +1,6 @@
 # AGENTS.md
 
-> Updated 2026-09-19 — v0.15.1 协议扩展（三栏工作台真实数据源）+ v0.15.2 session/status dispatch 修复 + v0.16.0 Web 工作台体验修复 + v0.16.1 跟随修复
+> Updated 2026-09-19 — v0.15.1 协议扩展（三栏工作台真实数据源）+ v0.15.2 session/status dispatch 修复 + v0.16.0 Web 工作台体验修复 + v0.16.1 跟随修复 + v0.16.2 远程访问修复
 > `file/list` 沙箱化目录懒加载 + git 状态点；`$/progress` 新增 `kind:"todo"`
 > （全量快照 + 会话内单调 `revision`）与 `kind:"file_change"`（write 自研行级
 > diff / bash git 前后采样，unified diff ≤64 KiB）；`$/askQuestion` +
@@ -28,6 +28,16 @@
 > 下方（右栏堆叠、行高 56px）；移除右上角模型 chip（composer 与 usage meta 行
 > 已展示）；会话单击不再自动收藏（仅星标按钮触发，回归测试锁定）。
 > Web 230 → 231 tests；PROTOCOL_VERSION 保持 0.13.0；工作区 0.16.0 → 0.16.1。
+> v0.16.2 远程访问修复（bugfix，无协议变更）：`serve --port` / `dashboard` 新增 `--host`
+> （默认仍 127.0.0.1 本机信任；`--host 0.0.0.0` 支持局域网/远程直连），`dashboard` 补齐
+> `--token`，非回环绑定无有效 `--token`（含空串）时输出暴露告警，启动日志打印实际
+> `ws://<host>:<port>/ws`（IPv6 自动加方括号、端口取实际绑定值）；Web
+> `resolveWsUrl` 页面地址派生（无 `VITE_AGENTJ_WS_URL` 时取页面 `host:4096`，https 自动
+> wss，`tauri.localhost` 保持明文回环），「连接设置」手动连接持久化到
+> `agentj.connection`（刷新自动恢复并重连、弹窗回填），修复远程打开页面仍连
+> `ws://127.0.0.1:4096/ws`、刷新丢失指定 IP 的问题。
+> Rust 553 → 560 tests / sdk 37 → 43 / web 231 → 239；PROTOCOL_VERSION 保持 0.13.0；
+> 工作区 0.16.1 → 0.16.2。
 > (17 crates + agentj-ui monorepo：Web / TUI / Desktop + SDK + tokens，
 > npm workspaces `apps/*`+`packages/*`，共享 SDK + protocol + tokens，
 > WebSocket 网关同端口复用，后端零改造，frontend stays in-repo)
@@ -35,6 +45,17 @@
 ## Project Status
 
 AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + 可插拔模块」架构。
+v0.16.2 已落地：**远程访问修复（bugfix，无协议变更）**
+（(1) `serve` / `dashboard` 新增 `--host` 绑定选项：默认仍 127.0.0.1 保持本机信任，
+`--host 0.0.0.0` 支持局域网/远程直连；`dashboard` 补齐 `--token`，非回环且无有效
+`--token`（含空串）时输出暴露告警；启动日志打印实际 `ws://<host>:<port>/ws`
+（IPv6 加方括号、端口取实际绑定值）。(2) Web SDK `resolveWsUrl` 页面地址派生：
+无 `VITE_AGENTJ_WS_URL`/显式 host 时取 `location.hostname:4096`，https → wss，
+`tauri.localhost` 守卫保持明文回环，Web App 初始化与手动连接均传入 `window.location`。
+(3) Web 连接设置持久化：手动连接存入 `agentj.connection`，刷新自动恢复并重连，
+弹窗回填已保存值；显式设置优先于 `VITE_AGENTJ_WS_URL`。
+Rust 553 → 560 tests / sdk 37 → 43 / web 231 → 239；PROTOCOL_VERSION 保持 0.13.0；
+工作区 0.16.1 → 0.16.2）。
 v0.16.1 已落地：**Web 工作台跟随修复（三项，无协议变更）**
 （(1) 左栏会话删除按钮移至收藏星标下方（右栏堆叠、行高 56px）；
 (2) 右上角模型 chip 移除，模型仍由 composer 与 usage meta 行展示；
@@ -101,7 +122,7 @@ Desktop：Tauri v2 壳套 `apps/web` 产物，四件套 deb/AppImage/dmg/msi，
 ## Commands
 
 - `cargo test --workspace` — 全量测试
-  （545 passed / 0 failed；含 bus 密封 + FileBackedStore/Config/CLI 单测
+  （560 passed / 0 failed；含 bus 密封 + FileBackedStore/Config/CLI 单测
   + e2e_cli/e2e_permission/e2e_serve/e2e_ws 密封测试）
 - `cargo clippy --workspace --all-targets -- -D warnings` — lint 门禁（零警告）
 - `cargo bench -p agentj-model` — 模型流式基准（criterion）
@@ -118,7 +139,7 @@ Desktop：Tauri v2 壳套 `apps/web` 产物，四件套 deb/AppImage/dmg/msi，
 - `bun --cwd agentj-ui/apps/tui test` — TUI 单测（含 mock WS e2e）
 - `./agentj-ui/apps/desktop/check-artifacts.sh linux` — Desktop 产物校验
 - `node agentj-ui/apps/desktop/check-desktop-ui.mjs` — Desktop 前端产物/配置一致性校验
-- `./scripts/check-version.sh` — 版本一致性（Cargo + sdk VERSION + desktop 均为 0.16.1，
+- `./scripts/check-version.sh` — 版本一致性（Cargo + sdk VERSION + desktop 均为 0.16.2，
   PROTOCOL_VERSION 0.13.0 + `protocol/methods.json` 版本 0.13.0）
 
 ### CI Pipelines (GitHub Actions)
@@ -180,7 +201,7 @@ Desktop：Tauri v2 壳套 `apps/web` 产物，四件套 deb/AppImage/dmg/msi，
   为 drift 门禁后第一门）。
 - `agentj-ui/packages/sdk`：共享 SDK（`src/client.ts` RpcClient +
   `src/router.ts` ResponseRouter/RpcTransport + `src/config.ts`
-   `VERSION="0.16.1"` + `PROTOCOL_VERSION="0.13.0"` + `resolveWsUrl` + `src/methods.ts` METHODS
+   `VERSION="0.16.2"` + `PROTOCOL_VERSION="0.13.0"` + `resolveWsUrl` + `src/methods.ts` METHODS
   + `transports/websocket.ts` WebSocketTransport
   + `transports/tcp.ts` TcpTransport；被 Web/TUI/Desktop 同源消费）。
 - `agentj-ui/packages/tokens`：共享语义 tokens（`palette.ts` 24 keys × dark/light + `SEMANTIC_KEYS` + `LAYOUT` 常量块（left/right 宽度/splitter/topbar/gap），`tokens.css/tokens.json/docs/ui-tokens.md` 生成，radius 类 keys kebab→camel 迁移，三端约束）。
@@ -200,9 +221,9 @@ Desktop：Tauri v2 壳套 `apps/web` 产物，四件套 deb/AppImage/dmg/msi，
   completion/theme/usage + runview 只读 TODO 区块（revision 门控） +
   mock WS e2e + sidebar 文本版 UnifiedSidebar 32char；`testRender` 快照）。
 - `agentj-ui/apps/desktop`：Desktop 壳（Tauri v2，`frontendDist` →
-   `../../web/dist`，与 workspace 版本同源 `0.16.1`，四件套打包）。
+    `../../web/dist`，与 workspace 版本同源 `0.16.2`，四件套打包）。
 - `agentj-ui/` 根：`package.json` workspaces `["apps/*","packages/*"]`
-  （frontend stays in-repo，前端不拆独立仓，与 Rust 共享 0.16.1）。
+  （frontend stays in-repo，前端不拆独立仓，与 Rust 共享 0.16.2）。
 - **守护内核（v0.4 已实现）**：统一 Connection 抽象 + `serve --port`
   常驻多客户端 + `run --attach` + `dashboard`（见 daemon-kernel 设计文档）。
 
