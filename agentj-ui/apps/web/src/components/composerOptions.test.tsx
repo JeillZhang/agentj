@@ -73,6 +73,24 @@ test("applies project defaults when the current project changes", () => {
   expect(localStorage.getItem("agentj.composer.agent")).toBe("plan");
   expect(screen.getByRole("button", { name: /deepseek-chat/ })).toBeTruthy();
 });
+test("keeps an explicit pick on a same-id project re-dispatch", () => {
+  localStorage.clear();
+  const alpha = createProject("Alpha");
+  updateProject(alpha.id, { defaultModel: "deepseek-chat", defaultAgent: "plan" });
+  setCurrentProject(alpha.id);
+  render(<ComposerOptions />);
+  expect(localStorage.getItem("agentj.composer.agent")).toBe("plan");
+
+  fireEvent.click(screen.getByRole("button", { name: /Plan/ }));
+  fireEvent.click(screen.getByText("Build"));
+  expect(localStorage.getItem("agentj.composer.agent")).toBe("build");
+
+  act(() => {
+    setCurrentProject(alpha.id);
+  });
+  expect(localStorage.getItem("agentj.composer.agent")).toBe("build");
+  expect(screen.getByRole("button", { name: /Build/ })).toBeInTheDocument();
+});
 test("keeps explicit prefs when the project has no defaults", () => {
   localStorage.clear();
   saveComposerPrefs({ model: "custom-model", agent: "build" });

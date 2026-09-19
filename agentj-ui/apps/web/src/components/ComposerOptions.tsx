@@ -65,11 +65,14 @@ export default function ComposerOptions({ model = null, children }: ComposerOpti
   const modelRef = useRef<HTMLButtonElement>(null);
   const agentRef = useRef<HTMLButtonElement>(null);
   const entropyRef = useRef<HTMLButtonElement>(null);
+  const appliedProjectRef = useRef<string | null>(null);
 
   useEffect(() => {
     const applyFor = (id: string) => {
+      if (appliedProjectRef.current === id) return;
       const project = loadProjects().find((p) => p.id === id);
       if (!project) return;
+      appliedProjectRef.current = id;
       const patch: Partial<ComposerPrefs> = {};
       if (project.defaultModel) patch.model = project.defaultModel;
       if (project.defaultAgent) patch.agent = project.defaultAgent as ComposerAgent;
