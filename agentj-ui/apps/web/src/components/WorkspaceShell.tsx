@@ -9,12 +9,39 @@ import {
   subscribeLayout,
 } from "../layoutStore";
 import type { LayoutState } from "../layoutStore";
+import { loadDisplayPrefs, subscribeDisplayPrefs } from "../displayPrefsStore";
+import type { DisplayLineHeight, DisplayPrefs, FontScale } from "../displayPrefsStore";
 import "./layout.css";
 
 const CENTER_MIN = 480;
 const SPLITTER_HIT = 7;
 const COLUMN_GAP = 12;
 const RIGHT_RAIL = 40; // matches .aj-workspace--right-collapsed rail width in layout.css
+
+type FontPx = { conv: string; left: string; right: string; code: string };
+
+const FONT_PX: Record<FontScale, FontPx> = {
+  sm: { conv: "13px", left: "12px", right: "12px", code: "11px" },
+  md: { conv: "15px", left: "13px", right: "13px", code: "12px" },
+  lg: { conv: "17px", left: "14.5px", right: "14.5px", code: "13.5px" },
+  xl: { conv: "19px", left: "16px", right: "16px", code: "15px" },
+};
+
+const LH: Record<DisplayLineHeight, string> = {
+  compact: "1.4",
+  default: "1.55",
+  relaxed: "1.8",
+};
+
+function displayVars(display: DisplayPrefs): Record<string, string> {
+  return {
+    "--aj-font-conv": FONT_PX[display.fontConversation].conv,
+    "--aj-font-left": FONT_PX[display.fontLeft].left,
+    "--aj-font-right": FONT_PX[display.fontRight].right,
+    "--aj-font-code": FONT_PX[display.fontCode].code,
+    "--aj-lh-conv": LH[display.lineHeight],
+  };
+}
 
 const noop = (): void => {};
 
@@ -39,10 +66,13 @@ export default function WorkspaceShell({
 }: WorkspaceShellProps) {
   const [left, center] = children;
   const [layout, setLayout] = useState<LayoutState>(() => loadLayout());
+  const [display, setDisplay] = useState<DisplayPrefs>(() => loadDisplayPrefs());
   const rootRef = useRef<HTMLDivElement>(null);
   const [containerWidth, setContainerWidth] = useState(0);
 
   useEffect(() => subscribeLayout(setLayout), []);
+
+  useEffect(() => subscribeDisplayPrefs(setDisplay), []);
 
   useEffect(() => {
     const el = rootRef.current;
@@ -101,6 +131,7 @@ export default function WorkspaceShell({
   const styleVars = {
     "--aj-left-w": `${leftWidth}px`,
     "--aj-right-w": `${rightWidth}px`,
+    ...displayVars(display),
   } as CSSProperties;
 
   const rootClass = [
@@ -113,7 +144,7 @@ export default function WorkspaceShell({
     .join(" ");
 
   return (
-    <div ref={rootRef} className={rootClass} style={styleVars}>
+    <div ref={rootRef} className={rootClass} style={styleVars} data-density={display.density}>
       <div className="aj-shell__left">{left}</div>
       <SplitPane
         side="left"
