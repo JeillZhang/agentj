@@ -2,6 +2,7 @@
 // `fileIconFor` only lowercases the extension and looks it up in a static table,
 // so it is trivial to unit-test and safe to call during render.
 import {
+  Database,
   File,
   FileArchive,
   FileCode2,
@@ -24,6 +25,7 @@ export type FileCategory =
   | "shell"
   | "image"
   | "archive"
+  | "db"
   | "default";
 
 export type FileIconMatch = {
@@ -42,7 +44,60 @@ const CATEGORIES: readonly CategorySpec[] = [
   {
     category: "code",
     Icon: FileCode2,
-    extensions: ["ts", "tsx", "js", "jsx", "mjs", "cjs", "vue", "svelte"],
+    extensions: [
+      "ts",
+      "tsx",
+      "js",
+      "jsx",
+      "mjs",
+      "cjs",
+      "vue",
+      "svelte",
+      "rs",
+      "go",
+      "py",
+      "rb",
+      "java",
+      "kt",
+      "kts",
+      "scala",
+      "swift",
+      "c",
+      "h",
+      "cpp",
+      "hpp",
+      "cc",
+      "cxx",
+      "hh",
+      "cs",
+      "php",
+      "lua",
+      "dart",
+      "r",
+      "pl",
+      "pm",
+      "ex",
+      "exs",
+      "erl",
+      "hrl",
+      "hs",
+      "clj",
+      "cljs",
+      "cljc",
+      "ml",
+      "fs",
+      "fsx",
+      "vb",
+      "jl",
+      "zig",
+      "nim",
+      "proto",
+      "graphql",
+      "gql",
+      "html",
+      "htm",
+      "xml",
+    ],
   },
   { category: "json", Icon: FileJson, extensions: ["json", "jsonc"] },
   { category: "doc", Icon: FileText, extensions: ["md", "mdx", "txt", "rst"] },
@@ -51,7 +106,23 @@ const CATEGORIES: readonly CategorySpec[] = [
   { category: "shell", Icon: SquareTerminal, extensions: ["sh", "bash", "zsh"] },
   { category: "image", Icon: Image, extensions: ["png", "jpg", "jpeg", "gif", "svg", "webp", "ico"] },
   { category: "archive", Icon: FileArchive, extensions: ["zip", "gz", "tar", "lock"] },
+  { category: "db", Icon: Database, extensions: ["sql", "db", "sqlite", "sqlite3"] },
 ];
+
+/** Extension-less build files matched on their exact basename before the extension scan. */
+const FILENAME_SPECIALS: Record<string, FileCategory> = {
+  Dockerfile: "code",
+  Makefile: "code",
+  "CMakeLists.txt": "code",
+};
+
+const CATEGORY_ICONS: Record<FileCategory, LucideIcon> = CATEGORIES.reduce(
+  (acc, spec) => {
+    acc[spec.category] = spec.Icon;
+    return acc;
+  },
+  { default: File } as Record<FileCategory, LucideIcon>,
+);
 
 /**
  * Lowercased text after the last dot, or "" when there is none.
@@ -65,6 +136,11 @@ export function extensionOf(name: string): string {
 
 /** Resolves a file name to its lucide icon + category; unknown extensions fall back to `File`. */
 export function fileIconFor(name: string): FileIconMatch {
+  const slash = name.lastIndexOf("/");
+  const basename = slash < 0 ? name : name.slice(slash + 1);
+  const special = FILENAME_SPECIALS[basename];
+  if (special) return { Icon: CATEGORY_ICONS[special], category: special };
+
   const ext = extensionOf(name);
   for (const spec of CATEGORIES) {
     if (spec.extensions.includes(ext)) return { Icon: spec.Icon, category: spec.category };
