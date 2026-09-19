@@ -2,7 +2,7 @@ import { expect, test, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import { render, screen, fireEvent, within, waitFor } from "@testing-library/react";
 import TopbarMenu from "./TopbarMenu";
-import { createProject, setCurrentProject } from "../projectStore";
+import { createProject, loadProjects, saveProjectDefaults, setCurrentProject } from "../projectStore";
 
 function openMenu() {
   fireEvent.click(screen.getByRole("button", { name: "更多" }));
@@ -173,4 +173,20 @@ test("outside mousedown and 帮助 both close the menu", () => {
   fireEvent.click(screen.getByRole("menuitem", { name: "帮助" }));
   expect(screen.queryByRole("menu")).toBeNull();
   localStorage.clear();
+});
+
+test("prefills and submits the work dir for new projects", () => {
+  localStorage.clear();
+  saveProjectDefaults({ workDir: "/repo/default" });
+  render(<TopbarMenu onConnect={() => {}} onContinue={() => {}} />);
+  fireEvent.click(screen.getByRole("button", { name: "更多" }));
+  fireEvent.mouseEnter(screen.getByRole("menuitem", { name: /项目/ }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "＋ 添加项目" }));
+  const dir = screen.getByLabelText("工作目录") as HTMLInputElement;
+  expect(dir.value).toBe("/repo/default");
+  fireEvent.change(screen.getByLabelText("项目名称"), { target: { value: "演示" } });
+  fireEvent.change(dir, { target: { value: "/repo/demo" } });
+  fireEvent.click(screen.getByRole("button", { name: "添加" }));
+  const created = loadProjects().find((p) => p.name === "演示");
+  expect(created?.workDir).toBe("/repo/demo");
 });
