@@ -18,6 +18,7 @@ import "./components/conversation.css";
 import "./components/trajectory.css";
 import "./components/hero.css";
 import "./components/dialog.css";
+import "./components/displayPrefs.css";
 import App from './App.tsx'
 
 createRoot(document.getElementById('root')!).render(

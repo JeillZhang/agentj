@@ -1,0 +1,116 @@
+/* displayPrefs.css — single display-preferences override layer.
+ *
+ * Imported LAST in main.tsx so that, at equal specificity, later rules win.
+ * Every var() usage carries the current px value as a fallback, so rendering
+ * is unchanged when no display prefs are applied (jsdom / plain render).
+ * Colors (if ever needed) must come from var(--aj-*).
+ */
+
+/* ── conversation zone ─────────────────────────────────────────────── */
+.aj-conv {
+  font-size: var(--aj-font-conv, 15px);
+  line-height: var(--aj-lh-conv, 1.55);
+}
+
+/* explicit smaller surfaces stay adapted relative to the zone size */
+.aj-ai code {
+  font-size: calc(var(--aj-font-code, 12px) - 0.5px);
+}
+
+.aj-tool-output {
+  font-size: var(--aj-font-code, 12px);
+}
+
+.aj-composer-card .aj-input {
+  font-size: calc(var(--aj-font-conv, 15px) - 1px);
+}
+
+.aj-composer__project-btn {
+  font-size: calc(var(--aj-font-conv, 15px) - 2px);
+}
+
+/* ── trajectory (same group as conversation) ───────────────────────── */
+.aj-traj-title {
+  font-size: calc(var(--aj-font-conv, 15px) - 2px); /* 13 at md */
+}
+
+.aj-traj-seq {
+  font-size: calc(var(--aj-font-conv, 15px) - 3px); /* 12 at md */
+}
+
+/* ── left zone ─────────────────────────────────────────────────────── */
+.aj-sidebar__body,
+.aj-sidebar__search input,
+.aj-seg button,
+.aj-sidebar .btn-primary {
+  font-size: var(--aj-font-left, 13px);
+}
+
+.aj-sess__title {
+  font-size: calc(var(--aj-font-left, 13px) - 1px); /* 12 at md */
+}
+
+.tree {
+  font-size: calc(var(--aj-font-left, 13px) - 0.5px); /* 12.5 at md */
+}
+
+.aj-sess__meta,
+.section-label,
+.aj-sidebar__subgroup-title,
+.left-foot {
+  font-size: calc(var(--aj-font-left, 13px) - 2px);
+}
+
+.trow .status-txt {
+  font-size: calc(var(--aj-font-left, 13px) - 3px);
+}
+
+/* ── right zone ────────────────────────────────────────────────────── */
+.aj-right__title,
+.aj-right__collapse,
+.sec-head {
+  font-size: calc(var(--aj-font-right, 13px) + 1px); /* 14 at md */
+}
+
+.todo-label {
+  font-size: var(--aj-font-right, 13px);
+}
+
+.fc-path {
+  font-size: calc(var(--aj-font-right, 13px) - 0.5px); /* 12.5 at md */
+}
+
+.diff {
+  font-size: calc(var(--aj-font-code, 12px) - 0.5px); /* 11.5 at md */
+}
+
+/* ── density: compact (gaps/paddings only, no hit-area shrink) ─────── */
+.aj-workspace[data-density="compact"] .aj-conv {
+  gap: 6px;
+}
+
+.aj-workspace[data-density="compact"] .aj-sess {
+  min-height: 48px;
+  padding: 6px 30px 6px 10px;
+}
+
+.aj-workspace[data-density="compact"] .aj-composer-card {
+  gap: 6px;
+  padding: 10px 16px;
+}
+
+.aj-workspace[data-density="compact"] .sec-body {
+  padding: 0 12px 6px;
+}
+
+.aj-workspace[data-density="compact"] .fc {
+  padding: 5px 9px;
+}
+
+/* ── reduced motion kill-switch ────────────────────────────────────── */
+:root[data-reduced-motion="true"] *,
+:root[data-reduced-motion="true"] *::before,
+:root[data-reduced-motion="true"] *::after {
+  transition: none !important;
+  animation: none !important;
+}
