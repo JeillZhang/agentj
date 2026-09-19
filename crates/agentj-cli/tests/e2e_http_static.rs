@@ -96,13 +96,17 @@ fn serve_serves_web_dist_with_spa_fallback_and_cache_headers() {
             .spawn()
             .unwrap(),
     );
-    let addr = read_listening_addr(&mut BufReader::new(child.0.stdout.take().unwrap()));
+    // Hold the reader for the whole test: dropping it would close the stdout
+    // pipe while the server may still print its remaining startup banner.
+    let mut reader = BufReader::new(child.0.stdout.take().unwrap());
+    let addr = read_listening_addr(&mut reader);
 
     let root = http_get(&addr, "/");
     assert!(root.starts_with("HTTP/1.1 200"), "GET /: {root}");
     assert!(root.contains("agentj-e2e-index"), "index body: {root}");
 
     let js = http_get(&addr, "/assets/app.js");
+    assert!(js.starts_with("HTTP/1.1 200"), "assets: {js}");
     assert!(
         js.to_ascii_lowercase()
             .contains("cache-control: public, max-age=31536000, immutable"),
@@ -130,8 +134,8 @@ fn serve_serves_web_dist_with_spa_fallback_and_cache_headers() {
 
 #[test]
 fn serve_without_dist_returns_404_and_warns() {
-    // No --web-dist and no AGENTJ_WEB_DIST: the discovery candidates relative to
-    // the crate cwd / exe dir do not exist, so the static surface stays off.
+    // Under `cargo test` the cwd is this crate dir, so no discovery candidate
+    // resolves (the repo-root agentj-ui/apps/web/dist is not reachable).
     let mut child = AutoReap(
         Command::new(env!("CARGO_BIN_EXE_agentj"))
             .args(["--config", serve_config(), "serve", "--port", "0"])
@@ -143,7 +147,9 @@ fn serve_without_dist_returns_404_and_warns() {
             .unwrap(),
     );
     let mut stderr = child.0.stderr.take().unwrap();
-    let addr = read_listening_addr(&mut BufReader::new(child.0.stdout.take().unwrap()));
+    // Hold the reader until the child is reaped (see the first test).
+    let mut reader = BufReader::new(child.0.stdout.take().unwrap());
+    let addr = read_listening_addr(&mut reader);
 
     let root = http_get(&addr, "/");
     assert!(
