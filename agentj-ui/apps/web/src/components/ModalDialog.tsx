@@ -11,6 +11,16 @@ export type ModalDialogProps = {
   cardClassName?: string;
 };
 
+// Module-level stack of mounted dialogs (bottom → top). Only the top-most
+// instance reacts to Escape/backdrop dismissal so nested dialogs (settings →
+// project edit) close one layer at a time.
+const modalStack: number[] = [];
+let nextModalId = 1;
+
+function isTopModal(id: number): boolean {
+  return modalStack[modalStack.length - 1] === id;
+}
+
 /**
  * Shared centered modal shell. Portals to `document.body` so it escapes any
  * ancestor containing block (e.g. the topbar `backdrop-filter`). Escape and
@@ -21,9 +31,23 @@ export default function ModalDialog({ title, onClose, children, cardClassName }:
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
 
+  const idRef = useRef<number | null>(null);
+  if (idRef.current === null) idRef.current = nextModalId++;
+
+  useEffect(() => {
+    const id = idRef.current;
+    if (id === null) return;
+    modalStack.push(id);
+    return () => {
+      const index = modalStack.indexOf(id);
+      if (index !== -1) modalStack.splice(index, 1);
+    };
+  }, []);
+
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onCloseRef.current();
+      const id = idRef.current;
+      if (event.key === "Escape" && id !== null && isTopModal(id)) onCloseRef.current();
     };
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
@@ -36,7 +60,8 @@ export default function ModalDialog({ title, onClose, children, cardClassName }:
       aria-modal="true"
       className="aj-dialog"
       onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onCloseRef.current();
+        const id = idRef.current;
+        if (e.target === e.currentTarget && id !== null && isTopModal(id)) onCloseRef.current();
       }}
     >
       <div className={`aj-dialog-card${cardClassName ? ` ${cardClassName}` : ""}`}>
