@@ -31,6 +31,10 @@ import { EMPTY_TODO_STATE, applyTodoFrame, todosFromHistory } from "./todoState"
 
 const rawWsEnv = import.meta.env.VITE_AGENTJ_WS_URL;
 const envWsUrl = typeof rawWsEnv === "string" ? rawWsEnv : undefined;
+const pageLocation =
+  typeof window === "undefined"
+    ? undefined
+    : { hostname: window.location.hostname, protocol: window.location.protocol };
 
 type ThemeMode = "dark" | "light" | "system";
 const THEME_CYCLE: Record<ThemeMode, ThemeMode> = { dark: "light", light: "system", system: "dark" };
@@ -221,7 +225,7 @@ function useApproval(client: RpcClient | null, activeSessionId: string | null) {
 }
 
 export default function App() {
-  const [wsUrl, setWsUrl] = useState(() => resolveWsUrl({ envUrl: envWsUrl }));
+  const [wsUrl, setWsUrl] = useState(() => resolveWsUrl({ envUrl: envWsUrl, location: pageLocation }));
   const [connectSeq, setConnectSeq] = useState(0);
   const { client: sharedClient, modules, status, banner, unreachable, modelName } = useSharedKernel(wsUrl, connectSeq);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
@@ -369,6 +373,7 @@ export default function App() {
       host: host || undefined,
       port: p,
       token: token || undefined,
+      location: pageLocation,
     });
     setWsUrl(next);
     setConnectSeq((n) => n + 1);

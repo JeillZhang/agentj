@@ -25,6 +25,12 @@ const shared = vi.hoisted(() => ({
 }));
 
 vi.mock("@agentj/sdk", () => {
+  const derivePageHost = (location?: { hostname: string; protocol: string }): string | undefined => {
+    if (!location) return undefined;
+    if (location.protocol !== "http:" && location.protocol !== "https:") return undefined;
+    if (!location.hostname || location.hostname === "tauri.localhost") return undefined;
+    return location.hostname;
+  };
   class ResponseRouter {
     setNotificationHandler(h: (m: string, p: unknown) => void) {
       shared.notificationHandler.value = h;
@@ -93,17 +99,20 @@ vi.mock("@agentj/sdk", () => {
     RpcClient,
     ResponseRouter,
     WebSocketTransport,
+    // DRIFT WARNING: keep in step with resolveWsUrl in @agentj/sdk src/config.ts (page-location host/scheme).
     resolveWsUrl: vi.fn(
       (o?: {
         envUrl?: string;
         host?: string;
         port?: number;
         token?: string;
+        location?: { hostname: string; protocol: string };
       }) => {
         if (o?.envUrl) return o.envUrl;
-        const host = o?.host ?? "127.0.0.1";
+        const host = o?.host ?? derivePageHost(o?.location) ?? "127.0.0.1";
         const port = o?.port ?? 4096;
-        const base = `ws://${host}:${port}/ws`;
+        const scheme = o?.location?.protocol === "https:" ? "wss" : "ws";
+        const base = `${scheme}://${host}:${port}/ws`;
         return o?.token ? `${base}?token=${o.token}` : base;
       },
     ),
@@ -167,6 +176,7 @@ vi.mock("@agentj/sdk", () => {
   };
 });
 
+import { resolveWsUrl } from "@agentj/sdk";
 import App, { connectionLight, isProtocolCompatible } from "./App";
 import { historyToEntries, historyToConversation, filterNodes } from "./Trajectory";
 import { Trajectory } from "./Trajectory";
@@ -797,5 +807,44 @@ describe("T23 topbar menu + right drawer", () => {
     } finally {
       delete (window as { matchMedia?: unknown }).matchMedia;
     }
+  });
+});
+
+describe("remote WebSocket origin", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    vi.mocked(resolveWsUrl).mockClear();
+  });
+
+  it("passes the page location into resolveWsUrl during init", () => {
+    render(<App />);
+    expect(vi.mocked(resolveWsUrl)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        location: expect.objectContaining({
+          hostname: window.location.hostname,
+          protocol: window.location.protocol,
+        }),
+      }),
+    );
+  });
+
+  it("passes the page location into resolveWsUrl on manual connect", async () => {
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "更多" }));
+    fireEvent.click(screen.getByText("连接设置…"));
+    const bar = screen.getByLabelText("connection");
+    fireEvent.change(within(bar).getByLabelText("Host"), { target: { value: "10.0.0.5" } });
+    fireEvent.click(within(bar).getByRole("button", { name: /connect/i }));
+    await waitFor(() =>
+      expect(vi.mocked(resolveWsUrl)).toHaveBeenCalledWith(
+        expect.objectContaining({
+          host: "10.0.0.5",
+          location: expect.objectContaining({
+            hostname: window.location.hostname,
+            protocol: window.location.protocol,
+          }),
+        }),
+      ),
+    );
   });
 });
