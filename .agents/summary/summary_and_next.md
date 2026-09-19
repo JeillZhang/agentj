@@ -30,8 +30,15 @@
   17→`17px`；缩放 SE +120/+80 → 680×526→800×606 位置不变；W 拖拽 −100 → 右缘锚定
   （右缘 1100→1100）；夹取 → 560×200（设置下限）且滑杆仍 200px 可用；
   hover 手柄 accent tint + `nwse-resize` 光标（修正前 320px 下限会压扁面板，已修复）。
-- ✅ **门禁**：web **439 tests（44 files）**（新增/改写：dialogResize 8、modalDialog 12、
-  显示面板 10、store 7、workspaceShell 9）/ sdk 46 / Rust 564 tests / clippy 零警告 /
+- ✅ **独立复核修复波（commit `e5ea9a4`，Oracle 评审 6 项全修）**：`resizeRect`
+  per-dialog 下限以视口上限夹取（375px 窄屏不再一触手柄就横向溢出）+ 增长按锚定边
+  可用空间夹取（拖过头原点零漂移）；新增 `clampDialogRect` + window resize 重夹取；
+  `ModalDialog` 忽略非主键 + `hasPointerCapture` 守卫 release；`displayPrefsStore`
+  旧枚举改 `hasOwnProperty`（`toString`/`constructor`/`__proto__` 不再冒充通过）；
+  `.aj-dialog__resize` 手柄外移（边缘 2px / 角 6px 落入卡片）避免遮挡滚动条。
+  实机复验：+120/+80 精确增长、上限 972×655 原点不动、700px 视口自动重夹取 684px。
+- ✅ **门禁**：web **446 tests（44 files）**（新增/改写：dialogResize 11、modalDialog 15、
+  显示面板 10、store 8、workspaceShell 9）/ sdk 46 / Rust 564 tests / clippy 零警告 /
   drift 2 passed / web build / tui 71 / check-version **0.17.2** / desktop-ui。
 - ✅ **版本与文档同步**：0.17.1 → 0.17.2（Cargo workspace + `Cargo.lock` 17 crates +
   sdk `config.ts`(+version 断言) + desktop 三处 + `package-lock.json`）；
@@ -51,7 +58,8 @@
 
 ## 下一步
 
-- 分支 `fix/display-slider-and-dialog-resize`（3 commits）已通过单测 + 实机验证；
+- 分支 `fix/display-slider-and-dialog-resize`（6 commits：2 修复 + 1 下限跟进 +
+  1 版本/文档 + 1 复核修复 + 1 文档计数）已通过单测 + 实机验证 + 独立复核；
   待创建 PR（→ main），合并由用户负责。
 - 后续特性候选（沿用前版结论）：内核直接托管 Web UI —— `serve` 静态文件服务
   （axum `ServeDir` 托管 `agentj-ui/apps/web/dist`），远程打开 `http://<host>:4096/`

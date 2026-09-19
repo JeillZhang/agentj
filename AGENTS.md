@@ -140,7 +140,10 @@
 > 可选 per-dialog `minWidth/minHeight`，设置弹窗下限 560px）；`.aj-settings` 宽度修饰
 > 移至 frame，`.aj-dialog-card` 基类规则不变（`ApprovalDialog` 不受影响）。
 > 实机 Playwright 验证：4 行横向布局、滑杆/数字/变量联动与夹取、SE/W 拖拽（对边锚定）、
-> 最小尺寸 560×200（滑杆仍 200px 可用）、hover 手柄反馈。web 417 → 439 tests（44 files）/
+> 最小尺寸 560×200（滑杆仍 200px 可用）、hover 手柄反馈。复核修复波（Oracle 评审 6 项）：
+> `resizeRect` per-dialog 下限以视口上限夹取 + 增长按锚定边可用空间夹取（原点零漂移）、
+> 新增 `clampDialogRect` + window resize 重夹取、非主键/pointer capture 守卫、
+> 旧枚举 `hasOwnProperty` 校验、手柄外移避让滚动条。web 417 → 446 tests（44 files）/
 > sdk 46 / Rust 564 tests；clippy 零警告 / drift 2 passed / web build / tui 71 /
 > check-version 0.17.2 / desktop-ui；PROTOCOL_VERSION 保持 0.13.0；工作区 0.17.1 → 0.17.2。
 > (17 crates + agentj-ui monorepo：Web / TUI / Desktop + SDK + tokens，
@@ -155,7 +158,7 @@ v0.17.2 已落地：**界面修复（显示设置 px 滑杆 + 可缩放弹窗，
 每区一行滑杆/数字/px + 行高密度横排，消除弹窗纵向拉伸；WorkspaceShell 注入 px；
 (2) 弹窗缩放：`ModalDialog` `.aj-dialog-frame` + 8 向手柄 + `dialogResize.ts`
 几何（对边锚定/最小 320×200/视口夹取/可覆盖下限，设置 560px）；实机 Playwright 验证。
-web 417 → 439 tests（44 files）/ sdk 46 / Rust 564 tests / tui 71；
+web 417 → 446 tests（44 files）/ sdk 46 / Rust 564 tests / tui 71；
 PROTOCOL_VERSION 保持 0.13.0；工作区 0.17.1 → 0.17.2）。
 v0.17.1 已落地：**v0.17.0 验收修复（BUG-008，无协议变更）**
 （窄视口 375–390px 左栏会话列表菜单横向夹取 + 「过滤/排序」飞出层方向自适应
@@ -295,7 +298,7 @@ Desktop：Tauri v2 壳套 `apps/web` 产物，四件套 deb/AppImage/dmg/msi，
   46 tests）
 - `npm --prefix agentj-ui run generate --workspace=@agentj/sdk` — 生成 `METHODS` 常量
   （`protocol/methods.json` → `agentj-ui/packages/sdk/src/methods.ts`）
-- `npm --prefix agentj-ui test --workspace=@agentj/web` — Web 单测（vitest，439 tests / 44 files）
+- `npm --prefix agentj-ui test --workspace=@agentj/web` — Web 单测（vitest，446 tests / 44 files）
 - `npm --prefix agentj-ui run build --workspace=@agentj/web` — Web 构建（`tsc -b && vite build`）
   > 注意：Vite dev server 不监听 root 之外的 `packages/sdk` 源（alias 直连源码）；
   > 改动 SDK 后须重启 dev server，否则运行陈旧的 `METHODS`（v0.16.3「加载中」根因）。
