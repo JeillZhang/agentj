@@ -285,7 +285,7 @@ describe("App with mocked SDK transport", () => {
   it("applies token to wsUrl via topbar connect dialog", async () => {
     render(<App />);
     fireEvent.click(screen.getByRole("button", { name: "更多" }));
-    fireEvent.click(screen.getByText("连接设置…"));
+    fireEvent.click(screen.getByText("设置…"));
     const bar = screen.getByLabelText("connection");
     fireEvent.change(within(bar).getByLabelText("Host"), { target: { value: "127.0.0.1" } });
     fireEvent.change(within(bar).getByLabelText("Port"), { target: { value: "4096" } });
@@ -856,7 +856,7 @@ describe("remote WebSocket origin", () => {
   it("passes the page location into resolveWsUrl on manual connect", async () => {
     render(<App />);
     fireEvent.click(screen.getByRole("button", { name: "更多" }));
-    fireEvent.click(screen.getByText("连接设置…"));
+    fireEvent.click(screen.getByText("设置…"));
     const bar = screen.getByLabelText("connection");
     fireEvent.change(within(bar).getByLabelText("Host"), { target: { value: "10.0.0.5" } });
     fireEvent.click(within(bar).getByRole("button", { name: /connect/i }));
@@ -895,7 +895,7 @@ describe("connection settings persistence", () => {
   it("persists manual connect settings so a reload keeps them", () => {
     const first = render(<App />);
     fireEvent.click(screen.getByRole("button", { name: "更多" }));
-    fireEvent.click(screen.getByText("连接设置…"));
+    fireEvent.click(screen.getByText("设置…"));
     const bar = screen.getByLabelText("connection");
     fireEvent.change(within(bar).getByLabelText("Host"), { target: { value: "192.168.3.31" } });
     fireEvent.change(within(bar).getByLabelText("Port"), { target: { value: "4096" } });

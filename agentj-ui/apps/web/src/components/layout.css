@@ -235,14 +235,20 @@
   margin: 0;
 }
 
+/* T11 — three-column workspace shell.
+   The right column is the single animating element: its width transitions
+   right-to-left while the inner .aj-right stays pinned to the end edge
+   (rightpanel.css align-self) so content never reflows mid-animation. */
 .aj-shell__right {
-  flex: 0 1 var(--aj-right-w, 320px);
-  min-width: 260px;
-  max-width: 480px;
+  flex: 0 1 auto;
+  width: var(--aj-right-w, var(--aj-rightWidth, 320px));
+  min-width: 0;
+  max-width: none;
   min-height: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  border-left: 0.5px solid var(--aj-border);
 }
 
 /* T25 — ≥1024: the sidebar must follow the shell column width set by the splitter.
@@ -253,10 +259,14 @@
     min-width: 0;
     max-width: none;
   }
+  .aj-shell__right {
+    transition: width var(--aj-motion) var(--aj-ease);
+  }
   .aj-workspace--right-collapsed .aj-shell__right {
-    flex-basis: 40px;
-    min-width: 0;
-    max-width: 40px;
+    width: 40px;
+  }
+  .aj-splitter[data-side="right"][data-dragging="true"] ~ .aj-shell__right {
+    transition: none;
   }
 }
 

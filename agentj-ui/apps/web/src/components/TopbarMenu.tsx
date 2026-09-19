@@ -1,13 +1,17 @@
-// TopbarMenu.tsx — topbar overflow menu (agentj 0.14.0 three-column workbench).
-// Hosts sidebar features migrated to the topbar: connect/continue dialogs,
-// favorites, sort/filter prefs, demo-data switch, settings/help.
+// TopbarMenu.tsx — topbar ⋯ overflow menu.
+// Five first-level items: 项目 (hover flyout), 继续会话…, 收藏会话 (hover flyout),
+// 设置… (SettingsDialog), 帮助. Sort/filter/demo/connect live inside SettingsDialog.
 import { useCallback, useEffect, useRef, useState } from "react";
-import ConnectionBar from "../ConnectionBar";
-import { isDemoEnabled, setDemoEnabled, subscribeDemo } from "../demoData";
+import type {
+  FocusEvent as ReactFocusEvent,
+  KeyboardEvent as ReactKeyboardEvent,
+  MouseEvent as ReactMouseEvent,
+} from "react";
 import { loadFavorites } from "../layoutStore";
 import { createProject, loadCurrentProject, loadProjects, setCurrentProject } from "../projectStore";
 import type { Project } from "../projectStore";
 import ModalDialog from "./ModalDialog";
+import SettingsDialog from "./SettingsDialog";
 import "./topbarmenu.css";
 
 type Props = {
@@ -15,20 +19,15 @@ type Props = {
   onContinue: (sessionId: string) => void;
 };
 
-type DialogKind = null | "connect" | "continue" | "addProject";
-type SubmenuKind = null | "sort" | "filter" | "project";
+type DialogKind = null | "continue" | "addProject" | "settings";
+type FlyoutKind = null | "project" | "favorites";
 
-const PREF_EVENT = "agentj:sidebar-prefs";
-
-function dispatchPrefs(patch: { sort?: string; filter?: string }): void {
-  window.dispatchEvent(new CustomEvent(PREF_EVENT, { detail: patch }));
-}
+const FLYOUT_CLOSE_DELAY_MS = 120;
 
 export default function TopbarMenu({ onConnect, onContinue }: Props) {
   const [open, setOpen] = useState(false);
   const [dialog, setDialog] = useState<DialogKind>(null);
-  const [submenu, setSubmenu] = useState<SubmenuKind>(null);
-  const [demo, setDemo] = useState<boolean>(() => isDemoEnabled());
+  const [flyout, setFlyout] = useState<FlyoutKind>(null);
   const [favorites, setFavorites] = useState<string[]>(() => loadFavorites());
   const [projects, setProjects] = useState<Project[]>(() => loadProjects());
   const [currentProjectId, setCurrentProjectId] = useState<string>(() => loadCurrentProject());
@@ -36,15 +35,63 @@ export default function TopbarMenu({ onConnect, onContinue }: Props) {
   const [continueId, setContinueId] = useState("");
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
+  const projectTriggerRef = useRef<HTMLButtonElement>(null);
+  const favoritesTriggerRef = useRef<HTMLButtonElement>(null);
+  const closeTimerRef = useRef<number | null>(null);
+  const suppressToggleRef = useRef(false);
+  const suppressFocusOpenRef = useRef(false);
 
-  useEffect(() => subscribeDemo(setDemo), []);
+  const cancelClose = useCallback(() => {
+    if (closeTimerRef.current != null) {
+      window.clearTimeout(closeTimerRef.current);
+      closeTimerRef.current = null;
+    }
+  }, []);
+
+  const scheduleClose = useCallback(() => {
+    cancelClose();
+    closeTimerRef.current = window.setTimeout(() => {
+      closeTimerRef.current = null;
+      setFlyout(null);
+    }, FLYOUT_CLOSE_DELAY_MS);
+  }, [cancelClose]);
+
+  const openFlyout = useCallback(
+    (kind: Exclude<FlyoutKind, null>) => {
+      cancelClose();
+      setFlyout(kind);
+    },
+    [cancelClose],
+  );
+
+  const toggleFlyout = useCallback(
+    (kind: Exclude<FlyoutKind, null>) => {
+      cancelClose();
+      setFlyout((prev) => (prev === kind ? null : kind));
+    },
+    [cancelClose],
+  );
+
+  useEffect(() => () => cancelClose(), [cancelClose]);
+
+  const focusWithoutOpening = useCallback((el: HTMLButtonElement | null) => {
+    suppressFocusOpenRef.current = true;
+    el?.focus();
+    queueMicrotask(() => {
+      suppressFocusOpenRef.current = false;
+    });
+  }, []);
 
   useEffect(() => {
     if (!open) return;
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
+      if (flyout) {
+        setFlyout(null);
+        focusWithoutOpening((flyout === "project" ? projectTriggerRef : favoritesTriggerRef).current);
+        return;
+      }
       setOpen(false);
-      setSubmenu(null);
       triggerRef.current?.focus();
     };
     const onDown = (event: MouseEvent) => {
@@ -56,45 +103,35 @@ export default function TopbarMenu({ onConnect, onContinue }: Props) {
       document.removeEventListener("keydown", onKey);
       document.removeEventListener("mousedown", onDown);
     };
-  }, [open]);
+  }, [open, flyout, focusWithoutOpening]);
+
+  const closeDialog = useCallback(() => {
+    setDialog(null);
+    triggerRef.current?.focus();
+  }, []);
 
   useEffect(() => {
     if (!dialog) return;
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.stopPropagation();
-        setDialog(null);
-        triggerRef.current?.focus();
-      }
+      if (event.key === "Escape") closeDialog();
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [dialog]);
+  }, [dialog, closeDialog]);
 
   const openMenu = useCallback(() => {
+    cancelClose();
     setFavorites(loadFavorites());
     setProjects(loadProjects());
     setCurrentProjectId(loadCurrentProject());
-    setSubmenu(null);
+    setFlyout(null);
     setOpen((v) => !v);
-  }, []);
+  }, [cancelClose]);
 
   const openDialog = useCallback((kind: Exclude<DialogKind, null>) => {
     setOpen(false);
-    setSubmenu(null);
+    setFlyout(null);
     setDialog(kind);
-  }, []);
-
-  const toggleDemo = useCallback(() => {
-    const next = !isDemoEnabled();
-    setDemoEnabled(next);
-    setDemo(next);
-  }, []);
-
-  const pickPref = useCallback((patch: { sort?: string; filter?: string }) => {
-    dispatchPrefs(patch);
-    setSubmenu(null);
-    setOpen(false);
   }, []);
 
   const pickFavorite = useCallback(
@@ -115,13 +152,11 @@ export default function TopbarMenu({ onConnect, onContinue }: Props) {
   const pickProject = useCallback((id: string) => {
     setCurrentProject(id);
     setCurrentProjectId(id);
-    setSubmenu(null);
     setOpen(false);
   }, []);
 
   const openAddProject = useCallback(() => {
     setAddName("");
-    setSubmenu(null);
     setOpen(false);
     setDialog("addProject");
   }, []);
@@ -136,6 +171,37 @@ export default function TopbarMenu({ onConnect, onContinue }: Props) {
     setAddName("");
     setDialog(null);
   }, [addName]);
+
+  const onRowBlur = useCallback((event: ReactFocusEvent<HTMLDivElement>) => {
+    if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setFlyout(null);
+  }, []);
+
+  const onFlyoutKeyDown = useCallback((event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+    const items = Array.from(
+      event.currentTarget.querySelectorAll<HTMLElement>('[role="menuitem"], [role="menuitemradio"]'),
+    );
+    if (items.length === 0) return;
+    const idx = items.indexOf(document.activeElement as HTMLElement);
+    const next = event.key === "ArrowDown" ? (idx + 1) % items.length : (idx - 1 + items.length) % items.length;
+    event.preventDefault();
+    items[next]?.focus();
+  }, []);
+
+  const onTriggerMouseDown = useCallback((event: ReactMouseEvent<HTMLButtonElement>) => {
+    suppressToggleRef.current = document.activeElement !== event.currentTarget;
+  }, []);
+
+  const onTriggerClick = useCallback(
+    (kind: Exclude<FlyoutKind, null>) => {
+      if (suppressToggleRef.current) {
+        suppressToggleRef.current = false;
+        return;
+      }
+      toggleFlyout(kind);
+    },
+    [toggleFlyout],
+  );
 
   return (
     <div className="aj-topbar-menu" ref={rootRef}>
@@ -153,133 +219,127 @@ export default function TopbarMenu({ onConnect, onContinue }: Props) {
 
       {open && (
         <div className="aj-menu" role="menu">
-          <button type="button" role="menuitem" className="aj-menu__item" onClick={() => openDialog("connect")}>
-            连接设置…
-          </button>
-          <button
-            type="button"
-            role="menuitem"
-            className="aj-menu__item"
-            aria-haspopup="menu"
-            aria-expanded={submenu === "project"}
-            onClick={() => setSubmenu((v) => (v === "project" ? null : "project"))}
+          <div
+            className="aj-menu__row"
+            onMouseEnter={() => openFlyout("project")}
+            onMouseLeave={scheduleClose}
+            onBlur={onRowBlur}
           >
-            项目
-          </button>
-          {submenu === "project" && (
-            <div className="aj-menu__sub" role="group" aria-label="项目">
-              {projects.map((p) => (
-                <button
-                  key={p.id}
-                  type="button"
-                  role="menuitemradio"
-                  aria-checked={p.id === currentProjectId}
-                  className="aj-menu__item aj-menu__item--sub"
-                  onClick={() => pickProject(p.id)}
-                >
-                  <span>{p.name}</span>
-                  {p.id === currentProjectId && <span className="aj-menu__state">✓</span>}
-                </button>
-              ))}
-              <button
-                type="button"
-                role="menuitem"
-                className="aj-menu__item aj-menu__item--sub"
-                onClick={openAddProject}
+            <button
+              ref={projectTriggerRef}
+              type="button"
+              role="menuitem"
+              className="aj-menu__item"
+              aria-haspopup="menu"
+              aria-expanded={flyout === "project"}
+              aria-controls="aj-menu-flyout-project"
+              onMouseDown={onTriggerMouseDown}
+              onFocus={() => {
+                if (!suppressFocusOpenRef.current) openFlyout("project");
+              }}
+              onClick={() => onTriggerClick("project")}
+            >
+              <span>项目</span>
+              <span className="aj-menu__chevron" aria-hidden="true">
+                ›
+              </span>
+            </button>
+            {flyout === "project" && (
+              <div
+                id="aj-menu-flyout-project"
+                className="aj-menu__flyout"
+                role="menu"
+                aria-label="项目"
+                onMouseEnter={cancelClose}
+                onMouseLeave={scheduleClose}
+                onKeyDown={onFlyoutKeyDown}
               >
-                ＋ 添加项目
-              </button>
-            </div>
-          )}
+                {projects.map((p) => (
+                  <button
+                    key={p.id}
+                    type="button"
+                    role="menuitemradio"
+                    aria-checked={p.id === currentProjectId}
+                    className="aj-menu__item aj-menu__item--sub"
+                    onClick={() => pickProject(p.id)}
+                  >
+                    <span>{p.name}</span>
+                    {p.id === currentProjectId && <span className="aj-menu__state">✓</span>}
+                  </button>
+                ))}
+                <div className="aj-menu__sep" role="separator" />
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="aj-menu__item aj-menu__item--sub"
+                  onClick={openAddProject}
+                >
+                  ＋ 添加项目
+                </button>
+              </div>
+            )}
+          </div>
+
           <button type="button" role="menuitem" className="aj-menu__item" onClick={() => openDialog("continue")}>
             继续会话…
           </button>
 
-          <p className="aj-menu__label">收藏会话</p>
-          {favorites.length === 0 ? (
-            <p className="aj-menu__empty">暂无收藏</p>
-          ) : (
-            favorites.map((id) => (
-              <button
-                key={id}
-                type="button"
-                role="menuitem"
-                className="aj-menu__item aj-menu__item--sub"
-                onClick={() => pickFavorite(id)}
-              >
-                {id}
-              </button>
-            ))
-          )}
-
-          <button
-            type="button"
-            role="menuitem"
-            className="aj-menu__item"
-            aria-haspopup="menu"
-            aria-expanded={submenu === "sort"}
-            onClick={() => setSubmenu((v) => (v === "sort" ? null : "sort"))}
+          <div
+            className="aj-menu__row"
+            onMouseEnter={() => openFlyout("favorites")}
+            onMouseLeave={scheduleClose}
+            onBlur={onRowBlur}
           >
-            排序
-          </button>
-          {submenu === "sort" && (
-            <div className="aj-menu__sub" role="group" aria-label="排序">
-              <button
-                type="button"
-                role="menuitemradio"
-                className="aj-menu__item aj-menu__item--sub"
-                onClick={() => pickPref({ sort: "updated" })}
+            <button
+              ref={favoritesTriggerRef}
+              type="button"
+              role="menuitem"
+              className="aj-menu__item"
+              aria-haspopup="menu"
+              aria-expanded={flyout === "favorites"}
+              aria-controls="aj-menu-flyout-favorites"
+              onMouseDown={onTriggerMouseDown}
+              onFocus={() => {
+                if (!suppressFocusOpenRef.current) openFlyout("favorites");
+              }}
+              onClick={() => onTriggerClick("favorites")}
+            >
+              <span>收藏会话</span>
+              <span className="aj-menu__chevron" aria-hidden="true">
+                ›
+              </span>
+            </button>
+            {flyout === "favorites" && (
+              <div
+                id="aj-menu-flyout-favorites"
+                className="aj-menu__flyout"
+                role="menu"
+                aria-label="收藏会话"
+                onMouseEnter={cancelClose}
+                onMouseLeave={scheduleClose}
+                onKeyDown={onFlyoutKeyDown}
               >
-                时间
-              </button>
-              <button
-                type="button"
-                role="menuitemradio"
-                className="aj-menu__item aj-menu__item--sub"
-                onClick={() => pickPref({ sort: "created" })}
-              >
-                创建时间
-              </button>
-            </div>
-          )}
+                {favorites.length === 0 ? (
+                  <p className="aj-menu__empty">暂无收藏</p>
+                ) : (
+                  favorites.map((id) => (
+                    <button
+                      key={id}
+                      type="button"
+                      role="menuitem"
+                      className="aj-menu__item aj-menu__item--sub"
+                      onClick={() => pickFavorite(id)}
+                    >
+                      {id}
+                    </button>
+                  ))
+                )}
+              </div>
+            )}
+          </div>
 
-          <button
-            type="button"
-            role="menuitem"
-            className="aj-menu__item"
-            aria-haspopup="menu"
-            aria-expanded={submenu === "filter"}
-            onClick={() => setSubmenu((v) => (v === "filter" ? null : "filter"))}
-          >
-            过滤
-          </button>
-          {submenu === "filter" && (
-            <div className="aj-menu__sub" role="group" aria-label="过滤">
-              <button
-                type="button"
-                role="menuitemradio"
-                className="aj-menu__item aj-menu__item--sub"
-                onClick={() => pickPref({ filter: "all" })}
-              >
-                全部
-              </button>
-              <button
-                type="button"
-                role="menuitemradio"
-                className="aj-menu__item aj-menu__item--sub"
-                onClick={() => pickPref({ filter: "favorites" })}
-              >
-                收藏
-              </button>
-            </div>
-          )}
-
-          <button type="button" role="menuitem" className="aj-menu__item" onClick={toggleDemo}>
-            <span>演示数据</span>
-            <span className="aj-menu__state">{demo ? "已开启" : "已关闭"}</span>
-          </button>
-          <button type="button" role="menuitem" className="aj-menu__item" onClick={() => setOpen(false)}>
-            设置
+          <button type="button" role="menuitem" className="aj-menu__item" onClick={() => openDialog("settings")}>
+            设置…
           </button>
           <button type="button" role="menuitem" className="aj-menu__item" onClick={() => setOpen(false)}>
             帮助
@@ -287,19 +347,12 @@ export default function TopbarMenu({ onConnect, onContinue }: Props) {
         </div>
       )}
 
-      {dialog === "connect" && (
-        <ModalDialog title="连接设置" onClose={() => setDialog(null)}>
-          <ConnectionBar
-            onConnect={(host, port, token) => {
-              onConnect(host, port, token);
-              setDialog(null);
-            }}
-          />
-        </ModalDialog>
+      {dialog === "settings" && (
+        <SettingsDialog onConnect={onConnect} onClose={closeDialog} />
       )}
 
       {dialog === "continue" && (
-        <ModalDialog title="继续会话" onClose={() => setDialog(null)}>
+        <ModalDialog title="继续会话" onClose={closeDialog}>
           <div className="aj-field">
             <label htmlFor="aj-continue-id" className="aj-label">
               session id
@@ -313,7 +366,7 @@ export default function TopbarMenu({ onConnect, onContinue }: Props) {
             />
           </div>
           <div className="aj-dialog__actions">
-            <button type="button" className="aj-button--ghost" onClick={() => setDialog(null)}>
+            <button type="button" className="aj-button--ghost" onClick={closeDialog}>
               取消
             </button>
             <button type="button" className="aj-button" onClick={submitContinue}>
@@ -324,7 +377,7 @@ export default function TopbarMenu({ onConnect, onContinue }: Props) {
       )}
 
       {dialog === "addProject" && (
-        <ModalDialog title="添加项目" onClose={() => setDialog(null)}>
+        <ModalDialog title="添加项目" onClose={closeDialog}>
           <div className="aj-field">
             <label htmlFor="aj-add-project" className="aj-label">
               项目名称
@@ -339,7 +392,7 @@ export default function TopbarMenu({ onConnect, onContinue }: Props) {
             />
           </div>
           <div className="aj-dialog__actions">
-            <button type="button" className="aj-button--ghost" onClick={() => setDialog(null)}>
+            <button type="button" className="aj-button--ghost" onClick={closeDialog}>
               取消
             </button>
             <button type="button" className="aj-button" disabled={!addName.trim()} onClick={submitAddProject}>
