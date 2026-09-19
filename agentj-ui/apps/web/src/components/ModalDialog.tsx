@@ -7,6 +7,8 @@ export type ModalDialogProps = {
   title: string;
   onClose: () => void;
   children: ReactNode;
+  /** Optional modifier appended to `.aj-dialog-card` (e.g. a wider settings card). */
+  cardClassName?: string;
 };
 
 /**
@@ -15,7 +17,7 @@ export type ModalDialogProps = {
  * mousedown on the backdrop invoke `onClose`; mousedown inside the card is
  * ignored. Styling comes entirely from the existing `.aj-dialog*` classes.
  */
-export default function ModalDialog({ title, onClose, children }: ModalDialogProps) {
+export default function ModalDialog({ title, onClose, children, cardClassName }: ModalDialogProps) {
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
 
@@ -37,7 +39,7 @@ export default function ModalDialog({ title, onClose, children }: ModalDialogPro
         if (e.target === e.currentTarget) onCloseRef.current();
       }}
     >
-      <div className="aj-dialog-card">
+      <div className={`aj-dialog-card${cardClassName ? ` ${cardClassName}` : ""}`}>
         <div className="aj-dialog__head">
           <h2 className="aj-dialog__title">{title}</h2>
           <button type="button" aria-label="close" className="aj-icon-btn" onClick={() => onCloseRef.current()}>

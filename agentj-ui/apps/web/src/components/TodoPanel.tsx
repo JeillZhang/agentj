@@ -25,7 +25,7 @@ export default function TodoPanel({ items }: TodoPanelProps) {
   const [open, toggle] = useRightSection("todo");
   const completed = items.filter((item) => item.status === "completed").length;
   return (
-    <div className="right-section">
+    <div className="right-section" data-section="todo" data-open={open ? "true" : undefined}>
       <button
         type="button"
         className="sec-head"

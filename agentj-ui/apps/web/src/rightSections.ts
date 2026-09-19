@@ -1,15 +1,21 @@
-import { useCallback, useState } from "react";
-import { loadRightSections, setRightSection, type RightSectionId } from "./layoutStore";
+import { useCallback, useSyncExternalStore } from "react";
+import {
+  RIGHT_SECTIONS_DEFAULTS,
+  loadRightSections,
+  setRightSection,
+  subscribeRightSections,
+  type RightSectionId,
+} from "./layoutStore";
 
 export function useRightSection(id: RightSectionId): [boolean, () => void] {
-  const [open, setOpen] = useState<boolean>(() => loadRightSections()[id]);
+  const open = useSyncExternalStore(
+    subscribeRightSections,
+    () => loadRightSections()[id],
+    () => RIGHT_SECTIONS_DEFAULTS[id],
+  );
 
   const toggle = useCallback((): void => {
-    setOpen((prev) => {
-      const next = !prev;
-      setRightSection(id, next);
-      return next;
-    });
+    setRightSection(id, !loadRightSections()[id]);
   }, [id]);
 
   return [open, toggle];

@@ -1,0 +1,141 @@
+/* settingsDialog.css — settings modal two-column layout (category tablist + panel).
+   Widens the shared `.aj-dialog-card` via the `.aj-settings` modifier. Tokens only. */
+
+.aj-dialog-card.aj-settings {
+  max-width: 680px;
+}
+
+.aj-settings-body {
+  display: flex;
+  gap: var(--aj-space-3);
+  min-height: 320px;
+}
+
+.aj-settings-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 136px;
+  flex-shrink: 0;
+  padding-right: var(--aj-space-2);
+  border-right: 0.5px solid var(--aj-border);
+}
+
+.aj-settings-nav__item {
+  padding: var(--aj-space-2) 10px;
+  border: none;
+  border-radius: var(--aj-radiusCtl);
+  background: transparent;
+  color: var(--aj-textMuted);
+  font: inherit;
+  font-size: var(--aj-font-sm);
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--aj-motion) var(--aj-ease), color var(--aj-motion) var(--aj-ease);
+}
+
+.aj-settings-nav__item:hover {
+  background: var(--aj-raised);
+  color: var(--aj-text);
+}
+
+.aj-settings-nav__item--active {
+  background: var(--aj-accentTint);
+  color: var(--aj-accent);
+  font-weight: 600;
+}
+
+.aj-settings-nav__item:focus-visible {
+  outline: 2px solid var(--aj-accent);
+  outline-offset: -2px;
+}
+
+.aj-settings-panel {
+  flex: 1;
+  min-width: 0;
+  outline: none;
+}
+
+.aj-settings-panel:focus-visible {
+  outline: 2px solid var(--aj-accent);
+  outline-offset: 2px;
+  border-radius: var(--aj-radiusCtl);
+}
+
+.aj-settings-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--aj-space-3);
+}
+
+.aj-settings-fieldset {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: var(--aj-space-2) var(--aj-space-3);
+  border: 0.5px solid var(--aj-border);
+  border-radius: var(--aj-radiusCard);
+}
+
+.aj-settings-legend {
+  padding: 0 var(--aj-space-1);
+  color: var(--aj-textMuted);
+  font-size: var(--aj-font-sm);
+}
+
+.aj-settings-radio {
+  display: flex;
+  align-items: center;
+  gap: var(--aj-space-2);
+  color: var(--aj-text);
+  font-size: var(--aj-font-sm);
+  cursor: pointer;
+}
+
+.aj-settings-radio input {
+  accent-color: var(--aj-accent);
+}
+
+.aj-settings-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--aj-space-3);
+  padding: var(--aj-space-3);
+  border: 0.5px solid var(--aj-border);
+  border-radius: var(--aj-radiusCard);
+  color: var(--aj-text);
+  font-size: var(--aj-font-sm);
+}
+
+.aj-settings-switch {
+  padding: 6px 12px;
+  border: 0.5px solid var(--aj-border);
+  border-radius: var(--aj-radiusCtl);
+  background: transparent;
+  color: var(--aj-textMuted);
+  font: inherit;
+  font-size: var(--aj-font-sm);
+  cursor: pointer;
+  transition: background var(--aj-motion) var(--aj-ease), color var(--aj-motion) var(--aj-ease);
+}
+
+.aj-settings-switch[aria-checked="true"] {
+  background: var(--aj-accentTint);
+  border-color: var(--aj-accent);
+  color: var(--aj-accent);
+}
+
+.aj-settings-switch:focus-visible {
+  outline: 2px solid var(--aj-accent);
+  outline-offset: 1px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .aj-settings-nav__item,
+  .aj-settings-switch {
+    transition: none;
+    animation: none;
+  }
+}

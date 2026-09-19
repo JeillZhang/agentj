@@ -206,7 +206,8 @@ test("project picked in TopbarMenu is inherited by the next new session via agen
   );
   fireEvent.click(screen.getByRole("button", { name: "更多" }));
   fireEvent.click(screen.getByRole("menuitem", { name: "项目" }));
-  fireEvent.click(within(screen.getByRole("group", { name: "项目" })).getByRole("menuitemradio", { name: /QA/ }));
+  const flyout = screen.getByRole("menu", { name: "项目" });
+  fireEvent.click(within(flyout).getByRole("menuitemradio", { name: /QA/ }));
   fireEvent.click(screen.getByRole("button", { name: "+ 新建会话" }));
   await waitFor(() => {
     const map = JSON.parse(localStorage.getItem("agentj.projectMap") ?? "{}") as Record<string, string>;

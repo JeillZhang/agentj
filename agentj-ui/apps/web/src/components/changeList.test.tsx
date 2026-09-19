@@ -8,7 +8,10 @@ const rows = [
   { path: "App.tsx", op: "modify" as const, additions: 24, deletions: 6, diff: "+ <SplitPane>\n- <div className=\"layout\">", toolCallId: null },
 ];
 test("rows and badges", () => {
-  render(<ChangeList changes={rows} />);
+  const { container } = render(<ChangeList changes={rows} />);
+  const section = container.querySelector(".right-section") as HTMLElement;
+  expect(section).toHaveAttribute("data-section", "changes");
+  expect(section).toHaveAttribute("data-open", "true");
   expect(screen.getByText("+86")).toBeInTheDocument();
   expect(screen.getByText("-6")).toBeInTheDocument();
   expect(screen.getAllByText("新增").length).toBe(1);
@@ -30,6 +33,7 @@ test("section collapses when the title button is clicked", () => {
   expect(container.querySelector(".file-changes")).not.toBeNull();
   fireEvent.click(toggle);
   expect(container.querySelector(".file-changes")).toBeNull();
+  expect(container.querySelector(".right-section")).not.toHaveAttribute("data-open");
   expect(screen.getByText("文件变更")).toBeInTheDocument();
   expect(toggle).toHaveAttribute("aria-expanded", "false");
   fireEvent.click(toggle);

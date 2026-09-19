@@ -2,7 +2,7 @@ import "@testing-library/jest-dom/vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { beforeEach, describe, expect, test } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import UnifiedSidebar from "./UnifiedSidebar";
 import TopbarMenu from "./TopbarMenu";
 import WorkspaceShell from "./WorkspaceShell";
@@ -38,17 +38,25 @@ describe("a11y gates T9", () => {
     localStorage.clear();
   });
 
-  test("keyboard a11y — project submenu trigger exposes aria-haspopup + aria-expanded", () => {
+  test("keyboard a11y — project flyout trigger exposes aria-haspopup + aria-expanded and focuses its items", () => {
     render(<TopbarMenu onConnect={() => {}} onContinue={() => {}} />);
     fireEvent.click(screen.getByRole("button", { name: "更多" }));
     const trigger = screen.getByRole("menuitem", { name: "项目" });
     expect(trigger).toHaveAttribute("aria-haspopup", "menu");
     expect(trigger).toHaveAttribute("aria-expanded", "false");
-    trigger.focus();
+    act(() => {
+      trigger.focus();
+    });
     expect(document.activeElement).toBe(trigger);
-    fireEvent.click(trigger);
     expect(trigger).toHaveAttribute("aria-expanded", "true");
-    expect(screen.getByRole("group", { name: "项目" })).toBeInTheDocument();
+    const flyout = screen.getByRole("menu", { name: "项目" });
+    expect(flyout).toBeInTheDocument();
+    const first = within(flyout).getAllByRole("menuitemradio")[0];
+    first.focus();
+    fireEvent.keyDown(first, { key: "ArrowDown" });
+    expect(flyout.contains(document.activeElement)).toBe(true);
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
   });
 
   test("sidebar rows stay aria-selected and focusable (60 sessions → ≤50 rows, 显示更多 present)", async () => {

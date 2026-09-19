@@ -1,7 +1,8 @@
 import { beforeEach, expect, test } from "vitest";
 import { loadLayout, saveLayout, subscribeLayout, loadComposerPrefs, saveComposerPrefs,
          loadAskCollapsed, saveAskCollapsed, loadFavorites, toggleFavorite,
-         loadRightSections, saveRightSections, setRightSection } from "./layoutStore";
+         loadRightSections, saveRightSections, setRightSection,
+         loadRightSectionSplit, saveRightSectionSplit, subscribeRightSections } from "./layoutStore";
 beforeEach(() => localStorage.clear());
 test("defaults and clamps", () => {
   expect(loadLayout()).toEqual({ leftWidth: 256, rightWidth: 320, leftTab: "sessions", rightCollapsed: false });
@@ -81,4 +82,37 @@ test("right sections tolerate malformed values", () => {
   expect(loadRightSections()).toEqual({ todo: true, changes: true });
   localStorage.setItem("agentj.layout.rightSections", JSON.stringify({ todo: false }));
   expect(loadRightSections()).toEqual({ todo: false, changes: true });
+});
+
+test("right-section split defaults null, roundtrips and clamps", () => {
+  expect(loadRightSectionSplit()).toBeNull();
+  saveRightSectionSplit(0.4);
+  expect(loadRightSectionSplit()).toBe(0.4);
+  localStorage.setItem("agentj.layout.rightSectionSplit", "2");
+  expect(loadRightSectionSplit()).toBe(0.85);
+  localStorage.setItem("agentj.layout.rightSectionSplit", "-1");
+  expect(loadRightSectionSplit()).toBe(0.15);
+  localStorage.setItem("agentj.layout.rightSectionSplit", "bogus");
+  expect(loadRightSectionSplit()).toBeNull();
+  saveRightSectionSplit(0.6);
+  expect(localStorage.getItem("agentj.layout.rightSectionSplit")).toBe("0.6");
+  saveRightSectionSplit(null);
+  expect(localStorage.getItem("agentj.layout.rightSectionSplit")).toBeNull();
+  expect(loadRightSectionSplit()).toBeNull();
+});
+
+test("right-section subscribers fire on same-tab updates and matching cross-tab storage", () => {
+  const hits: number[] = [];
+  const unsub = subscribeRightSections(() => hits.push(hits.length));
+  setRightSection("todo", false);
+  expect(hits.length).toBe(1);
+  window.dispatchEvent(new StorageEvent("storage", { key: "agentj.layout.rightSections" }));
+  expect(hits.length).toBe(2);
+  window.dispatchEvent(new StorageEvent("storage", { key: null }));
+  expect(hits.length).toBe(3);
+  window.dispatchEvent(new StorageEvent("storage", { key: "agentj.composer.model" }));
+  expect(hits.length).toBe(3);
+  unsub();
+  setRightSection("todo", true);
+  expect(hits.length).toBe(3);
 });
