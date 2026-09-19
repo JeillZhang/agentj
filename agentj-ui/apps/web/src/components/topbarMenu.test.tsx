@@ -190,3 +190,16 @@ test("prefills and submits the work dir for new projects", () => {
   const created = loadProjects().find((p) => p.name === "演示");
   expect(created?.workDir).toBe("/repo/demo");
 });
+
+test("normalizes an empty work dir to null on project create", () => {
+  localStorage.clear();
+  render(<TopbarMenu onConnect={() => {}} onContinue={() => {}} />);
+  fireEvent.click(screen.getByRole("button", { name: "更多" }));
+  fireEvent.mouseEnter(screen.getByRole("menuitem", { name: /项目/ }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "＋ 添加项目" }));
+  expect((screen.getByLabelText("工作目录") as HTMLInputElement).value).toBe("");
+  fireEvent.change(screen.getByLabelText("项目名称"), { target: { value: "X" } });
+  fireEvent.click(screen.getByRole("button", { name: "添加" }));
+  const created = loadProjects().find((p) => p.name === "X");
+  expect(created?.workDir).toBeNull();
+});

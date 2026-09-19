@@ -172,7 +172,7 @@ export default function TopbarMenu({ onConnect, onContinue }: Props) {
   const submitAddProject = useCallback(() => {
     const name = addName.trim();
     if (!name) return;
-    const created = createProject(name, addWorkDir.trim() || undefined);
+    const created = createProject(name, addWorkDir.trim());
     setCurrentProject(created.id);
     setCurrentProjectId(created.id);
     setProjects(loadProjects());
