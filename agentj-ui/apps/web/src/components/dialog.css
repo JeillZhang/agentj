@@ -33,6 +33,102 @@
   max-height: 90vh;
   overflow: auto;
 }
+
+.aj-dialog-frame {
+  position: relative;
+  display: flex;
+  width: 100%;
+  max-width: 560px;
+  max-height: 90vh;
+}
+
+.aj-dialog-frame > .aj-dialog-card {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  max-width: none;
+  max-height: none;
+}
+
+.aj-dialog-frame[data-resizing="true"] {
+  user-select: none;
+}
+
+.aj-dialog__resize {
+  position: absolute;
+  z-index: 1;
+  touch-action: none;
+}
+
+.aj-dialog__resize:hover {
+  background: var(--aj-accentTint);
+}
+
+.aj-dialog__resize[data-handle="n"],
+.aj-dialog__resize[data-handle="s"] {
+  left: 8px;
+  right: 8px;
+  height: 8px;
+}
+
+.aj-dialog__resize[data-handle="n"] {
+  top: -6px;
+  cursor: ns-resize;
+}
+
+.aj-dialog__resize[data-handle="s"] {
+  bottom: -6px;
+  cursor: ns-resize;
+}
+
+.aj-dialog__resize[data-handle="e"],
+.aj-dialog__resize[data-handle="w"] {
+  top: 8px;
+  bottom: 8px;
+  width: 8px;
+}
+
+.aj-dialog__resize[data-handle="e"] {
+  right: -6px;
+  cursor: ew-resize;
+}
+
+.aj-dialog__resize[data-handle="w"] {
+  left: -6px;
+  cursor: ew-resize;
+}
+
+.aj-dialog__resize[data-handle="ne"],
+.aj-dialog__resize[data-handle="nw"],
+.aj-dialog__resize[data-handle="se"],
+.aj-dialog__resize[data-handle="sw"] {
+  width: 12px;
+  height: 12px;
+}
+
+.aj-dialog__resize[data-handle="ne"] {
+  top: -6px;
+  right: -6px;
+  cursor: nesw-resize;
+}
+
+.aj-dialog__resize[data-handle="nw"] {
+  top: -6px;
+  left: -6px;
+  cursor: nwse-resize;
+}
+
+.aj-dialog__resize[data-handle="se"] {
+  bottom: -6px;
+  right: -6px;
+  cursor: nwse-resize;
+}
+
+.aj-dialog__resize[data-handle="sw"] {
+  bottom: -6px;
+  left: -6px;
+  cursor: nesw-resize;
+}
 .aj-popover[role="dialog"] {
   position: absolute;
   inset: auto;

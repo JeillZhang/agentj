@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   DISPLAY_PREFS_DEFAULTS,
+  FONT_SIZE_LIMITS,
   loadDisplayPrefs,
   saveDisplayPrefs,
   subscribeDisplayPrefs,
@@ -9,28 +10,17 @@ import type {
   DisplayDensity,
   DisplayLineHeight,
   DisplayPrefs,
-  FontScale,
+  FontSizeKey,
 } from "../displayPrefsStore";
 import "./settingsDialog.css";
 
-type FontPrefKey = "fontConversation" | "fontLeft" | "fontRight" | "fontCode";
-
-type FontGroup = { key: FontPrefKey; label: string; name: string };
+type FontGroup = { key: FontSizeKey; label: string };
 
 const FONT_GROUPS: FontGroup[] = [
-  { key: "fontConversation", label: "对话/轨迹", name: "aj-display-font-conversation" },
-  { key: "fontLeft", label: "左侧栏", name: "aj-display-font-left" },
-  { key: "fontRight", label: "右侧栏", name: "aj-display-font-right" },
-  { key: "fontCode", label: "代码", name: "aj-display-font-code" },
-];
-
-type ScaleOption = { label: string; value: FontScale };
-
-const SCALE_OPTIONS: ScaleOption[] = [
-  { label: "小", value: "sm" },
-  { label: "中", value: "md" },
-  { label: "大", value: "lg" },
-  { label: "特大", value: "xl" },
+  { key: "fontConversation", label: "对话/轨迹" },
+  { key: "fontLeft", label: "左侧栏" },
+  { key: "fontRight", label: "右侧栏" },
+  { key: "fontCode", label: "代码" },
 ];
 
 type LineHeightOption = { label: string; value: DisplayLineHeight };
@@ -48,7 +38,70 @@ const DENSITY_OPTIONS: DensityOption[] = [
   { label: "紧凑", value: "compact" },
 ];
 
-/** 显示 settings panel — changes apply immediately (persisted via displayPrefsStore). */
+function clamp(n: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, n));
+}
+
+type FontSizeRowProps = {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  onChange: (value: number) => void;
+};
+
+function FontSizeRow({ label, value, min, max, onChange }: FontSizeRowProps) {
+  const [draft, setDraft] = useState(String(value));
+
+  useEffect(() => {
+    setDraft(String(value));
+  }, [value]);
+
+  const commit = () => {
+    const parsed = Number(draft);
+    if (draft.trim() === "" || !Number.isFinite(parsed)) {
+      setDraft(String(value));
+      return;
+    }
+    const next = clamp(Math.round(parsed), min, max);
+    setDraft(String(next));
+    if (next !== value) onChange(next);
+  };
+
+  return (
+    <div className="aj-settings-font-row">
+      <span className="aj-settings-font-row__label">{label}</span>
+      <input
+        type="range"
+        className="aj-settings-range"
+        aria-label={`${label}字号`}
+        min={min}
+        max={max}
+        step={1}
+        value={value}
+        onChange={(event) => onChange(Number(event.target.value))}
+      />
+      <span className="aj-settings-font-row__value">
+        <input
+          type="number"
+          className="aj-settings-number"
+          aria-label={`${label}字号数值`}
+          min={min}
+          max={max}
+          step={1}
+          value={draft}
+          onChange={(event) => setDraft(event.target.value)}
+          onBlur={commit}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") commit();
+          }}
+        />
+        <span className="aj-settings-font-unit">px</span>
+      </span>
+    </div>
+  );
+}
+
 export default function SettingsDisplayPanel() {
   const [prefs, setPrefs] = useState(loadDisplayPrefs);
 
@@ -64,49 +117,50 @@ export default function SettingsDisplayPanel() {
 
   return (
     <div className="aj-settings-group">
-      {FONT_GROUPS.map((group) => (
-        <fieldset key={group.key} className="aj-settings-fieldset">
-          <legend className="aj-settings-legend">{group.label}</legend>
-          {SCALE_OPTIONS.map((option) => (
+      <fieldset className="aj-settings-fieldset">
+        <legend className="aj-settings-legend">字体大小（像素）</legend>
+        {FONT_GROUPS.map((group) => (
+          <FontSizeRow
+            key={group.key}
+            label={group.label}
+            value={prefs[group.key]}
+            min={FONT_SIZE_LIMITS[group.key].min}
+            max={FONT_SIZE_LIMITS[group.key].max}
+            onChange={(value) => apply({ [group.key]: value })}
+          />
+        ))}
+      </fieldset>
+      <fieldset className="aj-settings-fieldset">
+        <legend className="aj-settings-legend">行高</legend>
+        <div className="aj-settings-options">
+          {LINE_HEIGHT_OPTIONS.map((option) => (
             <label key={option.value} className="aj-settings-radio">
               <input
                 type="radio"
-                name={group.name}
-                checked={prefs[group.key] === option.value}
-                onChange={() => apply({ [group.key]: option.value })}
+                name="aj-display-line-height"
+                checked={prefs.lineHeight === option.value}
+                onChange={() => apply({ lineHeight: option.value })}
               />
               <span>{option.label}</span>
             </label>
           ))}
-        </fieldset>
-      ))}
-      <fieldset className="aj-settings-fieldset">
-        <legend className="aj-settings-legend">行高</legend>
-        {LINE_HEIGHT_OPTIONS.map((option) => (
-          <label key={option.value} className="aj-settings-radio">
-            <input
-              type="radio"
-              name="aj-display-line-height"
-              checked={prefs.lineHeight === option.value}
-              onChange={() => apply({ lineHeight: option.value })}
-            />
-            <span>{option.label}</span>
-          </label>
-        ))}
+        </div>
       </fieldset>
       <fieldset className="aj-settings-fieldset">
         <legend className="aj-settings-legend">界面密度</legend>
-        {DENSITY_OPTIONS.map((option) => (
-          <label key={option.value} className="aj-settings-radio">
-            <input
-              type="radio"
-              name="aj-display-density"
-              checked={prefs.density === option.value}
-              onChange={() => apply({ density: option.value })}
-            />
-            <span>{option.label}</span>
-          </label>
-        ))}
+        <div className="aj-settings-options">
+          {DENSITY_OPTIONS.map((option) => (
+            <label key={option.value} className="aj-settings-radio">
+              <input
+                type="radio"
+                name="aj-display-density"
+                checked={prefs.density === option.value}
+                onChange={() => apply({ density: option.value })}
+              />
+              <span>{option.label}</span>
+            </label>
+          ))}
+        </div>
       </fieldset>
       <div className="aj-settings-toggle">
         <span>减弱动画</span>
