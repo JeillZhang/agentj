@@ -227,12 +227,20 @@
   position: relative;
 }
 
-/* Full-bleed center column: conversation + composer stretch to the side panels. */
-.aj-shell__center .aj-conv,
-.aj-shell__center .aj-composer-card {
+/* Full-bleed center column: conversation stretches to the side panels. */
+.aj-shell__center .aj-conv {
   width: 100%;
   max-width: none;
   margin: 0;
+}
+
+/* The composer floats at 75% width, centered under the conversation. This
+   selector has specificity (0,2,0), so it must carry the 75% + auto margins
+   itself or it would re-widen the base .aj-composer-card rule. */
+.aj-shell__center .aj-composer-card {
+  width: 75%;
+  max-width: none;
+  margin: 0 auto;
 }
 
 /* T11 — three-column workspace shell.

@@ -1,9 +1,10 @@
 import "@testing-library/jest-dom/vitest";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, fireEvent, within, act, waitFor } from "@testing-library/react";
 import RunPanel, { ConversationFeed, failRun, fmtDuration, reduceRunFeed, type RunEntry } from "./RunPanel.tsx";
 import { createProject, setCurrentProject } from "./projectStore";
 import { setDemoEnabled } from "./demoData";
+import { formatUsageTitle } from "./tokenUsage";
 import { METHODS, type ProgressFrame } from "@agentj/sdk";
 
 beforeEach(() => localStorage.clear());
@@ -240,6 +241,86 @@ describe("RunPanel composer toolbar", () => {
   });
 });
 
+describe("RunPanel usage double-count guard", () => {
+  it("counts a turn once when a usage frame precedes the run result", async () => {
+    let handler: ((method: string, params: unknown) => void) | null = null;
+    const client = {
+      setNotificationHandler: (h: (method: string, params: unknown) => void) => { handler = h; },
+      removeNotificationHandler: () => { handler = null; },
+      request: async (method: string) => {
+        if (method === METHODS.sessionRun) {
+          return { usage: { prompt_tokens: 300, completion_tokens: 200 } };
+        }
+        return null;
+      },
+    } as unknown as Parameters<typeof RunPanel>[0]["client"];
+
+    const { container } = render(<RunPanel client={client} activeSessionId="s1" />);
+    fireEvent.change(screen.getByLabelText(/prompt/i), { target: { value: "hi" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+    act(() => {
+      handler?.(METHODS.progress, {
+        token: 1,
+        value: { kind: "usage", usage: { prompt_tokens: 300, completion_tokens: 200 } },
+      });
+    });
+    await waitFor(() => expect(container.querySelectorAll(".aj-composer__usage").length).toBe(1));
+    const readout = container.querySelector(".aj-composer__usage") as HTMLElement;
+    expect(readout).toHaveTextContent("Σ 500 · 输入 300 · 输出 200");
+    expect(container.querySelectorAll(".aj-composer__usage").length).toBe(1);
+  });
+});
+
+describe("RunPanel usage readout placement", () => {
+  it("renders the readout inside the composer header, after the model chip", () => {
+    const entries: RunEntry[] = [
+      user("hi"),
+      ai("hello"),
+      { kind: "usage", prompt_tokens: 300, completion_tokens: 200 },
+    ];
+    const { container } = render(
+      <RunPanel client={noopClient} activeSessionId="s1" model="deepseek-chat" initialEntries={entries} />,
+    );
+    const header = container.querySelector(".aj-composer__header") as HTMLElement;
+    const chip = header.querySelector(".aj-chip--model") as HTMLElement;
+    const readout = header.querySelector(".aj-composer__usage") as HTMLElement;
+    expect(chip).not.toBeNull();
+    expect(readout).not.toBeNull();
+    expect(readout).toHaveTextContent("Σ 500 · 输入 300 · 输出 200");
+    expect(readout).toHaveAttribute("aria-label", formatUsageTitle({ prompt: 300, completion: 200 }));
+    const ordered = header.querySelectorAll(".aj-chip--model, .aj-composer__usage");
+    expect(ordered.length).toBe(2);
+    expect(ordered[0]).toBe(chip);
+    expect(ordered[1]).toBe(readout);
+    expect(container.querySelector(".comp-tools .aj-composer__usage")).toBeNull();
+  });
+
+  it("omits the readout when there are no usage entries", () => {
+    const { container } = render(
+      <RunPanel client={noopClient} activeSessionId="s1" model="deepseek-chat" />,
+    );
+    expect(container.querySelector(".aj-composer__usage")).toBeNull();
+  });
+
+  it("omits the readout for a zero-total usage entry", () => {
+    const entries: RunEntry[] = [{ kind: "usage", prompt_tokens: 0, completion_tokens: 0 }];
+    const { container } = render(
+      <RunPanel client={noopClient} activeSessionId="s1" model="deepseek-chat" initialEntries={entries} />,
+    );
+    expect(container.querySelector(".aj-composer__usage")).toBeNull();
+  });
+
+  it("renders the readout alone in the header when no model is provided", () => {
+    const entries: RunEntry[] = [{ kind: "usage", prompt_tokens: 300, completion_tokens: 200 }];
+    const { container } = render(
+      <RunPanel client={noopClient} activeSessionId="s1" initialEntries={entries} />,
+    );
+    const header = container.querySelector(".aj-composer__header") as HTMLElement;
+    expect(header.querySelector(".aj-composer__usage")).not.toBeNull();
+    expect(header.querySelector(".aj-chip--model")).toBeNull();
+  });
+});
+
 describe("RunPanel demo ask card → QA record", () => {
   it("demo ask card submit appends QA record", () => {
     localStorage.setItem("agentj.demo", "1");
@@ -414,5 +495,48 @@ describe("RunPanel project picker edit", () => {
     fireEvent.click(screen.getByRole("button", { name: "编辑项目 Alpha" }));
     expect(screen.getByRole("dialog", { name: "编辑项目" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "project picker" }).textContent).toContain("Beta");
+  });
+});
+
+describe("RunPanel composer height CSS variable", () => {
+  it("publishes the composer full box height as --aj-composer-h", () => {
+    const captured: { cb: ResizeObserverCallback | null } = { cb: null };
+    const observe = vi.fn();
+    const disconnect = vi.fn();
+    class FakeResizeObserver {
+      constructor(cb: ResizeObserverCallback) {
+        captured.cb = cb;
+      }
+      observe = observe;
+      unobserve = () => {};
+      disconnect = disconnect;
+    }
+    vi.stubGlobal("ResizeObserver", FakeResizeObserver);
+    try {
+      const { container } = render(<RunPanel client={noopClient} activeSessionId="s1" />);
+      const composer = container.querySelector(".aj-composer-card") as HTMLElement;
+      const card = container.querySelector(".aj-card") as HTMLElement;
+      expect(observe).toHaveBeenCalledWith(composer);
+      act(() => {
+        const entry = {
+          target: composer,
+          borderBoxSize: [{ blockSize: 180, inlineSize: 100 }],
+        } as unknown as ResizeObserverEntry;
+        captured.cb?.([entry], {} as ResizeObserver);
+      });
+      expect(card.style.getPropertyValue("--aj-composer-h")).toBe("180px");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("renders without crashing when ResizeObserver is undefined", () => {
+    vi.stubGlobal("ResizeObserver", undefined);
+    try {
+      render(<RunPanel client={noopClient} activeSessionId="s1" />);
+      expect(document.querySelector(".aj-composer-card")).not.toBeNull();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

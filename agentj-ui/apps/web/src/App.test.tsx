@@ -414,6 +414,90 @@ describe("App with mocked SDK transport", () => {
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
+  it("bypass mode auto-responds allow without a dialog", async () => {
+    shared.newSessionId.value = "s1";
+    localStorage.setItem("agentj.composer.permissionMode", "bypass");
+    render(<App />);
+    await createActiveSession();
+    await waitFor(() => expect(shared.notificationHandler.value).not.toBeNull());
+    const handler = shared.notificationHandler.value!;
+    act(() => {
+      handler("$/permissionRequest", {
+        request_id: "r1",
+        tool: "bash",
+        args: { cmd: "ls" },
+        session_id: "s1",
+        reason: "ask",
+      });
+    });
+    await waitFor(() => expect(shared.requests.value).toContain("permission/respond"));
+    expect(shared.lastPermissionParams.value).toEqual({ request_id: "r1", decision: "allow" });
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("live permission toggle to bypass auto-responds without a preset", async () => {
+    shared.newSessionId.value = "s1";
+    render(<App />);
+    await createActiveSession();
+    fireEvent.click(document.getElementById("composer-permission-trigger")!);
+    fireEvent.click(screen.getByText("自动允许"));
+    expect(localStorage.getItem("agentj.composer.permissionMode")).toBe("bypass");
+    await waitFor(() => expect(shared.notificationHandler.value).not.toBeNull());
+    const handler = shared.notificationHandler.value!;
+    act(() => {
+      handler("$/permissionRequest", {
+        request_id: "r1",
+        tool: "bash",
+        args: { cmd: "ls" },
+        session_id: "s1",
+        reason: "ask",
+      });
+    });
+    await waitFor(() => expect(shared.requests.value).toContain("permission/respond"));
+    expect(shared.lastPermissionParams.value).toEqual({ request_id: "r1", decision: "allow" });
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("ask mode still shows the approval dialog and sends no respond", async () => {
+    shared.newSessionId.value = "s1";
+    render(<App />);
+    await createActiveSession();
+    await waitFor(() => expect(shared.notificationHandler.value).not.toBeNull());
+    const handler = shared.notificationHandler.value!;
+    act(() => {
+      handler("$/permissionRequest", {
+        request_id: "r1",
+        tool: "bash",
+        args: { cmd: "ls" },
+        session_id: "s1",
+        reason: "ask",
+      });
+    });
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
+    expect(shared.requests.value).not.toContain("permission/respond");
+  });
+
+  it("bypass mode does not auto-respond for another session", async () => {
+    shared.newSessionId.value = "s1";
+    localStorage.setItem("agentj.composer.permissionMode", "bypass");
+    render(<App />);
+    await createActiveSession();
+    await waitFor(() => expect(shared.notificationHandler.value).not.toBeNull());
+    const handler = shared.notificationHandler.value!;
+    act(() => {
+      handler("$/permissionRequest", {
+        request_id: "r-other",
+        tool: "bash",
+        args: { cmd: "rm" },
+        session_id: "s-other",
+        reason: "ask",
+      });
+    });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(shared.requests.value).not.toContain("permission/respond");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
   it("AllowAll sends permission/respond with decision allow_always and closes", async () => {
     shared.newSessionId.value = "s1";
     render(<App />);

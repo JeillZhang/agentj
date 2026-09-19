@@ -111,3 +111,44 @@ test("applies the current project defaults once on mount", () => {
   expect(localStorage.getItem("agentj.composer.model")).toBe("deepseek-chat");
   expect(localStorage.getItem("agentj.composer.agent")).toBe("plan");
 });
+
+test("permission trigger renders with the default label and opens its popover", () => {
+  render(<ComposerOptions model="deepseek-chat" />);
+  const trigger = screen.getByRole("button", { name: /逐次确认/ });
+  expect(trigger).toHaveAttribute("data-mode", "ask");
+  fireEvent.click(trigger);
+  expect(screen.getByText("权限模式")).toBeInTheDocument();
+  expect(trigger.closest(".sel-wrap")?.querySelector(".pop-perm")).not.toBeNull();
+});
+
+test("permission selection persists and updates data-mode", () => {
+  render(<ComposerOptions model="deepseek-chat" />);
+  fireEvent.click(screen.getByRole("button", { name: /逐次确认/ }));
+  fireEvent.click(screen.getByText("自动允许"));
+  expect(localStorage.getItem("agentj.composer.permissionMode")).toBe("bypass");
+  expect(screen.getByRole("button", { name: /自动允许/ })).toHaveAttribute("data-mode", "bypass");
+});
+
+test("permission popover is mutually exclusive with the other selectors", () => {
+  render(<ComposerOptions model="deepseek-chat" />);
+  const permission = screen.getByRole("button", { name: /逐次确认/ });
+  fireEvent.click(permission);
+  expect(document.querySelectorAll(".pop").length).toBe(1);
+  expect(document.querySelector(".pop-perm")).not.toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: /Build/ }));
+  expect(document.querySelectorAll(".pop").length).toBe(1);
+  expect(document.querySelector(".pop-perm")).toBeNull();
+  expect(screen.getByRole("button", { name: /Build/ })).toHaveAttribute("aria-expanded", "true");
+  fireEvent.click(permission);
+  expect(document.querySelectorAll(".pop").length).toBe(1);
+  expect(document.querySelector(".pop-perm")).not.toBeNull();
+});
+
+test("permission popover keyboard navigation selects a mode", () => {
+  render(<ComposerOptions model="deepseek-chat" />);
+  fireEvent.click(screen.getByRole("button", { name: /逐次确认/ }));
+  const pop = document.querySelector(".pop") as HTMLElement;
+  fireEvent.keyDown(pop, { key: "ArrowDown" });
+  fireEvent.keyDown(pop, { key: "Enter" });
+  expect(localStorage.getItem("agentj.composer.permissionMode")).toBe("bypass");
+});

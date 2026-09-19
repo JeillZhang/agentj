@@ -1,6 +1,6 @@
 # AGENTS.md
 
-> Updated 2026-09-19 — v0.15.1 协议扩展（三栏工作台真实数据源）+ v0.15.2 session/status dispatch 修复 + v0.16.0 Web 工作台体验修复 + v0.16.1 跟随修复 + v0.16.2 远程访问修复 + v0.16.3 Web 工作台修复（项目菜单 + 文件树）+ v0.16.4 Web 工作台体验修复（状态灯 hover 面板 + 右栏手风琴 + 滚动条）+ v0.16.5 Web 工作台四项修复（右栏右→左展开动画 + 任务/文件变更高度可调 + 顶栏菜单重构/设置弹窗 + 文件树图标）+ v0.17.0 Web 工作台六项增强（代码卡片 + 显示设置 + 文件树图标 + 会话列表菜单 + 项目编辑 + 设置项目面板）+ v0.17.1 验收修复（BUG-008 窄视口菜单/飞出层夹取）+ v0.17.2 界面修复（显示设置字号 px 滑杆/数字输入 + 弹窗边框/四角缩放）
+> Updated 2026-09-19 — v0.15.1 协议扩展（三栏工作台真实数据源）+ v0.15.2 session/status dispatch 修复 + v0.16.0 Web 工作台体验修复 + v0.16.1 跟随修复 + v0.16.2 远程访问修复 + v0.16.3 Web 工作台修复（项目菜单 + 文件树）+ v0.16.4 Web 工作台体验修复（状态灯 hover 面板 + 右栏手风琴 + 滚动条）+ v0.16.5 Web 工作台四项修复（右栏右→左展开动画 + 任务/文件变更高度可调 + 顶栏菜单重构/设置弹窗 + 文件树图标）+ v0.17.0 Web 工作台六项增强（代码卡片 + 显示设置 + 文件树图标 + 会话列表菜单 + 项目编辑 + 设置项目面板）+ v0.17.1 验收修复（BUG-008 窄视口菜单/飞出层夹取）+ v0.17.2 界面修复（显示设置字号 px 滑杆/数字输入 + 弹窗边框/四角缩放）+ v0.18.0 Web 三项增强（composer 75% 居中浮动 + 权限选择自动允许 + 会话 token 总量）+ v0.18.1 token 统计修复（读出移至 header 模型 chip 右侧 + 输入/输出 拆分）
 > `file/list` 沙箱化目录懒加载 + git 状态点；`$/progress` 新增 `kind:"todo"`
 > （全量快照 + 会话内单调 `revision`）与 `kind:"file_change"`（write 自研行级
 > diff / bash git 前后采样，unified diff ≤64 KiB）；`$/askQuestion` +
@@ -146,6 +146,40 @@
 > 旧枚举 `hasOwnProperty` 校验、手柄外移避让滚动条。web 417 → 446 tests（44 files）/
 > sdk 46 / Rust 564 tests；clippy 零警告 / drift 2 passed / web build / tui 71 /
 > check-version 0.17.2 / desktop-ui；PROTOCOL_VERSION 保持 0.13.0；工作区 0.17.1 → 0.17.2。
+> v0.18.0 Web 三项增强（纯前端，无协议变更，用户直报）：(1) composer 75% 居中浮动 ——
+> `.aj-composer-card` `position:absolute; bottom:16px; width:75%; margin:0 auto;
+> max-height:calc(100% - 32px)`（layout.css 拆分全宽规则，特异性 (0,2,0) 承接 75%），
+> `--aj-composer-h`（RunPanel `useLayoutEffect` + `ResizeObserver` `borderBoxSize`
+> 全盒高）驱动 `.aj-conv` `padding-bottom` 与 `scroll-padding-bottom`（= 高度 + 32px）：
+> 内容延伸至卡片底部（滚动穿透浮层）、滚动到底时末条消息停在输入框顶上方 ~16px；
+> 窄视口 `min-width: min(340px, calc(100% - 16px))` + `.comp-tools` `flex-wrap: wrap`
+> 两行兜底。(2) 权限选择器（逐次确认/自动允许）：`ComposerPrefs.permissionMode` +
+> `agentj.composer.permissionMode`（readEnum 校验 + 跨标签 `storage` 同步 + bypass
+> accent 边框提示）；bypass 时 `useApproval` 对当前会话 `$/permissionRequest` 自动
+> `permission/respond allow`（不再弹窗；内核配置 deny / 路径越界仍强制拒绝；纯客户端
+> 能力，协议未变）。(3) 会话 token 总量：`RunPanel` 聚合 usage entries（历史回放 +
+> 实时逐轮恰好一条）→ `ComposerOptions` 模型触发器右侧渲染 `Σ 5.2k`
+> （`formatTokenTotal`：k/M 一位小数、`.0` 修剪、999.95k 起进位 M；title 展示输入/输出
+> 明细；无用量隐藏）。
+> 实机 Playwright 验证：75.0% 居中（左右偏差 0）/ 浮底 16px / 内容穿透 / 滚底对齐
+> （末条距输入框顶 16px + 8px flex gap）/ 权限选择器交互 + 跨标签双向同步 / 390px
+> 两行工具栏无溢出；Oracle 复核 PASS（窄屏溢出 major 已修 + 6 minor/nit 修复波：
+> 跨标签同步 / `console.debug` / token 边界 / `useLayoutEffect` / 命名 / docstring +
+> 2 补测）。web 446 → 468 tests（45 files）/ sdk 46 / Rust 564 tests / tui 71 /
+> clippy 零警告 / drift 2 passed / web build / check-version 0.18.0 / desktop-ui；
+> PROTOCOL_VERSION 保持 0.13.0；工作区 0.17.2 → 0.18.0。
+> v0.18.1 token 统计修复（纯前端，无协议变更，用户直报）：(1) `Σ` 会话 token 读出从
+> composer 底栏（模型选项旁）移至输入框右上角「deepseek-chat」模型 chip 右侧 ——
+> `RunPanel` 新增 `.aj-composer__header-meta`（chip + 读出右对齐 + 内部换行兜底，
+> header `flex-wrap`），`ComposerOptions` 移除 `usageTotal` prop 与 `.comp-usage`
+> （options.css 同步移除）；(2) 统计拆分输入/输出：`Σ 2.5k · 输入 2k · 输出 500`
+> （新 `tokenUsage.ts`：`formatTokenTotal` 迁出 + `formatUsageSummary` 摘要 +
+> `formatUsageTitle` 精确 tooltip/aria-label）。实机 Playwright 15/15（位置/chip 右侧/
+> 拆分/精确值/390px 读出换行无溢出/无控制台错误）+ Oracle 复核 PASS（a11y aria-label
+> 明细 / meta 内部换行 / total 去重 / 4 补测）。web 468 → 479 tests（46 files）/
+> sdk 46 / Rust 564 tests / tui 71 / clippy 零警告 / drift 2 passed / web build /
+> check-version 0.18.1 / desktop-ui；PROTOCOL_VERSION 保持 0.13.0；
+> 工作区 0.18.0 → 0.18.1。
 > (17 crates + agentj-ui monorepo：Web / TUI / Desktop + SDK + tokens，
 > npm workspaces `apps/*`+`packages/*`，共享 SDK + protocol + tokens，
 > WebSocket 网关同端口复用，后端零改造，frontend stays in-repo)
@@ -153,6 +187,19 @@
 ## Project Status
 
 AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + 可插拔模块」架构。
+v0.18.1 已落地：**token 统计位置与拆分修复（用户直报，纯前端无协议变更）**
+（(1) `Σ` 会话 token 读出移至 composer header、紧邻「deepseek-chat」chip 右侧
+（`RunPanel` `.aj-composer__header-meta`；`ComposerOptions` 移除 `usageTotal`/`.comp-usage`）；
+(2) 拆分输入/输出：`Σ 2.5k · 输入 2k · 输出 500`（新 `tokenUsage.ts`
+`formatUsageSummary` + `formatUsageTitle`，tooltip 与 aria-label 精确值 + 合计）；
+实机 Playwright 15/15 + Oracle 复核 PASS + 修复波；web 468 → 479 tests（46 files）/
+sdk 46 / Rust 564 tests / tui 71；PROTOCOL_VERSION 保持 0.13.0；工作区 0.18.0 → 0.18.1）。
+v0.18.0 已落地：**Web 三项增强（composer 浮动布局 + 权限选择 + token 总量，纯前端无协议变更）**
+（(1) composer 75% 居中浮动 + `--aj-composer-h` 动态底部预留（内容延伸至卡片底部、
+滚动到底末条消息停在输入框顶上方）；(2) 权限选择器（逐次确认/自动允许 + 客户端自动允许 +
+跨标签同步，内核强制拒绝不受影响）；(3) 模型触发器右侧会话 token 总量 `Σ 5.2k`；
+窄视口 min-width + 工具栏换行兜底；Oracle 复核 PASS + 修复波。web 446 → 468 tests（45 files）/
+sdk 46 / Rust 564 tests / tui 71；PROTOCOL_VERSION 保持 0.13.0；工作区 0.17.2 → 0.18.0）。
 v0.17.2 已落地：**界面修复（显示设置 px 滑杆 + 可缩放弹窗，无协议变更）**
 （(1) 显示字号：`displayPrefsStore` 转像素数值 + 旧枚举迁移，`SettingsDisplayPanel`
 每区一行滑杆/数字/px + 行高密度横排，消除弹窗纵向拉伸；WorkspaceShell 注入 px；
@@ -298,7 +345,7 @@ Desktop：Tauri v2 壳套 `apps/web` 产物，四件套 deb/AppImage/dmg/msi，
   46 tests）
 - `npm --prefix agentj-ui run generate --workspace=@agentj/sdk` — 生成 `METHODS` 常量
   （`protocol/methods.json` → `agentj-ui/packages/sdk/src/methods.ts`）
-- `npm --prefix agentj-ui test --workspace=@agentj/web` — Web 单测（vitest，446 tests / 44 files）
+- `npm --prefix agentj-ui test --workspace=@agentj/web` — Web 单测（vitest，479 tests / 46 files）
 - `npm --prefix agentj-ui run build --workspace=@agentj/web` — Web 构建（`tsc -b && vite build`）
   > 注意：Vite dev server 不监听 root 之外的 `packages/sdk` 源（alias 直连源码）；
   > 改动 SDK 后须重启 dev server，否则运行陈旧的 `METHODS`（v0.16.3「加载中」根因）。
@@ -307,7 +354,7 @@ Desktop：Tauri v2 壳套 `apps/web` 产物，四件套 deb/AppImage/dmg/msi，
 - `bun --cwd agentj-ui/apps/tui test` — TUI 单测（含 mock WS e2e，71 tests）
 - `./agentj-ui/apps/desktop/check-artifacts.sh linux` — Desktop 产物校验
 - `node agentj-ui/apps/desktop/check-desktop-ui.mjs` — Desktop 前端产物/配置一致性校验
-- `./scripts/check-version.sh` — 版本一致性（Cargo + sdk VERSION + desktop 均为 0.17.2，
+- `./scripts/check-version.sh` — 版本一致性（Cargo + sdk VERSION + desktop 均为 0.18.1，
   PROTOCOL_VERSION 0.13.0 + `protocol/methods.json` 版本 0.13.0）
 
 ### CI Pipelines (GitHub Actions)
@@ -369,7 +416,7 @@ Desktop：Tauri v2 壳套 `apps/web` 产物，四件套 deb/AppImage/dmg/msi，
   为 drift 门禁后第一门）。
 - `agentj-ui/packages/sdk`：共享 SDK（`src/client.ts` RpcClient +
   `src/router.ts` ResponseRouter/RpcTransport + `src/config.ts`
-   `VERSION="0.17.2"` + `PROTOCOL_VERSION="0.13.0"` + `resolveWsUrl` + `src/methods.ts` METHODS
+   `VERSION="0.18.1"` + `PROTOCOL_VERSION="0.13.0"` + `resolveWsUrl` + `src/methods.ts` METHODS
   + `transports/websocket.ts` WebSocketTransport
   + `transports/tcp.ts` TcpTransport；`RpcClient.request` 拦截空/未定义 method（v0.16.3），
   被 Web/TUI/Desktop 同源消费）。
@@ -397,6 +444,12 @@ Desktop：Tauri v2 壳套 `apps/web` 产物，四件套 deb/AppImage/dmg/msi，
   `SettingsDisplayPanel` 每区一行「滑杆 + number + px」/ `ModalDialog`
   `.aj-dialog-frame` + 8 向缩放手柄 + `dialogResize.ts`（对边锚定/夹取，
   设置下限 560px）；
+  **v0.18.0 三项增强**：composer 75% 居中浮动（`--aj-composer-h` 动态预留 +
+  `scroll-padding-bottom` 滚底对齐 + 窄屏 min-width/换行兜底）/ 权限选择器
+  （`逐次确认`/`自动允许` + 跨标签 storage 同步 + bypass 客户端自动允许）/
+  会话 token 总量 `Σ` 读出（`formatTokenTotal`；v0.18.1 起移至 composer header
+  模型 chip 右侧并拆分 输入/输出 —— `tokenUsage.ts` `formatUsageSummary`/
+  `formatUsageTitle` + `.aj-composer__header-meta`）；
   `layoutStore` 宽度/面板持久化，
   `todoState`/`changes` reducer，`deriveChanges` 半推导退役；
   布局/会话/Composer/对话/轨迹/Hero/对话框拆 `components/*.css`，vitest + vite build）。
@@ -405,9 +458,9 @@ Desktop：Tauri v2 壳套 `apps/web` 产物，四件套 deb/AppImage/dmg/msi，
   completion/theme/usage + runview 只读 TODO 区块（revision 门控） +
   mock WS e2e + sidebar 文本版 UnifiedSidebar 32char；`testRender` 快照）。
 - `agentj-ui/apps/desktop`：Desktop 壳（Tauri v2，`frontendDist` →
-    `../../web/dist`，与 workspace 版本同源 `0.17.2`，四件套打包）。
+    `../../web/dist`，与 workspace 版本同源 `0.18.1`，四件套打包）。
 - `agentj-ui/` 根：`package.json` workspaces `["apps/*","packages/*"]`
-  （frontend stays in-repo，前端不拆独立仓，与 Rust 共享 0.17.2）。
+  （frontend stays in-repo，前端不拆独立仓，与 Rust 共享 0.18.1）。
 - **守护内核（v0.4 已实现）**：统一 Connection 抽象 + `serve --port`
   常驻多客户端 + `run --attach` + `dashboard`（见 daemon-kernel 设计文档）。
 
