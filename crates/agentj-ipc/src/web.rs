@@ -45,7 +45,12 @@ impl WebConfig {
 
 /// Whether the request peer is a loopback address (hybrid auth exemption, D2).
 pub fn peer_is_loopback(peer: std::net::SocketAddr) -> bool {
-    peer.ip().is_loopback()
+    match peer.ip() {
+        std::net::IpAddr::V4(v4) => v4.is_loopback(),
+        std::net::IpAddr::V6(v6) => {
+            v6.is_loopback() || v6.to_ipv4_mapped().is_some_and(|v4| v4.is_loopback())
+        }
+    }
 }
 
 /// Extract the `agentj_session` cookie value from a `Cookie` header.
@@ -321,6 +326,14 @@ mod tests {
         // become `//evil` (open redirect); control chars are rejected too.
         assert_eq!(safe_next(Some("/\\evil")), "/");
         assert_eq!(safe_next(Some("/\tevil")), "/");
+    }
+    #[test]
+    fn loopback_detection_covers_v4_mapped_peers() {
+        assert!(peer_is_loopback("127.0.0.1:5555".parse().unwrap()));
+        assert!(peer_is_loopback("[::1]:5555".parse().unwrap()));
+        assert!(peer_is_loopback("[::ffff:127.0.0.1]:5555".parse().unwrap()));
+        assert!(!peer_is_loopback("[::ffff:8.8.8.8]:1".parse().unwrap()));
+        assert!(!peer_is_loopback("203.0.113.7:41000".parse().unwrap()));
     }
     #[test]
     fn sessions_roundtrip_and_empty_token_normalizes_to_none() {
