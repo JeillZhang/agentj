@@ -13,7 +13,7 @@ type EntropyPreset = { value: number; label: string; short: string };
 
 export const MODEL_LIST: ModelEntry[] = [{ name: "deepseek-chat", cap: "128k 上下文 · 工具调用" }];
 
-const AGENTS: AgentEntry[] = [
+export const AGENT_LIST: AgentEntry[] = [
   { id: "build", label: "Build", cap: "默认 · 读写工具全开" },
   { id: "plan", label: "Plan", cap: "只读 · 先出方案不落盘" },
   { id: "explore", label: "Explore", cap: "只读 · 大范围检索" },
@@ -31,7 +31,7 @@ export type ComposerOptionsProps = {
 };
 
 function agentIndex(agent: ComposerAgent): number {
-  const index = AGENTS.findIndex((entry) => entry.id === agent);
+  const index = AGENT_LIST.findIndex((entry) => entry.id === agent);
   return index < 0 ? 0 : index;
 }
 
@@ -89,7 +89,7 @@ export default function ComposerOptions({ model = null, children }: ComposerOpti
       setPrefs({ ...prefs, model: entry.name });
       saveComposerPrefs({ model: entry.name });
     } else if (id === "agent") {
-      const entry = AGENTS[index];
+      const entry = AGENT_LIST[index];
       if (!entry) return;
       setPrefs({ ...prefs, agent: entry.id });
       saveComposerPrefs({ agent: entry.id });
@@ -104,7 +104,7 @@ export default function ComposerOptions({ model = null, children }: ComposerOpti
 
   const optionCount = (id: Exclude<OpenId, null>): number => {
     if (id === "model") return MODEL_LIST.length;
-    if (id === "agent") return AGENTS.length;
+    if (id === "agent") return AGENT_LIST.length;
     return ENTROPY_PRESETS.length;
   };
 
@@ -189,7 +189,7 @@ export default function ComposerOptions({ model = null, children }: ComposerOpti
           onClick={() => openPanel("agent", agentIndex(prefs.agent))}
         >
           <span className="g">⚙</span>
-          {AGENTS[agentIndex(prefs.agent)].label}
+          {AGENT_LIST[agentIndex(prefs.agent)].label}
           <span className="cv">⌄</span>
         </button>
         <OptionPopover
@@ -203,7 +203,7 @@ export default function ComposerOptions({ model = null, children }: ComposerOpti
           onKeyDown={handleKeyDown}
         >
           <div className="pop-title" id="composer-agent-title">选择 Agent</div>
-          {AGENTS.map((entry, index) => {
+          {AGENT_LIST.map((entry, index) => {
             const selected = prefs.agent === entry.id;
             return (
               <div
