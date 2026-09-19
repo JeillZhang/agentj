@@ -57,6 +57,16 @@
 - ✅ **版本与文档同步**：Cargo workspace + `sdk/src/config.ts VERSION` + desktop 三处
   0.17.0；`AGENTS.md` / `README.md` / 本文件 / 设计 spec TODO 清单（G0-G6 勾选 +
   D4 行高 1.55 与候选来源修订）已同步，提交见 `docs: auto-sync ...`。
+- ✅ **最终整支复核修复波 + mini round（2026-09-19）**：Critical C1 = 左栏会话菜单
+  `createPortal` 到 `document.body` + `position: fixed`（触发点矩形定位、resize 重算、
+  scroll 关闭），逃逸 `.aj-sidebar` / `.aj-sidebar__body` / `.aj-shell__left` 裁剪层级
+  （几何裁剪属 jsdom 不可见项，留待实机 Playwright 验收）；Important I1 = 删除 TopbarMenu
+  的 dialog 级 Escape `useEffect`，嵌套弹窗仅栈顶关闭；M1 = 项目默认值仅在实际切换时应用
+  （同 id 重派发不再覆盖显式 model/agent 选择）；M2 = composer 输入默认字号回到 15px；
+  M3 = `.aj-ai pre` legacy padding 收窄为 `:not(.aj-code__body)`（卡片 10 12 生效）；
+  M4 = `package-lock.json` desktop workspace 刷新至 0.17.0；mini = 菜单打开时聚焦首个
+  `menuitem`（恢复键盘进入，`preventScroll`）。web **401 → 405 tests** / build 通过
+  （43 files）。
 
 ## 遗留问题 / 遗留 minors
 
@@ -72,9 +82,9 @@
   该问题在 `e68258b`（分支基线）即存在（`crates/` 与基线逐字节相同），非本特性引入。
 - T4 minor（parked）：新增的 modal backdrop 测试无判别力（未断言「下层弹窗 backdrop
   点击不应关闭下层」）；建议补一条。
-- T5 parked（plan-mandated，验收视觉确认即可）：composer input `calc(-1px)` 默认档
-  = 14px（现值 15px）；紧凑 `.aj-sess` min-height 56 → 48px；CSS 横幅注释 >120 字符
-  （仓库既有风格，非门禁）。
+- T5 parked（plan-mandated，验收视觉确认即可）：紧凑 `.aj-sess` min-height 56 → 48px；
+  CSS 横幅注释 >120 字符（仓库既有风格，非门禁）。composer input 默认档 14px 偏差已在
+  最终复核修复波修正为 15px（见上）。
 - T7 minor（optional）：代码卡片二次点击恢复默认（展开）未加测试；`languageOf` 浅扫描
   已够用。
 - T9 minor（optional）：显示面板 3 条测试覆盖建议（非阻塞）。
