@@ -3,8 +3,8 @@ import { PROTOCOL_VERSION, VERSION, resolveWsUrl } from "../config.js";
 import { METHODS } from "../methods.js";
 
 describe("config", () => {
-  it("version bumped to 0.17.2", () => {
-    expect(VERSION).toBe("0.17.2");
+  it("version bumped to 0.18.0", () => {
+    expect(VERSION).toBe("0.18.0");
     expect(PROTOCOL_VERSION).toBe("0.13.0");
   });
 
