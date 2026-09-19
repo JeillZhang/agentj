@@ -4,7 +4,7 @@ AI 编码代理工具（Rust）——Linux 内核式「内核调度 + 可插拔�
 内核通过统一的 JSON-RPC 2.0 协议（stdio / TCP / WebSocket）对外暴露能力；
 CLI、TUI、Web、Desktop 均通过 `agentj-ui` 协议消费者接入，任意语言可开发前端。
 
-> 当前版本：**v0.18.1**——token 统计修复（用户直报，纯前端，无协议变更）：① `Σ` 会话 token 读出从 composer 底栏（模型选项旁）移至输入框 header、紧邻「deepseek-chat」模型 chip 右侧（`RunPanel` `.aj-composer__header-meta`；`ComposerOptions` 移除 `usageTotal`/`.comp-usage`）；② 统计拆分输入/输出：`Σ 2.5k · 输入 2k · 输出 500`（新 `tokenUsage.ts` `formatUsageSummary` + `formatUsageTitle`；`formatTokenTotal` k/M 一位小数、999.95k 起进位 M），tooltip/aria-label 精确值 + 合计；header `flex-wrap` 窄视口读出换行右对齐；实机 Playwright 15/15 + Oracle 复核 PASS + 修复波；v0.18.0——Web 三项增强（用户直报，纯前端，无协议变更）：① 中栏 composer 75% 宽居中浮动于底部（`--aj-composer-h` 动态底部预留：内容延伸至卡片底部、滚动到底时末条消息停在输入框顶上方 ~16px；窄视口 `min-width: min(340px, calc(100% - 16px))` + `.comp-tools` 换行兜底）；② 权限选择器（逐次确认/自动允许：bypass 时客户端自动回 `permission/respond allow` 不弹窗，内核 deny/路径越界仍强制拒绝；跨标签 storage 同步）；③ 会话 token 总量 `Σ 5.2k`（`formatTokenTotal`：k/M 一位小数、999.95k 起进位 M；无用量隐藏）；实机 Playwright 验证 + Oracle 复核 PASS（6 minor/nit 修复波 + 2 补测）；v0.17.2——界面修复（用户直报 2 项，纯前端，无协议变更）：设置「显示」字号改为逐区 px 数值 + 横向「滑杆 + 数字输入 + px」行（`FONT_SIZE_LIMITS` 校验 + 旧 sm/md/lg/xl 迁移，行高/密度横排），消除弹窗纵向过度拉伸；`ModalDialog` 弹窗（设置等）新增 `.aj-dialog-frame` + 8 向指针手柄（4 边/4 角），`dialogResize.ts` 几何（对边锚定 + 最小 320×200 + 视口 8px 夹取 + per-dialog 下限，设置弹窗 560px）；实机 Playwright 验证；v0.17.1——v0.17.0 验收修复（BUG-008：窄视口 375–390px 左栏会话列表菜单横向夹取 + 「过滤/排序」飞出层按空间方向自适应 `.aj-menu__flyout--left`，resize 重算，桌面 ≥1024 行为不变）+ Web 工作台六项增强（纯前端，无协议变更）：代码块卡片化（`CodeBlockCard` + `copyText` clipboard→execCommand 降级链 + `rehype-highlight` 高亮）/ 显示设置（`displayPrefsStore` + 设置「显示」tab + `displayPrefs.css` 覆盖层 + `--aj-font-*`/`--aj-lh-conv`/`data-density`/`data-reduced-motion`）/ 文件树源码与 db 图标 + 文件名特例 / 左栏 `SessionListMenu`（清理 + 过滤/排序向右飞出二级菜单，设置「会话列表」移除）/ 项目编辑（`projectStore` 扩展字段 + `ProjectEditDialog` + composer 行内编辑 + `project_root` 随 `session/new` 打通 + 项目默认模型/Agent 应用）/ 设置「项目」tab（全局默认 + 列表 + 守卫删除 + `ModalDialog` 嵌套栈）；v0.16.5——Web 工作台四项修复：右栏折叠/展开单段右→左平滑动画（外层 `width` 过渡 + 内层 `align-self: flex-end` 右缘锚定、内容零回流；仅 ≥1024，拖拽期间兄弟选择器禁用过渡）/ 顶栏「...」五项菜单（项目、继续会话…、收藏会话、设置…、帮助；项目与收藏会话 hover 左向飞出二级菜单 + Esc 分层 + 键盘可达；排序/过滤/演示数据/连接设置迁入「设置」弹窗，左 tablist 分类 + `sidebarPrefsStore` 持久化）/ 右栏任务/文件变更成对面板（单开铺满至底部、双开 `role=separator` 拖拽/键盘调节 + `agentj.layout.rightSectionSplit` 比例持久化、双击/Home 复位）/ 文件树分类图标（Folder/FolderOpen + 扩展名 lucide 图标 + 任意深度缩进）；v0.16.4——Web 工作台体验修复（六项 + 验收 1 bug）：状态灯 hover 连接面板（左上角仅 `agentj` + 状态灯；⋯ 菜单移除状态区块）/ 右栏 VS Code 手风琴（折叠 = 紧凑标题行堆叠、展开 = 向下延展、空数据保留标题行、localStorage 记忆默认全展开）/ 全局 token 化滚动条 / composer 选项弹层二次点击收起（`OptionPopover.anchorRef`）/ 新建会话不再自动收藏 / 验收修复 BUG-007（顶栏 `z-index: 20` 高于侧栏）；v0.16.3——Web 工作台修复：左栏「项目」迁入右上角「...」菜单二级菜单（「连接设置」下方，选择项目 + 「＋ 添加项目」+ `agentj:current-project-updated` 同步）与文件 tab 永久「加载中」修复（内核非法请求回显可确定 id `-32600` + SDK 拒绝空/未定义 method）；v0.16.2——远程访问修复：内核 `--host` 绑定（默认仍 127.0.0.1，`0.0.0.0` 可局域网/远程直连）+ `dashboard --token` + Web 页面地址派生与连接设置持久化（修复远程访问误连 `ws://127.0.0.1:4096/ws`、刷新丢失指定 IP）；v0.16.1 三项修复：会话删除移至星标下方 + 顶栏模型 chip 移除 + 单击不再自动收藏；v0.16.0 六项修复：协议版本 semver 兼容 + composer 弹层锚定 + hover/主题对比度 + 会话管理 + 全宽拉伸；协议扩展：三栏工作台真实数据源
+> 当前版本：**v0.19.0**——内核托管 Web UI + 文件树状态补强（无 wire 变更）：① 内核同端口静态托管内置 Web UI——`agentj-ipc` 新 `web` 模块 `build_router` 在 `ws_router` 上 `nest_service("/assets", ServeDir + immutable 长缓存)` + `fallback_service(ServeDir::fallback(ServeFile(index.html)) 根 no-cache、未知页面 200)`；`/ws` 与 `/login`/`/logout` 显式路由优先且不在门后（防重定向环，错拼 `/assets/*` 仍 404）；② 混合鉴权登录门——回环 peer 或未配置 token 直出，非回环 + token 且无有效 cookie → `302 /login?next=<同源相对路径>`（`next` 白名单防开放重定向）；内嵌登录页（无 JS）POST 校验 token 后颁发不透明会话 cookie（`agentj_session`，`HttpOnly; SameSite=Lax; Path=/`，无 Max-Age，内存态重启即失效）/ `/logout` 撤销；③ WS 第三鉴权通道——有效会话 cookie + 同源 Origin 免 `?token=`/`initialize.token`（服务端为 cookie 通道注入 initialize token；另两通道语义不变）；④ `serve`/`dashboard` 新增 `--web-dist <PATH>`（四级发现 flag/env → cwd `agentj-ui/apps/web/dist` → exe 相对；启动打印 `http://<host>:<port>/`，缺失告警）；⑤ 文件树目录聚合状态——`file/list` 目录 `git_status` 取后代最高优先级字母（`U>D>M>A`，`srcx/` 不误伤 `src/`），Web `FileTree` 目录行渲染状态字母、移除冗余圆点。实机 + `e2e_http_static`（持有 stdout reader）覆盖；v0.18.1——token 统计修复（用户直报，纯前端，无协议变更）：① `Σ` 会话 token 读出从 composer 底栏（模型选项旁）移至输入框 header、紧邻「deepseek-chat」模型 chip 右侧（`RunPanel` `.aj-composer__header-meta`；`ComposerOptions` 移除 `usageTotal`/`.comp-usage`）；② 统计拆分输入/输出：`Σ 2.5k · 输入 2k · 输出 500`（新 `tokenUsage.ts` `formatUsageSummary` + `formatUsageTitle`；`formatTokenTotal` k/M 一位小数、999.95k 起进位 M），tooltip/aria-label 精确值 + 合计；header `flex-wrap` 窄视口读出换行右对齐；实机 Playwright 15/15 + Oracle 复核 PASS + 修复波；v0.18.0——Web 三项增强（用户直报，纯前端，无协议变更）：① 中栏 composer 75% 宽居中浮动于底部（`--aj-composer-h` 动态底部预留：内容延伸至卡片底部、滚动到底时末条消息停在输入框顶上方 ~16px；窄视口 `min-width: min(340px, calc(100% - 16px))` + `.comp-tools` 换行兜底）；② 权限选择器（逐次确认/自动允许：bypass 时客户端自动回 `permission/respond allow` 不弹窗，内核 deny/路径越界仍强制拒绝；跨标签 storage 同步）；③ 会话 token 总量 `Σ 5.2k`（`formatTokenTotal`：k/M 一位小数、999.95k 起进位 M；无用量隐藏）；实机 Playwright 验证 + Oracle 复核 PASS（6 minor/nit 修复波 + 2 补测）；v0.17.2——界面修复（用户直报 2 项，纯前端，无协议变更）：设置「显示」字号改为逐区 px 数值 + 横向「滑杆 + 数字输入 + px」行（`FONT_SIZE_LIMITS` 校验 + 旧 sm/md/lg/xl 迁移，行高/密度横排），消除弹窗纵向过度拉伸；`ModalDialog` 弹窗（设置等）新增 `.aj-dialog-frame` + 8 向指针手柄（4 边/4 角），`dialogResize.ts` 几何（对边锚定 + 最小 320×200 + 视口 8px 夹取 + per-dialog 下限，设置弹窗 560px）；实机 Playwright 验证；v0.17.1——v0.17.0 验收修复（BUG-008：窄视口 375–390px 左栏会话列表菜单横向夹取 + 「过滤/排序」飞出层按空间方向自适应 `.aj-menu__flyout--left`，resize 重算，桌面 ≥1024 行为不变）+ Web 工作台六项增强（纯前端，无协议变更）：代码块卡片化（`CodeBlockCard` + `copyText` clipboard→execCommand 降级链 + `rehype-highlight` 高亮）/ 显示设置（`displayPrefsStore` + 设置「显示」tab + `displayPrefs.css` 覆盖层 + `--aj-font-*`/`--aj-lh-conv`/`data-density`/`data-reduced-motion`）/ 文件树源码与 db 图标 + 文件名特例 / 左栏 `SessionListMenu`（清理 + 过滤/排序向右飞出二级菜单，设置「会话列表」移除）/ 项目编辑（`projectStore` 扩展字段 + `ProjectEditDialog` + composer 行内编辑 + `project_root` 随 `session/new` 打通 + 项目默认模型/Agent 应用）/ 设置「项目」tab（全局默认 + 列表 + 守卫删除 + `ModalDialog` 嵌套栈）；v0.16.5——Web 工作台四项修复：右栏折叠/展开单段右→左平滑动画（外层 `width` 过渡 + 内层 `align-self: flex-end` 右缘锚定、内容零回流；仅 ≥1024，拖拽期间兄弟选择器禁用过渡）/ 顶栏「...」五项菜单（项目、继续会话…、收藏会话、设置…、帮助；项目与收藏会话 hover 左向飞出二级菜单 + Esc 分层 + 键盘可达；排序/过滤/演示数据/连接设置迁入「设置」弹窗，左 tablist 分类 + `sidebarPrefsStore` 持久化）/ 右栏任务/文件变更成对面板（单开铺满至底部、双开 `role=separator` 拖拽/键盘调节 + `agentj.layout.rightSectionSplit` 比例持久化、双击/Home 复位）/ 文件树分类图标（Folder/FolderOpen + 扩展名 lucide 图标 + 任意深度缩进）；v0.16.4——Web 工作台体验修复（六项 + 验收 1 bug）：状态灯 hover 连接面板（左上角仅 `agentj` + 状态灯；⋯ 菜单移除状态区块）/ 右栏 VS Code 手风琴（折叠 = 紧凑标题行堆叠、展开 = 向下延展、空数据保留标题行、localStorage 记忆默认全展开）/ 全局 token 化滚动条 / composer 选项弹层二次点击收起（`OptionPopover.anchorRef`）/ 新建会话不再自动收藏 / 验收修复 BUG-007（顶栏 `z-index: 20` 高于侧栏）；v0.16.3——Web 工作台修复：左栏「项目」迁入右上角「...」菜单二级菜单（「连接设置」下方，选择项目 + 「＋ 添加项目」+ `agentj:current-project-updated` 同步）与文件 tab 永久「加载中」修复（内核非法请求回显可确定 id `-32600` + SDK 拒绝空/未定义 method）；v0.16.2——远程访问修复：内核 `--host` 绑定（默认仍 127.0.0.1，`0.0.0.0` 可局域网/远程直连）+ `dashboard --token` + Web 页面地址派生与连接设置持久化（修复远程访问误连 `ws://127.0.0.1:4096/ws`、刷新丢失指定 IP）；v0.16.1 三项修复：会话删除移至星标下方 + 顶栏模型 chip 移除 + 单击不再自动收藏；v0.16.0 六项修复：协议版本 semver 兼容 + composer 弹层锚定 + hover/主题对比度 + 会话管理 + 全宽拉伸；协议扩展：三栏工作台真实数据源
 > （`file/list` 目录懒加载 + git 状态点；`$/progress` 新增 `kind:"todo"`
 > 全量快照 + 会话内单调 `revision` 与 `kind:"file_change"` unified diff；
 > `$/askQuestion` + `question/respond` owner 定向提问；会话级 `project_root`；
@@ -112,6 +112,7 @@ CLI、TUI、Web、Desktop 均通过 `agentj-ui` 协议消费者接入，任意�
 - [x] **Web 工作台修复（v0.16.3）**：左栏「项目」区块（项目分组 + 底栏「+ 添加项目」+ 添加对话框）整体迁入右上角「...」菜单二级菜单（位于「连接设置」下方）：子菜单列全部项目（当前项 ✓ / `menuitemradio` + `aria-checked`）、选择即切换当前项目（localStorage + 新 `agentj:current-project-updated` 事件同步 composer picker 与侧栏新建会话归属）、「＋ 添加项目」复用 ModalDialog；侧栏保留扁平最近会话列表。文件 tab 永久「加载中」修复：内核非法结构请求回显可确定 id（`-32600`；语法错误仍 `-32700` + null，对齐 `docs/specs/ipc-protocol.md`）+ SDK `RpcClient.request` 拒绝空/未定义 method；根因 = 长驻 Vite dev server 不监听 root 外 `packages/sdk` 源（陈旧 SDK 无 `METHODS.fileList` → 请求缺 `method`）+ `id:null` 响应无法匹配。Rust 560 → 564 / sdk 43 → 46 / web 239 → 246 tests（含 9801187 连接设置持久化加固 +2），PROTOCOL_VERSION 保持 0.13.0，工作区 0.16.2 → 0.16.3
 - [x] **远程访问修复（v0.16.2）**：内核 `serve`/`dashboard` 新增 `--host`（默认 127.0.0.1；`0.0.0.0` 局域网/远程直连；`dashboard` 补 `--token`；非回环无有效 token 告警；IPv6/实际端口打印修正）；Web `resolveWsUrl` 页面地址派生（无 `VITE_AGENTJ_WS_URL` 时取页面 host:4096，https → wss，Tauri 桌面保持明文回环）+ 连接设置持久化（`agentj.connection`：刷新自动恢复重连、弹窗回填）。Rust 560 / sdk 43 / web 239 tests，PROTOCOL_VERSION 保持 0.13.0，工作区 0.16.1 → 0.16.2
 - [x] **Web 工作台跟随修复（v0.16.1）**：左栏会话删除按钮移至收藏星标下方（右栏堆叠、行高 56px）；右上角模型 chip 移除（模型仍由 composer 与 usage meta 行展示）；会话单击不再自动收藏（仅星标按钮触发，回归测试锁定）。Web 230 → 231 tests，PROTOCOL_VERSION 保持 0.13.0，工作区 0.16.0 → 0.16.1
+- [x] **内核托管 Web UI + 文件树状态补强（v0.19.0）**：无 wire 变更（PROTOCOL_VERSION 保持 0.13.0）。① 同端口静态托管：`agentj-ipc` 新 `web` 模块（`WebConfig` + `build_router`）在 `ws_router` 上 `nest_service("/assets", ServeDir + Cache-Control: public, max-age=31536000, immutable)` + `fallback_service(ServeDir::fallback(ServeFile(index.html)) + no-cache)`（未知页面 200；`/ws`、`/login`、`/logout` 显式路由优先且不在门后）。② 混合鉴权登录门：回环 peer / 未配置 token 直出；非回环 + token 无有效 cookie → `302 /login?next=<同源相对路径>`（`safe_next` 白名单防开放重定向，错拼 `/assets/*` 仍 404）；内嵌登录页 POST 校验后颁发不透明 `agentj_session` cookie（`HttpOnly; SameSite=Lax; Path=/`，无 Max-Age，内存态）+ `/logout` 撤销。③ WS cookie 第三通道：有效会话 cookie + 同源 Origin 免 `?token=`/`initialize.token`（`serve_connection` token 参数遗留，服务端为 cookie 通道注入 initialize token）。④ CLI：`serve`/`dashboard --web-dist <PATH>` 四级发现 + 启动打印 `http://<host>:<port>/` + 缺失告警。⑤ 文件树目录聚合：`file/list` 目录 `git_status` 聚合后代最高优先级字母（`U>D>M>A`，前缀边界 `src/` 严格匹配）+ Web `FileTree` 目录状态字母、移除冗余圆点。测试：agentj-ipc `web` 单测（静态/缓存头/登录门/cookie/伪造 cookie/dist 缺失）+ CLI `e2e_http_static`（持有 stdout reader）。Rust 564 → 591 tests / sdk 46 / Web 479 → 480 tests（46 files）/ tui 71；PROTOCOL_VERSION 保持 0.13.0，工作区 0.18.1 → 0.19.0
 
 ## Project Structure
 
@@ -131,7 +132,8 @@ crates/                    # 17 个 workspace crate（统一目录）
   agentj-mcp/              # MCP 客户端 + McpConnectionManager
   agentj-skills/           # skills 加载器
   agentj-plugin/           # 插件系统 + libloading
-  agentj-ipc/              # JSON-RPC IPC（stdio/TCP/WS + 连接分类器 + file/list + 提问接线）
+  agentj-ipc/              # JSON-RPC IPC（stdio/TCP/WS + 连接分类器 + file/list（含目录聚合状态）+ 提问接线
+                           #   + web 模块：静态托管 ServeDir/SPA fallback + 登录门 + WS cookie 通道）
   agentj-cli/              # agentj 二进制（run/serve/dashboard）
   agentj-plugin-fixture/   # 插件 cdylib 测试夹具（dev-only）
 agentj-ui/                 # 前端 monorepo（npm workspaces，frontend stays in-repo）
@@ -142,14 +144,14 @@ agentj-ui/                 # 前端 monorepo（npm workspaces，frontend stays i
       src/
         client.ts          # RpcClient
         router.ts          # ResponseRouter + RpcTransport
-        config.ts          # VERSION="0.18.1" + PROTOCOL_VERSION="0.13.0" + resolveWsUrl
+        config.ts          # VERSION="0.19.0" + PROTOCOL_VERSION="0.13.0" + resolveWsUrl
         methods.ts         # METHODS 常量（由 methods.json 生成）
         transports/
           websocket.ts     # WebSocketTransport（浏览器）
           tcp.ts           # TcpTransport（Node 直连预留）
     tokens/                # 共享 tokens（palette.ts 24 keys + LAYOUT 常量 + tokens.css/json/md 生成）
   apps/
-    web/                   # Web 三栏工作台（真实协议驱动：WorkspaceShell/RightPanel/TodoPanel/ChangeList/FileTree/AskQuestionCard/ConnectionStatus/SettingsDialog；v0.17.0 代码卡片 + 显示设置 + 源码/db 图标 + 会话列表菜单 + 项目编辑 + 设置项目面板；v0.18.0 composer 75% 居中浮动 + 权限选择器；v0.18.1 token 读出移至 header 模型 chip 右侧 + 输入/输出 拆分（`tokenUsage.ts`）；消费 @agentj/sdk + @agentj/tokens + lucide-react；components/*.css 模块化）
+    web/                   # Web 三栏工作台（真实协议驱动：WorkspaceShell/RightPanel/TodoPanel/ChangeList/FileTree/AskQuestionCard/ConnectionStatus/SettingsDialog；v0.17.0 代码卡片 + 显示设置 + 源码/db 图标 + 会话列表菜单 + 项目编辑 + 设置项目面板；v0.18.0 composer 75% 居中浮动 + 权限选择器；v0.18.1 token 读出移至 header 模型 chip 右侧 + 输入/输出 拆分（`tokenUsage.ts`）；v0.19.0 `FileTree` 目录聚合状态字母（目录行渲染后代最高优先级 git 字母）+ 移除冗余圆点；消费 @agentj/sdk + @agentj/tokens + lucide-react；components/*.css 模块化）
     tui/                   # TUI（Bun + @opentui/react，全功能 + runview 只读 TODO 区块）
     desktop/               # Tauri 壳（套 web/dist，输出安装包）
 models/                    # models/opencode-go.json
@@ -159,7 +161,7 @@ docs/superpowers/          # 设计文档 + 实现计划（中文）
 ```
 
 > 前端不拆独立仓：`agentj-ui` 保留在 `crates/` 同级 monorepo 内，
-> 与 Rust workspace 共享版本 `0.18.1`（`VERSION` + 单一 `PROTOCOL_VERSION 0.13.0` 来源 `sdk/config.ts`）。
+> 与 Rust workspace 共享版本 `0.19.0`（`VERSION` + 单一 `PROTOCOL_VERSION 0.13.0` 来源 `sdk/config.ts`）。
 
 ## Usage
 
@@ -170,6 +172,14 @@ agentj serve --port 4096 --host 0.0.0.0 --token SECRET  # 局域网/远程直连
 agentj serve --port 4096 --token SECRET   # 鉴权：?token= 或 initialize.token
 agentj dashboard --port 4096              # 同款协议入口（无 token 最简）
 agentj dashboard --port 4096 --token SECRET  # dashboard 远程访问鉴权（v0.16.2）
+
+# 内核托管 Web UI（同端口静态托管内置前端，v0.19.0）
+agentj serve --port 4096 --web-dist path/to/agentj-ui/apps/web/dist   # 显式指定 dist
+# 四级发现：--web-dist → AGENTJ_WEB_DIST → cwd agentj-ui/apps/web/dist → exe 相对（缺失告警）
+# 本地打开即用：浏览器访问 http://127.0.0.1:4096/（回环 peer 免登录）
+# 远程访问闭环：agentj serve --host 0.0.0.0 --token SECRET
+#   → 浏览器打开 http://<host>:4096/ → 内嵌登录页输入 token → cookie 会话生效，UI + WS 同源可用
+#   （非回环未配 token 直出并告警；dist 缺失则静态 UI 停用、仅 /ws 可用）
 
 # 单轮运行 / 附着运行
 agentj run "explain this codebase"
@@ -254,7 +264,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo bench -p agentj-model       # 模型流式基准
 cargo run -p agentj-protocol --bin gen_schemas   # 重新生成 schemas/*.json
 cargo test -p agentj-protocol -- drift          # 漂移门禁（51 schemas 无漂移）
-./scripts/check-version.sh        # 版本一致性：Cargo.toml + sdk/config.ts + desktop 均为 0.18.1（PROTOCOL_VERSION 0.13.0）
+./scripts/check-version.sh        # 版本一致性：Cargo.toml + sdk/config.ts + desktop 均为 0.19.0（PROTOCOL_VERSION 0.13.0）
 
 # 前端 monorepo（npm workspaces，根为 agentj-ui/）
 npm --prefix agentj-ui install                           # 安装（agentj-ui workspaces）

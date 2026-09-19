@@ -108,13 +108,6 @@ button.trow:focus-visible {
   font-weight: 500;
 }
 
-.trow .dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  flex-shrink: 0;
-}
-
 .trow .status-txt {
   font-size: 10px;
   font-weight: 700;
@@ -132,11 +125,6 @@ button.trow:focus-visible {
 .status-A { color: var(--aj-success); }
 .status-U { color: var(--aj-textCaption); }
 .status-D { color: var(--aj-error); }
-
-.dot-M { background: var(--aj-warning); }
-.dot-A { background: var(--aj-success); }
-.dot-U { background: var(--aj-textCaption); }
-.dot-D { background: var(--aj-error); }
 
 .left-foot {
   margin-top: auto;

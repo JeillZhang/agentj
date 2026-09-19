@@ -86,7 +86,7 @@ test("shows retry after failure and re-requests the same path", async () => {
   expect(srcCalls[0].params.depth).toBe(1);
 });
 
-test("renders M/A/U/D git dots from git_status", async () => {
+test("renders M/A/U/D git letters from git_status and no dot", async () => {
   const calls: Call[] = [];
   const client = mockClient((path) => ({ entries: path ? CHILDREN : ROOT, truncated: false }), calls);
   const { container } = render(<FileTree client={client} sessionId="s1" demo={false} />);
@@ -97,6 +97,16 @@ test("renders M/A/U/D git dots from git_status", async () => {
   expect(container.querySelector(".status-A")).not.toBeNull();
   expect(container.querySelector(".status-U")).not.toBeNull();
   expect(container.querySelector(".status-D")).not.toBeNull();
+  expect(container.querySelector(".dot")).toBeNull();
+});
+
+test("dir rows show the aggregate status letter", async () => {
+  const root: RawEntry[] = [{ name: "src", path: "src", kind: "dir", git_status: "D" }];
+  const client = mockClient(() => ({ entries: root, truncated: false }));
+  const { container } = render(<FileTree client={client} sessionId="s1" demo={false} />);
+  await screen.findByText("src");
+  expect(container.querySelector(".trow-dir .status-D")).not.toBeNull();
+  expect(container.querySelector(".trow-dir .dot")).toBeNull();
 });
 
 test("footer counts tracked-status changes only and keeps the expand glyph", async () => {

@@ -110,6 +110,7 @@ pub struct TcpBindOptions {
     pub token: Option<String>,
     pub max_connections: usize,
     pub trajectory_store: Option<Arc<crate::trajectory::TrajectoryStore>>,
+    pub web_dist: Option<std::path::PathBuf>,
 }
 
 impl Default for TcpBindOptions {
@@ -118,6 +119,7 @@ impl Default for TcpBindOptions {
             token: None,
             max_connections: 16,
             trajectory_store: None,
+            web_dist: None,
         }
     }
 }
@@ -152,6 +154,10 @@ impl TcpIpcServer {
         server.attach_question_notifier();
         server.set_token(options.token.clone());
         let shared = Arc::new(server);
+        let web = Arc::new(crate::web::WebConfig::new(
+            options.web_dist.clone(),
+            options.token.clone(),
+        ));
         Ok(Self {
             listener,
             shared: shared.clone(),
@@ -163,6 +169,7 @@ impl TcpIpcServer {
                 token: options.token,
                 max_connections: options.max_connections,
                 active_ws: AtomicUsize::new(0),
+                web,
             }),
         })
     }

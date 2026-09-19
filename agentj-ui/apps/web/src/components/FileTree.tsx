@@ -110,12 +110,7 @@ type NodeListProps = {
 };
 
 function StatusCell({ git }: { git: GitLetter }) {
-  return (
-    <>
-      <span className={`status-txt status-${git}`}>{git}</span>
-      <span className={`dot dot-${git}`} aria-hidden="true" />
-    </>
-  );
+  return <span className={`status-txt status-${git}`}>{git}</span>;
 }
 
 /** Renders one loaded level; dirs recurse only while expanded and drive their own load state. */
@@ -182,6 +177,7 @@ function NodeList({
                   <Folder className="dir-icon dir-icon--closed" size={13} aria-hidden="true" />
                 )}
                 <span className="name">{node.name}</span>
+                {node.git ? <StatusCell git={node.git} /> : null}
               </button>
               <div id={groupId}>{body}</div>
             </div>

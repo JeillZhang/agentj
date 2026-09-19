@@ -6,11 +6,9 @@
 
 use crate::{Connection, ConnectionWriter, IpcError, TransportKind};
 use axum::Router;
-use axum::extract::Query;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
 use futures::stream::SplitStream;
 use futures::{SinkExt, StreamExt};
 use hyper::body::Incoming;
@@ -28,6 +26,9 @@ pub struct WsConnection {
     peer: String,
     stream: SplitStream<WebSocket>,
     tx: mpsc::UnboundedSender<String>,
+    /// Cookie-authenticated upgrades are exempt from `initialize.token` (design
+    /// D4); the upgrade layer supplies the configured token on their behalf.
+    init_token: Option<String>,
 }
 
 impl WsConnection {
@@ -47,8 +48,35 @@ impl WsConnection {
             peer,
             stream,
             tx,
+            init_token: None,
         }
     }
+
+    /// Mark this connection as pre-authenticated at the upgrade layer (cookie
+    /// channel): the given token is supplied to `initialize` on the wire.
+    pub fn with_init_token(mut self, token: Option<String>) -> Self {
+        self.init_token = token;
+        self
+    }
+}
+
+/// Supply `token` to an `initialize` request lacking one. Non-initialize and
+/// non-object payloads pass through untouched; a matching token is left as-is.
+fn supply_initialize_token(raw: &str, token: &str) -> String {
+    let Ok(mut value) = serde_json::from_str::<serde_json::Value>(raw) else {
+        return raw.to_string();
+    };
+    if value.get("method").and_then(|m| m.as_str()) != Some("initialize") {
+        return raw.to_string();
+    }
+    let Some(params) = value.get_mut("params").and_then(|p| p.as_object_mut()) else {
+        return raw.to_string();
+    };
+    if params.get("token").and_then(|t| t.as_str()) == Some(token) {
+        return raw.to_string();
+    }
+    params.insert("token".into(), serde_json::Value::String(token.to_string()));
+    serde_json::to_string(&value).unwrap_or_else(|_| raw.to_string())
 }
 
 #[async_trait::async_trait]
@@ -67,7 +95,13 @@ impl Connection for WsConnection {
     async fn recv(&mut self) -> Option<Result<String, IpcError>> {
         loop {
             match self.stream.next().await {
-                Some(Ok(Message::Text(text))) => return Some(Ok(text.to_string())),
+                Some(Ok(Message::Text(text))) => {
+                    let line = match self.init_token.as_deref() {
+                        Some(token) => supply_initialize_token(&text, token),
+                        None => text.to_string(),
+                    };
+                    return Some(Ok(line));
+                }
                 Some(Ok(Message::Close(_))) | None => return None,
                 Some(Ok(_)) => continue, // ping/pong/binary ignored
                 Some(Err(e)) => {
@@ -100,6 +134,7 @@ pub struct WsServerState {
     pub token: Option<String>,
     pub max_connections: usize,
     pub active_ws: AtomicUsize,
+    pub web: Arc<crate::web::WebConfig>,
 }
 
 #[derive(serde::Deserialize)]
@@ -107,26 +142,26 @@ pub struct WsQuery {
     pub token: Option<String>,
 }
 
-/// Build a per-connection axum Router for the WS upgrade endpoint. `peer` is
-/// captured so the WsConnection gets a stable id/peer_desc.
+/// Build a per-connection axum Router. Connection-kind routing, the WS upgrade
+/// and — when a dist was resolved — the static SPA surface all live in
+/// `web::build_router` (design D1/D9: explicit `/ws` route beats the fallback).
 pub fn ws_router(state: Arc<WsServerState>, peer: SocketAddr) -> Router {
-    Router::new().route(
-        "/ws",
-        get(move |Query(query): Query<WsQuery>, ws: WebSocketUpgrade| {
-            let state = state.clone();
-            async move { ws_upgrade(state, query, peer, ws).await }
-        }),
-    )
+    crate::web::build_router(state, peer)
 }
 
-async fn ws_upgrade(
+pub(crate) async fn ws_upgrade(
     state: Arc<WsServerState>,
     query: WsQuery,
     peer: SocketAddr,
     ws: WebSocketUpgrade,
+    headers: axum::http::HeaderMap,
 ) -> Response {
-    // 设计 D6 双通道 ①：upgrade 阶段 ?token= 校验。
-    if state.token.is_some() && state.token.as_deref() != query.token.as_deref() {
+    // 设计 D4 三通道：?token=（不变）/ 有效会话 cookie + 同源 Origin /
+    // initialize.token（不变）。cookie 通道已在升级层完成鉴权。
+    let cookie_authed = state.web.token.is_some()
+        && crate::web::session_cookie(&headers).is_some_and(|sid| state.web.is_valid_session(sid))
+        && crate::web::origin_matches_host(&headers);
+    if state.token.is_some() && state.token.as_deref() != query.token.as_deref() && !cookie_authed {
         return (StatusCode::FORBIDDEN, "missing or invalid token").into_response();
     }
     if state.active_ws.load(Ordering::SeqCst) >= state.max_connections {
@@ -134,11 +169,21 @@ async fn ws_upgrade(
     }
     state.active_ws.fetch_add(1, Ordering::SeqCst);
     let state = state.clone(); // clone the Arc for the upgraded task
+    let required = if cookie_authed {
+        None
+    } else {
+        state.token.clone()
+    };
+    let supplied = if cookie_authed {
+        state.token.clone()
+    } else {
+        None
+    };
     ws.on_upgrade(move |socket| async move {
-        let conn = WsConnection::new(socket, peer.to_string());
+        let conn = WsConnection::new(socket, peer.to_string()).with_init_token(supplied);
         // 设计 D7: WS 连接走既有 serve_connection（注册表/订阅/鉴权零改动）。
         let _ = Arc::clone(&state.shared)
-            .serve_connection(Box::new(conn), state.token.as_deref())
+            .serve_connection(Box::new(conn), required.as_deref())
             .await;
         state.active_ws.fetch_sub(1, Ordering::SeqCst);
     })
@@ -225,5 +270,39 @@ mod tests {
             let mut conn = WsConnection::new(socket, "test-peer".into());
             assert!(conn.recv().await.is_none(), "close frame must yield EOF");
         })
+    }
+
+    #[test]
+    fn supply_initialize_token_injects_missing_token() {
+        let raw = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocol_version":"0.13.0"}}"#;
+        let out = supply_initialize_token(raw, "secret");
+        let value: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(value["params"]["token"], "secret");
+        assert_eq!(value["params"]["protocol_version"], "0.13.0");
+    }
+
+    #[test]
+    fn supply_initialize_token_preserves_matching_token_verbatim() {
+        let raw = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"token":"secret"}}"#;
+        assert_eq!(supply_initialize_token(raw, "secret"), raw);
+    }
+
+    #[test]
+    fn supply_initialize_token_replaces_wrong_token() {
+        let raw = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"token":"wrong"}}"#;
+        let value: serde_json::Value = supply_initialize_token(raw, "secret").parse().unwrap();
+        assert_eq!(value["params"]["token"], "secret");
+    }
+
+    #[test]
+    fn supply_initialize_token_passes_through_non_initialize_and_malformed() {
+        let run = r#"{"jsonrpc":"2.0","id":2,"method":"session/run","params":{}}"#;
+        assert_eq!(supply_initialize_token(run, "secret"), run);
+        assert_eq!(supply_initialize_token("not json", "secret"), "not json");
+        let array_params = r#"{"jsonrpc":"2.0","id":3,"method":"initialize","params":[]}"#;
+        assert_eq!(
+            supply_initialize_token(array_params, "secret"),
+            array_params
+        );
     }
 }
