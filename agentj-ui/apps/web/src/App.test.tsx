@@ -190,6 +190,7 @@ import { loadConnection } from "./connectionStore";
 import App, { connectionLight, isProtocolCompatible } from "./App";
 import { historyToEntries, historyToConversation, filterNodes } from "./Trajectory";
 import { Trajectory } from "./Trajectory";
+import { saveDisplayPrefs } from "./displayPrefsStore";
 
 const WIRE_CORPUS = [
   { session_id: "s1", seq: 1, ts: 100, value: { kind: "user", content: "hi" } },
@@ -929,5 +930,30 @@ describe("connection settings persistence", () => {
     render(<App />);
     expect(() => new URL(shared.lastWsUrl.value)).not.toThrow();
     expect(shared.lastWsUrl.value).not.toContain(":4096:4096");
+  });
+});
+
+describe("reduced motion preference", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    document.documentElement.removeAttribute("data-reduced-motion");
+  });
+  afterEach(() => {
+    localStorage.clear();
+    document.documentElement.removeAttribute("data-reduced-motion");
+  });
+
+  it("mirrors displayPrefs.reducedMotion onto documentElement", () => {
+    localStorage.setItem("agentj.displayPrefs", JSON.stringify({ reducedMotion: true }));
+    render(<App />);
+    expect(document.documentElement.dataset.reducedMotion).toBe("true");
+    act(() => { saveDisplayPrefs({ reducedMotion: false }); });
+    expect(document.documentElement.dataset.reducedMotion).toBeUndefined();
+    delete document.documentElement.dataset.reducedMotion;
+  });
+
+  it("leaves no data-reduced-motion attribute for default prefs", () => {
+    render(<App />);
+    expect(document.documentElement.dataset.reducedMotion).toBeUndefined();
   });
 });
