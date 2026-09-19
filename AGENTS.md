@@ -1,6 +1,6 @@
 # AGENTS.md
 
-> Updated 2026-09-19 — v0.15.1 协议扩展（三栏工作台真实数据源）+ v0.15.2 session/status dispatch 修复 + v0.16.0 Web 工作台体验修复 + v0.16.1 跟随修复 + v0.16.2 远程访问修复 + v0.16.3 Web 工作台修复（项目菜单 + 文件树）+ v0.16.4 Web 工作台体验修复（状态灯 hover 面板 + 右栏手风琴 + 滚动条）+ v0.16.5 Web 工作台四项修复（右栏右→左展开动画 + 任务/文件变更高度可调 + 顶栏菜单重构/设置弹窗 + 文件树图标）+ v0.17.0 Web 工作台六项增强（代码卡片 + 显示设置 + 文件树图标 + 会话列表菜单 + 项目编辑 + 设置项目面板）+ v0.17.1 验收修复（BUG-008 窄视口菜单/飞出层夹取）
+> Updated 2026-09-19 — v0.15.1 协议扩展（三栏工作台真实数据源）+ v0.15.2 session/status dispatch 修复 + v0.16.0 Web 工作台体验修复 + v0.16.1 跟随修复 + v0.16.2 远程访问修复 + v0.16.3 Web 工作台修复（项目菜单 + 文件树）+ v0.16.4 Web 工作台体验修复（状态灯 hover 面板 + 右栏手风琴 + 滚动条）+ v0.16.5 Web 工作台四项修复（右栏右→左展开动画 + 任务/文件变更高度可调 + 顶栏菜单重构/设置弹窗 + 文件树图标）+ v0.17.0 Web 工作台六项增强（代码卡片 + 显示设置 + 文件树图标 + 会话列表菜单 + 项目编辑 + 设置项目面板）+ v0.17.1 验收修复（BUG-008 窄视口菜单/飞出层夹取）+ v0.17.2 界面修复（显示设置字号 px 滑杆/数字输入 + 弹窗边框/四角缩放）
 > `file/list` 沙箱化目录懒加载 + git 状态点；`$/progress` 新增 `kind:"todo"`
 > （全量快照 + 会话内单调 `revision`）与 `kind:"file_change"`（write 自研行级
 > diff / bash git 前后采样，unified diff ≤64 KiB）；`$/askQuestion` +
@@ -128,6 +128,24 @@
 > web 405 → 417 tests（43 files）/ sdk 46 / Rust 564 tests；clippy 零警告 / drift 2 passed /
 > web build / tui 71 / check-version 0.17.1 / desktop-ui；PROTOCOL_VERSION 保持 0.13.0；
 > 工作区 0.17.0 → 0.17.1。
+> v0.17.2 界面修复（bugfix，无协议变更，用户直报 2 项）：(1) 设置「显示」字号设置由
+> 四档枚举（小/中/大/特大 × 4 区，16 个单选纵向堆叠致弹窗过度拉伸）改为逐区像素数值
+> —— `displayPrefsStore` 字号字段转为 px（`FONT_SIZE_LIMITS` 校验：对话 12–24 默认 15、
+> 左右栏 10–20 默认 13、代码 10–20 默认 12；clamp+取整；旧 sm/md/lg/xl 按区迁移），
+> `SettingsDisplayPanel` 每区一行「标签 + range 滑杆 + number 输入 + px」（draft 受控，
+> blur/Enter 提交夹取），行高/密度选项横排；`WorkspaceShell` 直接注入 `${px}px`。
+> (2) 弹窗边框/四角可缩放 —— `ModalDialog` 新增 `.aj-dialog-frame`（承载尺寸/位置，
+> 首次拖拽冻结 fixed 矩形）+ 8 个指针手柄（4 边 + 4 角，hover accentTint + 方向光标）；
+> 新 `dialogResize.ts` 纯函数 `resizeRect`（对边锚定、最小 320×200、视口 8px 边距夹取、
+> 可选 per-dialog `minWidth/minHeight`，设置弹窗下限 560px）；`.aj-settings` 宽度修饰
+> 移至 frame，`.aj-dialog-card` 基类规则不变（`ApprovalDialog` 不受影响）。
+> 实机 Playwright 验证：4 行横向布局、滑杆/数字/变量联动与夹取、SE/W 拖拽（对边锚定）、
+> 最小尺寸 560×200（滑杆仍 200px 可用）、hover 手柄反馈。复核修复波（Oracle 评审 6 项）：
+> `resizeRect` per-dialog 下限以视口上限夹取 + 增长按锚定边可用空间夹取（原点零漂移）、
+> 新增 `clampDialogRect` + window resize 重夹取、非主键/pointer capture 守卫、
+> 旧枚举 `hasOwnProperty` 校验、手柄外移避让滚动条。web 417 → 446 tests（44 files）/
+> sdk 46 / Rust 564 tests；clippy 零警告 / drift 2 passed / web build / tui 71 /
+> check-version 0.17.2 / desktop-ui；PROTOCOL_VERSION 保持 0.13.0；工作区 0.17.1 → 0.17.2。
 > (17 crates + agentj-ui monorepo：Web / TUI / Desktop + SDK + tokens，
 > npm workspaces `apps/*`+`packages/*`，共享 SDK + protocol + tokens，
 > WebSocket 网关同端口复用，后端零改造，frontend stays in-repo)
@@ -135,6 +153,13 @@
 ## Project Status
 
 AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + 可插拔模块」架构。
+v0.17.2 已落地：**界面修复（显示设置 px 滑杆 + 可缩放弹窗，无协议变更）**
+（(1) 显示字号：`displayPrefsStore` 转像素数值 + 旧枚举迁移，`SettingsDisplayPanel`
+每区一行滑杆/数字/px + 行高密度横排，消除弹窗纵向拉伸；WorkspaceShell 注入 px；
+(2) 弹窗缩放：`ModalDialog` `.aj-dialog-frame` + 8 向手柄 + `dialogResize.ts`
+几何（对边锚定/最小 320×200/视口夹取/可覆盖下限，设置 560px）；实机 Playwright 验证。
+web 417 → 446 tests（44 files）/ sdk 46 / Rust 564 tests / tui 71；
+PROTOCOL_VERSION 保持 0.13.0；工作区 0.17.1 → 0.17.2）。
 v0.17.1 已落地：**v0.17.0 验收修复（BUG-008，无协议变更）**
 （窄视口 375–390px 左栏会话列表菜单横向夹取 + 「过滤/排序」飞出层方向自适应
 `.aj-menu__flyout--left`；`clampMenuLeft` / `chooseFlyoutSide` 导出纯函数 + resize 重算；
@@ -273,7 +298,7 @@ Desktop：Tauri v2 壳套 `apps/web` 产物，四件套 deb/AppImage/dmg/msi，
   46 tests）
 - `npm --prefix agentj-ui run generate --workspace=@agentj/sdk` — 生成 `METHODS` 常量
   （`protocol/methods.json` → `agentj-ui/packages/sdk/src/methods.ts`）
-- `npm --prefix agentj-ui test --workspace=@agentj/web` — Web 单测（vitest，401 tests / 43 files）
+- `npm --prefix agentj-ui test --workspace=@agentj/web` — Web 单测（vitest，446 tests / 44 files）
 - `npm --prefix agentj-ui run build --workspace=@agentj/web` — Web 构建（`tsc -b && vite build`）
   > 注意：Vite dev server 不监听 root 之外的 `packages/sdk` 源（alias 直连源码）；
   > 改动 SDK 后须重启 dev server，否则运行陈旧的 `METHODS`（v0.16.3「加载中」根因）。
@@ -282,7 +307,7 @@ Desktop：Tauri v2 壳套 `apps/web` 产物，四件套 deb/AppImage/dmg/msi，
 - `bun --cwd agentj-ui/apps/tui test` — TUI 单测（含 mock WS e2e，71 tests）
 - `./agentj-ui/apps/desktop/check-artifacts.sh linux` — Desktop 产物校验
 - `node agentj-ui/apps/desktop/check-desktop-ui.mjs` — Desktop 前端产物/配置一致性校验
-- `./scripts/check-version.sh` — 版本一致性（Cargo + sdk VERSION + desktop 均为 0.17.0，
+- `./scripts/check-version.sh` — 版本一致性（Cargo + sdk VERSION + desktop 均为 0.17.2，
   PROTOCOL_VERSION 0.13.0 + `protocol/methods.json` 版本 0.13.0）
 
 ### CI Pipelines (GitHub Actions)
@@ -344,7 +369,7 @@ Desktop：Tauri v2 壳套 `apps/web` 产物，四件套 deb/AppImage/dmg/msi，
   为 drift 门禁后第一门）。
 - `agentj-ui/packages/sdk`：共享 SDK（`src/client.ts` RpcClient +
   `src/router.ts` ResponseRouter/RpcTransport + `src/config.ts`
-   `VERSION="0.17.0"` + `PROTOCOL_VERSION="0.13.0"` + `resolveWsUrl` + `src/methods.ts` METHODS
+   `VERSION="0.17.2"` + `PROTOCOL_VERSION="0.13.0"` + `resolveWsUrl` + `src/methods.ts` METHODS
   + `transports/websocket.ts` WebSocketTransport
   + `transports/tcp.ts` TcpTransport；`RpcClient.request` 拦截空/未定义 method（v0.16.3），
   被 Web/TUI/Desktop 同源消费）。
@@ -368,6 +393,10 @@ Desktop：Tauri v2 壳套 `apps/web` 产物，四件套 deb/AppImage/dmg/msi，
   `project_root` 随 `session/new` 打通；`SettingsDialog` 分类 = 连接/显示/项目/演示数据
   （排序/过滤迁入 `SessionListMenu`，`sidebarPrefsStore` 持久化 `agentj.sidebarPrefs`）；
   `ModalDialog` 模块级模态栈（嵌套弹窗仅栈顶响应 Esc/遮罩）；
+  **v0.17.2 界面修复**：显示字号逐区 px（`FONT_SIZE_LIMITS` + 旧枚举迁移）+
+  `SettingsDisplayPanel` 每区一行「滑杆 + number + px」/ `ModalDialog`
+  `.aj-dialog-frame` + 8 向缩放手柄 + `dialogResize.ts`（对边锚定/夹取，
+  设置下限 560px）；
   `layoutStore` 宽度/面板持久化，
   `todoState`/`changes` reducer，`deriveChanges` 半推导退役；
   布局/会话/Composer/对话/轨迹/Hero/对话框拆 `components/*.css`，vitest + vite build）。
@@ -376,9 +405,9 @@ Desktop：Tauri v2 壳套 `apps/web` 产物，四件套 deb/AppImage/dmg/msi，
   completion/theme/usage + runview 只读 TODO 区块（revision 门控） +
   mock WS e2e + sidebar 文本版 UnifiedSidebar 32char；`testRender` 快照）。
 - `agentj-ui/apps/desktop`：Desktop 壳（Tauri v2，`frontendDist` →
-    `../../web/dist`，与 workspace 版本同源 `0.17.0`，四件套打包）。
+    `../../web/dist`，与 workspace 版本同源 `0.17.2`，四件套打包）。
 - `agentj-ui/` 根：`package.json` workspaces `["apps/*","packages/*"]`
-  （frontend stays in-repo，前端不拆独立仓，与 Rust 共享 0.17.0）。
+  （frontend stays in-repo，前端不拆独立仓，与 Rust 共享 0.17.2）。
 - **守护内核（v0.4 已实现）**：统一 Connection 抽象 + `serve --port`
   常驻多客户端 + `run --attach` + `dashboard`（见 daemon-kernel 设计文档）。
 

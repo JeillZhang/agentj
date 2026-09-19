@@ -118,7 +118,7 @@ test("injects display font vars and density", () => {
   expect(root.style.getPropertyValue("--aj-font-code")).toBe("12px");
   expect(root.style.getPropertyValue("--aj-lh-conv")).toBe("1.55");
   expect(root.dataset.density).toBe("default");
-  act(() => { saveDisplayPrefs({ fontConversation: "lg", density: "compact", lineHeight: "relaxed" }); });
+  act(() => { saveDisplayPrefs({ fontConversation: 17, density: "compact", lineHeight: "relaxed" }); });
   expect(root.style.getPropertyValue("--aj-font-conv")).toBe("17px");
   expect(root.style.getPropertyValue("--aj-lh-conv")).toBe("1.8");
   expect(root.dataset.density).toBe("compact");
