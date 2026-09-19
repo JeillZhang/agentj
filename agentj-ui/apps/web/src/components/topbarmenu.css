@@ -174,6 +174,24 @@
   right: auto;
   left: -8px;
 }
+/* Narrow-viewport variant (BUG-008): fly out to the LEFT of the row; explicit
+   mirror of --right because the base .aj-menu__flyout already right-anchors. */
+.aj-menu__flyout--left {
+  left: auto;
+  right: calc(100% + 6px);
+}
+.aj-menu__flyout--left::before {
+  left: auto;
+  right: -8px;
+}
+/* BUG-008: at narrow viewports the portaled session menu sits near the right
+   edge, so a 200px left flyout would still leave the left edge of the screen;
+   shrink only these short flyouts so the left-flipped variant fits fully. */
+@media (max-width: 480px) {
+  .aj-sidebar__menu .aj-menu__flyout {
+    min-width: 160px;
+  }
+}
 .aj-menu__item--danger {
   color: var(--aj-error);
 }

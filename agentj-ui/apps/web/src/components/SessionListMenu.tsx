@@ -25,6 +25,21 @@ type FlyoutKind = null | "filter" | "sort";
 
 const FLYOUT_CLOSE_DELAY_MS = 120;
 
+export const MENU_MIN_WIDTH = 200;
+export const MENU_EDGE_MARGIN = 8;
+export const FLYOUT_GAP = 6;
+
+export type FlyoutSide = "right" | "left";
+
+export function clampMenuLeft(triggerLeft: number, menuWidth: number, viewportWidth: number): number {
+  const maxLeft = viewportWidth - menuWidth - MENU_EDGE_MARGIN;
+  return Math.max(MENU_EDGE_MARGIN, Math.min(triggerLeft, maxLeft));
+}
+
+export function chooseFlyoutSide(rowRight: number, flyoutWidth: number, viewportWidth: number): FlyoutSide {
+  return rowRight + FLYOUT_GAP + flyoutWidth <= viewportWidth ? "right" : "left";
+}
+
 const FILTER_OPTIONS: ReadonlyArray<{ value: SidebarFilter; label: string }> = [
   { value: "all", label: "全部" },
   { value: "favorites", label: "仅收藏" },
@@ -38,6 +53,7 @@ const SORT_OPTIONS: ReadonlyArray<{ value: SidebarSort; label: string }> = [
 export default function SessionListMenu({ deletableCount, busy, onCleanup }: Props) {
   const [open, setOpen] = useState(false);
   const [flyout, setFlyout] = useState<FlyoutKind>(null);
+  const [flyoutSide, setFlyoutSide] = useState<FlyoutSide>("right");
   const [prefs, setPrefs] = useState<SidebarPrefs>(() => loadSidebarPrefs());
   // Fixed viewport coordinates for the portaled menu (trigger-relative at open).
   const [menuPos, setMenuPos] = useState({ top: 0, left: 0 });
@@ -67,20 +83,33 @@ export default function SessionListMenu({ deletableCount, busy, onCleanup }: Pro
     }, FLYOUT_CLOSE_DELAY_MS);
   }, [cancelClose]);
 
+  const measureFlyoutSide = useCallback((kind: Exclude<FlyoutKind, null>): FlyoutSide => {
+    const trigger = kind === "filter" ? filterTriggerRef.current : sortTriggerRef.current;
+    const rect = trigger?.getBoundingClientRect();
+    if (!rect) return "right";
+    return chooseFlyoutSide(rect.right, MENU_MIN_WIDTH, window.innerWidth);
+  }, []);
+
   const openFlyout = useCallback(
     (kind: Exclude<FlyoutKind, null>) => {
       cancelClose();
+      setFlyoutSide(measureFlyoutSide(kind));
       setFlyout(kind);
     },
-    [cancelClose],
+    [cancelClose, measureFlyoutSide],
   );
 
   const toggleFlyout = useCallback(
     (kind: Exclude<FlyoutKind, null>) => {
       cancelClose();
-      setFlyout((prev) => (prev === kind ? null : kind));
+      if (flyout === kind) {
+        setFlyout(null);
+      } else {
+        setFlyoutSide(measureFlyoutSide(kind));
+        setFlyout(kind);
+      }
     },
-    [cancelClose],
+    [cancelClose, flyout, measureFlyoutSide],
   );
 
   const closeAll = useCallback(() => {
@@ -102,8 +131,13 @@ export default function SessionListMenu({ deletableCount, busy, onCleanup }: Pro
   const updateMenuPos = useCallback(() => {
     const rect = triggerRef.current?.getBoundingClientRect();
     if (!rect) return;
-    setMenuPos({ top: rect.bottom + 6, left: rect.left });
-  }, []);
+    const menuWidth = menuRef.current?.getBoundingClientRect().width || MENU_MIN_WIDTH;
+    setMenuPos({
+      top: rect.bottom + 6,
+      left: clampMenuLeft(rect.left, menuWidth, window.innerWidth),
+    });
+    if (flyout) setFlyoutSide(measureFlyoutSide(flyout));
+  }, [flyout, measureFlyoutSide]);
 
   useLayoutEffect(() => {
     if (!open) return;
@@ -156,6 +190,7 @@ export default function SessionListMenu({ deletableCount, busy, onCleanup }: Pro
   }, [cancelClose, open]);
 
   const cleanupDisabled = deletableCount === 0 || busy === true;
+  const flyoutClass = `aj-menu__flyout ${flyoutSide === "left" ? "aj-menu__flyout--left" : "aj-menu__flyout--right"}`;
 
   const runCleanup = useCallback(() => {
     if (cleanupDisabled) return;
@@ -275,7 +310,7 @@ export default function SessionListMenu({ deletableCount, busy, onCleanup }: Pro
               {flyout === "filter" && (
                 <div
                   id="aj-session-menu-filter"
-                  className="aj-menu__flyout aj-menu__flyout--right"
+                  className={flyoutClass}
                   role="menu"
                   aria-label="过滤"
                   onMouseEnter={cancelClose}
@@ -331,7 +366,7 @@ export default function SessionListMenu({ deletableCount, busy, onCleanup }: Pro
               {flyout === "sort" && (
                 <div
                   id="aj-session-menu-sort"
-                  className="aj-menu__flyout aj-menu__flyout--right"
+                  className={flyoutClass}
                   role="menu"
                   aria-label="排序"
                   onMouseEnter={cancelClose}
