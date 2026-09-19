@@ -1,37 +1,47 @@
 # Summary & Next
 
 > 本文件仅保留**当前正在开发**功能设计文档的内容：进度、剩余步骤、遗留问题与下一步。同步更新时**替换**（不要追加）前一功能内容。
-> 当前功能：**远程访问修复（v0.16.2）—— bugfix，无协议变更**
-> ——来源=用户反馈：远程通过 http://192.168.3.31/ 打开 Web 工作台报
-> `kernel closed on ws://127.0.0.1:4096/ws`；连接指定 IP 后刷新断连
+> 当前功能：**Web 工作台修复（v0.16.3）—— 项目列表迁入顶栏菜单 + 文件树永久「加载中」修复**
+> ——来源=用户反馈：① 左栏「项目」需移至右上角「...」菜单（连接设置下方，二级菜单选择项目）；
+> ② 文件 tab 永久「加载中」，无法显示工作区文件树
 
-## v0.16.2: 远程访问修复 ✅（本次完成）
+## v0.16.3: Web 工作台修复 ✅（本次完成）
 
-- ✅ **(1) 服务端 `--host`（根因：绑定硬编码 127.0.0.1）**：`serve --port` / `dashboard`
-  新增 `--host`（默认仍 127.0.0.1 保持本机信任；`--host 0.0.0.0` 支持局域网/远程直连）；
-  `dashboard` 补齐 `--token`；非回环且无有效 `--token`（含空串）时 stderr 暴露告警；
-  启动日志打印实际 `ws://<host>:<port>/ws`（IPv6 加方括号、端口取实际绑定值）；
-  `listening on ` 行保持兼容（e2e 解析）。
-- ✅ **(2) Web 端页面地址派生（根因：默认回落 127.0.0.1）**：`resolveWsUrl` 新增
-  `location` 输入（无 `VITE_AGENTJ_WS_URL`/显式 host 时取 `location.hostname:4096`；
-  https → wss；`tauri.localhost` 守卫保持明文回环，Desktop 不受影响）；Web App 初始化
-  与「连接设置」手动连接均传入 `window.location`。
-- ✅ **(3) 连接设置持久化（根因：刷新丢失指定 IP）**：手动连接存入
-  `agentj.connection`，刷新自动恢复并重连；连接设置弹窗回填已保存值；
-  显式设置优先于 `VITE_AGENTJ_WS_URL`。
-- ✅ Oracle 评审：无 Critical；2 Important（dashboard 无 `--token` 致告警不可执行 /
-  空 token 压制告警）与 2 Minor（IPv6 与端口打印 / Tauri https scheme 守卫）
-  已全部修复并回归锁定。
-- ✅ TDD 回归锁定：Rust +7 tests（553 → 560）/ SDK +6（37 → 43）/ Web +8（231 → 239）；
-  全量门禁绿（fmt / clippy 零警告 / drift / web build / tui 71 / desktop-ui /
-  check-version）。
-- ✅ 文档同步 + 版本 0.16.1 → 0.16.2（PROTOCOL_VERSION 保持 0.13.0）。
+- ✅ **(1) 项目列表迁入顶栏菜单（无协议变更）**：左栏「项目」区块（项目分组 + 底栏
+  「+ 添加项目」+ 添加对话框）整体移除，迁入 `TopbarMenu` 二级菜单（位于「连接设置」
+  下方）：列出全部项目（当前项 ✓ / `menuitemradio` + `aria-checked`）、选择即切换
+  当前项目（`setCurrentProject` → localStorage + 新 `agentj:current-project-updated`
+  事件）、「＋ 添加项目」复用 ModalDialog；`RunPanel` composer picker 与
+  `UnifiedSidebar`（新建会话归属）经事件同步；侧栏保留扁平最近会话列表；
+  App hero 悬空 `.aj-project-new` 选择器顺带清理；`.gitignore` 加 `.playwright-mcp`。
+- ✅ **(2) 文件树永久「加载中」修复（三层根因链）**：
+  ① 长驻 Vite dev server 不监听 root 之外 `packages/sdk` 源（实测 touch 不失效）
+  → 陈旧 SDK（无 `METHODS.fileList`，PROTOCOL_VERSION 0.12.1）→ `JSON.stringify`
+  丢弃 `method` 字段；
+  ② 内核 `handle_request_from` 对 schema 非法请求回 `-32700` + `id:null` →
+  客户端 Promise 永不 settle → 「加载中」永久；
+  ③ SDK 无 method 校验。
+  修复：内核 `parse_request`（可确定 id → `-32600` 回显 id；语法错误仍 `-32700`+null，
+  对齐 docs/specs/ipc-protocol.md §5）+ SDK `RpcClient.request` 空/未定义 method
+  直接抛 `invalid RPC method`（不再发出畸形帧）；环境侧重启长驻 dev server
+  （本机 5173/4096 已按原参数重启为 0.16.3）。
+- ✅ 实机验证（Playwright，:5174 全栈）：文件 tab 渲染工作区树（README.md /
+  rust-toolchain.toml / 6 个文件；修复前永久「加载中」）；「...」菜单顺序 =
+  连接设置… → 项目 → 继续会话…；子菜单选择/新建项目 → ✓ 标记 + composer picker
+  即时同步 + localStorage 持久化；侧栏无「项目」区块/底栏；内核方法缺失帧已回显
+  id 99 + `-32600`（scratch :14098 实测）。
+- ✅ TDD 回归锁定：Rust +4 tests（560 → 564）/ sdk +3（43 → 46）/ Web +7
+  （239 → 246，含 PR #53 同期 9801187「连接设置持久化对畸形输入加固」+2 与本次 +5）；
+  全量门禁绿（fmt / clippy 零警告 / drift 2 passed / web build /
+  tui 71 / desktop-ui / check-version 0.16.3）。
 
 ## 遗留 / 下一步
 
-- 无开放 bug。
-- 待确认：新建会话仍会自动收藏（v0.11 遗留，测试 `new session becomes active and favorited`）
-  ——用户尚未表态，暂保留。
+- 待确认：新建会话仍会自动收藏（v0.11 遗留，测试 `new session becomes active and
+  favorited`）——用户尚未表态，暂保留。
+- 观察（非本批改动）：Vite dev server 不监听 root 外 `packages/sdk`（alias 直连源码）
+  —— 改 SDK 后需重启 dev server（已记入 AGENTS.md Commands 注记）；内核回显 +
+  SDK 拦截后同类故障将「快速失败」（显示「加载失败」+ 重试）而非永久加载。
 - **下一特性（已确认，方案 2）：内核直接托管 Web UI** —— `serve` 增加静态文件服务
   （axum `ServeDir` 托管 `agentj-ui/apps/web/dist`），远程直接打开
   `http://<host>:4096/` 即用、WS 同源零配置；按 feature 流程（design → plan → dev）
