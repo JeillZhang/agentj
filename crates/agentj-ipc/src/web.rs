@@ -80,7 +80,14 @@ pub fn origin_matches_host(headers: &axum::http::HeaderMap) -> bool {
 /// Whitelist `next` redirect targets to same-site absolute paths (防开放重定向).
 pub fn safe_next(next: Option<&str>) -> String {
     match next {
-        Some(n) if n.starts_with('/') && !n.starts_with("//") => n.to_string(),
+        Some(n)
+            if n.starts_with('/')
+                && !n.starts_with("//")
+                && !n.contains('\\')
+                && !n.chars().any(char::is_control) =>
+        {
+            n.to_string()
+        }
         _ => "/".to_string(),
     }
 }
@@ -310,6 +317,10 @@ mod tests {
         assert_eq!(safe_next(Some("/ok?x=1")), "/ok?x=1");
         assert_eq!(safe_next(Some("//evil")), "/");
         assert_eq!(safe_next(Some("https://evil")), "/");
+        // Browsers normalize `\` to `/` for special schemes, so `/\evil` would
+        // become `//evil` (open redirect); control chars are rejected too.
+        assert_eq!(safe_next(Some("/\\evil")), "/");
+        assert_eq!(safe_next(Some("/\tevil")), "/");
     }
     #[test]
     fn sessions_roundtrip_and_empty_token_normalizes_to_none() {
