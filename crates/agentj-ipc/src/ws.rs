@@ -271,4 +271,38 @@ mod tests {
             assert!(conn.recv().await.is_none(), "close frame must yield EOF");
         })
     }
+
+    #[test]
+    fn supply_initialize_token_injects_missing_token() {
+        let raw = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocol_version":"0.13.0"}}"#;
+        let out = supply_initialize_token(raw, "secret");
+        let value: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(value["params"]["token"], "secret");
+        assert_eq!(value["params"]["protocol_version"], "0.13.0");
+    }
+
+    #[test]
+    fn supply_initialize_token_preserves_matching_token_verbatim() {
+        let raw = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"token":"secret"}}"#;
+        assert_eq!(supply_initialize_token(raw, "secret"), raw);
+    }
+
+    #[test]
+    fn supply_initialize_token_replaces_wrong_token() {
+        let raw = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"token":"wrong"}}"#;
+        let value: serde_json::Value = supply_initialize_token(raw, "secret").parse().unwrap();
+        assert_eq!(value["params"]["token"], "secret");
+    }
+
+    #[test]
+    fn supply_initialize_token_passes_through_non_initialize_and_malformed() {
+        let run = r#"{"jsonrpc":"2.0","id":2,"method":"session/run","params":{}}"#;
+        assert_eq!(supply_initialize_token(run, "secret"), run);
+        assert_eq!(supply_initialize_token("not json", "secret"), "not json");
+        let array_params = r#"{"jsonrpc":"2.0","id":3,"method":"initialize","params":[]}"#;
+        assert_eq!(
+            supply_initialize_token(array_params, "secret"),
+            array_params
+        );
+    }
 }
