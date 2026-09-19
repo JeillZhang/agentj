@@ -1,8 +1,9 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ChangeEvent, KeyboardEvent as ReactKeyboardEvent, ReactNode } from "react";
 import OptionPopover from "./OptionPopover";
 import { loadComposerPrefs, saveComposerPrefs } from "../layoutStore";
 import type { ComposerAgent, ComposerPrefs } from "../layoutStore";
+import { loadCurrentProject, loadProjects } from "../projectStore";
 import "./options.css";
 
 type OpenId = "model" | "agent" | "entropy" | null;
@@ -64,6 +65,26 @@ export default function ComposerOptions({ model = null, children }: ComposerOpti
   const modelRef = useRef<HTMLButtonElement>(null);
   const agentRef = useRef<HTMLButtonElement>(null);
   const entropyRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    const applyFor = (id: string) => {
+      const project = loadProjects().find((p) => p.id === id);
+      if (!project) return;
+      const patch: Partial<ComposerPrefs> = {};
+      if (project.defaultModel) patch.model = project.defaultModel;
+      if (project.defaultAgent) patch.agent = project.defaultAgent as ComposerAgent;
+      if (Object.keys(patch).length === 0) return;
+      setPrefs((prev) => ({ ...prev, ...patch }));
+      saveComposerPrefs(patch);
+    };
+    applyFor(loadCurrentProject());
+    const onCurrent = (event: Event) => {
+      const id = (event as CustomEvent<{ id?: string }>).detail?.id;
+      if (typeof id === "string") applyFor(id);
+    };
+    window.addEventListener("agentj:current-project-updated", onCurrent);
+    return () => window.removeEventListener("agentj:current-project-updated", onCurrent);
+  }, []);
 
   const modelName = model ?? prefs.model;
   const triggerRefs = { model: modelRef, agent: agentRef, entropy: entropyRef };

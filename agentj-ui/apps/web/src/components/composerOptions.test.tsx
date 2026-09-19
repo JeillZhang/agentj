@@ -1,7 +1,9 @@
 import "@testing-library/jest-dom/vitest";
 import { beforeEach, expect, test } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { act, render, screen, fireEvent } from "@testing-library/react";
 import ComposerOptions from "./ComposerOptions";
+import { createProject, setCurrentProject, updateProject } from "../projectStore";
+import { saveComposerPrefs } from "../layoutStore";
 beforeEach(() => localStorage.clear());
 test("three triggers and mutual exclusion", () => {
   render(<ComposerOptions model="deepseek-chat" />);
@@ -58,4 +60,36 @@ test("second click on a trigger closes its popover", () => {
   fireEvent.click(trigger);
   expect(trigger).toHaveAttribute("aria-expanded", "true");
   expect(document.querySelector(".pop-model")).not.toBeNull();
+});
+test("applies project defaults when the current project changes", () => {
+  localStorage.clear();
+  const alpha = createProject("Alpha");
+  updateProject(alpha.id, { defaultModel: "deepseek-chat", defaultAgent: "plan" });
+  render(<ComposerOptions />);
+  act(() => {
+    setCurrentProject(alpha.id);
+  });
+  expect(localStorage.getItem("agentj.composer.model")).toBe("deepseek-chat");
+  expect(localStorage.getItem("agentj.composer.agent")).toBe("plan");
+  expect(screen.getByRole("button", { name: /deepseek-chat/ })).toBeTruthy();
+});
+test("keeps explicit prefs when the project has no defaults", () => {
+  localStorage.clear();
+  saveComposerPrefs({ model: "custom-model", agent: "build" });
+  const beta = createProject("Beta");
+  render(<ComposerOptions />);
+  act(() => {
+    setCurrentProject(beta.id);
+  });
+  expect(localStorage.getItem("agentj.composer.model")).toBe("custom-model");
+  expect(localStorage.getItem("agentj.composer.agent")).toBe("build");
+});
+test("applies the current project defaults once on mount", () => {
+  localStorage.clear();
+  const alpha = createProject("Alpha");
+  updateProject(alpha.id, { defaultModel: "deepseek-chat", defaultAgent: "plan" });
+  setCurrentProject(alpha.id);
+  render(<ComposerOptions />);
+  expect(localStorage.getItem("agentj.composer.model")).toBe("deepseek-chat");
+  expect(localStorage.getItem("agentj.composer.agent")).toBe("plan");
 });
