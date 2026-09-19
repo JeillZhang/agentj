@@ -64,6 +64,9 @@ enum Commands {
         /// Max concurrent TCP connections for resident mode.
         #[arg(long, default_value_t = 16)]
         max_connections: usize,
+        /// Directory containing the built Web UI (index.html); overrides auto-discovery.
+        #[arg(long)]
+        web_dist: Option<std::path::PathBuf>,
     },
     /// Serve the JSON-RPC API over TCP for the Web Dashboard.
     Dashboard {
@@ -76,6 +79,9 @@ enum Commands {
         /// Require this access token in initialize when serving remote clients.
         #[arg(long)]
         token: Option<String>,
+        /// Directory containing the built Web UI (index.html); overrides auto-discovery.
+        #[arg(long)]
+        web_dist: Option<std::path::PathBuf>,
     },
 }
 
@@ -192,6 +198,7 @@ struct TcpServeOptions {
     port: u16,
     token: Option<String>,
     max_connections: usize,
+    web_dist: Option<std::path::PathBuf>,
     trajectory_store: Option<Arc<agentj_ipc::trajectory::TrajectoryStore>>,
 }
 
@@ -226,6 +233,44 @@ fn insecure_bind_warning(host: &str, token: Option<&str>) -> Option<String> {
     ))
 }
 
+/// Four-tier web dist discovery: explicit flag/env (stop on invalid) then cwd/exe-relative.
+fn resolve_web_dist(
+    explicit: Option<std::path::PathBuf>,
+    env: Option<std::path::PathBuf>,
+    cwd: &Path,
+    exe_dir: &Path,
+) -> Option<std::path::PathBuf> {
+    for (candidate, source) in [(explicit, "--web-dist"), (env, "AGENTJ_WEB_DIST")] {
+        let Some(dir) = candidate else { continue };
+        if dir.join("index.html").is_file() {
+            return Some(dir);
+        }
+        eprintln!(
+            "warning: {source} path {} has no index.html; static web UI disabled",
+            dir.display()
+        );
+        return None; // explicit source: stop discovery, never silently serve another dir
+    }
+    [
+        cwd.join("agentj-ui/apps/web/dist"),
+        exe_dir.join("../share/agentj/web"),
+        exe_dir.join("web"),
+    ]
+    .into_iter()
+    .find(|d| d.join("index.html").is_file())
+}
+
+/// Gather the process-level discovery inputs and resolve the web dist directory.
+fn discover_web_dist(explicit: Option<std::path::PathBuf>) -> Option<std::path::PathBuf> {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(Path::to_path_buf))
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let env = std::env::var_os("AGENTJ_WEB_DIST").map(std::path::PathBuf::from);
+    resolve_web_dist(explicit, env, &cwd, &exe_dir)
+}
+
 async fn serve_tcp(
     kernel: Kernel,
     session: Arc<dyn SessionStore>,
@@ -235,6 +280,7 @@ async fn serve_tcp(
     mcp_manager: Arc<McpConnectionManager>,
 ) -> anyhow::Result<()> {
     let warning = insecure_bind_warning(&options.host, options.token.as_deref());
+    let web_dist = discover_web_dist(options.web_dist.clone());
     let mut tcp = agentj_ipc::tcp::TcpIpcServer::bind(
         &format!("{}:{}", bracket_ipv6(&options.host), options.port),
         kernel,
@@ -245,7 +291,7 @@ async fn serve_tcp(
             token: options.token,
             max_connections: options.max_connections,
             trajectory_store: options.trajectory_store,
-            web_dist: None,
+            web_dist: web_dist.clone(),
         },
     )
     .await?;
@@ -256,6 +302,18 @@ async fn serve_tcp(
         bracket_ipv6(&options.host),
         local.port()
     );
+    match &web_dist {
+        Some(dir) => println!(
+            "web ui on http://{}:{}/ (dist: {})",
+            bracket_ipv6(&options.host),
+            local.port(),
+            dir.display()
+        ),
+        None => eprintln!(
+            "warning: web dist not found; build it via `npm --prefix agentj-ui run build \
+             --workspace=@agentj/web` or pass --web-dist <PATH>"
+        ),
+    }
     if let Some(warning) = warning {
         eprintln!("{warning}");
     }
@@ -535,6 +593,7 @@ async fn main() -> anyhow::Result<()> {
             host,
             token,
             max_connections,
+            web_dist,
         }) => {
             serve_tcp(
                 kernel,
@@ -546,13 +605,19 @@ async fn main() -> anyhow::Result<()> {
                     port,
                     token,
                     max_connections,
+                    web_dist,
                     trajectory_store: Some(Arc::clone(&trajectory_store)),
                 },
                 mcp_manager.clone(),
             )
             .await?;
         }
-        Some(Commands::Dashboard { port, host, token }) => {
+        Some(Commands::Dashboard {
+            port,
+            host,
+            token,
+            web_dist,
+        }) => {
             serve_tcp(
                 kernel,
                 session_for_ipc,
@@ -563,6 +628,7 @@ async fn main() -> anyhow::Result<()> {
                     port,
                     token,
                     max_connections: 16,
+                    web_dist,
                     trajectory_store: Some(Arc::clone(&trajectory_store)),
                 },
                 mcp_manager.clone(),
@@ -802,5 +868,104 @@ mod tests {
         assert_eq!(bracket_ipv6("[::1]"), "[::1]");
         assert_eq!(bracket_ipv6("0.0.0.0"), "0.0.0.0");
         assert_eq!(bracket_ipv6("192.168.3.31"), "192.168.3.31");
+    }
+
+    // std temp dirs (no new dev-deps; CLI has no tempfile).
+    fn temp_dist_dir(tag: &str, with_index: bool) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("agentj-cli-web-{}-{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        if with_index {
+            std::fs::write(dir.join("index.html"), "<html></html>").unwrap();
+        }
+        dir
+    }
+
+    #[test]
+    fn resolve_web_dist_prefers_explicit_and_stops_on_invalid() {
+        let explicit = temp_dist_dir("explicit", true);
+        let cwd = temp_dist_dir("cwd-valid", true);
+        assert_eq!(
+            resolve_web_dist(Some(explicit.clone()), None, &cwd, &cwd),
+            Some(explicit.clone())
+        );
+        let bad = temp_dist_dir("explicit-bad", false);
+        assert_eq!(
+            resolve_web_dist(Some(bad), None, &cwd, &cwd),
+            None,
+            "invalid explicit source must stop discovery"
+        );
+        std::fs::remove_dir_all(&explicit).ok();
+        std::fs::remove_dir_all(&cwd).ok();
+    }
+
+    #[test]
+    fn resolve_web_dist_falls_back_to_cwd_and_env_order() {
+        let cwd = temp_dist_dir("cwd-order", false);
+        let env_dir = temp_dist_dir("env-order", true);
+        assert_eq!(
+            resolve_web_dist(None, Some(env_dir.clone()), &cwd, &cwd),
+            Some(env_dir.clone())
+        );
+        let cwd_valid = temp_dist_dir("cwd-valid2", true);
+        let cwd_layout = temp_dist_dir("cwd-layout", false);
+        let nested = cwd_layout.join("agentj-ui/apps/web/dist");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(nested.join("index.html"), "<html></html>").unwrap();
+        assert_eq!(
+            resolve_web_dist(None, None, &cwd_layout, &cwd_valid),
+            Some(nested.clone())
+        );
+        std::fs::remove_dir_all(&cwd).ok();
+        std::fs::remove_dir_all(&env_dir).ok();
+        std::fs::remove_dir_all(&cwd_valid).ok();
+        std::fs::remove_dir_all(&cwd_layout).ok();
+    }
+
+    #[test]
+    fn resolve_web_dist_uses_exe_relative_candidate() {
+        let base = std::env::temp_dir().join(format!("agentj-cli-exe-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let exe_dir = base.join("bin");
+        let share = base.join("share/agentj/web");
+        std::fs::create_dir_all(&exe_dir).unwrap();
+        std::fs::create_dir_all(&share).unwrap();
+        std::fs::write(share.join("index.html"), "<html></html>").unwrap();
+        let empty_cwd = base.join("nowhere");
+        let found = resolve_web_dist(None, None, &empty_cwd, &exe_dir);
+        assert_eq!(
+            found.map(|p| p.canonicalize().unwrap()),
+            Some(share.canonicalize().unwrap()),
+            "exe-relative ../share/agentj/web must be discovered"
+        );
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn serve_and_dashboard_accept_web_dist_flag() {
+        let cli =
+            Cli::try_parse_from(["agentj", "serve", "--port", "0", "--web-dist", "/tmp/dist"])
+                .unwrap();
+        match cli.command {
+            Some(Commands::Serve { web_dist, .. }) => {
+                assert_eq!(web_dist.as_deref(), Some(std::path::Path::new("/tmp/dist")))
+            }
+            _ => panic!("expected serve subcommand"),
+        }
+        let cli = Cli::try_parse_from([
+            "agentj",
+            "dashboard",
+            "--port",
+            "4096",
+            "--web-dist",
+            "/tmp/dist",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Commands::Dashboard { web_dist, .. }) => {
+                assert_eq!(web_dist.as_deref(), Some(std::path::Path::new("/tmp/dist")))
+            }
+            _ => panic!("expected dashboard subcommand"),
+        }
     }
 }
