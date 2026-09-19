@@ -132,6 +132,12 @@
   outline-offset: 1px;
 }
 
+.aj-settings-foot {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .aj-settings-nav__item,
   .aj-settings-switch {
