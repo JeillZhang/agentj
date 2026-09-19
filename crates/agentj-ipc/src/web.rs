@@ -286,9 +286,10 @@ pub fn build_router(
     let ws_route = axum::routing::get({
         let state = state.clone();
         move |axum::extract::Query(q): axum::extract::Query<crate::ws::WsQuery>,
-              ws: axum::extract::WebSocketUpgrade| {
+              ws: axum::extract::WebSocketUpgrade,
+              headers: axum::http::HeaderMap| {
             let state = state.clone();
-            async move { crate::ws::ws_upgrade(state, q, peer, ws).await }
+            async move { crate::ws::ws_upgrade(state, q, peer, ws, headers).await }
         }
     });
     let mut router = axum::Router::new().route("/ws", ws_route);

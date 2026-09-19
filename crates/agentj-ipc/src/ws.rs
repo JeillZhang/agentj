@@ -26,6 +26,9 @@ pub struct WsConnection {
     peer: String,
     stream: SplitStream<WebSocket>,
     tx: mpsc::UnboundedSender<String>,
+    /// Cookie-authenticated upgrades are exempt from `initialize.token` (design
+    /// D4); the upgrade layer supplies the configured token on their behalf.
+    init_token: Option<String>,
 }
 
 impl WsConnection {
@@ -45,8 +48,35 @@ impl WsConnection {
             peer,
             stream,
             tx,
+            init_token: None,
         }
     }
+
+    /// Mark this connection as pre-authenticated at the upgrade layer (cookie
+    /// channel): the given token is supplied to `initialize` on the wire.
+    pub fn with_init_token(mut self, token: Option<String>) -> Self {
+        self.init_token = token;
+        self
+    }
+}
+
+/// Supply `token` to an `initialize` request lacking one. Non-initialize and
+/// non-object payloads pass through untouched; a matching token is left as-is.
+fn supply_initialize_token(raw: &str, token: &str) -> String {
+    let Ok(mut value) = serde_json::from_str::<serde_json::Value>(raw) else {
+        return raw.to_string();
+    };
+    if value.get("method").and_then(|m| m.as_str()) != Some("initialize") {
+        return raw.to_string();
+    }
+    let Some(params) = value.get_mut("params").and_then(|p| p.as_object_mut()) else {
+        return raw.to_string();
+    };
+    if params.get("token").and_then(|t| t.as_str()) == Some(token) {
+        return raw.to_string();
+    }
+    params.insert("token".into(), serde_json::Value::String(token.to_string()));
+    serde_json::to_string(&value).unwrap_or_else(|_| raw.to_string())
 }
 
 #[async_trait::async_trait]
@@ -65,7 +95,13 @@ impl Connection for WsConnection {
     async fn recv(&mut self) -> Option<Result<String, IpcError>> {
         loop {
             match self.stream.next().await {
-                Some(Ok(Message::Text(text))) => return Some(Ok(text.to_string())),
+                Some(Ok(Message::Text(text))) => {
+                    let line = match self.init_token.as_deref() {
+                        Some(token) => supply_initialize_token(&text, token),
+                        None => text.to_string(),
+                    };
+                    return Some(Ok(line));
+                }
                 Some(Ok(Message::Close(_))) | None => return None,
                 Some(Ok(_)) => continue, // ping/pong/binary ignored
                 Some(Err(e)) => {
@@ -118,9 +154,14 @@ pub(crate) async fn ws_upgrade(
     query: WsQuery,
     peer: SocketAddr,
     ws: WebSocketUpgrade,
+    headers: axum::http::HeaderMap,
 ) -> Response {
-    // 设计 D6 双通道 ①：upgrade 阶段 ?token= 校验。
-    if state.token.is_some() && state.token.as_deref() != query.token.as_deref() {
+    // 设计 D4 三通道：?token=（不变）/ 有效会话 cookie + 同源 Origin /
+    // initialize.token（不变）。cookie 通道已在升级层完成鉴权。
+    let cookie_authed = state.web.token.is_some()
+        && crate::web::session_cookie(&headers).is_some_and(|sid| state.web.is_valid_session(sid))
+        && crate::web::origin_matches_host(&headers);
+    if state.token.is_some() && state.token.as_deref() != query.token.as_deref() && !cookie_authed {
         return (StatusCode::FORBIDDEN, "missing or invalid token").into_response();
     }
     if state.active_ws.load(Ordering::SeqCst) >= state.max_connections {
@@ -128,11 +169,21 @@ pub(crate) async fn ws_upgrade(
     }
     state.active_ws.fetch_add(1, Ordering::SeqCst);
     let state = state.clone(); // clone the Arc for the upgraded task
+    let required = if cookie_authed {
+        None
+    } else {
+        state.token.clone()
+    };
+    let supplied = if cookie_authed {
+        state.token.clone()
+    } else {
+        None
+    };
     ws.on_upgrade(move |socket| async move {
-        let conn = WsConnection::new(socket, peer.to_string());
+        let conn = WsConnection::new(socket, peer.to_string()).with_init_token(supplied);
         // 设计 D7: WS 连接走既有 serve_connection（注册表/订阅/鉴权零改动）。
         let _ = Arc::clone(&state.shared)
-            .serve_connection(Box::new(conn), state.token.as_deref())
+            .serve_connection(Box::new(conn), required.as_deref())
             .await;
         state.active_ws.fetch_sub(1, Ordering::SeqCst);
     })
