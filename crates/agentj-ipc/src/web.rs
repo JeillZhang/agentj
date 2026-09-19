@@ -1,6 +1,8 @@
 //! Kernel-hosted web UI helpers (design D2/D3/D5): hybrid auth config,
 //! opaque session cookies, origin/next validation and the login page.
 
+use axum::response::IntoResponse as _;
+
 /// Cookie carrying the opaque session id issued after a successful login.
 pub const SESSION_COOKIE: &str = "agentj_session";
 
@@ -117,6 +119,89 @@ pub fn login_page_html(error: Option<&str>, next: &str) -> String {
     )
 }
 
+#[derive(serde::Deserialize)]
+struct LoginQuery {
+    next: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct LoginForm {
+    token: String,
+    next: Option<String>,
+}
+
+fn redirect_found(location: &str) -> axum::response::Response {
+    (
+        axum::http::StatusCode::FOUND,
+        [(axum::http::header::LOCATION, location.to_string())],
+    )
+        .into_response()
+}
+
+/// Validate the submitted token (only when one is configured) and, on success,
+/// issue an opaque session id in a session cookie (no Max-Age) before
+/// redirecting to the whitelisted `next` path.
+async fn submit_login(web: &WebConfig, form: LoginForm) -> axum::response::Response {
+    let expected = web.token.as_deref().unwrap_or_default();
+    if !expected.is_empty() && form.token == expected {
+        let sid = web.issue_session();
+        let mut res = redirect_found(&safe_next(form.next.as_deref()));
+        res.headers_mut().insert(
+            axum::http::header::SET_COOKIE,
+            format!("{SESSION_COOKIE}={sid}; HttpOnly; SameSite=Lax; Path=/")
+                .parse()
+                .expect("valid cookie header"),
+        );
+        res
+    } else {
+        (
+            axum::http::StatusCode::UNAUTHORIZED,
+            axum::response::Html(login_page_html(
+                Some("访问令牌无效"),
+                &safe_next(form.next.as_deref()),
+            )),
+        )
+            .into_response()
+    }
+}
+
+/// Revoke the caller's session if present and clear the cookie (`Max-Age=0`).
+async fn logout(web: &WebConfig, headers: axum::http::HeaderMap) -> axum::response::Response {
+    if let Some(sid) = session_cookie(&headers) {
+        web.revoke_session(sid);
+    }
+    let mut res = redirect_found("/login");
+    res.headers_mut().insert(
+        axum::http::header::SET_COOKIE,
+        format!("{SESSION_COOKIE}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0")
+            .parse()
+            .expect("valid cookie header"),
+    );
+    res
+}
+
+/// Register the credential endpoints. They are deliberately **not** gated (T5
+/// wraps only the static surface), so a signed-out browser cannot loop.
+fn auth_routes(router: axum::Router, web: std::sync::Arc<WebConfig>) -> axum::Router {
+    let login_get = |axum::extract::Query(q): axum::extract::Query<LoginQuery>| async move {
+        axum::response::Html(login_page_html(None, &safe_next(q.next.as_deref())))
+    };
+    let login_post = {
+        let web = web.clone();
+        move |form: axum::extract::Form<LoginForm>| {
+            let web = web.clone();
+            async move { submit_login(&web, form.0).await }
+        }
+    };
+    let logout_post = move |headers: axum::http::HeaderMap| {
+        let web = web.clone();
+        async move { logout(&web, headers).await }
+    };
+    router
+        .route("/login", axum::routing::get(login_get).post(login_post))
+        .route("/logout", axum::routing::post(logout_post))
+}
+
 /// Build the HTTP router for one accepted connection: the `/ws` upgrade route
 /// plus — when a dist was resolved — the static SPA surface. Cache headers are
 /// applied per service (`Router::layer` would leak them onto `/ws`), the root
@@ -136,6 +221,7 @@ pub fn build_router(
         }
     });
     let mut router = axum::Router::new().route("/ws", ws_route);
+    router = auth_routes(router, state.web.clone());
     if let Some(dist) = state.web.dist.clone() {
         let spa = tower_http::services::ServeDir::new(&dist).fallback(
             tower_http::services::ServeFile::new(dist.join("index.html")),
@@ -223,6 +309,33 @@ mod tests {
         (status, headers, String::from_utf8_lossy(&body).to_string())
     }
 
+    async fn form_post(
+        router: axum::Router,
+        path: &str,
+        body: &str,
+    ) -> (axum::http::StatusCode, axum::http::HeaderMap, String) {
+        use tower::util::ServiceExt;
+        let res = router
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri(path)
+                    .header(
+                        axum::http::header::CONTENT_TYPE,
+                        "application/x-www-form-urlencoded",
+                    )
+                    .body(axum::body::Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let (status, headers) = (res.status(), res.headers().clone());
+        let bytes = axum::body::to_bytes(res.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        (status, headers, String::from_utf8_lossy(&bytes).to_string())
+    }
+
     #[tokio::test]
     async fn serves_index_assets_and_spa_fallback_with_cache_headers() {
         let dist = temp_dist("static");
@@ -260,5 +373,71 @@ mod tests {
         let peer: std::net::SocketAddr = "127.0.0.1:5555".parse().unwrap();
         let (s, _, _) = get(crate::web::build_router(state, peer), "/").await;
         assert_eq!(s, axum::http::StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn login_sets_session_cookie_and_redirects_to_next() {
+        let web = crate::web::WebConfig::new(None, Some("secret".into()));
+        let state = test_state(web);
+        let peer: std::net::SocketAddr = "127.0.0.1:5555".parse().unwrap();
+        let (s, h, _) = form_post(
+            crate::web::build_router(state, peer),
+            "/login",
+            "token=secret&next=%2Ffoo",
+        )
+        .await;
+        assert_eq!(s, axum::http::StatusCode::FOUND);
+        assert_eq!(h.get(axum::http::header::LOCATION).unwrap(), "/foo");
+        let cookie = h
+            .get(axum::http::header::SET_COOKIE)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(
+            cookie.contains("agentj_session=")
+                && cookie.contains("HttpOnly")
+                && cookie.contains("SameSite=Lax")
+                && cookie.contains("Path=/")
+        );
+        assert!(!cookie.contains("Max-Age"), "session cookie: {cookie}");
+    }
+
+    #[tokio::test]
+    async fn login_with_wrong_token_is_401_and_logout_revokes() {
+        let state = test_state(crate::web::WebConfig::new(None, Some("secret".into())));
+        let peer: std::net::SocketAddr = "127.0.0.1:5555".parse().unwrap();
+        let (s, h, _) = form_post(
+            crate::web::build_router(state.clone(), peer),
+            "/login",
+            "token=nope",
+        )
+        .await;
+        assert_eq!(s, axum::http::StatusCode::UNAUTHORIZED);
+        assert!(h.get(axum::http::header::SET_COOKIE).is_none());
+        let sid = state.web.issue_session();
+        use tower::util::ServiceExt;
+        let res = crate::web::build_router(state.clone(), peer)
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/logout")
+                    .header(axum::http::header::COOKIE, format!("agentj_session={sid}"))
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), axum::http::StatusCode::FOUND);
+        assert!(!state.web.is_valid_session(&sid));
+    }
+
+    #[tokio::test]
+    async fn login_page_renders_form_with_hidden_next() {
+        let state = test_state(crate::web::WebConfig::new(None, Some("secret".into())));
+        let peer: std::net::SocketAddr = "127.0.0.1:5555".parse().unwrap();
+        let (s, _, body) = get(crate::web::build_router(state, peer), "/login?next=%2Ffoo").await;
+        assert_eq!(s, axum::http::StatusCode::OK);
+        assert!(body.contains("action=\"/login\""), "form action: {body}");
+        assert!(body.contains("value=\"/foo\""), "hidden next: {body}");
     }
 }
