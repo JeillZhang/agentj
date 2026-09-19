@@ -402,3 +402,17 @@ describe("ConversationFeed code fences", () => {
     expect(container.querySelector(".aj-code")).not.toBeNull();
   });
 });
+
+describe("RunPanel project picker edit", () => {
+  it("edits a project from the picker without switching", async () => {
+    localStorage.clear();
+    createProject("Alpha");
+    const beta = createProject("Beta");
+    setCurrentProject(beta.id);
+    render(<RunPanel client={null} activeSessionId={null} initialEntries={[]} />);
+    fireEvent.click(screen.getByRole("button", { name: "project picker" }));
+    fireEvent.click(screen.getByRole("button", { name: "编辑项目 Alpha" }));
+    expect(screen.getByRole("dialog", { name: "编辑项目" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "project picker" }).textContent).toContain("Beta");
+  });
+});
