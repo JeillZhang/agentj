@@ -1,6 +1,6 @@
 # AGENTS.md
 
-> Updated 2026-09-19 — v0.15.1 协议扩展（三栏工作台真实数据源）+ v0.15.2 session/status dispatch 修复 + v0.16.0 Web 工作台体验修复 + v0.16.1 跟随修复 + v0.16.2 远程访问修复 + v0.16.3 Web 工作台修复（项目菜单 + 文件树）+ v0.16.4 Web 工作台体验修复（状态灯 hover 面板 + 右栏手风琴 + 滚动条）+ v0.16.5 Web 工作台四项修复（右栏右→左展开动画 + 任务/文件变更高度可调 + 顶栏菜单重构/设置弹窗 + 文件树图标）+ v0.17.0 Web 工作台六项增强（代码卡片 + 显示设置 + 文件树图标 + 会话列表菜单 + 项目编辑 + 设置项目面板）
+> Updated 2026-09-19 — v0.15.1 协议扩展（三栏工作台真实数据源）+ v0.15.2 session/status dispatch 修复 + v0.16.0 Web 工作台体验修复 + v0.16.1 跟随修复 + v0.16.2 远程访问修复 + v0.16.3 Web 工作台修复（项目菜单 + 文件树）+ v0.16.4 Web 工作台体验修复（状态灯 hover 面板 + 右栏手风琴 + 滚动条）+ v0.16.5 Web 工作台四项修复（右栏右→左展开动画 + 任务/文件变更高度可调 + 顶栏菜单重构/设置弹窗 + 文件树图标）+ v0.17.0 Web 工作台六项增强（代码卡片 + 显示设置 + 文件树图标 + 会话列表菜单 + 项目编辑 + 设置项目面板）+ v0.17.1 验收修复（BUG-008 窄视口菜单/飞出层夹取）
 > `file/list` 沙箱化目录懒加载 + git 状态点；`$/progress` 新增 `kind:"todo"`
 > （全量快照 + 会话内单调 `revision`）与 `kind:"file_change"`（write 自研行级
 > diff / bash git 前后采样，unified diff ≤64 KiB）；`$/askQuestion` +
@@ -119,6 +119,15 @@
 > clippy 零警告 / drift 2 passed / web build / tui 71 / check-version 0.17.0 / desktop-ui。
 > 新依赖 `rehype-highlight`（web workspace）；PROTOCOL_VERSION 保持 0.13.0；
 > 工作区 0.16.5 → 0.17.0。
+> v0.17.1 验收修复（bugfix，无协议变更）：实机 Playwright 验收 v0.17.0 六项时发现
+> BUG-008 —— 窄视口（375–390px）左栏会话列表菜单超出右缘被 `.aj-sidebar` 裁剪，
+> 「过滤/排序」二级飞出层亦溢出视口不可点。修复：导出 `clampMenuLeft`
+> （菜单左缘夹取到 `[8, innerWidth - menuWidth - 8]`）与 `chooseFlyoutSide`
+> （行右缘 + gap + 飞出宽 > 视口宽时向左展开），飞出层方向自适应
+> （`.aj-menu__flyout--left`）；resize 经 `updateMenuPos` 重算。桌面（≥1024）行为不变。
+> web 405 → 417 tests（43 files）/ sdk 46 / Rust 564 tests；clippy 零警告 / drift 2 passed /
+> web build / tui 71 / check-version 0.17.1 / desktop-ui；PROTOCOL_VERSION 保持 0.13.0；
+> 工作区 0.17.0 → 0.17.1。
 > (17 crates + agentj-ui monorepo：Web / TUI / Desktop + SDK + tokens，
 > npm workspaces `apps/*`+`packages/*`，共享 SDK + protocol + tokens，
 > WebSocket 网关同端口复用，后端零改造，frontend stays in-repo)
@@ -126,6 +135,11 @@
 ## Project Status
 
 AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + 可插拔模块」架构。
+v0.17.1 已落地：**v0.17.0 验收修复（BUG-008，无协议变更）**
+（窄视口 375–390px 左栏会话列表菜单横向夹取 + 「过滤/排序」飞出层方向自适应
+`.aj-menu__flyout--left`；`clampMenuLeft` / `chooseFlyoutSide` 导出纯函数 + resize 重算；
+桌面行为不变。web 405 → 417 tests（43 files）/ sdk 46 / Rust 564 tests / tui 71；
+PROTOCOL_VERSION 保持 0.13.0；工作区 0.17.0 → 0.17.1）。
 v0.17.0 已落地：**Web 工作台六项增强（纯前端，无协议变更）**
 （(1) 对话代码块卡片化：`rehype-highlight` 高亮 + `CodeBlockCard`（折叠/展开 +
 复制）+ `copyText`（clipboard → execCommand 降级链）；(2) 显示设置：

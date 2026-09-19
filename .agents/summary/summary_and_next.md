@@ -1,16 +1,16 @@
 # Summary & Next
 
 > 本文件仅保留**当前正在开发**功能设计文档的内容：进度、剩余步骤、遗留问题与下一步。同步更新时**替换**（不要追加）前一功能内容。
-> 当前功能：**Web 工作台六项增强（v0.17.0）—— 代码卡片 + 显示设置 + 文件树图标 + 会话列表菜单 + 项目编辑 + 设置项目面板**
+> 当前功能：**Web 工作台六项增强（v0.17.0）→ 验收修复（v0.17.1，BUG-008）—— 已完成并验收通过**
 > ——来源=用户反馈六项：① 对话中栏代码输出应以独立卡片呈现（左上展开折叠 + 右上复制）；
 > ② 设置提供显示设置（对话/轨迹、左栏、右栏字号独立 + 其他必要项）；③ 文件树为 rust 等
 > 源码文件提供图标；④ 左栏清理按钮改为下拉菜单（设置中「会话列表」项迁入 + 悬停自动展开
 > 二级菜单选过滤/排序）；⑤ composer 项目下拉每项提供编辑按钮（工作目录、默认项目等）；
 > ⑥ 设置弹窗提供项目公共配置。
 > 范围：仅 `agentj-ui/apps/web`（Desktop 复用 Web 产物）；**Rust / SDK / protocol 零改动**；
-> `PROTOCOL_VERSION` 保持 `0.13.0`；工作区 0.16.5 → 0.17.0。
+> `PROTOCOL_VERSION` 保持 `0.13.0`；工作区 0.16.5 → 0.17.0 → 0.17.1。
 
-## v0.17.0: Web 工作台六项增强 ✅（本次完成）
+## v0.17.0: Web 工作台六项增强 + v0.17.1 验收修复 ✅（已完成 / 已验收）
 
 - ✅ **(1) 对话代码块卡片化（G1）**：`RunPanel` 唯一 ReactMarkdown 渲染点接
   `rehypePlugins={[rehypeHighlight]}`（hljs common 语言集）+ `components={{ pre: CodeBlockCard }}`；
@@ -50,56 +50,52 @@
   编辑/删除，Inbox 不可删、删除确认展示会话回退数）+ `SettingsProjectPanel.css`；
   `SettingsDialog` 分类终为 连接/显示/项目/演示数据；`ModalDialog` 引入模块级模态栈
   （嵌套弹窗仅栈顶响应 Esc/遮罩，现有单层用法行为不变）。
-- ✅ **门禁全绿（T23 全量，2026-09-19）**：web **401 tests（43 files）** / sdk **46** /
-  Rust **564 tests**（0 failed）/ clippy 零警告 / drift **2 passed** / web build /
-  tui **71** / check-version **0.17.0** / desktop-ui。新依赖 `rehype-highlight`
-  （web workspace + lockfile）；`PROTOCOL_VERSION` 保持 0.13.0。
-- ✅ **版本与文档同步**：Cargo workspace + `sdk/src/config.ts VERSION` + desktop 三处
-  0.17.0；`AGENTS.md` / `README.md` / 本文件 / 设计 spec TODO 清单（G0-G6 勾选 +
-  D4 行高 1.55 与候选来源修订）已同步，提交见 `docs: auto-sync ...`。
 - ✅ **最终整支复核修复波 + mini round（2026-09-19）**：Critical C1 = 左栏会话菜单
   `createPortal` 到 `document.body` + `position: fixed`（触发点矩形定位、resize 重算、
-  scroll 关闭），逃逸 `.aj-sidebar` / `.aj-sidebar__body` / `.aj-shell__left` 裁剪层级
-  （几何裁剪属 jsdom 不可见项，留待实机 Playwright 验收）；Important I1 = 删除 TopbarMenu
-  的 dialog 级 Escape `useEffect`，嵌套弹窗仅栈顶关闭；M1 = 项目默认值仅在实际切换时应用
-  （同 id 重派发不再覆盖显式 model/agent 选择）；M2 = composer 输入默认字号回到 15px；
-  M3 = `.aj-ai pre` legacy padding 收窄为 `:not(.aj-code__body)`（卡片 10 12 生效）；
+  scroll 关闭），逃逸 `.aj-sidebar` / `.aj-sidebar__body` / `.aj-shell__left` 裁剪层级；
+  Important I1 = 删除 TopbarMenu 的 dialog 级 Escape `useEffect`，嵌套弹窗仅栈顶关闭；
+  M1 = 项目默认值仅在实际切换时应用；M2 = composer 输入默认字号回到 15px；
+  M3 = `.aj-ai pre` legacy padding 收窄为 `:not(.aj-code__body)`；
   M4 = `package-lock.json` desktop workspace 刷新至 0.17.0；mini = 菜单打开时聚焦首个
-  `menuitem`（恢复键盘进入，`preventScroll`）。web **401 → 405 tests** / build 通过
-  （43 files）。
+  `menuitem`。web 401 → 405 tests / build 通过（43 files）。
+- ✅ **验收（v0.17.1，实机 Playwright，2026-09-19）**：六项逐项通过 + 深浅主题 + 键盘链路；
+  发现并修复 1 个 Bug —— **BUG-008（medium）**：窄视口（375–390px）左栏会话列表菜单
+  超出右缘被 `.aj-sidebar`/`.aj-sidebar__body`/`.aj-shell__left` 裁剪，「过滤/排序」二级
+  飞出层亦溢出视口不可点。修复（commit `89b3422`）：导出 `clampMenuLeft`
+  （菜单左缘夹取到 `[8, innerWidth - menuWidth - 8]`）与 `chooseFlyoutSide`
+  （行右缘 + `FLYOUT_GAP(6)` + 飞出宽 > 视口宽时向左展开，`.aj-menu__flyout--left`）；
+  `updateMenuPos` 在 resize 时重算菜单位置与飞出方向；桌面 ≥1024 行为不变。
+  回归测试 `sessionListMenu.test.tsx`（+139 行，覆盖夹取/方向选择/resize）；验收回归 verified。
+- ✅ **门禁全绿（验收后，2026-09-19）**：web **417 tests（43 files）** / sdk **46** /
+  Rust **564 tests**（0 failed）/ clippy 零警告 / drift **2 passed** / web build /
+  tui **71** / check-version **0.17.1** / desktop-ui。新依赖 `rehype-highlight`
+  （web workspace + lockfile）；`PROTOCOL_VERSION` 保持 0.13.0。
+- ✅ **版本与文档同步**：Cargo workspace + `sdk/src/config.ts VERSION` + desktop 三处
+  0.17.0 → 0.17.1（`Cargo.lock` / `agentj-ui/package-lock.json` 同步重生成）；
+  `AGENTS.md` / `README.md` / 本文件已同步；提交
+  `chore: bump 0.17.1 + docs sync after v0.17.0 acceptance (BUG-008)`。
 
 ## 遗留问题 / 遗留 minors
 
-- **实机 Playwright 验收尚未执行**：本次 T23 只跑全量门禁 + 文档同步；六项 + 深浅主题 +
-  键盘链路的实机验收在 post-dev `/jskill-test-acceptance` 流程执行（见下一步）。
-- **e2e_permission 会话状态污染（本次发现并清理，需长期修复）**：
+- **e2e_permission 会话状态污染（预存在，非本特性引入）**：
   `crates/agentj-cli/tests/e2e_permission.rs` 硬编码 `session_id="s1"`，依赖
   `FileBackedStore` 默认目录（`~/.local/share/agentj/sessions`）。一旦 `s1.json` 被
   过期清理标记为 `Archived`，`session/run` 返回 `session 's1' is inactive`，测试在
   `read_json_line` 阻塞（无 `$/permissionRequest`）→ `cargo test --workspace` 挂起。
-  本次删除陈旧 `s1.json`/`s1.trajectory` 后 564 tests 全绿。建议后续把测试改为消费
-  `session/new` 返回的真实 id（并隔离临时 session 目录），避免跨运行状态依赖。
-  该问题在 `e68258b`（分支基线）即存在（`crates/` 与基线逐字节相同），非本特性引入。
-- T4 minor（parked）：新增的 modal backdrop 测试无判别力（未断言「下层弹窗 backdrop
-  点击不应关闭下层」）；建议补一条。
-- T5 parked（plan-mandated，验收视觉确认即可）：紧凑 `.aj-sess` min-height 56 → 48px；
-  CSS 横幅注释 >120 字符（仓库既有风格，非门禁）。composer input 默认档 14px 偏差已在
-  最终复核修复波修正为 15px（见上）。
-- T7 minor（optional）：代码卡片二次点击恢复默认（展开）未加测试；`languageOf` 浅扫描
-  已够用。
-- T9 minor（optional）：显示面板 3 条测试覆盖建议（非阻塞）。
-- T2/T12 minor：`sqlite3`（含版本号的扩展名）映射未单测；db 配色在 T12 已补。
-- 观察：移动端抽屉 + 桌面折叠偏好共存沿用 v0.16.4 行为；`.aj-right__body` 逐面板
-  内部滚动（双开各 pane 独立 scrollbar）。
+  该问题在 `e68258b`（分支基线）即存在（`crates/` 与基线逐字节相同）。建议后续把测试
+  改为消费 `session/new` 返回的真实 id（并隔离临时 session 目录），避免跨运行状态依赖。
+- T4 minor（parked，deferred）：新增的 modal backdrop 测试无判别力（未断言「下层弹窗
+  backdrop 点击不应关闭下层」）；建议补一条。
+- M5（deferred）：add-dialog 相对路径处理（工作目录路径校验/展示）待补。
+- M6（deferred）：picker edit 嵌套交互 + 焦点管理细节待收敛。
+- M7（deferred）：其余 minor 测试覆盖缺口（代码卡片二次点击恢复默认、显示面板
+  3 条覆盖、`sqlite3` 扩展名映射等）。
 
 ## 下一步
 
-- **post-dev `/jskill-test-acceptance`**：实机 Playwright 验收六项（代码卡片复制成功/降级
-  路径、显示设置即时生效 + 刷新保持 + 恢复默认、`.rs/.go/.py` code 图标 + `.sql` db 图标、
-  左栏菜单清理/过滤/排序飞出、composer 项目编辑 + WS 帧携带 `project_root`、设置「项目」
-  列表/删除回退）+ 深浅主题 + 键盘链路；发现 Bug 走 bug-fix 循环，回归通过后
-  `/jskill-test-acceptance` 自动创建 PR（用户负责合并）。
-- **下一特性候选（沿用 v0.16.5 summary 结论，方案 2）：内核直接托管 Web UI** ——
+- **PR 已创建，待用户合并**：验收通过后 `/jskill-test-acceptance` 已自动创建 PR
+  （`feature/web-workbench-enhancement` → main）；合并由用户负责。
+- **后续特性候选（沿用 v0.16.5 summary 结论，方案 2）：内核直接托管 Web UI** ——
   `serve` 增加静态文件服务（axum `ServeDir` 托管 `agentj-ui/apps/web/dist`），远程直接
   打开 `http://<host>:4096/` 即用、WS 同源零配置；立项时需覆盖：dist 路径发现/
   `--web-dist` 参数、`/` 与 `/ws` 路由共存、token 下静态资源策略、测试与文档。
