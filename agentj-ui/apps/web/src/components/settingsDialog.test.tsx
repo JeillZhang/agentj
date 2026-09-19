@@ -6,7 +6,7 @@ import SettingsDialog from "./SettingsDialog";
 test("defaults to the 连接 tab, uses the wide card and switches categories via the tablist", () => {
   localStorage.clear();
   render(<SettingsDialog onConnect={() => {}} onClose={() => {}} />);
-  expect(document.querySelector(".aj-dialog-card.aj-settings")).not.toBeNull();
+  expect(document.querySelector(".aj-dialog-frame.aj-settings")).not.toBeNull();
   expect(screen.getAllByRole("tab").map((t) => t.textContent)).toEqual([
     "连接",
     "显示",

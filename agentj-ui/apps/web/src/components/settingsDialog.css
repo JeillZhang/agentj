@@ -1,7 +1,7 @@
 /* settingsDialog.css — settings modal two-column layout (category tablist + panel).
-   Widens the shared `.aj-dialog-card` via the `.aj-settings` modifier. Tokens only. */
+   Widens the shared `.aj-dialog-frame` via the `.aj-settings` modifier. Tokens only. */
 
-.aj-dialog-card.aj-settings {
+.aj-dialog-frame.aj-settings {
   max-width: 680px;
 }
 
