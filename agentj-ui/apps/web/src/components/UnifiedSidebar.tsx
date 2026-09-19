@@ -176,14 +176,16 @@ export default function UnifiedSidebar({
       setError(null);
       try {
         let sid = "";
+        const target = loadProjects().find((p) => p.id === targetProjectId);
+        const params = target?.workDir ? { project_root: target.workDir } : {};
         const rpc = client as RpcClient | null;
         if (rpc && typeof (rpc as unknown as { request?: unknown }).request === "function") {
-          const res = (await (rpc as RpcClient).request(METHODS.sessionNew, {})) as { session_id: string };
+          const res = (await (rpc as RpcClient).request(METHODS.sessionNew, params)) as { session_id: string };
           sid = res.session_id;
         } else {
           const { transport, client: tmp } = openOpClient(wsUrl);
           try {
-            const res = (await tmp.request(METHODS.sessionNew, {})) as { session_id: string };
+            const res = (await tmp.request(METHODS.sessionNew, params)) as { session_id: string };
             sid = res.session_id;
           } finally {
             (transport as unknown as { close?: () => void }).close?.();

@@ -3,7 +3,7 @@ import { test, expect, vi } from "vitest";
 import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import UnifiedSidebar from "./UnifiedSidebar";
 import TopbarMenu from "./TopbarMenu";
-import { createProject } from "../projectStore";
+import { createProject, setCurrentProject, updateProject } from "../projectStore";
 
 const client = {
   request: async (m: string) =>
@@ -216,4 +216,65 @@ test("project picked in TopbarMenu is inherited by the next new session via agen
   const map = JSON.parse(localStorage.getItem("agentj.projectMap") ?? "{}") as Record<string, string>;
   expect(map["s-new"]).not.toBe("default");
   localStorage.clear();
+});
+
+test("sends project_root when the project defines a work dir", async () => {
+  localStorage.clear();
+  const alpha = createProject("Alpha");
+  updateProject(alpha.id, { workDir: "/repo/alpha" });
+  setCurrentProject(alpha.id);
+  const requests: Array<{ method: string; params: unknown }> = [];
+  const client = {
+    request: vi.fn(async (method: string, params: unknown) => {
+      requests.push({ method, params });
+      if (method === "session/new") return { session_id: "s1" };
+      return {};
+    }),
+  };
+  render(
+    <UnifiedSidebar wsUrl="ws://x" client={client} activeSessionId={null} onActiveChange={() => {}} />,
+  );
+  fireEvent.click(screen.getByRole("button", { name: /新建会话/ }));
+  await waitFor(() => expect(requests.some((r) => r.method === "session/new")).toBe(true));
+  expect(requests.find((r) => r.method === "session/new")?.params).toEqual({
+    project_root: "/repo/alpha",
+  });
+});
+
+test("omits project_root when the project has no work dir", async () => {
+  localStorage.clear();
+  const beta = createProject("Beta");
+  setCurrentProject(beta.id);
+  const requests: Array<{ method: string; params: unknown }> = [];
+  const client = {
+    request: vi.fn(async (method: string, params: unknown) => {
+      requests.push({ method, params });
+      if (method === "session/new") return { session_id: "s2" };
+      return {};
+    }),
+  };
+  render(
+    <UnifiedSidebar wsUrl="ws://x" client={client} activeSessionId={null} onActiveChange={() => {}} />,
+  );
+  fireEvent.click(screen.getByRole("button", { name: /新建会话/ }));
+  await waitFor(() => expect(requests.some((r) => r.method === "session/new")).toBe(true));
+  expect(requests.find((r) => r.method === "session/new")?.params).toEqual({});
+});
+
+test("surfaces session/new failures via the error banner", async () => {
+  localStorage.clear();
+  const alpha = createProject("Alpha");
+  updateProject(alpha.id, { workDir: "/repo/alpha" });
+  setCurrentProject(alpha.id);
+  const client = {
+    request: vi.fn(async (method: string) => {
+      if (method === "session/new") throw new Error("-32807 PathNotAllowed: /repo/alpha");
+      return {};
+    }),
+  };
+  render(
+    <UnifiedSidebar wsUrl="ws://x" client={client} activeSessionId={null} onActiveChange={() => {}} />,
+  );
+  fireEvent.click(screen.getByRole("button", { name: /新建会话/ }));
+  expect(await screen.findByRole("alert")).toBeTruthy();
 });
