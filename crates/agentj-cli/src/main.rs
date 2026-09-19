@@ -245,6 +245,7 @@ async fn serve_tcp(
             token: options.token,
             max_connections: options.max_connections,
             trajectory_store: options.trajectory_store,
+            web_dist: None,
         },
     )
     .await?;

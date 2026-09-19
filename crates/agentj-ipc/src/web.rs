@@ -117,6 +117,44 @@ pub fn login_page_html(error: Option<&str>, next: &str) -> String {
     )
 }
 
+/// Build the HTTP router for one accepted connection: the `/ws` upgrade route
+/// plus — when a dist was resolved — the static SPA surface. Cache headers are
+/// applied per service (`Router::layer` would leak them onto `/ws`), the root
+/// mount is `fallback_service` (unknown paths -> index.html, 200) because
+/// `nest_service("/")` panics.
+pub fn build_router(
+    state: std::sync::Arc<crate::ws::WsServerState>,
+    peer: std::net::SocketAddr,
+) -> axum::Router {
+    use tower::Layer as _;
+    let ws_route = axum::routing::get({
+        let state = state.clone();
+        move |axum::extract::Query(q): axum::extract::Query<crate::ws::WsQuery>,
+              ws: axum::extract::WebSocketUpgrade| {
+            let state = state.clone();
+            async move { crate::ws::ws_upgrade(state, q, peer, ws).await }
+        }
+    });
+    let mut router = axum::Router::new().route("/ws", ws_route);
+    if let Some(dist) = state.web.dist.clone() {
+        let spa = tower_http::services::ServeDir::new(&dist).fallback(
+            tower_http::services::ServeFile::new(dist.join("index.html")),
+        );
+        let spa = tower_http::set_header::SetResponseHeaderLayer::overriding(
+            axum::http::header::CACHE_CONTROL,
+            axum::http::HeaderValue::from_static("no-cache"),
+        )
+        .layer(spa);
+        let assets = tower_http::set_header::SetResponseHeaderLayer::overriding(
+            axum::http::header::CACHE_CONTROL,
+            axum::http::HeaderValue::from_static("public, max-age=31536000, immutable"),
+        )
+        .layer(tower_http::services::ServeDir::new(dist.join("assets")));
+        router = router.nest_service("/assets", assets).fallback_service(spa);
+    }
+    router
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -140,5 +178,87 @@ mod tests {
     #[test]
     fn pct_encode_escapes_query_delimiters() {
         assert_eq!(pct_encode("/a b?c&d"), "/a%20b%3Fc%26d");
+    }
+
+    fn temp_dist(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("agentj-web-{}-{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("assets")).unwrap();
+        std::fs::write(dir.join("index.html"), "<html>agentj-index</html>").unwrap();
+        std::fs::write(dir.join("assets/app.js"), "console.log(1)").unwrap();
+        dir
+    }
+
+    fn test_state(web: crate::web::WebConfig) -> std::sync::Arc<crate::ws::WsServerState> {
+        let kernel = agentj_core::kernel::Kernel::new();
+        let session: std::sync::Arc<dyn agentj_core::module::SessionStore> =
+            std::sync::Arc::new(agentj_session::InMemoryStore::new());
+        std::sync::Arc::new(crate::ws::WsServerState {
+            shared: std::sync::Arc::new(crate::IpcServer::new(kernel, session)),
+            token: None,
+            max_connections: 16,
+            active_ws: std::sync::atomic::AtomicUsize::new(0),
+            web: std::sync::Arc::new(web),
+        })
+    }
+
+    async fn get(
+        router: axum::Router,
+        path: &str,
+    ) -> (axum::http::StatusCode, axum::http::HeaderMap, String) {
+        use tower::util::ServiceExt;
+        let res = router
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri(path)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let (status, headers) = (res.status(), res.headers().clone());
+        let body = axum::body::to_bytes(res.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        (status, headers, String::from_utf8_lossy(&body).to_string())
+    }
+
+    #[tokio::test]
+    async fn serves_index_assets_and_spa_fallback_with_cache_headers() {
+        let dist = temp_dist("static");
+        let state = test_state(crate::web::WebConfig::new(Some(dist.clone()), None));
+        let peer: std::net::SocketAddr = "127.0.0.1:5555".parse().unwrap();
+        let (s, h, b) = get(crate::web::build_router(state.clone(), peer), "/").await;
+        assert_eq!(s, axum::http::StatusCode::OK);
+        assert!(b.contains("agentj-index"));
+        assert_eq!(
+            h.get(axum::http::header::CACHE_CONTROL).unwrap(),
+            "no-cache"
+        );
+        let (s, h, _) = get(
+            crate::web::build_router(state.clone(), peer),
+            "/assets/app.js",
+        )
+        .await;
+        assert_eq!(s, axum::http::StatusCode::OK);
+        assert!(
+            h.get(axum::http::header::CACHE_CONTROL)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .contains("immutable")
+        );
+        let (s, _, b) = get(crate::web::build_router(state, peer), "/unknown-route").await;
+        assert_eq!(s, axum::http::StatusCode::OK, "SPA fallback must be 200");
+        assert!(b.contains("agentj-index"));
+        std::fs::remove_dir_all(&dist).ok();
+    }
+
+    #[tokio::test]
+    async fn missing_dist_returns_404() {
+        let state = test_state(crate::web::WebConfig::disabled());
+        let peer: std::net::SocketAddr = "127.0.0.1:5555".parse().unwrap();
+        let (s, _, _) = get(crate::web::build_router(state, peer), "/").await;
+        assert_eq!(s, axum::http::StatusCode::NOT_FOUND);
     }
 }

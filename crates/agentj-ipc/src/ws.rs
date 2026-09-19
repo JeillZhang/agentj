@@ -6,11 +6,9 @@
 
 use crate::{Connection, ConnectionWriter, IpcError, TransportKind};
 use axum::Router;
-use axum::extract::Query;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
 use futures::stream::SplitStream;
 use futures::{SinkExt, StreamExt};
 use hyper::body::Incoming;
@@ -100,6 +98,7 @@ pub struct WsServerState {
     pub token: Option<String>,
     pub max_connections: usize,
     pub active_ws: AtomicUsize,
+    pub web: Arc<crate::web::WebConfig>,
 }
 
 #[derive(serde::Deserialize)]
@@ -107,19 +106,14 @@ pub struct WsQuery {
     pub token: Option<String>,
 }
 
-/// Build a per-connection axum Router for the WS upgrade endpoint. `peer` is
-/// captured so the WsConnection gets a stable id/peer_desc.
+/// Build a per-connection axum Router. Connection-kind routing, the WS upgrade
+/// and — when a dist was resolved — the static SPA surface all live in
+/// `web::build_router` (design D1/D9: explicit `/ws` route beats the fallback).
 pub fn ws_router(state: Arc<WsServerState>, peer: SocketAddr) -> Router {
-    Router::new().route(
-        "/ws",
-        get(move |Query(query): Query<WsQuery>, ws: WebSocketUpgrade| {
-            let state = state.clone();
-            async move { ws_upgrade(state, query, peer, ws).await }
-        }),
-    )
+    crate::web::build_router(state, peer)
 }
 
-async fn ws_upgrade(
+pub(crate) async fn ws_upgrade(
     state: Arc<WsServerState>,
     query: WsQuery,
     peer: SocketAddr,
