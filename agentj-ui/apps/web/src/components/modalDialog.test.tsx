@@ -181,3 +181,49 @@ test("honors per-dialog minimum size overrides", () => {
   expect(frame.style.height).toBe("300px");
   fireEvent.pointerUp(se, { pointerId: 1 });
 });
+
+test("ignores non-primary pointer buttons", () => {
+  render(<ModalDialog title="A" onClose={() => {}}><p /></ModalDialog>);
+  const dialog = screen.getByLabelText("A");
+  const frame = dialog.querySelector(".aj-dialog-frame") as HTMLElement;
+  stubRect(frame, { left: 100, top: 100, width: 560, height: 400 });
+  const se = seHandle(dialog);
+  fireEvent.pointerDown(se, { clientX: 660, clientY: 500, pointerId: 1, button: 2 });
+  fireEvent.pointerMove(se, { clientX: 760, clientY: 560, pointerId: 1 });
+  expect(frame.style.position).toBe("");
+  expect(frame.style.width).toBe("");
+});
+
+test("pointercancel ends the resize without leaving drag state behind", () => {
+  render(<ModalDialog title="A" onClose={() => {}}><p /></ModalDialog>);
+  const dialog = screen.getByLabelText("A");
+  const frame = dialog.querySelector(".aj-dialog-frame") as HTMLElement;
+  stubRect(frame, { left: 100, top: 100, width: 560, height: 400 });
+  const se = seHandle(dialog);
+  fireEvent.pointerDown(se, { clientX: 660, clientY: 500, pointerId: 1 });
+  fireEvent.pointerMove(se, { clientX: 700, clientY: 530, pointerId: 1 });
+  expect(frame.dataset.resizing).toBe("true");
+  fireEvent.pointerCancel(se, { pointerId: 1 });
+  expect(frame.dataset.resizing).toBeUndefined();
+});
+
+test("re-clamps a manually sized dialog when the viewport shrinks", () => {
+  render(<ModalDialog title="A" onClose={() => {}}><p /></ModalDialog>);
+  const dialog = screen.getByLabelText("A");
+  const frame = dialog.querySelector(".aj-dialog-frame") as HTMLElement;
+  stubRect(frame, { left: 100, top: 100, width: 560, height: 400 });
+  const se = seHandle(dialog);
+  fireEvent.pointerDown(se, { clientX: 660, clientY: 500, pointerId: 1 });
+  fireEvent.pointerMove(se, { clientX: 760, clientY: 560, pointerId: 1 });
+  fireEvent.pointerUp(se, { pointerId: 1 });
+  expect(frame.style.width).toBe("660px");
+  const innerWidth = window.innerWidth;
+  Object.defineProperty(window, "innerWidth", { configurable: true, value: 500 });
+  try {
+    fireEvent(window, new Event("resize"));
+    expect(frame.style.width).toBe("484px");
+    expect(frame.style.left).toBe("8px");
+  } finally {
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: innerWidth });
+  }
+});

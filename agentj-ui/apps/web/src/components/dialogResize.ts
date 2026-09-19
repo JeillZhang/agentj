@@ -25,6 +25,18 @@ function clamp(n: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, n));
 }
 
+/** Per-dialog mins never exceed the viewport-capped max, so tiny screens still fit. */
+function sizeBounds(viewport: ViewportSize, limits: DialogSizeLimits) {
+  const maxWidth = Math.max(DIALOG_MIN_WIDTH, viewport.width - 2 * DIALOG_VIEWPORT_MARGIN);
+  const maxHeight = Math.max(DIALOG_MIN_HEIGHT, viewport.height - 2 * DIALOG_VIEWPORT_MARGIN);
+  return {
+    minWidth: Math.min(limits.minWidth ?? DIALOG_MIN_WIDTH, maxWidth),
+    minHeight: Math.min(limits.minHeight ?? DIALOG_MIN_HEIGHT, maxHeight),
+    maxWidth,
+    maxHeight,
+  };
+}
+
 /** Applies a pointer delta to a dialog rect; opposite edges stay anchored on clamp. */
 export function resizeRect(
   start: DialogRect,
@@ -34,8 +46,7 @@ export function resizeRect(
   viewport: ViewportSize,
   limits: DialogSizeLimits = {},
 ): DialogRect {
-  const minWidth = limits.minWidth ?? DIALOG_MIN_WIDTH;
-  const minHeight = limits.minHeight ?? DIALOG_MIN_HEIGHT;
+  const { minWidth, minHeight, maxWidth, maxHeight } = sizeBounds(viewport, limits);
   const anchorRight = start.left + start.width;
   const anchorBottom = start.top + start.height;
   let { left, top, width, height } = start;
@@ -51,25 +62,21 @@ export function resizeRect(
     height = start.height - dy;
   }
 
-  if (width < minWidth) {
-    width = minWidth;
-    if (handle.includes("w")) left = anchorRight - width;
-  }
-  if (height < minHeight) {
-    height = minHeight;
-    if (handle.includes("n")) top = anchorBottom - height;
-  }
+  const capWidth = handle.includes("w")
+    ? clamp(anchorRight - DIALOG_VIEWPORT_MARGIN, minWidth, maxWidth)
+    : handle.includes("e")
+      ? clamp(viewport.width - DIALOG_VIEWPORT_MARGIN - left, minWidth, maxWidth)
+      : maxWidth;
+  const capHeight = handle.includes("n")
+    ? clamp(anchorBottom - DIALOG_VIEWPORT_MARGIN, minHeight, maxHeight)
+    : handle.includes("s")
+      ? clamp(viewport.height - DIALOG_VIEWPORT_MARGIN - top, minHeight, maxHeight)
+      : maxHeight;
+  width = clamp(width, minWidth, capWidth);
+  height = clamp(height, minHeight, capHeight);
 
-  const maxWidth = Math.max(minWidth, viewport.width - 2 * DIALOG_VIEWPORT_MARGIN);
-  const maxHeight = Math.max(minHeight, viewport.height - 2 * DIALOG_VIEWPORT_MARGIN);
-  if (width > maxWidth) {
-    width = maxWidth;
-    if (handle.includes("w")) left = anchorRight - width;
-  }
-  if (height > maxHeight) {
-    height = maxHeight;
-    if (handle.includes("n")) top = anchorBottom - height;
-  }
+  if (handle.includes("w")) left = anchorRight - width;
+  if (handle.includes("n")) top = anchorBottom - height;
 
   const maxLeft = Math.max(DIALOG_VIEWPORT_MARGIN, viewport.width - DIALOG_VIEWPORT_MARGIN - width);
   const maxTop = Math.max(DIALOG_VIEWPORT_MARGIN, viewport.height - DIALOG_VIEWPORT_MARGIN - height);
@@ -77,4 +84,22 @@ export function resizeRect(
   top = clamp(top, DIALOG_VIEWPORT_MARGIN, maxTop);
 
   return { left, top, width, height };
+}
+
+export function clampDialogRect(
+  rect: DialogRect,
+  viewport: ViewportSize,
+  limits: DialogSizeLimits = {},
+): DialogRect {
+  const { minWidth, minHeight, maxWidth, maxHeight } = sizeBounds(viewport, limits);
+  const width = clamp(rect.width, minWidth, maxWidth);
+  const height = clamp(rect.height, minHeight, maxHeight);
+  const maxLeft = Math.max(DIALOG_VIEWPORT_MARGIN, viewport.width - DIALOG_VIEWPORT_MARGIN - width);
+  const maxTop = Math.max(DIALOG_VIEWPORT_MARGIN, viewport.height - DIALOG_VIEWPORT_MARGIN - height);
+  return {
+    left: clamp(rect.left, DIALOG_VIEWPORT_MARGIN, maxLeft),
+    top: clamp(rect.top, DIALOG_VIEWPORT_MARGIN, maxTop),
+    width,
+    height,
+  };
 }

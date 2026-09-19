@@ -95,7 +95,10 @@ function normalizeFontSize(key: FontSizeKey, value: unknown): number | null {
     const { min, max } = FONT_SIZE_LIMITS[key];
     return clamp(Math.round(value), min, max);
   }
-  if (typeof value === "string" && value in LEGACY_FONT_SCALES[key]) {
+  if (
+    typeof value === "string" &&
+    Object.prototype.hasOwnProperty.call(LEGACY_FONT_SCALES[key], value)
+  ) {
     return LEGACY_FONT_SCALES[key][value];
   }
   return null;

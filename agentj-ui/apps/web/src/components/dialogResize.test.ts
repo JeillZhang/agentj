@@ -5,6 +5,7 @@ import {
   DIALOG_MIN_WIDTH,
   DIALOG_VIEWPORT_MARGIN,
   RESIZE_HANDLES,
+  clampDialogRect,
   resizeRect,
 } from "./dialogResize";
 import type { DialogRect } from "./dialogResize";
@@ -72,12 +73,25 @@ describe("resizeRect", () => {
     });
   });
 
-  it("caps the size at the viewport and keeps the rect inside", () => {
+  it("caps growth at the remaining viewport space without moving the anchored origin", () => {
     const capped = resizeRect(START, "se", 5000, 5000, VIEWPORT);
-    expect(capped.width).toBe(VIEWPORT.width - 2 * MARGIN);
-    expect(capped.height).toBe(VIEWPORT.height - 2 * MARGIN);
-    expect(capped.left).toBe(MARGIN);
-    expect(capped.top).toBe(MARGIN);
+    expect(capped).toEqual({ left: 200, top: 150, width: 816, height: 610 });
+    expect(capped.left + capped.width).toBe(VIEWPORT.width - MARGIN);
+    expect(capped.top + capped.height).toBe(VIEWPORT.height - MARGIN);
+  });
+
+  it("caps a per-dialog minimum at the viewport on narrow screens", () => {
+    const narrow = { width: 375, height: 667 };
+    const rect = resizeRect(
+      { left: 16, top: 120, width: 343, height: 400 },
+      "se",
+      0,
+      0,
+      narrow,
+      { minWidth: 560 },
+    );
+    expect(rect.width).toBe(narrow.width - 2 * MARGIN);
+    expect(rect.left + rect.width).toBeLessThanOrEqual(narrow.width - MARGIN);
   });
 
   it("honors custom min size limits while anchoring the opposite edge", () => {
@@ -94,5 +108,21 @@ describe("resizeRect", () => {
     expect(rect.top).toBeGreaterThanOrEqual(MARGIN);
     expect(rect.left + rect.width).toBeLessThanOrEqual(VIEWPORT.width - MARGIN);
     expect(rect.top + rect.height).toBeLessThanOrEqual(VIEWPORT.height - MARGIN);
+  });
+});
+
+describe("clampDialogRect", () => {
+  it("shrinks and repositions a rect into a smaller viewport", () => {
+    expect(
+      clampDialogRect({ left: 100, top: 100, width: 660, height: 460 }, { width: 500, height: 768 }),
+    ).toEqual({ left: 8, top: 100, width: 484, height: 460 });
+  });
+
+  it("keeps per-dialog minimums when the viewport allows them", () => {
+    const rect = clampDialogRect({ left: 0, top: 0, width: 100, height: 100 }, VIEWPORT, {
+      minWidth: 560,
+      minHeight: 300,
+    });
+    expect(rect).toMatchObject({ width: 560, height: 300, left: 8, top: 8 });
   });
 });

@@ -34,6 +34,16 @@ describe("displayPrefsStore", () => {
     expect(prefs.fontCode).toBe(12);
   });
 
+  it("rejects prototype-chain keys masquerading as legacy scales", () => {
+    localStorage.setItem(DISPLAY_PREFS_KEY, JSON.stringify({
+      fontConversation: "toString", fontLeft: "constructor", fontCode: "__proto__",
+    }));
+    const prefs = loadDisplayPrefs();
+    expect(prefs.fontConversation).toBe(DISPLAY_PREFS_DEFAULTS.fontConversation);
+    expect(prefs.fontLeft).toBe(DISPLAY_PREFS_DEFAULTS.fontLeft);
+    expect(prefs.fontCode).toBe(DISPLAY_PREFS_DEFAULTS.fontCode);
+  });
+
   it("clamps numeric values to the per-zone limits", () => {
     localStorage.setItem(DISPLAY_PREFS_KEY, JSON.stringify({ fontConversation: 999, fontCode: 2 }));
     const prefs = loadDisplayPrefs();

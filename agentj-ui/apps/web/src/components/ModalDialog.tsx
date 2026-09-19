@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { CSSProperties, PointerEvent as ReactPointerEvent, ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { X } from "lucide-react";
-import { RESIZE_HANDLES, resizeRect } from "./dialogResize";
+import { clampDialogRect, RESIZE_HANDLES, resizeRect } from "./dialogResize";
 import type { DialogRect, ResizeHandle } from "./dialogResize";
 
 export type ModalDialogProps = {
@@ -52,6 +52,8 @@ export default function ModalDialog({
   const dragRef = useRef<DragState | null>(null);
   const [rect, setRect] = useState<DialogRect | null>(null);
   const [resizing, setResizing] = useState(false);
+  const rectRef = useRef<DialogRect | null>(null);
+  rectRef.current = rect;
 
   useEffect(() => {
     const id = idRef.current;
@@ -72,10 +74,26 @@ export default function ModalDialog({
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, []);
 
+  useEffect(() => {
+    const handleWindowResize = () => {
+      const current = rectRef.current;
+      if (!current) return;
+      setRect(
+        clampDialogRect(
+          current,
+          { width: window.innerWidth, height: window.innerHeight },
+          { minWidth, minHeight },
+        ),
+      );
+    };
+    window.addEventListener("resize", handleWindowResize);
+    return () => window.removeEventListener("resize", handleWindowResize);
+  }, [minWidth, minHeight]);
+
   const startResize =
     (handle: ResizeHandle) => (event: ReactPointerEvent<HTMLSpanElement>) => {
       const frame = frameRef.current;
-      if (!frame) return;
+      if (!frame || event.button > 0) return;
       const bounds = frame.getBoundingClientRect();
       const start: DialogRect = {
         left: bounds.left,
@@ -111,8 +129,12 @@ export default function ModalDialog({
     if (!dragRef.current) return;
     dragRef.current = null;
     setResizing(false);
-    if (typeof event.currentTarget.releasePointerCapture === "function") {
-      event.currentTarget.releasePointerCapture(event.pointerId);
+    const el = event.currentTarget;
+    if (typeof el.hasPointerCapture !== "function" || !el.hasPointerCapture(event.pointerId)) {
+      return;
+    }
+    if (typeof el.releasePointerCapture === "function") {
+      el.releasePointerCapture(event.pointerId);
     }
   };
 

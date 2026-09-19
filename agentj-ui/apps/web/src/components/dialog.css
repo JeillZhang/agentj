@@ -66,35 +66,35 @@
 
 .aj-dialog__resize[data-handle="n"],
 .aj-dialog__resize[data-handle="s"] {
-  left: 12px;
-  right: 12px;
+  left: 8px;
+  right: 8px;
   height: 8px;
 }
 
 .aj-dialog__resize[data-handle="n"] {
-  top: -3px;
+  top: -6px;
   cursor: ns-resize;
 }
 
 .aj-dialog__resize[data-handle="s"] {
-  bottom: -3px;
+  bottom: -6px;
   cursor: ns-resize;
 }
 
 .aj-dialog__resize[data-handle="e"],
 .aj-dialog__resize[data-handle="w"] {
-  top: 12px;
-  bottom: 12px;
+  top: 8px;
+  bottom: 8px;
   width: 8px;
 }
 
 .aj-dialog__resize[data-handle="e"] {
-  right: -3px;
+  right: -6px;
   cursor: ew-resize;
 }
 
 .aj-dialog__resize[data-handle="w"] {
-  left: -3px;
+  left: -6px;
   cursor: ew-resize;
 }
 
@@ -102,31 +102,31 @@
 .aj-dialog__resize[data-handle="nw"],
 .aj-dialog__resize[data-handle="se"],
 .aj-dialog__resize[data-handle="sw"] {
-  width: 14px;
-  height: 14px;
+  width: 12px;
+  height: 12px;
 }
 
 .aj-dialog__resize[data-handle="ne"] {
-  top: -3px;
-  right: -3px;
+  top: -6px;
+  right: -6px;
   cursor: nesw-resize;
 }
 
 .aj-dialog__resize[data-handle="nw"] {
-  top: -3px;
-  left: -3px;
+  top: -6px;
+  left: -6px;
   cursor: nwse-resize;
 }
 
 .aj-dialog__resize[data-handle="se"] {
-  bottom: -3px;
-  right: -3px;
+  bottom: -6px;
+  right: -6px;
   cursor: nwse-resize;
 }
 
 .aj-dialog__resize[data-handle="sw"] {
-  bottom: -3px;
-  left: -3px;
+  bottom: -6px;
+  left: -6px;
   cursor: nesw-resize;
 }
 .aj-popover[role="dialog"] {
