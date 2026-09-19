@@ -1713,11 +1713,19 @@ async fn attach_git_statuses(result: FileListResult, root: &std::path::Path) -> 
         .entries
         .into_iter()
         .map(|mut entry| {
-            if entry.kind == FileKind::File {
-                entry.git_status = snapshot
-                    .as_ref()
-                    .and_then(|s| file_list::git_statuses(s, &entry.path))
-                    .and_then(|(x, y)| file_list::map_git_status(x, y));
+            match entry.kind {
+                FileKind::File => {
+                    entry.git_status = snapshot
+                        .as_ref()
+                        .and_then(|s| file_list::git_statuses(s, &entry.path))
+                        .and_then(|(x, y)| file_list::map_git_status(x, y));
+                }
+                FileKind::Dir => {
+                    entry.git_status = snapshot
+                        .as_ref()
+                        .and_then(|s| file_list::aggregate_dir_status(&entry.path, &s.statuses));
+                }
+                FileKind::Unknown => {}
             }
             entry
         })
@@ -5366,6 +5374,48 @@ mod tests {
         assert_eq!(entry("m.txt")["git_status"], "M", "modified: {v}");
         assert_eq!(entry("a.txt")["git_status"], "A", "untracked: {v}");
         assert_eq!(entry("d.txt")["git_status"], "D", "staged delete: {v}");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// AC: a worktree deletion below `src` surfaces as the aggregate `D` on the
+    /// `src` directory entry even though the deleted file is not listed.
+    #[tokio::test]
+    async fn dispatch_file_list_reports_aggregate_dir_status() {
+        let root = temp_dir_filelist("git-dir-agg");
+        git_run(&root, &["init", "-q"]);
+        std::fs::create_dir_all(root.join("src/deep")).unwrap();
+        std::fs::write(root.join("src/deep/del.txt"), "1\n").unwrap();
+        git_run(&root, &["add", "."]);
+        git_run(
+            &root,
+            &[
+                "-c",
+                "user.name=AgentJ",
+                "-c",
+                "user.email=agentj@example.com",
+                "commit",
+                "-qm",
+                "init",
+            ],
+        );
+        std::fs::remove_file(root.join("src/deep/del.txt")).unwrap(); // worktree delete -> ' D'
+        let (server, sid) = file_list_server(&root);
+        let v = file_list_call(&server, &sid, None, None).await;
+        assert!(v["error"].is_null(), "call must succeed: {v}");
+        let entry = |name: &str| -> serde_json::Value {
+            v["result"]["entries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|e| e["name"] == name)
+                .cloned()
+                .unwrap_or(serde_json::Value::Null)
+        };
+        assert_eq!(
+            entry("src")["git_status"],
+            "D",
+            "deleted descendant surfaces on the dir: {v}"
+        );
         std::fs::remove_dir_all(&root).ok();
     }
 

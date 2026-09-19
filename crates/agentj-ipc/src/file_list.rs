@@ -164,6 +164,45 @@ pub fn map_git_status(x: char, y: char) -> Option<GitFileStatus> {
     }
 }
 
+/// Aggregate the highest-priority git status among the descendants of `dir`.
+/// Only root-relative statuses strictly under `"{dir}/"` count (so `srcx/...`
+/// never affects `src`); the ladder is `U > D > M > A` (then `Unknown`), and a
+/// directory with no status-bearing descendants yields `None`.
+pub fn aggregate_dir_status(
+    dir: &str,
+    statuses: &std::collections::HashMap<String, (char, char)>,
+) -> Option<GitFileStatus> {
+    if dir.is_empty() {
+        return None;
+    }
+    let prefix = format!("{dir}/");
+    let mut best: Option<GitFileStatus> = None;
+    for (path, (x, y)) in statuses {
+        if !path.starts_with(&prefix) {
+            continue;
+        }
+        if let Some(status) = map_git_status(*x, *y)
+            && best
+                .as_ref()
+                .is_none_or(|current| status_priority(&status) < status_priority(current))
+        {
+            best = Some(status);
+        }
+    }
+    best
+}
+
+/// Priority ladder for [`aggregate_dir_status`] (`U=0` best … `Unknown=4`).
+fn status_priority(status: &GitFileStatus) -> u8 {
+    match status {
+        GitFileStatus::U => 0,
+        GitFileStatus::D => 1,
+        GitFileStatus::M => 2,
+        GitFileStatus::A => 3,
+        GitFileStatus::Unknown => 4,
+    }
+}
+
 /// BFS state: each queue item is (absolute directory, root-relative prefix,
 /// levels still allowed below it).
 struct Walk {
@@ -540,5 +579,35 @@ mod tests {
         };
         assert_eq!(git_statuses(&snapshot, "a.rs"), Some((' ', 'M')));
         assert_eq!(git_statuses(&snapshot, "absent"), None);
+    }
+
+    #[test]
+    fn dir_status_aggregates_descendants_by_priority() {
+        let mut statuses = HashMap::new();
+        statuses.insert("src/m.rs".to_string(), (' ', 'M'));
+        statuses.insert("src/deep/d.rs".to_string(), (' ', 'D'));
+        statuses.insert("src/add.rs".to_string(), ('?', '?'));
+        assert_eq!(
+            aggregate_dir_status("src", &statuses),
+            Some(GitFileStatus::D)
+        );
+        statuses.insert("src/conflict.rs".to_string(), ('U', 'U'));
+        assert_eq!(
+            aggregate_dir_status("src", &statuses),
+            Some(GitFileStatus::U)
+        );
+        statuses.remove("src/conflict.rs");
+        statuses.remove("src/deep/d.rs");
+        assert_eq!(
+            aggregate_dir_status("src", &statuses),
+            Some(GitFileStatus::M)
+        );
+        assert_eq!(aggregate_dir_status("srcx", &statuses), None);
+        assert_eq!(aggregate_dir_status("src/deep", &statuses), None);
+        assert_eq!(
+            aggregate_dir_status("src", &Default::default()),
+            None,
+            "no statuses = no dir status"
+        );
     }
 }
