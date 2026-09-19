@@ -144,3 +144,41 @@ test("uses demo fixtures without requests", () => {
   expect(screen.getByText("apps/")).toBeInTheDocument();
   expect(calls).toHaveLength(0);
 });
+
+test("dir icon swaps Folder/FolderOpen with the expanded state", async () => {
+  const client = mockClient((path) => ({ entries: path ? CHILDREN : ROOT, truncated: false }));
+  render(<FileTree client={client} sessionId="s1" demo={false} />);
+  await screen.findByText("src");
+
+  const collapsed = screen.getByRole("button", { name: /src/ });
+  expect(collapsed.querySelector(".dir-icon--closed")).not.toBeNull();
+  expect(collapsed.querySelector(".dir-icon--open")).toBeNull();
+
+  fireEvent.click(collapsed);
+  await screen.findByText("App.tsx");
+
+  const expanded = screen.getByRole("button", { name: /src/ });
+  expect(expanded).toHaveAttribute("aria-expanded", "true");
+  expect(expanded.querySelector(".dir-icon--open")).not.toBeNull();
+  expect(expanded.querySelector(".dir-icon--closed")).toBeNull();
+  expect(expanded.querySelector(".chev")).not.toBeNull();
+});
+
+test("applies per-category icon modifiers to files", async () => {
+  const entries: RawEntry[] = [
+    { name: "app.ts", path: "app.ts", kind: "file", git_status: null },
+    { name: "data.json", path: "data.json", kind: "file", git_status: null },
+    { name: "readme.md", path: "readme.md", kind: "file", git_status: null },
+    { name: "logo.png", path: "logo.png", kind: "file", git_status: null },
+    { name: "Makefile", path: "Makefile", kind: "file", git_status: null },
+  ];
+  const client = mockClient(() => ({ entries, truncated: false }));
+  const { container } = render(<FileTree client={client} sessionId="s1" demo={false} />);
+  await screen.findByText("app.ts");
+
+  expect(container.querySelector(".file-icon--code")).not.toBeNull();
+  expect(container.querySelector(".file-icon--json")).not.toBeNull();
+  expect(container.querySelector(".file-icon--doc")).not.toBeNull();
+  expect(container.querySelector(".file-icon--image")).not.toBeNull();
+  expect(container.querySelector(".file-icon--default")).not.toBeNull();
+});

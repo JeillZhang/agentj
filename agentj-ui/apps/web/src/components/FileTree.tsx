@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { ReactNode } from "react";
-import { File } from "lucide-react";
+import type { CSSProperties, ReactNode } from "react";
+import { ChevronRight, Folder, FolderOpen } from "lucide-react";
 import { METHODS } from "@agentj/sdk";
 import type { RpcClient } from "@agentj/sdk";
 import { DEMO_FILE_TREE } from "../demoData";
 import type { FileNode } from "../demoData";
+import { fileIconFor } from "../fileIcons";
 import "./filetree.css";
 
 export type FileTreeProps = {
@@ -92,6 +93,11 @@ function childGroupId(path: string): string {
   return `filetree-${path}-children`;
 }
 
+/** Row left inset grows linearly with depth so arbitrarily deep trees stay readable. */
+function rowIndent(depth: number): number {
+  return depth * 14 + 2;
+}
+
 type NodeListProps = {
   entries: Map<string, ViewEntry[]>;
   parent: string;
@@ -123,10 +129,10 @@ function NodeList({
   onToggle,
   onRetry,
 }: NodeListProps) {
-  const indent = depth > 0 ? ` indent-${depth}` : "";
   return (
     <>
       {(entries.get(parent) ?? []).map((node) => {
+        const rowStyle: CSSProperties = { paddingLeft: rowIndent(depth) };
         if (node.kind === "dir") {
           const open = expanded.has(node.path);
           const groupId = childGroupId(node.path);
@@ -163,22 +169,29 @@ function NodeList({
             <div className="trow-group" key={node.path}>
               <button
                 type="button"
-                className={`trow${indent} trow-dir`}
+                className="trow trow-dir"
+                style={rowStyle}
                 aria-expanded={open}
                 aria-controls={groupId}
                 onClick={() => onToggle(node.path)}
               >
-                <span className="chev" aria-hidden="true">{open ? "▾" : "▸"}</span>
+                <ChevronRight className="chev" size={12} aria-hidden="true" />
+                {open ? (
+                  <FolderOpen className="dir-icon dir-icon--open" size={13} aria-hidden="true" />
+                ) : (
+                  <Folder className="dir-icon dir-icon--closed" size={13} aria-hidden="true" />
+                )}
                 <span className="name">{node.name}</span>
               </button>
               <div id={groupId}>{body}</div>
             </div>
           );
         }
+        const { Icon, category } = fileIconFor(node.name);
         return (
-          <div className={`trow${indent}`} key={node.path}>
+          <div className="trow" key={node.path} style={rowStyle}>
             <span className="chev" aria-hidden="true" />
-            <File className="file-icon" size={12} aria-hidden="true" />
+            <Icon className={`file-icon file-icon--${category}`} size={13} aria-hidden="true" />
             <span className="name">{node.name}</span>
             {node.git ? <StatusCell git={node.git} /> : null}
           </div>
