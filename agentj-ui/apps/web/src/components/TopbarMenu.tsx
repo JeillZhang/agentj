@@ -117,15 +117,6 @@ export default function TopbarMenu({ onConnect, onContinue }: Props) {
     triggerRef.current?.focus();
   }, []);
 
-  useEffect(() => {
-    if (!dialog) return;
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") closeDialog();
-    };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [dialog, closeDialog]);
-
   const openMenu = useCallback(() => {
     cancelClose();
     setFavorites(loadFavorites());

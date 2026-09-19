@@ -147,6 +147,25 @@ test("设置… opens the settings dialog and connect roundtrips then closes", (
   localStorage.clear();
 });
 
+test("nested dialog inside settings closes one Escape layer at a time", () => {
+  localStorage.clear();
+  render(<TopbarMenu onConnect={() => {}} onContinue={() => {}} />);
+  openMenu();
+  fireEvent.click(screen.getByRole("menuitem", { name: "设置…" }));
+  const settings = screen.getByLabelText("设置");
+  fireEvent.click(within(settings).getByRole("tab", { name: "项目" }));
+  fireEvent.click(screen.getByLabelText("编辑项目 Inbox"));
+  expect(screen.getByLabelText("编辑项目")).toBeInTheDocument();
+
+  fireEvent.keyDown(document, { key: "Escape" });
+  expect(screen.queryByLabelText("编辑项目")).toBeNull();
+  expect(screen.getByLabelText("设置")).toBeInTheDocument();
+
+  fireEvent.keyDown(document, { key: "Escape" });
+  expect(screen.queryByLabelText("设置")).toBeNull();
+  localStorage.clear();
+});
+
 test("continue dialog stays unchanged and submits the session id", () => {
   localStorage.clear();
   const onContinue = vi.fn();
