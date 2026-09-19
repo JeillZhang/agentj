@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { FileChangeRow } from "../changes";
+import { useRightSection } from "../rightSections";
 
 export type ChangeListProps = {
   changes: FileChangeRow[];
@@ -61,7 +62,7 @@ function DiffPanel({ row }: { row: FileChangeRow }) {
 }
 
 export default function ChangeList({ changes }: ChangeListProps) {
-  const [open, setOpen] = useState(true);
+  const [open, toggle] = useRightSection("changes");
   const [expandedPath, setExpandedPath] = useState<string | null>(null);
 
   return (
@@ -71,16 +72,16 @@ export default function ChangeList({ changes }: ChangeListProps) {
         className="sec-head"
         aria-expanded={open}
         aria-controls="change-section-body"
-        onClick={() => setOpen((prev) => !prev)}
+        onClick={toggle}
       >
         <span>文件变更</span>
         <span className="count">{changes.length}</span>
         <span className="sec-chev" aria-hidden="true">{open ? "▾" : "▸"}</span>
       </button>
       <div id="change-section-body" className="sec-body">
-        {changes.length === 0 ? (
+        {open && (changes.length === 0 ? (
           <p className="aj-empty">待协议支持</p>
-        ) : open && (
+        ) : (
           <div className="file-changes">
             {changes.map((row) => {
               if (row.diff === null) {
@@ -106,7 +107,7 @@ export default function ChangeList({ changes }: ChangeListProps) {
               );
             })}
           </div>
-        )}
+        ))}
       </div>
     </div>
   );

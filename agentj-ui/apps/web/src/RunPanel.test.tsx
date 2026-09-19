@@ -2,7 +2,7 @@ import "@testing-library/jest-dom/vitest";
 import { beforeEach, describe, expect, it } from "vitest";
 import { render, screen, fireEvent, within, act, waitFor } from "@testing-library/react";
 import RunPanel, { ConversationFeed, failRun, fmtDuration, reduceRunFeed, type RunEntry } from "./RunPanel.tsx";
-import UnifiedSidebar from "./components/UnifiedSidebar";
+import { createProject, setCurrentProject } from "./projectStore";
 import { setDemoEnabled } from "./demoData";
 import { METHODS, type ProgressFrame } from "@agentj/sdk";
 
@@ -367,18 +367,15 @@ describe("RunPanel real $/askQuestion → question/respond", () => {
   });
 });
 
-describe("RunPanel project picker → UnifiedSidebar sync", () => {
-  it("shows a project created via the composer picker in the already-mounted sidebar immediately", () => {
-    render(
-      <>
-        <UnifiedSidebar wsUrl="ws://x" client={null} activeSessionId="s1" onActiveChange={() => {}} />
-        <RunPanel client={noopClient} activeSessionId="s1" />
-      </>,
-    );
-    expect(screen.getByRole("button", { name: /Inbox folder/ })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /New Project folder/ })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /project picker/i }));
-    fireEvent.click(screen.getByText("New Project"));
-    expect(screen.getByRole("button", { name: /New Project folder/ })).toBeInTheDocument();
+describe("RunPanel project picker label follows project changes", () => {
+  it("updates the composer picker label when the current project changes elsewhere", () => {
+    render(<RunPanel client={noopClient} activeSessionId="s1" />);
+    const picker = screen.getByRole("button", { name: /project picker/i });
+    expect(picker).toHaveTextContent("Inbox");
+
+    const pick = createProject("MenuPick");
+    act(() => setCurrentProject(pick.id));
+
+    expect(screen.getByRole("button", { name: /project picker/i })).toHaveTextContent("MenuPick");
   });
 });

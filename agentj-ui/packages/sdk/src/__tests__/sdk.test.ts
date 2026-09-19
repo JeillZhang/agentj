@@ -54,6 +54,42 @@ describe("RpcClient", () => {
     expect(result).toEqual({ session_id: "s1" });
   });
 
+  it("rejects a non-string method before sending anything", async () => {
+    let sent = false;
+    const client = new RpcClient({
+      send: async () => {
+        sent = true;
+        return JSON.stringify({ jsonrpc: "2.0", id: 1, result: {} });
+      },
+    });
+    await expect(client.request(undefined as never)).rejects.toThrow("invalid RPC method");
+    expect(sent).toBe(false);
+  });
+
+  it("rejects an empty method before sending anything", async () => {
+    let sent = false;
+    const client = new RpcClient({
+      send: async () => {
+        sent = true;
+        return JSON.stringify({ jsonrpc: "2.0", id: 1, result: {} });
+      },
+    });
+    await expect(client.request("")).rejects.toThrow("invalid RPC method");
+    expect(sent).toBe(false);
+  });
+
+  it("rejects a whitespace-only method before sending anything", async () => {
+    let sent = false;
+    const client = new RpcClient({
+      send: async () => {
+        sent = true;
+        return JSON.stringify({ jsonrpc: "2.0", id: 1, result: {} });
+      },
+    });
+    await expect(client.request("   ")).rejects.toThrow("invalid RPC method");
+    expect(sent).toBe(false);
+  });
+
   it("feeds notifications to the registered handler instead of dropping them", () => {
     const router = new ResponseRouter();
     const seen: Array<[string, unknown]> = [];

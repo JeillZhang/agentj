@@ -40,6 +40,9 @@ export class RpcClient {
     method: string,
     params: Record<string, unknown> = {},
   ): Promise<unknown> {
+    if (typeof method !== "string" || method.trim().length === 0) {
+      throw new Error(`invalid RPC method: ${String(method)}`);
+    }
     const id = RpcClient.nextId++;
     const line = JSON.stringify({ jsonrpc: "2.0", id, method, params });
     const raw = await this.transport.send(line);

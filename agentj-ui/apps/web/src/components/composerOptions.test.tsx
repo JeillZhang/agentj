@@ -45,3 +45,17 @@ test("each popover anchors inside its own sel-wrap", () => {
   expect(screen.getByRole("button", { name: /均衡/ }).closest(".sel-wrap")?.querySelector(".pop-ent"))
     .not.toBeNull();
 });
+test("second click on a trigger closes its popover", () => {
+  render(<ComposerOptions model="deepseek-chat" />);
+  const trigger = screen.getByRole("button", { name: /deepseek-chat/ });
+  fireEvent.click(trigger);
+  expect(trigger).toHaveAttribute("aria-expanded", "true");
+  expect(document.querySelector(".pop-model")).not.toBeNull();
+  fireEvent.mouseDown(trigger);
+  fireEvent.click(trigger);
+  expect(trigger).toHaveAttribute("aria-expanded", "false");
+  expect(document.querySelector(".pop")).toBeNull();
+  fireEvent.click(trigger);
+  expect(trigger).toHaveAttribute("aria-expanded", "true");
+  expect(document.querySelector(".pop-model")).not.toBeNull();
+});

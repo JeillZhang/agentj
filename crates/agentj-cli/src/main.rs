@@ -52,9 +52,12 @@ enum Commands {
     },
     /// Serve the JSON-RPC API over stdio, or over TCP with --port (resident kernel).
     Serve {
-        /// Bind a resident multi-client TCP kernel on 127.0.0.1:<port>.
+        /// Bind a resident multi-client TCP kernel on <host>:<port> (default host 127.0.0.1).
         #[arg(long)]
         port: Option<u16>,
+        /// Bind address; use 0.0.0.0 to accept remote/LAN clients.
+        #[arg(long, default_value = "127.0.0.1")]
+        host: String,
         /// Require this access token in initialize when serving TCP.
         #[arg(long)]
         token: Option<String>,
@@ -67,6 +70,12 @@ enum Commands {
         /// TCP port to listen on for the Web Dashboard.
         #[arg(long)]
         port: u16,
+        /// Bind address (default 127.0.0.1); use 0.0.0.0 for LAN/remote clients.
+        #[arg(long, default_value = "127.0.0.1")]
+        host: String,
+        /// Require this access token in initialize when serving remote clients.
+        #[arg(long)]
+        token: Option<String>,
     },
 }
 
@@ -179,10 +188,42 @@ fn spawn_tcp_signal_task(shared: Arc<IpcServer>) -> tokio::task::JoinHandle<()> 
 
 /// TCP listener options bundled to keep `serve_tcp` within the argument-count gate.
 struct TcpServeOptions {
+    host: String,
     port: u16,
     token: Option<String>,
     max_connections: usize,
     trajectory_store: Option<Arc<agentj_ipc::trajectory::TrajectoryStore>>,
+}
+
+/// Whether `host` refers to the loopback interface (the local-trust default).
+fn is_loopback_host(host: &str) -> bool {
+    if host == "localhost" {
+        return true;
+    }
+    host.trim_matches(['[', ']'])
+        .parse::<std::net::IpAddr>()
+        .map(|ip| ip.is_loopback())
+        .unwrap_or(false)
+}
+
+/// Bracket bare IPv6 literals so they compose into valid `host:port` pairs.
+fn bracket_ipv6(host: &str) -> String {
+    if host.contains(':') && !host.starts_with('[') {
+        format!("[{host}]")
+    } else {
+        host.to_string()
+    }
+}
+
+/// Warn when a non-loopback bind has no token — the kernel would be exposed
+/// to the network without access control (design: 127.0.0.1 local-trust model).
+fn insecure_bind_warning(host: &str, token: Option<&str>) -> Option<String> {
+    if is_loopback_host(host) || token.is_some_and(|t| !t.is_empty()) {
+        return None;
+    }
+    Some(format!(
+        "warning: binding {host} without --token exposes the kernel to the network; add --token for access control"
+    ))
 }
 
 async fn serve_tcp(
@@ -193,8 +234,9 @@ async fn serve_tcp(
     options: TcpServeOptions,
     mcp_manager: Arc<McpConnectionManager>,
 ) -> anyhow::Result<()> {
+    let warning = insecure_bind_warning(&options.host, options.token.as_deref());
     let mut tcp = agentj_ipc::tcp::TcpIpcServer::bind(
-        &format!("127.0.0.1:{}", options.port),
+        &format!("{}:{}", bracket_ipv6(&options.host), options.port),
         kernel,
         session,
         Some(permission_module),
@@ -206,8 +248,16 @@ async fn serve_tcp(
         },
     )
     .await?;
-    println!("listening on {}", tcp.local_addr()?);
-    println!("websocket on ws://127.0.0.1:{}/ws", options.port);
+    let local = tcp.local_addr()?;
+    println!("listening on {local}");
+    println!(
+        "websocket on ws://{}:{}/ws",
+        bracket_ipv6(&options.host),
+        local.port()
+    );
+    if let Some(warning) = warning {
+        eprintln!("{warning}");
+    }
     let signal_task = spawn_tcp_signal_task(tcp.shared_server());
     // Resident mode: exits when the last client disconnects or a shutdown
     // request arrives (决策 #3 按需常驻).
@@ -481,6 +531,7 @@ async fn main() -> anyhow::Result<()> {
         }
         Some(Commands::Serve {
             port: Some(port),
+            host,
             token,
             max_connections,
         }) => {
@@ -490,6 +541,7 @@ async fn main() -> anyhow::Result<()> {
                 permission_module,
                 question_module.clone(),
                 TcpServeOptions {
+                    host,
                     port,
                     token,
                     max_connections,
@@ -499,15 +551,16 @@ async fn main() -> anyhow::Result<()> {
             )
             .await?;
         }
-        Some(Commands::Dashboard { port }) => {
+        Some(Commands::Dashboard { port, host, token }) => {
             serve_tcp(
                 kernel,
                 session_for_ipc,
                 permission_module,
                 question_module.clone(),
                 TcpServeOptions {
+                    host,
                     port,
-                    token: None,
+                    token,
                     max_connections: 16,
                     trajectory_store: Some(Arc::clone(&trajectory_store)),
                 },
@@ -683,5 +736,70 @@ mod tests {
         record_completed_turn(&c, "s1".into(), None);
         let t = c.get_session_totals("s1").unwrap();
         assert_eq!((t.prompt_tokens, t.completion_tokens, t.turns), (0, 0, 1));
+    }
+
+    #[test]
+    fn serve_host_defaults_to_loopback() {
+        let cli = Cli::try_parse_from(["agentj", "serve", "--port", "4096"]).expect("parse");
+        match cli.command {
+            Some(Commands::Serve { host, .. }) => assert_eq!(host, "127.0.0.1"),
+            _ => panic!("expected serve subcommand"),
+        }
+    }
+
+    #[test]
+    fn serve_host_accepts_remote_bind() {
+        let cli = Cli::try_parse_from(["agentj", "serve", "--port", "4096", "--host", "0.0.0.0"])
+            .expect("parse");
+        match cli.command {
+            Some(Commands::Serve { host, .. }) => assert_eq!(host, "0.0.0.0"),
+            _ => panic!("expected serve subcommand"),
+        }
+    }
+
+    #[test]
+    fn dashboard_host_defaults_to_loopback() {
+        let cli = Cli::try_parse_from(["agentj", "dashboard", "--port", "4096"]).expect("parse");
+        match cli.command {
+            Some(Commands::Dashboard { host, .. }) => assert_eq!(host, "127.0.0.1"),
+            _ => panic!("expected dashboard subcommand"),
+        }
+    }
+
+    #[test]
+    fn dashboard_accepts_token_flag() {
+        let cli =
+            Cli::try_parse_from(["agentj", "dashboard", "--port", "4096", "--token", "s3cret"])
+                .expect("parse");
+        match cli.command {
+            Some(Commands::Dashboard { token, .. }) => assert_eq!(token.as_deref(), Some("s3cret")),
+            _ => panic!("expected dashboard subcommand"),
+        }
+    }
+
+    #[test]
+    fn loopback_host_detection_covers_localhost_and_loopback_ips() {
+        for host in ["127.0.0.1", "localhost", "::1", "[::1]"] {
+            assert!(is_loopback_host(host), "{host} should be loopback");
+        }
+        for host in ["0.0.0.0", "192.168.3.31"] {
+            assert!(!is_loopback_host(host), "{host} should not be loopback");
+        }
+    }
+
+    #[test]
+    fn insecure_bind_warning_flags_exposed_bind_without_token() {
+        assert!(insecure_bind_warning("0.0.0.0", None).is_some());
+        assert!(insecure_bind_warning("0.0.0.0", Some("t")).is_none());
+        assert!(insecure_bind_warning("0.0.0.0", Some("")).is_some());
+        assert!(insecure_bind_warning("127.0.0.1", None).is_none());
+    }
+
+    #[test]
+    fn bracket_ipv6_wraps_bare_literals_only() {
+        assert_eq!(bracket_ipv6("::1"), "[::1]");
+        assert_eq!(bracket_ipv6("[::1]"), "[::1]");
+        assert_eq!(bracket_ipv6("0.0.0.0"), "0.0.0.0");
+        assert_eq!(bracket_ipv6("192.168.3.31"), "192.168.3.31");
     }
 }

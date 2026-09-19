@@ -2,6 +2,8 @@ import "@testing-library/jest-dom/vitest";
 import { test, expect, vi } from "vitest";
 import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import UnifiedSidebar from "./UnifiedSidebar";
+import TopbarMenu from "./TopbarMenu";
+import { createProject } from "../projectStore";
 
 const client = {
   request: async (m: string) =>
@@ -15,12 +17,13 @@ const client = {
   setNotificationHandler: () => {},
 };
 
-function makeClient(sessions: Array<Record<string, unknown>>) {
+function makeClient(sessions: Array<Record<string, unknown>>, newSessionId?: string) {
   const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
   const rpc = {
     request: async (method: string, params: Record<string, unknown> = {}) => {
       calls.push({ method, params });
       if (method === "session/list") return { sessions };
+      if (method === "session/new" && newSessionId) return { session_id: newSessionId };
       return null;
     },
     setNotificationHandler: () => {},
@@ -35,7 +38,11 @@ test("tabs, no legacy widgets, files tab persistence", async () => {
   expect(screen.getByRole("tab", { name: "会话" })).toBeInTheDocument();
   expect(screen.queryByText("Threads")).toBeNull();
   expect(screen.queryByLabelText("Settings")).toBeNull();
-  expect(container.querySelector(".aj-sidebar__footer")?.textContent).toContain("添加项目");
+  expect(container.querySelector(".aj-sidebar__footer")).toBeNull();
+  expect(container.querySelector(".aj-project-group")).toBeNull();
+  expect(screen.queryByText("项目")).toBeNull();
+  expect(screen.queryByText("+ 添加项目")).toBeNull();
+  expect(screen.queryByText("＋ 添加项目")).toBeNull();
   fireEvent.click(screen.getByRole("tab", { name: "文件" }));
   expect(localStorage.getItem("agentj.layout.leftTab")).toBe("files");
   localStorage.clear();
@@ -56,8 +63,6 @@ test("flat list renders sessions and star toggle persists", async () => {
   );
   const flat = container.querySelector('[aria-label="最近会话"]') as HTMLElement;
   await within(flat).findByText("hi");
-  const grouped = container.querySelector('[aria-label="session list"]') as HTMLElement;
-  expect(within(grouped).getByText("hi")).toBeInTheDocument();
   fireEvent.click(container.querySelector(".aj-star") as HTMLElement);
   expect(JSON.parse(localStorage.getItem("agentj.favorites") ?? "[]")).toContain("s1");
 });
@@ -80,42 +85,21 @@ test("clicking a session row leaves favorites untouched; only the star favorites
   localStorage.clear();
 });
 
-test("add-project dialog creates a project from the footer button", async () => {
+test("sidebar no longer renders the project section or add-project dialog", () => {
   localStorage.clear();
   const { container } = render(
     <UnifiedSidebar wsUrl="ws://x" client={client as never} activeSessionId={null} onActiveChange={() => {}} />,
   );
-  fireEvent.click(screen.getByRole("button", { name: "+ 添加项目" }));
-  const dialog = screen.getByLabelText("添加项目");
-  expect(dialog.parentElement).toBe(document.body);
-
-  const addButton = within(dialog).getByRole("button", { name: "添加" });
-  expect(addButton).toBeDisabled();
-  fireEvent.change(within(dialog).getByLabelText("项目名称"), { target: { value: "新项目" } });
-  fireEvent.click(addButton);
-
-  expect(screen.queryByLabelText("添加项目")).not.toBeInTheDocument();
-  expect(localStorage.getItem("agentj.projects") ?? "").toContain("新项目");
-  await within(container).findByText("新项目");
+  expect(container.querySelector(".aj-sidebar__footer")).toBeNull();
+  expect(container.querySelector(".aj-project-group")).toBeNull();
+  expect(container.querySelector(".section-label")).toBeNull();
+  expect(screen.queryByText("项目")).toBeNull();
+  expect(screen.queryByText("＋ 添加项目")).toBeNull();
+  expect(screen.queryByLabelText("添加项目")).toBeNull();
   localStorage.clear();
 });
 
-test("add-project dialog closes on backdrop mousedown and cancel", () => {
-  localStorage.clear();
-  render(
-    <UnifiedSidebar wsUrl="ws://x" client={client as never} activeSessionId={null} onActiveChange={() => {}} />,
-  );
-  fireEvent.click(screen.getByRole("button", { name: "+ 添加项目" }));
-  fireEvent.mouseDown(screen.getByLabelText("添加项目"));
-  expect(screen.queryByLabelText("添加项目")).not.toBeInTheDocument();
-
-  fireEvent.click(screen.getByRole("button", { name: "+ 添加项目" }));
-  fireEvent.click(within(screen.getByLabelText("添加项目")).getByRole("button", { name: "取消" }));
-  expect(screen.queryByLabelText("添加项目")).not.toBeInTheDocument();
-  localStorage.clear();
-});
-
-test("every session row renders a delete button (flat + grouped)", async () => {
+test("every session row renders a delete button", async () => {
   localStorage.clear();
   const { client: c } = makeClient([
     { session_id: "s1", state: "active", preview: "hi", updated_at: String(Date.now()) },
@@ -125,9 +109,7 @@ test("every session row renders a delete button (flat + grouped)", async () => {
   );
   const flat = container.querySelector('[aria-label="最近会话"]') as HTMLElement;
   await within(flat).findByText("hi");
-  const grouped = container.querySelector('[aria-label="session list"]') as HTMLElement;
   expect(within(flat).getAllByLabelText("删除会话").length).toBe(1);
-  expect(within(grouped).getAllByLabelText("删除会话").length).toBe(1);
   localStorage.clear();
 });
 
@@ -209,5 +191,28 @@ test("session/list rows with state deleted are filtered out", async () => {
   await within(flat).findByText("alive-preview");
   expect(within(flat).queryByText("gone-preview")).toBeNull();
   expect(container.querySelectorAll('[aria-label="最近会话"] .aj-session-del').length).toBe(1);
+  localStorage.clear();
+});
+
+test("project picked in TopbarMenu is inherited by the next new session via agentj:current-project-updated", async () => {
+  localStorage.clear();
+  const qa = createProject("QA");
+  const { client: c } = makeClient([], "s-new");
+  render(
+    <>
+      <TopbarMenu onConnect={() => {}} onContinue={() => {}} />
+      <UnifiedSidebar wsUrl="ws://x" client={c as never} activeSessionId={null} onActiveChange={() => {}} />
+    </>,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "更多" }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "项目" }));
+  fireEvent.click(within(screen.getByRole("group", { name: "项目" })).getByRole("menuitemradio", { name: /QA/ }));
+  fireEvent.click(screen.getByRole("button", { name: "+ 新建会话" }));
+  await waitFor(() => {
+    const map = JSON.parse(localStorage.getItem("agentj.projectMap") ?? "{}") as Record<string, string>;
+    expect(map["s-new"]).toBe(qa.id);
+  });
+  const map = JSON.parse(localStorage.getItem("agentj.projectMap") ?? "{}") as Record<string, string>;
+  expect(map["s-new"]).not.toBe("default");
   localStorage.clear();
 });

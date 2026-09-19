@@ -1,4 +1,5 @@
 import { expect, test, vi } from "vitest";
+import { createRef } from "react";
 import { render, fireEvent } from "@testing-library/react";
 import OptionPopover from "./OptionPopover";
 test("esc and outside close", () => {
@@ -15,6 +16,22 @@ test("esc and outside close", () => {
   expect(onClose).toHaveBeenCalledTimes(1); // inside: no extra close
   fireEvent.mouseDown(document.body);
   expect(onClose).toHaveBeenCalledTimes(2);
+});
+test("mousedown on anchorRef does not close", () => {
+  const anchorRef = createRef<HTMLButtonElement>();
+  const onClose = vi.fn();
+  render(
+    <>
+      <button ref={anchorRef}>trigger</button>
+      <OptionPopover open onClose={onClose} anchorRef={anchorRef}>
+        <div>panel</div>
+      </OptionPopover>
+    </>,
+  );
+  fireEvent.mouseDown(anchorRef.current!);
+  expect(onClose).not.toHaveBeenCalled();
+  fireEvent.mouseDown(document.body);
+  expect(onClose).toHaveBeenCalledTimes(1);
 });
 test("open focuses the panel when focusable", () => {
   render(

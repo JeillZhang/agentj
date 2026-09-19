@@ -257,6 +257,46 @@ struct JsonRpcError {
     data: Option<Value>,
 }
 
+/// Parse `raw` into a [`JsonRpcRequest`] or, on failure, build the JSON-RPC
+/// 2.0 error response (JSON-RPC 2.0 §5). A syntax error is `-32700` with a
+/// null id; valid JSON that fails request schema validation is `-32600` with
+/// the raw request id echoed when it is a string, number or null.
+fn parse_request(raw: &str) -> Result<JsonRpcRequest, Box<JsonRpcResponse>> {
+    match serde_json::from_str::<JsonRpcRequest>(raw) {
+        Ok(req) => Ok(req),
+        Err(e) => {
+            let (code, id, message) = match serde_json::from_str::<Value>(raw) {
+                Ok(value) => (
+                    error_codes::INVALID_REQUEST,
+                    extract_request_id(&value),
+                    format!("Invalid Request: {e}"),
+                ),
+                Err(_) => (error_codes::PARSE_ERROR, None, format!("Parse error: {e}")),
+            };
+            Err(Box::new(JsonRpcResponse {
+                jsonrpc: "2.0".into(),
+                id: id.unwrap_or(Value::Null),
+                result: None,
+                error: Some(JsonRpcError {
+                    code,
+                    message,
+                    data: None,
+                }),
+            }))
+        }
+    }
+}
+
+/// Extract a JSON-RPC 2.0 id from a raw JSON value. Only string, number and
+/// null ids are valid; absent or invalid types (object/array/bool) yield
+/// `None` so the error response falls back to a null id.
+fn extract_request_id(value: &Value) -> Option<Value> {
+    match value.get("id") {
+        Some(id @ (Value::String(_) | Value::Number(_) | Value::Null)) => Some(id.clone()),
+        _ => None,
+    }
+}
+
 /// Method-dispatch failure carrying the JSON-RPC 2.0 standard error code
 /// (design 决策 #4). `handle_request` echoes the request `id` alongside this
 /// code so every error path round-trips the correlation id. `data` carries
@@ -439,25 +479,17 @@ impl IpcServer {
         self.handle_request_from(raw, "stdio").await
     }
 
-    /// Handle a single JSON-RPC request from connection `conn_id`. Every error
-    /// path echoes the request `id` (JSON-RPC 2.0 §5) with the semantically
+    /// Handle a single JSON-RPC request from connection `conn_id`. Valid
+    /// requests echo the request `id` (JSON-RPC 2.0 §5) with the semantically
     /// correct standard code, never falling through to the serve loop.
+    /// Malformed requests still get an error line: a syntax error yields
+    /// `-32700` with a null id (the id is undetectable), while valid JSON that
+    /// fails request schema validation yields `-32600` and echoes the raw `id`
+    /// when it is a string, number or null.
     pub async fn handle_request_from(&self, raw: &str, conn_id: &str) -> Result<String, IpcError> {
-        let req: JsonRpcRequest = match serde_json::from_str(raw) {
+        let req = match parse_request(raw) {
             Ok(r) => r,
-            Err(e) => {
-                let err_resp = JsonRpcResponse {
-                    jsonrpc: "2.0".into(),
-                    id: Value::Null,
-                    result: None,
-                    error: Some(JsonRpcError {
-                        code: -32700,
-                        message: format!("Parse error: {e}"),
-                        data: None,
-                    }),
-                };
-                return Ok(serde_json::to_string(&err_resp)?);
-            }
+            Err(err_resp) => return Ok(serde_json::to_string(&*err_resp)?),
         };
 
         let result = if let Some(err) = self.auth_gate(&req, conn_id) {
@@ -3269,6 +3301,63 @@ mod tests {
         let resp = server.handle_request("not json").await.unwrap();
         let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
         assert_eq!(v["error"]["code"], -32700); // Parse error
+        assert_eq!(v["id"], serde_json::Value::Null);
+    }
+
+    #[tokio::test]
+    async fn schema_invalid_request_echoes_id_with_invalid_request_code() {
+        let server = IpcServer::new(Kernel::new(), stub_session());
+        let resp = server
+            .handle_request(r#"{"jsonrpc":"2.0","id":10,"params":{}}"#)
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(v["error"]["code"], -32600); // Invalid Request
+        assert_eq!(v["id"], 10);
+    }
+
+    #[tokio::test]
+    async fn schema_invalid_request_echoes_string_id_with_invalid_request_code() {
+        let server = IpcServer::new(Kernel::new(), stub_session());
+        let resp = server
+            .handle_request(r#"{"jsonrpc":"2.0","id":"abc","params":{}}"#)
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(v["error"]["code"], -32600); // Invalid Request
+        assert_eq!(v["id"], "abc");
+    }
+
+    #[tokio::test]
+    async fn non_object_json_returns_invalid_request_with_null_id() {
+        let server = IpcServer::new(Kernel::new(), stub_session());
+        let resp = server.handle_request("42").await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(v["error"]["code"], -32600);
+        assert_eq!(v["id"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn request_id_extraction_accepts_only_jsonrpc_id_types() {
+        let cases = [
+            (
+                serde_json::json!({"id": "abc"}),
+                Some(serde_json::json!("abc")),
+            ),
+            (serde_json::json!({"id": 7}), Some(serde_json::json!(7))),
+            (
+                serde_json::json!({"id": null}),
+                Some(serde_json::Value::Null),
+            ),
+            (serde_json::json!({}), None),
+            (serde_json::json!({"id": {"x": 1}}), None),
+            (serde_json::json!({"id": [1]}), None),
+            (serde_json::json!({"id": true}), None),
+            (serde_json::json!("42"), None),
+        ];
+        for (value, expected) in cases {
+            assert_eq!(extract_request_id(&value), expected, "value: {value}");
+        }
     }
 
     #[tokio::test]

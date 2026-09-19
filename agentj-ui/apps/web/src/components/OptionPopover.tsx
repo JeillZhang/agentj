@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import type { HTMLAttributes, ReactNode } from "react";
+import type { HTMLAttributes, ReactNode, RefObject } from "react";
 import "./options.css";
 
 export type OptionPopoverProps = {
@@ -8,6 +8,7 @@ export type OptionPopoverProps = {
   align?: "left" | "right";
   width?: number;
   labelledBy?: string;
+  anchorRef?: RefObject<HTMLElement | null>;
   children: ReactNode;
 } & Omit<HTMLAttributes<HTMLDivElement>, "children">;
 
@@ -15,9 +16,11 @@ export type OptionPopoverProps = {
  * Upward-anchored option popover primitive.
  *
  * Renders nothing while closed. While open, Escape and mousedown outside the
- * panel invoke `onClose`; mousedown inside the panel is ignored. Extra
- * attributes (onKeyDown, tabIndex, role) are forwarded onto the `.pop` panel so
- * consumers can own listbox keyboard behaviour.
+ * panel invoke `onClose`; mousedown inside the panel or inside `anchorRef`
+ * (typically the trigger button) is ignored, so a trigger click toggles the
+ * popover closed instead of close-then-reopen. Extra attributes (onKeyDown,
+ * tabIndex, role) are forwarded onto the `.pop` panel so consumers can own
+ * listbox keyboard behaviour.
  */
 export default function OptionPopover({
   open,
@@ -25,6 +28,7 @@ export default function OptionPopover({
   align,
   width,
   labelledBy,
+  anchorRef,
   children,
   ...rest
 }: OptionPopoverProps) {
@@ -38,7 +42,10 @@ export default function OptionPopover({
       if (event.key === "Escape") onCloseRef.current();
     };
     const handleMouseDown = (event: MouseEvent) => {
-      if (!ref.current?.contains(event.target as Node)) onCloseRef.current();
+      const target = event.target as Node;
+      if (ref.current?.contains(target)) return;
+      if (anchorRef?.current?.contains(target)) return;
+      onCloseRef.current();
     };
     document.addEventListener("keydown", handleKeyDown);
     document.addEventListener("mousedown", handleMouseDown);
@@ -47,7 +54,7 @@ export default function OptionPopover({
       document.removeEventListener("keydown", handleKeyDown);
       document.removeEventListener("mousedown", handleMouseDown);
     };
-  }, [open]);
+  }, [open, anchorRef]);
 
   if (!open) return null;
 

@@ -1,14 +1,16 @@
 import { useState } from "react";
 import { Plug, Link, Key, Eye, EyeOff } from "lucide-react";
+import { loadConnection } from "./connectionStore";
 
 type Props = {
   onConnect: (host: string, port: string, token: string) => void;
 };
 
 export default function ConnectionBar({ onConnect }: Props) {
-  const [host, setHost] = useState("");
-  const [port, setPort] = useState("");
-  const [token, setToken] = useState("");
+  const [stored] = useState(loadConnection);
+  const [host, setHost] = useState(stored?.host ?? "");
+  const [port, setPort] = useState(stored?.port ?? "");
+  const [token, setToken] = useState(stored?.token ?? "");
   const [showToken, setShowToken] = useState(false);
   const [hostError, setHostError] = useState<string | null>(null);
 
