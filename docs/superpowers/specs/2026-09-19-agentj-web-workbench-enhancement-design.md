@@ -44,7 +44,7 @@ v0.16.5 的 Web 三栏工作台已具备真实协议驱动（TODO/变更/文件�
 ### 目标
 
 - **G1 代码卡片（P0）**：对话中 markdown 围栏代码渲染为独立卡片 `CodeBlockCard`——左上折叠/展开（默认展开、折叠态保留 header）、右上复制（clipboard → execCommand 降级链 + 瞬态反馈）；`rehype-highlight`（hljs common 语言集）高亮，主题色映射到现有语义色变量；流式安全（折叠态不因追加重渲染丢失）；行内 code 样式不变。
-- **G2 显示设置（P0）**：新 `displayPrefsStore`（`agentj.displayPrefs`）——`fontConversation/fontLeft/fontRight/fontCode`（档位 小/中/大/特大）+ `lineHeight`（紧凑 1.4 / 默认 1.6 / 宽松 1.8）+ `density`（默认/紧凑）+ `reducedMotion`（bool）；设置弹窗新增「显示」tab（含「恢复默认」）；即时生效；中档 = 当前视觉；CSS 变量注入 + `var()` fallback 保值。
+- **G2 显示设置（P0）**：新 `displayPrefsStore`（`agentj.displayPrefs`）——`fontConversation/fontLeft/fontRight/fontCode`（档位 小/中/大/特大）+ `lineHeight`（紧凑 1.4 / 默认 1.55 / 宽松 1.8，默认档修订见 D4）+ `density`（默认/紧凑）+ `reducedMotion`（bool）；设置弹窗新增「显示」tab（含「恢复默认」）；即时生效；中档 = 当前视觉；CSS 变量注入 + `var()` fallback 保值。
 - **G3 文件图标（P1）**：`fileIcons.ts` 覆盖主流源码扩展名（rs/go/py/java/c/cpp/cs/rb/php/kt/swift/scala/lua/dart 等）+ 新增 `db` 类（`Database` 图标）+ 文件名特例（Dockerfile/Makefile/CMakeLists.txt → code）。
 - **G4 会话列表菜单（P0）**：左栏清理按钮改为下拉菜单 `SessionListMenu`——`清理所有会话…`（打开既有确认弹窗，无可删时禁用）+ `过滤 ›`（全部/仅收藏）+ `排序 ›`（最近更新/创建时间）；悬停行自动展开二级飞出（镜像 TopbarMenu 模式，方向向右）；设置弹窗「会话列表」tab 整体移除。
 - **G5 项目编辑（P0）**：`Project` 记录扩展 `workDir/isDefault/defaultModel/defaultAgent`（可选字段，零迁移）；store 新增 `updateProject`（isDefault 全局互斥；补齐 rename 事件）与 `deleteProject`；composer picker 每行右侧编辑按钮 → `ProjectEditDialog`；**工作目录打通 `session/new { project_root }`**；默认模型/Agent 随项目切换应用。
@@ -210,6 +210,7 @@ flowchart LR
 - 轨迹分组：节点正文 = `calc(var(--aj-font-conv) - 2px)`（中档 = 13 现值）、次要行 = `calc(var(--aj-font-conv) - 3px)`（中档 = 12 现值）。
 - **对齐修正（随实现记录）**：`.aj-ai pre` 现状未显式设字号（继承正文 15px），本次统一为 `--aj-font-code` 中档 12px（对齐 v0.14 视觉规格「代码块 12px」）；行内 code / diff 行 / 工具输出经 `calc` 在中档精确保留现值。
 - 密度：`data-density="compact"` 仅收紧 4 类间距（对话 gap、会话行内边距、右栏行内边距、composer 内边距），不改字号与控件命中区。
+- **行高修订（随实现记录，2026-09-19）**：默认档取当前正文实测值 **1.55**（`.aj-conv` 现值），本设计初稿的取整值 1.6 被计划取代；`displayPrefsStore` `DisplayLineHeight.default = "1.55"`，`WorkspaceShell` `LH.default = "1.55"`；紧凑 1.4 / 宽松 1.8 不变。
 
 **D5 减弱动画（G2）**
 - `reducedMotion` 由 App effect 写 `documentElement.dataset.reducedMotion`（镜像 theme 机制，覆盖 portal 弹窗）；CSS 以 `:root[data-reduced-motion="true"] *` 熔断过渡/动画（时长趋零）。
@@ -246,7 +247,7 @@ flowchart LR
 - 项目切换（`agentj:current-project-updated`，来源：composer picker / 顶栏项目飞出 / 设置默认项目选择）→ 若目标项目设 `defaultModel/defaultAgent` 则写入 composer 持久化选择（`agentj.composer.*`）并同步 UI；未设置则保留当前选择。
 - 应用启动时按当前项目（回退链结果）同样应用一次。
 - 语义：**「切换时应用」而非「强制」**——用户在 composer 的显式选择立即生效并持久化（项目内可临时换模型；切走再切回会重新应用项目默认）。
-- 候选模型/Agent 列表与 composer 同源（kernel/status；App 下传）；列表不可用时选择器禁用并提示「连接后可用」。
+- 候选模型/Agent 列表来源（**随实现修订，2026-09-19**）：`ProjectEditDialog`（及 composer picker）的默认模型/Agent 候选与 composer 同源常量——`ComposerOptions.MODEL_LIST` / `AGENT_LIST`（`AGENT_LIST` 由原 `const AGENTS` 导出）。本设计初稿的「kernel/status 运行时来源 + App 下传」措辞被取代；随之「列表不可用 → 选择器禁用 + 连接后可用」边界情况取消（静态候选始终可用）。
 
 **D12 嵌套弹窗栈（G6）**
 - 设置弹窗内打开 `ProjectEditDialog` 与删除确认 → 两层 `ModalDialog` 叠加；`ModalDialog` 引入模块级栈：仅**栈顶实例**响应 Esc 与遮罩点击，卸载出栈；关闭时焦点归还其触发元素。
@@ -295,7 +296,7 @@ flowchart LR
 | 无可删会话 | 清理项禁用（aria-disabled + muted），过滤/排序仍可用 |
 | 嵌套弹窗 Esc | 仅栈顶关闭（模态栈）；焦点归还触发元素 |
 | 流式未闭合围栏 | react-markdown 兜底为代码块；卡片折叠态按位置保持 |
-| 模型列表未就绪 | 默认模型/Agent 选择器禁用 + 「连接后可用」提示 |
+| 模型列表未就绪 | ~~默认模型/Agent 选择器禁用 + 「连接后可用」提示~~（已随实现取消：候选为静态 `MODEL_LIST`/`AGENT_LIST`，始终可用） |
 | 菜单矮视口 | 飞出层 `max-height:50vh` 内部滚动（沿用 topbar 菜单） |
 
 ## 测试策略
@@ -326,13 +327,15 @@ flowchart LR
 
 ## TODO 清单（plan 阶段拆分任务并逐期勾选）
 
-> 状态：**设计完成（2026-09-19），待实现计划**。
-> `/jskill-feature-plan` 将按本设计产出 T0..Tn 任务级清单（TDD）并回填本节。
+> 状态：**已实现（2026-09-19，v0.17.0）—— T0..T23 全部落地，T23 全量门禁通过**。
+> `/jskill-feature-plan` 产出的 T0..T23 任务级清单（TDD）已执行并逐任务评审通过；
+> 实机 Playwright 验收（六项 + 深浅主题 + 键盘链路）在 post-dev
+> `/jskill-test-acceptance` 流程执行。
 
-- [ ] G1 代码卡片（`CodeBlockCard` + `copyText` + hljs 语义色映射）
-- [ ] G2 显示设置（`displayPrefsStore` + 设置「显示」tab + 三栏 CSS 变量消费）
-- [ ] G3 文件树源码图标（扩展名 + db 类 + 文件名特例）
-- [ ] G4 会话列表菜单（`SessionListMenu` + 设置「会话列表」移除）
-- [ ] G5 项目编辑（记录扩展 + 编辑弹窗 + picker 行内编辑 + `project_root` 打通 + 默认模型联动）
-- [ ] G6 设置「项目」tab（全局默认 + 列表 + 删除 + 嵌套弹窗栈）
-- [ ] G0 横切：版本 0.17.0 + 全量门禁 + 文档同步
+- [x] G1 代码卡片（`CodeBlockCard` + `copyText` + hljs 语义色映射）2026-09-19
+- [x] G2 显示设置（`displayPrefsStore` + 设置「显示」tab + 三栏 CSS 变量消费）2026-09-19
+- [x] G3 文件树源码图标（扩展名 + db 类 + 文件名特例）2026-09-19
+- [x] G4 会话列表菜单（`SessionListMenu` + 设置「会话列表」移除）2026-09-19
+- [x] G5 项目编辑（记录扩展 + 编辑弹窗 + picker 行内编辑 + `project_root` 打通 + 默认模型联动）2026-09-19
+- [x] G6 设置「项目」tab（全局默认 + 列表 + 删除 + 嵌套弹窗栈）2026-09-19
+- [x] G0 横切：版本 0.17.0 + 全量门禁 + 文档同步 2026-09-19

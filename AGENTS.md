@@ -1,6 +1,6 @@
 # AGENTS.md
 
-> Updated 2026-09-19 — v0.15.1 协议扩展（三栏工作台真实数据源）+ v0.15.2 session/status dispatch 修复 + v0.16.0 Web 工作台体验修复 + v0.16.1 跟随修复 + v0.16.2 远程访问修复 + v0.16.3 Web 工作台修复（项目菜单 + 文件树）+ v0.16.4 Web 工作台体验修复（状态灯 hover 面板 + 右栏手风琴 + 滚动条）+ v0.16.5 Web 工作台四项修复（右栏右→左展开动画 + 任务/文件变更高度可调 + 顶栏菜单重构/设置弹窗 + 文件树图标）
+> Updated 2026-09-19 — v0.15.1 协议扩展（三栏工作台真实数据源）+ v0.15.2 session/status dispatch 修复 + v0.16.0 Web 工作台体验修复 + v0.16.1 跟随修复 + v0.16.2 远程访问修复 + v0.16.3 Web 工作台修复（项目菜单 + 文件树）+ v0.16.4 Web 工作台体验修复（状态灯 hover 面板 + 右栏手风琴 + 滚动条）+ v0.16.5 Web 工作台四项修复（右栏右→左展开动画 + 任务/文件变更高度可调 + 顶栏菜单重构/设置弹窗 + 文件树图标）+ v0.17.0 Web 工作台六项增强（代码卡片 + 显示设置 + 文件树图标 + 会话列表菜单 + 项目编辑 + 设置项目面板）
 > `file/list` 沙箱化目录懒加载 + git 状态点；`$/progress` 新增 `kind:"todo"`
 > （全量快照 + 会话内单调 `revision`）与 `kind:"file_change"`（write 自研行级
 > diff / bash git 前后采样，unified diff ≤64 KiB）；`$/askQuestion` +
@@ -90,6 +90,35 @@
 > 持久化 + 焦点归还；面板拖拽 ±120px 1:1、刷新保留、Home 复位；目录开合图标 +
 > 分类图标 + 30px 深缩进）。Rust 564 tests / sdk 46 / web 263 → 308；
 > PROTOCOL_VERSION 保持 0.13.0；工作区 0.16.4 → 0.16.5。
+> v0.17.0 Web 工作台六项增强（纯前端，无协议变更）：(1) 对话代码块卡片化 ——
+> `rehype-highlight`（hljs common 语言集，`.hljs-*` 映射现有语义色变量）+
+> 新 `CodeBlockCard`（`figure > figcaption + pre`：左上折叠/展开保留 header +
+> 语言标签、右上复制；折叠不卸载，流式追加保持折叠态）+ 新 `copyText`
+> （`navigator.clipboard` → textarea/`execCommand` 降级链 + 失败瞬态，
+> `http` 局域网非安全上下文可用）；(2) 显示设置 —— 新 `displayPrefsStore`
+> （`agentj.displayPrefs`：对话/左栏/右栏/代码四档字号 + 行高紧凑 1.4/默认 1.55/宽松 1.8
+> + 密度 + 减弱动画）+ `SettingsDisplayPanel`（设置「显示」tab + 「恢复默认」）+ 新
+> `displayPrefs.css` 覆盖层（最后导入、`var()` fallback 保值）+ `WorkspaceShell`
+> inline `--aj-font-conv/-left/-right/-code`、`--aj-lh-conv`、`data-density` +
+> `App` effect 写 `documentElement[data-reduced-motion]`；(3) 文件树源码图标 ——
+> `fileIcons.ts` 扩展主流源码扩展名（rs/go/py/java/c/cpp/cs/rb/php/kt/swift/scala/lua/dart 等）
+> + 新 db 类（`Database`）+ 文件名特例（Dockerfile/Makefile/CMakeLists.txt → code）+
+> `.file-icon--db` 配色；(4) 会话列表菜单 —— 新 `SessionListMenu`（左栏清理按钮改为
+> ⋯ 菜单：`清理所有会话…` 打开既有确认弹窗、无可删禁用；`过滤 ›`/`排序 ›` 悬停向右
+> 飞出二级 `menuitemradio`，镜像 TopbarMenu 延迟/桥接/Esc 分层/键盘；直写
+> `sidebarPrefsStore`）—— 设置弹窗「会话列表」tab 整体移除；
+> (5) 项目编辑 —— `projectStore` 扩展 `workDir/isDefault/defaultModel/defaultAgent`
+> 可选字段（零迁移）+ `updateProject`（`isDefault` 互斥 + 修复 rename 不通知）/
+> `deleteProject`（Inbox 守卫 + 会话归属回退 + 计数）+ `ProjectDefaults`；新
+> `ProjectEditDialog`（名称 / 工作目录绝对路径校验 / 默认项目 / 默认模型 / Agent）+
+> composer picker 每行编辑按钮 + `session/new` 首次携带 `project_root`（工作目录打通）+
+> 项目默认模型/Agent 随切换应用；(6) 设置「项目」tab —— `SettingsProjectPanel`
+> （全局默认项目 + 新项目工作目录预填 + 项目列表 名称/工作目录/默认徽标/编辑/删除，
+> Inbox 不可删、删除确认展示会话回退数）+ `ModalDialog` 模块级模态栈（嵌套弹窗仅栈顶
+> 响应 Esc/遮罩）。门禁全绿：web 308 → 401 tests（43 files）/ sdk 46 / Rust 564 tests /
+> clippy 零警告 / drift 2 passed / web build / tui 71 / check-version 0.17.0 / desktop-ui。
+> 新依赖 `rehype-highlight`（web workspace）；PROTOCOL_VERSION 保持 0.13.0；
+> 工作区 0.16.5 → 0.17.0。
 > (17 crates + agentj-ui monorepo：Web / TUI / Desktop + SDK + tokens，
 > npm workspaces `apps/*`+`packages/*`，共享 SDK + protocol + tokens，
 > WebSocket 网关同端口复用，后端零改造，frontend stays in-repo)
@@ -97,6 +126,18 @@
 ## Project Status
 
 AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + 可插拔模块」架构。
+v0.17.0 已落地：**Web 工作台六项增强（纯前端，无协议变更）**
+（(1) 对话代码块卡片化：`rehype-highlight` 高亮 + `CodeBlockCard`（折叠/展开 +
+复制）+ `copyText`（clipboard → execCommand 降级链）；(2) 显示设置：
+`displayPrefsStore` + 设置「显示」tab + `displayPrefs.css` 覆盖层 +
+WorkspaceShell `--aj-font-*`/`--aj-lh-conv`/`data-density` + App
+`data-reduced-motion`；(3) 文件树源码/db 图标 + 文件名特例；
+(4) 左栏 `SessionListMenu`（清理所有会话 + 过滤/排序向右飞出二级菜单，
+设置「会话列表」tab 移除）；(5) 项目编辑：`projectStore` 可选字段 +
+`ProjectEditDialog` + composer 行内编辑 + `project_root` 随 `session/new` 打通 +
+项目默认模型/Agent 随切换应用；(6) 设置「项目」tab（全局默认 + 列表 + 守卫删除 +
+`ModalDialog` 嵌套栈）。web 308 → 401 tests / sdk 46 / Rust 564 tests / tui 71；
+PROTOCOL_VERSION 保持 0.13.0；工作区 0.16.5 → 0.17.0）。
 v0.16.5 已落地：**Web 工作台四项体验修复（无协议变更）**
 （(1) 右栏折叠/展开单段右→左平滑动画（外层 width 过渡 + 内层 `align-self:
 flex-end` 右缘锚定、内容零回流、仅 ≥1024 动画、拖拽期间 sibling 选择器禁用过渡）；
@@ -214,17 +255,20 @@ Desktop：Tauri v2 壳套 `apps/web` 产物，四件套 deb/AppImage/dmg/msi，
 - `npm --prefix agentj-ui run generate --workspace=@agentj/protocol` — 生成 protocol 类型
   （`schemas/*.json` → `agentj-ui/packages/protocol/types.d.ts`）
 - `npm --prefix agentj-ui run build --workspace=@agentj/protocol` — `tsc --noEmit` 校验
-- `npm --prefix agentj-ui test --workspace=@agentj/sdk` — SDK 单测（client/router/transports/config）
+- `npm --prefix agentj-ui test --workspace=@agentj/sdk` — SDK 单测（client/router/transports/config，
+  46 tests）
 - `npm --prefix agentj-ui run generate --workspace=@agentj/sdk` — 生成 `METHODS` 常量
   （`protocol/methods.json` → `agentj-ui/packages/sdk/src/methods.ts`）
-- `npm --prefix agentj-ui test --workspace=@agentj/web` — Web 单测（vitest）
+- `npm --prefix agentj-ui test --workspace=@agentj/web` — Web 单测（vitest，401 tests / 43 files）
 - `npm --prefix agentj-ui run build --workspace=@agentj/web` — Web 构建（`tsc -b && vite build`）
   > 注意：Vite dev server 不监听 root 之外的 `packages/sdk` 源（alias 直连源码）；
   > 改动 SDK 后须重启 dev server，否则运行陈旧的 `METHODS`（v0.16.3「加载中」根因）。
-- `bun --cwd agentj-ui/apps/tui test` — TUI 单测（含 mock WS e2e）
+  > Web 新依赖 `rehype-highlight`（hljs common 语言集，随 `npm --prefix agentj-ui install`
+  > + lockfile 落地，v0.17.0）。
+- `bun --cwd agentj-ui/apps/tui test` — TUI 单测（含 mock WS e2e，71 tests）
 - `./agentj-ui/apps/desktop/check-artifacts.sh linux` — Desktop 产物校验
 - `node agentj-ui/apps/desktop/check-desktop-ui.mjs` — Desktop 前端产物/配置一致性校验
-- `./scripts/check-version.sh` — 版本一致性（Cargo + sdk VERSION + desktop 均为 0.16.5，
+- `./scripts/check-version.sh` — 版本一致性（Cargo + sdk VERSION + desktop 均为 0.17.0，
   PROTOCOL_VERSION 0.13.0 + `protocol/methods.json` 版本 0.13.0）
 
 ### CI Pipelines (GitHub Actions)
@@ -286,7 +330,7 @@ Desktop：Tauri v2 壳套 `apps/web` 产物，四件套 deb/AppImage/dmg/msi，
   为 drift 门禁后第一门）。
 - `agentj-ui/packages/sdk`：共享 SDK（`src/client.ts` RpcClient +
   `src/router.ts` ResponseRouter/RpcTransport + `src/config.ts`
-   `VERSION="0.16.5"` + `PROTOCOL_VERSION="0.13.0"` + `resolveWsUrl` + `src/methods.ts` METHODS
+   `VERSION="0.17.0"` + `PROTOCOL_VERSION="0.13.0"` + `resolveWsUrl` + `src/methods.ts` METHODS
   + `transports/websocket.ts` WebSocketTransport
   + `transports/tcp.ts` TcpTransport；`RpcClient.request` 拦截空/未定义 method（v0.16.3），
   被 Web/TUI/Desktop 同源消费）。
@@ -300,15 +344,16 @@ Desktop：Tauri v2 壳套 `apps/web` 产物，四件套 deb/AppImage/dmg/msi，
   `OptionPopover`/`ComposerOptions`（模型/Agent/熵变） +
   `AskQuestionCard`（`$/askQuestion` → `question/respond`） +
   `TopbarMenu`（v0.16.5 五项：项目/继续会话…/收藏会话/设置…/帮助；项目与收藏会话
-  hover 左向飞出二级菜单 + 关闭延迟 + Esc 分层 + 键盘可达；排序/过滤/演示数据/
-  连接设置迁入 `SettingsDialog` 弹窗（左 tablist 连接/会话列表/演示数据 +
-  `sidebarPrefsStore` 持久化 `agentj.sidebarPrefs`）；项目选择经
-  `agentj:current-project-updated` 同步）；
-  `ConnectionStatus`（状态灯 + hover 连接面板）+ 右栏成对面板化（单开铺满至底部 /
-  双开拖拽 + 键盘调节 + `agentj.layout.rightSectionSplit` 比例持久化 +
-  `useSyncExternalStore` 同 tab 事件跨实例同步；v0.16.5）+ token 化滚动条（v0.16.4）
-  + 文件树分类图标（`fileIcons.ts`，Folder/FolderOpen + 扩展名 lucide 图标 +
-  任意深度内联缩进，v0.16.5）；
+  hover 左向飞出二级菜单 + 关闭延迟 + Esc 分层 + 键盘可达） +
+  `ConnectionStatus`（状态灯 + hover 连接面板）；
+  **v0.17.0 六项增强**：`CodeBlockCard`（`pre` 覆盖 + `copyText` 降级链 +
+  `rehype-highlight`，`codeblock.css`）/ `displayPrefsStore` + `SettingsDisplayPanel` +
+  `displayPrefs.css` 覆盖层 / `fileIcons.ts` 源码与 db 图标 / `SessionListMenu`
+  （`过滤`/`排序` 向右飞出）/ `ProjectEditDialog` + `SettingsProjectPanel`（设置「项目」tab）+
+  `projectStore` 扩展（`workDir/isDefault/defaultModel/defaultAgent` + update/delete/defaults）+
+  `project_root` 随 `session/new` 打通；`SettingsDialog` 分类 = 连接/显示/项目/演示数据
+  （排序/过滤迁入 `SessionListMenu`，`sidebarPrefsStore` 持久化 `agentj.sidebarPrefs`）；
+  `ModalDialog` 模块级模态栈（嵌套弹窗仅栈顶响应 Esc/遮罩）；
   `layoutStore` 宽度/面板持久化，
   `todoState`/`changes` reducer，`deriveChanges` 半推导退役；
   布局/会话/Composer/对话/轨迹/Hero/对话框拆 `components/*.css`，vitest + vite build）。
@@ -317,9 +362,9 @@ Desktop：Tauri v2 壳套 `apps/web` 产物，四件套 deb/AppImage/dmg/msi，
   completion/theme/usage + runview 只读 TODO 区块（revision 门控） +
   mock WS e2e + sidebar 文本版 UnifiedSidebar 32char；`testRender` 快照）。
 - `agentj-ui/apps/desktop`：Desktop 壳（Tauri v2，`frontendDist` →
-    `../../web/dist`，与 workspace 版本同源 `0.16.5`，四件套打包）。
+    `../../web/dist`，与 workspace 版本同源 `0.17.0`，四件套打包）。
 - `agentj-ui/` 根：`package.json` workspaces `["apps/*","packages/*"]`
-  （frontend stays in-repo，前端不拆独立仓，与 Rust 共享 0.16.5）。
+  （frontend stays in-repo，前端不拆独立仓，与 Rust 共享 0.17.0）。
 - **守护内核（v0.4 已实现）**：统一 Connection 抽象 + `serve --port`
   常驻多客户端 + `run --attach` + `dashboard`（见 daemon-kernel 设计文档）。
 
