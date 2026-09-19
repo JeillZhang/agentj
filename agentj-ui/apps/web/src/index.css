@@ -50,6 +50,18 @@ body {
 }
 code, pre, kbd { font-family: var(--aj-mono); }
 :focus-visible { outline: 2px solid var(--aj-accent); outline-offset: 2px; }
+/* Custom scrollbars (token-based, light+dark) */
+* { scrollbar-width: thin; scrollbar-color: var(--aj-border) transparent; }
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb {
+  background: var(--aj-border);
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-thumb:hover { background: var(--aj-textCaption); background-clip: content-box; }
+*::-webkit-scrollbar-corner { background: transparent; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition: none !important; animation: none !important; }
 }

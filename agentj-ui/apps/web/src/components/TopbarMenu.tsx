@@ -5,19 +5,18 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import ConnectionBar from "../ConnectionBar";
 import { isDemoEnabled, setDemoEnabled, subscribeDemo } from "../demoData";
 import { loadFavorites } from "../layoutStore";
+import { createProject, loadCurrentProject, loadProjects, setCurrentProject } from "../projectStore";
+import type { Project } from "../projectStore";
 import ModalDialog from "./ModalDialog";
 import "./topbarmenu.css";
 
 type Props = {
-  model?: string | null;
-  connectionLabel?: string;
-  modules?: string[];
   onConnect: (host: string, port: string, token: string) => void;
   onContinue: (sessionId: string) => void;
 };
 
-type DialogKind = null | "connect" | "continue";
-type SubmenuKind = null | "sort" | "filter";
+type DialogKind = null | "connect" | "continue" | "addProject";
+type SubmenuKind = null | "sort" | "filter" | "project";
 
 const PREF_EVENT = "agentj:sidebar-prefs";
 
@@ -25,23 +24,18 @@ function dispatchPrefs(patch: { sort?: string; filter?: string }): void {
   window.dispatchEvent(new CustomEvent(PREF_EVENT, { detail: patch }));
 }
 
-export default function TopbarMenu({
-  model,
-  connectionLabel = "未连接",
-  modules,
-  onConnect,
-  onContinue,
-}: Props) {
+export default function TopbarMenu({ onConnect, onContinue }: Props) {
   const [open, setOpen] = useState(false);
   const [dialog, setDialog] = useState<DialogKind>(null);
   const [submenu, setSubmenu] = useState<SubmenuKind>(null);
   const [demo, setDemo] = useState<boolean>(() => isDemoEnabled());
   const [favorites, setFavorites] = useState<string[]>(() => loadFavorites());
+  const [projects, setProjects] = useState<Project[]>(() => loadProjects());
+  const [currentProjectId, setCurrentProjectId] = useState<string>(() => loadCurrentProject());
+  const [addName, setAddName] = useState("");
   const [continueId, setContinueId] = useState("");
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
-
-  const connected = connectionLabel.length > 0 && !connectionLabel.includes("未连接");
 
   useEffect(() => subscribeDemo(setDemo), []);
 
@@ -79,6 +73,8 @@ export default function TopbarMenu({
 
   const openMenu = useCallback(() => {
     setFavorites(loadFavorites());
+    setProjects(loadProjects());
+    setCurrentProjectId(loadCurrentProject());
     setSubmenu(null);
     setOpen((v) => !v);
   }, []);
@@ -116,6 +112,31 @@ export default function TopbarMenu({
     setDialog(null);
   }, [continueId, onContinue]);
 
+  const pickProject = useCallback((id: string) => {
+    setCurrentProject(id);
+    setCurrentProjectId(id);
+    setSubmenu(null);
+    setOpen(false);
+  }, []);
+
+  const openAddProject = useCallback(() => {
+    setAddName("");
+    setSubmenu(null);
+    setOpen(false);
+    setDialog("addProject");
+  }, []);
+
+  const submitAddProject = useCallback(() => {
+    const name = addName.trim();
+    if (!name) return;
+    const created = createProject(name);
+    setCurrentProject(created.id);
+    setCurrentProjectId(created.id);
+    setProjects(loadProjects());
+    setAddName("");
+    setDialog(null);
+  }, [addName]);
+
   return (
     <div className="aj-topbar-menu" ref={rootRef}>
       <button
@@ -132,21 +153,44 @@ export default function TopbarMenu({
 
       {open && (
         <div className="aj-menu" role="menu">
-          <div className="aj-menu__status" role="presentation" aria-label="连接状态">
-            <span className="aj-menu__dot" data-state={connected ? "on" : "off"} />
-            <span className="aj-menu__conn">{connectionLabel}</span>
-            {model && <span className="aj-chip aj-chip--model">{model}</span>}
-            {modules?.map((m) => (
-              <span key={m} className="aj-chip">
-                {m}
-              </span>
-            ))}
-          </div>
-          <div className="aj-menu__sep" role="separator" />
-
           <button type="button" role="menuitem" className="aj-menu__item" onClick={() => openDialog("connect")}>
             连接设置…
           </button>
+          <button
+            type="button"
+            role="menuitem"
+            className="aj-menu__item"
+            aria-haspopup="menu"
+            aria-expanded={submenu === "project"}
+            onClick={() => setSubmenu((v) => (v === "project" ? null : "project"))}
+          >
+            项目
+          </button>
+          {submenu === "project" && (
+            <div className="aj-menu__sub" role="group" aria-label="项目">
+              {projects.map((p) => (
+                <button
+                  key={p.id}
+                  type="button"
+                  role="menuitemradio"
+                  aria-checked={p.id === currentProjectId}
+                  className="aj-menu__item aj-menu__item--sub"
+                  onClick={() => pickProject(p.id)}
+                >
+                  <span>{p.name}</span>
+                  {p.id === currentProjectId && <span className="aj-menu__state">✓</span>}
+                </button>
+              ))}
+              <button
+                type="button"
+                role="menuitem"
+                className="aj-menu__item aj-menu__item--sub"
+                onClick={openAddProject}
+              >
+                ＋ 添加项目
+              </button>
+            </div>
+          )}
           <button type="button" role="menuitem" className="aj-menu__item" onClick={() => openDialog("continue")}>
             继续会话…
           </button>
@@ -274,6 +318,32 @@ export default function TopbarMenu({
             </button>
             <button type="button" className="aj-button" onClick={submitContinue}>
               继续
+            </button>
+          </div>
+        </ModalDialog>
+      )}
+
+      {dialog === "addProject" && (
+        <ModalDialog title="添加项目" onClose={() => setDialog(null)}>
+          <div className="aj-field">
+            <label htmlFor="aj-add-project" className="aj-label">
+              项目名称
+            </label>
+            <input
+              id="aj-add-project"
+              className="aj-input"
+              autoFocus
+              value={addName}
+              onChange={(e) => setAddName(e.target.value)}
+              placeholder="项目名称"
+            />
+          </div>
+          <div className="aj-dialog__actions">
+            <button type="button" className="aj-button--ghost" onClick={() => setDialog(null)}>
+              取消
+            </button>
+            <button type="button" className="aj-button" disabled={!addName.trim()} onClick={submitAddProject}>
+              添加
             </button>
           </div>
         </ModalDialog>

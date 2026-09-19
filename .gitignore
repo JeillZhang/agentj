@@ -129,3 +129,4 @@ docker-compose.override.yml
 .remember/
 
 .superpowers
+.playwright-mcp

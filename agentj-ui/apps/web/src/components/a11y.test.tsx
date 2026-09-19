@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { beforeEach, describe, expect, test } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import UnifiedSidebar from "./UnifiedSidebar";
+import TopbarMenu from "./TopbarMenu";
 import WorkspaceShell from "./WorkspaceShell";
 
 // helper to read sidebar/composer css via import.meta.dirname
@@ -37,26 +38,20 @@ describe("a11y gates T9", () => {
     localStorage.clear();
   });
 
-  test("keyboard a11y — chevron has aria-expanded + aria-controls", () => {
-    render(
-      <UnifiedSidebar wsUrl="ws://x" client={null} activeSessionId={null} onActiveChange={() => {}} />,
-    );
-    const chevrons = screen
-      .getAllByRole("button")
-      .filter((b) => b.hasAttribute("aria-expanded"));
-    expect(chevrons.length).toBeGreaterThan(0);
-    chevrons[0].focus();
-    expect(document.activeElement).toBe(chevrons[0]);
-    // aria-controls must be present and point to an existing id
-    for (const b of chevrons) {
-      expect(b).toHaveAttribute("aria-expanded");
-      expect(b).toHaveAttribute("aria-controls");
-      const id = b.getAttribute("aria-controls")!;
-      expect(document.getElementById(id)).not.toBeNull();
-    }
+  test("keyboard a11y — project submenu trigger exposes aria-haspopup + aria-expanded", () => {
+    render(<TopbarMenu onConnect={() => {}} onContinue={() => {}} />);
+    fireEvent.click(screen.getByRole("button", { name: "更多" }));
+    const trigger = screen.getByRole("menuitem", { name: "项目" });
+    expect(trigger).toHaveAttribute("aria-haspopup", "menu");
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    trigger.focus();
+    expect(document.activeElement).toBe(trigger);
+    fireEvent.click(trigger);
+    expect(trigger).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("group", { name: "项目" })).toBeInTheDocument();
   });
 
-  test("sidebar rows stay aria-selected and focusable (60 sessions → ≤100 rows, 显示更多 present)", async () => {
+  test("sidebar rows stay aria-selected and focusable (60 sessions → ≤50 rows, 显示更多 present)", async () => {
     render(
       <UnifiedSidebar
         wsUrl="ws://x"
@@ -68,10 +63,10 @@ describe("a11y gates T9", () => {
     await waitFor(() => {
       expect(document.querySelectorAll(".aj-session-list [aria-selected]").length).toBeGreaterThan(0);
     });
-    // flat list (50) + grouped default list (50) — never all 60 in each list.
+    // flat list pages at 50 rows — never all 60 in one list.
     // Scoped to session lists: the sidebar tabs also carry [aria-selected].
     const sessionRows = document.querySelectorAll(".aj-session-list [aria-selected]");
-    expect(sessionRows.length).toBeLessThanOrEqual(100);
+    expect(sessionRows.length).toBeLessThanOrEqual(50);
     expect(sessionRows.length).toBeGreaterThan(0);
     for (const r of sessionRows) {
       expect(r.getAttribute("tabIndex")).toBe("0");

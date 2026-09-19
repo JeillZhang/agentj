@@ -352,6 +352,22 @@ export default function RunPanel({
     try { setProjects(loadProjects()); } catch {}
   }, [pickerOpen]);
 
+  // Follow project changes made elsewhere (topbar menu) so the picker label stays in sync.
+  useEffect(() => {
+    const sync = () => {
+      try {
+        setProjects(loadProjects());
+        setCurrentId(loadCurrentProject());
+      } catch {}
+    };
+    window.addEventListener("agentj:current-project-updated", sync);
+    window.addEventListener("agentj:projects-updated", sync);
+    return () => {
+      window.removeEventListener("agentj:current-project-updated", sync);
+      window.removeEventListener("agentj:projects-updated", sync);
+    };
+  }, []);
+
   useEffect(() => {
     if (!client) return;
     const handler = (method: string, params: unknown) => {

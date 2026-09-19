@@ -25,6 +25,12 @@ const shared = vi.hoisted(() => ({
 }));
 
 vi.mock("@agentj/sdk", () => {
+  const derivePageHost = (location?: { hostname: string; protocol: string }): string | undefined => {
+    if (!location) return undefined;
+    if (location.protocol !== "http:" && location.protocol !== "https:") return undefined;
+    if (!location.hostname || location.hostname === "tauri.localhost") return undefined;
+    return location.hostname;
+  };
   class ResponseRouter {
     setNotificationHandler(h: (m: string, p: unknown) => void) {
       shared.notificationHandler.value = h;
@@ -93,17 +99,29 @@ vi.mock("@agentj/sdk", () => {
     RpcClient,
     ResponseRouter,
     WebSocketTransport,
+    // DRIFT WARNING: keep in step with resolveWsUrl in @agentj/sdk src/config.ts (page-location host/scheme).
     resolveWsUrl: vi.fn(
       (o?: {
         envUrl?: string;
         host?: string;
         port?: number;
         token?: string;
+        location?: { hostname: string; protocol: string };
       }) => {
-        if (o?.envUrl) return o.envUrl;
-        const host = o?.host ?? "127.0.0.1";
+        if (o?.envUrl) {
+          if (!o.token) return o.envUrl;
+          const sep = o.envUrl.includes("?") ? "&" : "?";
+          return `${o.envUrl}${sep}token=${encodeURIComponent(o.token)}`;
+        }
+        const host = o?.host ?? derivePageHost(o?.location) ?? "127.0.0.1";
         const port = o?.port ?? 4096;
-        const base = `ws://${host}:${port}/ws`;
+        const scheme =
+          o?.location?.hostname === "tauri.localhost"
+            ? "ws"
+            : o?.location?.protocol === "https:"
+              ? "wss"
+              : "ws";
+        const base = `${scheme}://${host}:${port}/ws`;
         return o?.token ? `${base}?token=${o.token}` : base;
       },
     ),
@@ -167,6 +185,8 @@ vi.mock("@agentj/sdk", () => {
   };
 });
 
+import { resolveWsUrl } from "@agentj/sdk";
+import { loadConnection } from "./connectionStore";
 import App, { connectionLight, isProtocolCompatible } from "./App";
 import { historyToEntries, historyToConversation, filterNodes } from "./Trajectory";
 import { Trajectory } from "./Trajectory";
@@ -235,27 +255,31 @@ describe("App with mocked SDK transport", () => {
 
   it("renders modules from kernel/status via SDK client", async () => {
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "更多" }));
     await waitFor(() =>
-      expect(screen.getByText("test-mod: running")).toBeInTheDocument(),
+      expect(document.querySelector('.aj-status-light[data-state="connected"]')).not.toBeNull(),
     );
+    fireEvent.mouseEnter(screen.getByTestId("connection-status"));
+    expect(await screen.findByText("test-mod: running")).toBeInTheDocument();
   });
 
   it("shows connected status after successful kernel/status", async () => {
     render(<App />);
     await waitFor(() =>
-      expect(screen.getByText("connected")).toBeInTheDocument(),
+      expect(document.querySelector('.aj-status-light[data-state="connected"]')).not.toBeNull(),
     );
   });
 
-  it("topbar menu reflects real modules and connection state from kernel/status", async () => {
+  it("connection status panel reflects real modules and connection state", async () => {
     render(<App />);
-    await waitFor(() => expect(screen.getByText("connected")).toBeInTheDocument());
-    fireEvent.click(screen.getByRole("button", { name: "更多" }));
-    const menu = screen.getByRole("menu");
-    expect(await within(menu).findByText("test-mod: running")).toBeInTheDocument();
-    expect(within(menu).getByText(/已连接 ws:\/\//)).toBeInTheDocument();
-    expect(within(menu).queryByText("未连接")).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(document.querySelector('.aj-status-light[data-state="connected"]')).not.toBeNull(),
+    );
+    fireEvent.mouseEnter(screen.getByTestId("connection-status"));
+    const panel = await screen.findByRole("tooltip", { name: "连接状态" });
+    expect(within(panel).getByText(/已连接 ws:\/\//)).toBeInTheDocument();
+    expect(within(panel).getByText("deepseek-chat")).toBeInTheDocument();
+    expect(within(panel).getByText("test-mod: running")).toBeInTheDocument();
+    expect(within(panel).queryByText("未连接")).not.toBeInTheDocument();
   });
 
   it("applies token to wsUrl via topbar connect dialog", async () => {
@@ -283,7 +307,9 @@ describe("App with mocked SDK transport", () => {
   it("does not banner on compatible minor drift (client 0.12.1 vs server 0.13.0)", async () => {
     shared.initVersion.value = "0.13.0";
     render(<App />);
-    await screen.findByText("connected");
+    await waitFor(() =>
+      expect(document.querySelector('.aj-status-light[data-state="connected"]')).not.toBeNull(),
+    );
     expect(document.querySelector(".aj-banner")).toBeNull();
   });
 
@@ -298,13 +324,13 @@ describe("App with mocked SDK transport", () => {
     expect(screen.queryByText(/agentj dashboard --port/i)).toBeNull();
   });
 
-  it("new session becomes active and favorited", async () => {
+  it("new session becomes active but not favorited", async () => {
     shared.newSessionId.value = "s9";
     render(<App />);
     await createActiveSession();
     expect(
       JSON.parse(localStorage.getItem("agentj.favorites") ?? "[]"),
-    ).toContain("s9");
+    ).not.toContain("s9");
   });
 
   it("continue dialog continues via status+subscribe", async () => {
@@ -579,7 +605,7 @@ describe("App shell + history rebuild", () => {
     shared.historyResult.value = { events: WIRE_CORPUS, next_cursor: null };
     shared.sessionListResult.value = { sessions: [{ session_id: "s1", state: "active", preview: "hi" }] };
     render(<App />);
-    const list = await screen.findByRole("list", { name: "session list" });
+    const list = await screen.findByRole("list", { name: "最近会话" });
     fireEvent.click(await within(list).findByText(/hi/));
     expect(await screen.findByText("hello world")).toBeInTheDocument();
     expect(screen.getByText("in=10 out=5")).toBeInTheDocument();
@@ -589,7 +615,7 @@ describe("App shell + history rebuild", () => {
     shared.historyResult.value = { events: WIRE_CORPUS, next_cursor: null };
     shared.sessionListResult.value = { sessions: [{ session_id: "s1", state: "active", preview: "hi" }] };
     render(<App />);
-    const list = await screen.findByRole("list", { name: "session list" });
+    const list = await screen.findByRole("list", { name: "最近会话" });
     fireEvent.click(await within(list).findByText(/hi/));
     await screen.findByText("hello world");
     fireEvent.click(screen.getByRole("tab", { name: /轨迹/ }));
@@ -618,7 +644,7 @@ describe("App shell + history rebuild", () => {
     const header = document.querySelector(".aj-topbar") as HTMLElement;
     expect(within(header).queryByLabelText("model")).toBeNull();
     expect(within(header).queryByText("deepseek-chat")).toBeNull();
-    const list = await screen.findByRole("list", { name: "session list" });
+    const list = await screen.findByRole("list", { name: "最近会话" });
     fireEvent.click(await within(list).findByText(/hi/));
     await screen.findByText("hello world");
     expect(screen.getAllByText("deepseek-chat").length).toBeGreaterThanOrEqual(2);
@@ -628,7 +654,9 @@ describe("App shell + history rebuild", () => {
     expect(connectionLight("kernel unreachable on ws://x", true)).toBe("unreachable");
     expect(connectionLight("connecting to kernel on ws://x…", false)).toBe("connecting");
     render(<App />);
-    await screen.findByText("connected");
+    await waitFor(() =>
+      expect(document.querySelector('.aj-status-light[data-state="connected"]')).not.toBeNull(),
+    );
     const light = () => document.querySelector<HTMLElement>(".aj-status-light")!;
     expect(light()).not.toBeNull();
     expect(light().dataset.state).toBe("connected");
@@ -759,6 +787,13 @@ describe("T2 App Shell grid + popover + scrim", () => {
     expect(css).toContain("280px");
     expect(css).toContain("var(--aj-space-4)");
   });
+  it("topbar stacks above the sidebar so its dropdown panels stay visible", () => {
+    const p = join(dirname(fileURLToPath(import.meta.url)), "components/layout.css");
+    const css = readFileSync(p, "utf8");
+    const topbarZ = Number(css.match(/\.aj-topbar\s*\{[^}]*z-index:\s*(\d+)/)?.[1] ?? "0");
+    const sidebarZ = Number(css.match(/\.aj-sidebar\s*\{[^}]*z-index:\s*(\d+)/)?.[1] ?? "0");
+    expect(topbarZ).toBeGreaterThan(sidebarZ);
+  });
 });
 
 describe("T23 topbar menu + right drawer", () => {
@@ -797,5 +832,102 @@ describe("T23 topbar menu + right drawer", () => {
     } finally {
       delete (window as { matchMedia?: unknown }).matchMedia;
     }
+  });
+});
+
+describe("remote WebSocket origin", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    vi.mocked(resolveWsUrl).mockClear();
+  });
+
+  it("passes the page location into resolveWsUrl during init", () => {
+    render(<App />);
+    expect(vi.mocked(resolveWsUrl)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        location: expect.objectContaining({
+          hostname: window.location.hostname,
+          protocol: window.location.protocol,
+        }),
+      }),
+    );
+  });
+
+  it("passes the page location into resolveWsUrl on manual connect", async () => {
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "更多" }));
+    fireEvent.click(screen.getByText("连接设置…"));
+    const bar = screen.getByLabelText("connection");
+    fireEvent.change(within(bar).getByLabelText("Host"), { target: { value: "10.0.0.5" } });
+    fireEvent.click(within(bar).getByRole("button", { name: /connect/i }));
+    await waitFor(() =>
+      expect(vi.mocked(resolveWsUrl)).toHaveBeenCalledWith(
+        expect.objectContaining({
+          host: "10.0.0.5",
+          location: expect.objectContaining({
+            hostname: window.location.hostname,
+            protocol: window.location.protocol,
+          }),
+        }),
+      ),
+    );
+  });
+});
+
+describe("connection settings persistence", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    vi.mocked(resolveWsUrl).mockClear();
+  });
+  afterEach(() => localStorage.clear());
+
+  it("restores the last manual connection on a fresh mount", () => {
+    localStorage.setItem(
+      "agentj.connection",
+      JSON.stringify({ host: "192.168.3.31", port: "4096", token: "s3cret" }),
+    );
+    render(<App />);
+    expect(vi.mocked(resolveWsUrl)).toHaveBeenCalledWith(
+      expect.objectContaining({ host: "192.168.3.31", port: 4096, token: "s3cret" }),
+    );
+  });
+
+  it("persists manual connect settings so a reload keeps them", () => {
+    const first = render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "更多" }));
+    fireEvent.click(screen.getByText("连接设置…"));
+    const bar = screen.getByLabelText("connection");
+    fireEvent.change(within(bar).getByLabelText("Host"), { target: { value: "192.168.3.31" } });
+    fireEvent.change(within(bar).getByLabelText("Port"), { target: { value: "4096" } });
+    fireEvent.click(within(bar).getByRole("button", { name: /connect/i }));
+    expect(loadConnection()).toEqual({ host: "192.168.3.31", port: "4096", token: "" });
+    first.unmount();
+    vi.mocked(resolveWsUrl).mockClear();
+    render(<App />);
+    expect(vi.mocked(resolveWsUrl)).toHaveBeenCalledWith(
+      expect.objectContaining({ host: "192.168.3.31" }),
+    );
+  });
+
+  it("trims a stored host and drops a non-numeric port", () => {
+    localStorage.setItem(
+      "agentj.connection",
+      JSON.stringify({ host: " 1.2.3.4 ", port: "abc", token: "" }),
+    );
+    render(<App />);
+    expect(vi.mocked(resolveWsUrl)).toHaveBeenCalledWith(
+      expect.objectContaining({ host: "1.2.3.4" }),
+    );
+    expect(shared.lastWsUrl.value).not.toContain("NaN");
+  });
+
+  it("falls back instead of bricking when the stored host embeds a port", () => {
+    localStorage.setItem(
+      "agentj.connection",
+      JSON.stringify({ host: "192.168.3.31:4096", port: "4096", token: "" }),
+    );
+    render(<App />);
+    expect(() => new URL(shared.lastWsUrl.value)).not.toThrow();
+    expect(shared.lastWsUrl.value).not.toContain(":4096:4096");
   });
 });

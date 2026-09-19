@@ -267,98 +267,6 @@
   font-size: var(--aj-font-sm);
 }
 
-.aj-sidebar__footer {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 12px;
-  border-top: 0.5px solid var(--aj-border);
-  background: var(--aj-sidebar);
-  box-shadow: 0 -0.5px 0 var(--aj-border);
-}
-
-.aj-sidebar__footer button {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  border: none;
-  background: transparent;
-  color: var(--aj-textMuted);
-  cursor: pointer;
-  font: inherit;
-  font-size: var(--aj-font-sm);
-  padding: 4px 6px;
-  border-radius: var(--aj-radiusCtl);
-}
-
-.aj-sidebar__footer button:hover {
-  background: var(--aj-raised);
-  color: var(--aj-text);
-}
-
-.aj-project-group {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.aj-project-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  height: 36px;
-  padding: 8px 10px;
-  border: 0.5px solid transparent;
-  border-radius: var(--aj-radiusCtl);
-  background: transparent;
-  color: var(--aj-text);
-  cursor: pointer;
-  font: inherit;
-  font-size: 13px;
-  font-weight: 600;
-  text-align: left;
-}
-
-.aj-project-row:hover {
-  background: var(--aj-raised);
-  border-color: var(--aj-border);
-}
-
-.aj-project-row__name {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.aj-project-row__count {
-  font-size: 12px;
-  color: var(--aj-textCaption);
-  font-weight: 400;
-}
-
-.aj-project-row__chevron,
-.aj-project-row__icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--aj-textMuted);
-  flex-shrink: 0;
-}
-
-.aj-project-group__body {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding-left: 4px;
-}
-
-.aj-project-group__body .aj-session-list {
-  padding-left: 24px;
-}
-
 .aj-session-list .aj-sidebar__subgroup {
   display: flex;
   align-items: center;
@@ -375,19 +283,6 @@
   color: var(--aj-textCaption);
 }
 
-.aj-project-empty {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 8px 0 8px 28px;
-  align-items: flex-start;
-}
-
-.aj-project-new {
-  margin-left: 28px;
-  align-self: flex-start;
-}
-
 .aj-sidebar--unreachable {
   opacity: 0.6;
   filter: grayscale(0.12);
@@ -399,11 +294,6 @@
 
 .aj-sidebar--unreachable .aj-status-light[data-state="unreachable"] {
   background: var(--aj-error);
-}
-
-.aj-project-more {
-  margin-left: 28px;
-  align-self: flex-start;
 }
 
 @media (prefers-reduced-motion: reduce) {

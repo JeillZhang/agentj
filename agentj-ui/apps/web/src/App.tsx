@@ -14,6 +14,7 @@ import ApprovalDialog from "./ApprovalDialog";
 import type { ApprovalRequest } from "./ApprovalDialog";
 import RunPanel from "./RunPanel";
 import TopbarMenu from "./components/TopbarMenu";
+import ConnectionStatus from "./components/ConnectionStatus";
 import UnifiedSidebar from "./components/UnifiedSidebar";
 import WorkspaceShell from "./components/WorkspaceShell";
 import RightPanel from "./components/RightPanel";
@@ -23,6 +24,7 @@ import { Trajectory, historyToConversation } from "./Trajectory";
 import type { RawEvent } from "./Trajectory";
 import heroImg from "./assets/hero.png";
 import { loadCurrentProject, setCurrentProject } from "./projectStore";
+import { loadConnection, saveConnection } from "./connectionStore";
 import { loadLayout, saveLayout, subscribeLayout } from "./layoutStore";
 import { isDemoEnabled, subscribeDemo, DEMO_TODOS, DEMO_CHANGES } from "./demoData";
 import { applyFileChange, changesFromHistory } from "./changes";
@@ -31,6 +33,50 @@ import { EMPTY_TODO_STATE, applyTodoFrame, todosFromHistory } from "./todoState"
 
 const rawWsEnv = import.meta.env.VITE_AGENTJ_WS_URL;
 const envWsUrl = typeof rawWsEnv === "string" ? rawWsEnv : undefined;
+const pageLocation =
+  typeof window === "undefined"
+    ? undefined
+    : { hostname: window.location.hostname, protocol: window.location.protocol };
+
+/**
+ * Manual settings (dialog / stored) win over the build-time env URL; when no
+ * host or port is given, fall back to the env URL, then the page origin, then
+ * loopback (see `resolveWsUrl`).
+ */
+function parsePort(port: string): number | undefined {
+  if (!port.trim()) return undefined;
+  const parsed = Number(port);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function resolveConnection(host: string, port: string, token: string): string {
+  const trimmedHost = host.trim();
+  const portNumber = parsePort(port);
+  if (trimmedHost || portNumber !== undefined) {
+    return resolveWsUrl({
+      host: trimmedHost || undefined,
+      port: portNumber,
+      token: token || undefined,
+      location: pageLocation,
+    });
+  }
+  return resolveWsUrl({ envUrl: envWsUrl, token: token || undefined, location: pageLocation });
+}
+
+/** Malformed endpoints (e.g. a host with an embedded port) would make `new WebSocket` throw at mount. */
+function safeWsUrl(candidate: string): string {
+  try {
+    new URL(candidate);
+    return candidate;
+  } catch {
+    return resolveConnection("", "", "");
+  }
+}
+
+function initialWsUrl(): string {
+  const stored = loadConnection();
+  return safeWsUrl(resolveConnection(stored?.host ?? "", stored?.port ?? "", stored?.token ?? ""));
+}
 
 type ThemeMode = "dark" | "light" | "system";
 const THEME_CYCLE: Record<ThemeMode, ThemeMode> = { dark: "light", light: "system", system: "dark" };
@@ -221,7 +267,7 @@ function useApproval(client: RpcClient | null, activeSessionId: string | null) {
 }
 
 export default function App() {
-  const [wsUrl, setWsUrl] = useState(() => resolveWsUrl({ envUrl: envWsUrl }));
+  const [wsUrl, setWsUrl] = useState(initialWsUrl);
   const [connectSeq, setConnectSeq] = useState(0);
   const { client: sharedClient, modules, status, banner, unreachable, modelName } = useSharedKernel(wsUrl, connectSeq);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
@@ -363,14 +409,8 @@ export default function App() {
   const connState = connectionLight(status, unreachable);
 
   const handleConnect = useCallback((host: string, port: string, token: string) => {
-    const p = port ? Number(port) : undefined;
-    const next = resolveWsUrl({
-      envUrl: envWsUrl,
-      host: host || undefined,
-      port: p,
-      token: token || undefined,
-    });
-    setWsUrl(next);
+    saveConnection({ host, port, token });
+    setWsUrl(safeWsUrl(resolveConnection(host, port, token)));
     setConnectSeq((n) => n + 1);
     setDrawerOpen(false);
   }, []);
@@ -397,30 +437,21 @@ export default function App() {
     return () => document.removeEventListener("keydown", onKey);
   }, [rightDrawerOpen]);
 
-  // expose currentProjectId wiring via window for UnifiedSidebar new session assignment
-  useEffect(() => {
-    (window as unknown as Record<string, unknown>).__agentjCurrentProject = currentProjectId;
-  }, [currentProjectId]);
-
   return (
     <div className="aj-app" data-drawer={drawerOpen ? "open" : "closed"}>
       <header className="aj-topbar" role="banner">
         <div className="aj-topbar__brand">
           <h1>agentj</h1>
-          <p className="aj-statusline">
-            <span className="aj-status-light" data-state={connState} aria-hidden="true" />
-            <span className="aj-status-text">{status}</span>
-          </p>
+          <ConnectionStatus
+            state={connState}
+            label={connState === "connected" ? `已连接 ${wsUrl}` : "未连接"}
+            model={modelName}
+            modules={modules.map((m) => `${m.id}: ${m.state}`)}
+          />
         </div>
         <div className="aj-topbar__center" aria-hidden="true" />
         <div className="aj-topbar__actions">
-          <TopbarMenu
-            model={modelName}
-            connectionLabel={connState === "connected" ? `已连接 ${wsUrl}` : "未连接"}
-            modules={modules.map((m) => `${m.id}: ${m.state}`)}
-            onConnect={handleConnect}
-            onContinue={setActiveSessionIdAndHydrate}
-          />
+          <TopbarMenu onConnect={handleConnect} onContinue={setActiveSessionIdAndHydrate} />
           <button type="button" aria-label="toggle sessions" className="aj-button aj-drawer-toggle" aria-expanded={drawerOpen} aria-controls="aj-sidebar" onClick={() => setDrawerOpen((o) => !o)}><Menu size={16} aria-hidden="true" /></button>
           <button type="button" aria-label="toggle theme" className="aj-icon-btn" onClick={() => setTheme((t) => THEME_CYCLE[t])}>
             {theme === "dark" ? <Moon size={16} aria-hidden="true" /> : theme === "light" ? <Sun size={16} aria-hidden="true" /> : <Monitor size={16} aria-hidden="true" />}
@@ -503,7 +534,7 @@ export default function App() {
                   type="button"
                   className="aj-button aj-hero-trigger"
                   onClick={() => {
-                    const btn = document.querySelector<HTMLButtonElement>(".aj-session-actions button, .aj-project-new");
+                    const btn = document.querySelector<HTMLButtonElement>(".aj-session-actions button");
                     if (btn) btn.click();
                     else window.dispatchEvent(new CustomEvent("agentj:new-session"));
                   }}
