@@ -64,6 +64,10 @@ export default function SettingsProjectPanel() {
 
   const defaultProjectId = getDefaultProject().id;
   const deleteCount = confirmDelete ? sessionCountForProject(confirmDelete.id) : 0;
+  const confirmText = confirmDelete
+    ? `删除项目「${confirmDelete.name}」？` +
+      `该项目下 ${deleteCount} 个会话将归属回 Inbox。此操作不可恢复。`
+    : "";
 
   return (
     <div className="aj-settings-group">
@@ -151,9 +155,7 @@ export default function SettingsProjectPanel() {
 
       {confirmDelete ? (
         <ModalDialog title="删除项目" onClose={() => setConfirmDelete(null)}>
-          <p className="aj-dialog__text">
-            {`删除项目「${confirmDelete.name}」？该项目下 ${deleteCount} 个会话将归属回 Inbox。此操作不可恢复。`}
-          </p>
+          <p className="aj-dialog__text">{confirmText}</p>
           <div className="aj-dialog__actions">
             <button type="button" className="aj-button--ghost" onClick={() => setConfirmDelete(null)}>
               取消
