@@ -22,7 +22,7 @@
 }
 
 .aj-composer-card .aj-input {
-  font-size: calc(var(--aj-font-conv, 15px) - 1px);
+  font-size: var(--aj-font-conv, 15px);
 }
 
 .aj-composer__project-btn {
