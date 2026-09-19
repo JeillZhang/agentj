@@ -1,6 +1,6 @@
 [package]
 name = "agentj-ui"
-version = "0.16.5"
+version = "0.17.1"
 description = "AgentJ UI desktop shell"
 authors = ["AgentJ"]
 edition = "2021"

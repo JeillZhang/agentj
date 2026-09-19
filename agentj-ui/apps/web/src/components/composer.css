@@ -137,6 +137,38 @@
   color: var(--aj-accent);
 }
 
+.aj-composer__picker-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.aj-composer__picker-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.aj-composer__picker-edit {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--aj-textMuted);
+  cursor: pointer;
+}
+
+.aj-composer__picker-edit:hover {
+  background: var(--aj-raised);
+  color: var(--aj-text);
+}
+
 .sel[aria-expanded="true"] {
   background: var(--aj-raised);
   color: var(--aj-text);

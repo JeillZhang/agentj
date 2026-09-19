@@ -90,6 +90,17 @@ describe("ghost button is self-contained (no native look)", () => {
   });
 });
 
+describe("file icon category tints", () => {
+  function readFiletreeCss(): string {
+    const webRoot = join(dirname(fileURLToPath(import.meta.url)), "../..");
+    return readFileSync(join(webRoot, "src/components/filetree.css"), "utf8");
+  }
+  it("declares a db category tint", () => {
+    const css = readFiletreeCss();
+    expect(css).toMatch(/\.file-icon--db\s*\{[^}]*color:\s*var\(--aj-[a-zA-Z]+\)/);
+  });
+});
+
 describe("T0 scaffold density and hairline", () => {
   function readIndexCss(): string {
     const webRoot = join(dirname(fileURLToPath(import.meta.url)), "../..");

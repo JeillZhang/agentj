@@ -89,6 +89,7 @@ button.trow:focus-visible {
 .file-icon--shell { color: var(--aj-success); }
 .file-icon--image { color: var(--aj-accent); }
 .file-icon--archive { color: var(--aj-textCaption); }
+.file-icon--db { color: var(--aj-warning); }
 .file-icon--default { color: var(--aj-textMuted); }
 
 .trow .name {

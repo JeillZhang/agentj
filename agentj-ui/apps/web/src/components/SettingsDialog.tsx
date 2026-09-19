@@ -2,9 +2,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
 import ConnectionBar from "../ConnectionBar";
 import { isDemoEnabled, setDemoEnabled, subscribeDemo } from "../demoData";
-import { loadSidebarPrefs, saveSidebarPrefs } from "../sidebarPrefsStore";
-import type { SidebarFilter, SidebarSort } from "../sidebarPrefsStore";
 import ModalDialog from "./ModalDialog";
+import SettingsDisplayPanel from "./SettingsDisplayPanel";
+import SettingsProjectPanel from "./SettingsProjectPanel";
 import "./settingsDialog.css";
 
 type Props = {
@@ -12,12 +12,13 @@ type Props = {
   onClose: () => void;
 };
 
-type CategoryId = "connection" | "sessions" | "demo";
+type CategoryId = "connection" | "display" | "project" | "demo";
 type Category = { id: CategoryId; label: string };
 
 const CATEGORIES: Category[] = [
   { id: "connection", label: "连接" },
-  { id: "sessions", label: "会话列表" },
+  { id: "display", label: "显示" },
+  { id: "project", label: "项目" },
   { id: "demo", label: "演示数据" },
 ];
 
@@ -31,7 +32,6 @@ function tabId(id: CategoryId): string {
 
 export default function SettingsDialog({ onConnect, onClose }: Props) {
   const [active, setActive] = useState<CategoryId>("connection");
-  const [prefs, setPrefs] = useState(loadSidebarPrefs);
   const [demo, setDemo] = useState(isDemoEnabled);
   const tabRefs = useRef(new Map<CategoryId, HTMLButtonElement | null>());
 
@@ -56,9 +56,6 @@ export default function SettingsDialog({ onConnect, onClose }: Props) {
     },
     [active, select],
   );
-
-  const pickSort = useCallback((sort: SidebarSort) => setPrefs(saveSidebarPrefs({ sort })), []);
-  const pickFilter = useCallback((filter: SidebarFilter) => setPrefs(saveSidebarPrefs({ filter })), []);
 
   return (
     <ModalDialog title="设置" onClose={onClose} cardClassName="aj-settings">
@@ -99,52 +96,8 @@ export default function SettingsDialog({ onConnect, onClose }: Props) {
               }}
             />
           )}
-          {active === "sessions" && (
-            <div className="aj-settings-group">
-              <fieldset className="aj-settings-fieldset">
-                <legend className="aj-settings-legend">排序</legend>
-                <label className="aj-settings-radio">
-                  <input
-                    type="radio"
-                    name="aj-settings-sort"
-                    checked={prefs.sort === "updated"}
-                    onChange={() => pickSort("updated")}
-                  />
-                  <span>时间</span>
-                </label>
-                <label className="aj-settings-radio">
-                  <input
-                    type="radio"
-                    name="aj-settings-sort"
-                    checked={prefs.sort === "created"}
-                    onChange={() => pickSort("created")}
-                  />
-                  <span>创建时间</span>
-                </label>
-              </fieldset>
-              <fieldset className="aj-settings-fieldset">
-                <legend className="aj-settings-legend">过滤</legend>
-                <label className="aj-settings-radio">
-                  <input
-                    type="radio"
-                    name="aj-settings-filter"
-                    checked={prefs.filter === "all"}
-                    onChange={() => pickFilter("all")}
-                  />
-                  <span>全部</span>
-                </label>
-                <label className="aj-settings-radio">
-                  <input
-                    type="radio"
-                    name="aj-settings-filter"
-                    checked={prefs.filter === "favorites"}
-                    onChange={() => pickFilter("favorites")}
-                  />
-                  <span>收藏</span>
-                </label>
-              </fieldset>
-            </div>
-          )}
+          {active === "display" && <SettingsDisplayPanel />}
+          {active === "project" && <SettingsProjectPanel />}
           {active === "demo" && (
             <div className="aj-settings-toggle">
               <span>演示数据</span>

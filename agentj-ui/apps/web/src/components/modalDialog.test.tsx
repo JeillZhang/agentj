@@ -50,3 +50,43 @@ test("close button invokes onClose", () => {
   fireEvent.click(screen.getByLabelText("close"));
   expect(onClose).toHaveBeenCalledTimes(1);
 });
+
+test("closes only the top-most dialog on Escape", () => {
+  const closeA = vi.fn();
+  const closeB = vi.fn();
+  render(<ModalDialog title="A" onClose={closeA}>a</ModalDialog>);
+  render(<ModalDialog title="B" onClose={closeB}>b</ModalDialog>);
+  fireEvent.keyDown(document, { key: "Escape" });
+  expect(closeB).toHaveBeenCalledTimes(1);
+  expect(closeA).not.toHaveBeenCalled();
+});
+
+test("passes Escape through to the next dialog after the top one unmounts", () => {
+  const closeA = vi.fn();
+  const closeB = vi.fn();
+  const { rerender } = render(
+    <>
+      <ModalDialog title="A" onClose={closeA}>a</ModalDialog>
+      <ModalDialog title="B" onClose={closeB}>b</ModalDialog>
+    </>,
+  );
+  fireEvent.keyDown(document, { key: "Escape" });
+  rerender(<ModalDialog title="A" onClose={closeA}>a</ModalDialog>);
+  fireEvent.keyDown(document, { key: "Escape" });
+  expect(closeA).toHaveBeenCalledTimes(1);
+});
+
+test("backdrop mousedown closes only the top-most dialog", () => {
+  const closeA = vi.fn();
+  const closeB = vi.fn();
+  render(
+    <>
+      <ModalDialog title="A" onClose={closeA}>a</ModalDialog>
+      <ModalDialog title="B" onClose={closeB}>b</ModalDialog>
+    </>,
+  );
+  fireEvent.mouseDown(screen.getByLabelText("B"));
+  expect(closeB).toHaveBeenCalledTimes(1);
+  expect(closeA).not.toHaveBeenCalled();
+  expect(screen.getByLabelText("A")).toBeInTheDocument();
+});

@@ -183,7 +183,12 @@
   flex: 1;
 }
 
-.aj-sidebar__cleanup {
+/* SessionListMenu trigger: compact next to the growing 新建会话 button; display/align/justify live in topbarmenu.css. */
+.aj-sidebar__actions .aj-sidebar__menu-wrap {
+  flex: 0 0 auto;
+}
+
+.aj-sidebar__actions .aj-sidebar__menu-btn {
   flex: 0 0 auto;
   padding: 0 12px;
 }

@@ -1,9 +1,9 @@
 import "@testing-library/jest-dom/vitest";
-import { test, expect, vi } from "vitest";
+import { test, it, expect, vi } from "vitest";
 import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import UnifiedSidebar from "./UnifiedSidebar";
 import TopbarMenu from "./TopbarMenu";
-import { createProject } from "../projectStore";
+import { createProject, setCurrentProject, updateProject } from "../projectStore";
 
 const client = {
   request: async (m: string) =>
@@ -144,7 +144,43 @@ test("per-row delete confirms and removes the session via session/delete", async
   localStorage.clear();
 });
 
-test("clear-all deletes every session except the active one", async () => {
+it("opens the cleanup dialog from the session list menu", async () => {
+  const client = {
+    request: vi.fn(async () => ({
+      sessions: [
+        { session_id: "a", preview: "one" },
+        { session_id: "b", preview: "two" },
+      ],
+    })),
+  };
+  render(
+    <UnifiedSidebar wsUrl="ws://x" client={client} activeSessionId={null} onActiveChange={() => {}} />,
+  );
+  await screen.findByText("one");
+  fireEvent.click(screen.getByRole("button", { name: "会话列表菜单" }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "清理所有会话…" }));
+  expect(await screen.findByText(/将删除/)).toBeTruthy();
+  localStorage.clear();
+});
+
+test("session list menu disables clear-all when nothing is deletable", async () => {
+  localStorage.clear();
+  const { client: c } = makeClient([
+    { session_id: "only", state: "active", preview: "solo", updated_at: "1" },
+  ]);
+  render(
+    <UnifiedSidebar wsUrl="ws://x" client={c as never} activeSessionId="only" onActiveChange={() => {}} />,
+  );
+  await screen.findByText("solo");
+  fireEvent.click(screen.getByRole("button", { name: "会话列表菜单" }));
+  expect(screen.getByRole("menuitem", { name: "清理所有会话…" })).toHaveAttribute(
+    "aria-disabled",
+    "true",
+  );
+  localStorage.clear();
+});
+
+test("clear-all from the menu deletes every session except the active one", async () => {
   localStorage.clear();
   const removed: string[] = [];
   const { calls, client: c } = makeClient([
@@ -163,9 +199,8 @@ test("clear-all deletes every session except the active one", async () => {
   );
   const flat = container.querySelector('[aria-label="最近会话"]') as HTMLElement;
   await within(flat).findByText("one");
-  const cleanup = screen.getByRole("button", { name: "清理会话" });
-  await waitFor(() => expect(cleanup).not.toBeDisabled());
-  fireEvent.click(cleanup);
+  fireEvent.click(screen.getByRole("button", { name: "会话列表菜单" }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "清理所有会话…" }));
   const dialog = screen.getByRole("dialog", { name: "清理会话" });
   expect(within(dialog).getByText(/将删除 2 个会话/)).toBeInTheDocument();
   fireEvent.click(within(dialog).getByRole("button", { name: "删除全部" }));
@@ -216,4 +251,65 @@ test("project picked in TopbarMenu is inherited by the next new session via agen
   const map = JSON.parse(localStorage.getItem("agentj.projectMap") ?? "{}") as Record<string, string>;
   expect(map["s-new"]).not.toBe("default");
   localStorage.clear();
+});
+
+test("sends project_root when the project defines a work dir", async () => {
+  localStorage.clear();
+  const alpha = createProject("Alpha");
+  updateProject(alpha.id, { workDir: "/repo/alpha" });
+  setCurrentProject(alpha.id);
+  const requests: Array<{ method: string; params: unknown }> = [];
+  const client = {
+    request: vi.fn(async (method: string, params: unknown) => {
+      requests.push({ method, params });
+      if (method === "session/new") return { session_id: "s1" };
+      return {};
+    }),
+  };
+  render(
+    <UnifiedSidebar wsUrl="ws://x" client={client} activeSessionId={null} onActiveChange={() => {}} />,
+  );
+  fireEvent.click(screen.getByRole("button", { name: /新建会话/ }));
+  await waitFor(() => expect(requests.some((r) => r.method === "session/new")).toBe(true));
+  expect(requests.find((r) => r.method === "session/new")?.params).toEqual({
+    project_root: "/repo/alpha",
+  });
+});
+
+test("omits project_root when the project has no work dir", async () => {
+  localStorage.clear();
+  const beta = createProject("Beta");
+  setCurrentProject(beta.id);
+  const requests: Array<{ method: string; params: unknown }> = [];
+  const client = {
+    request: vi.fn(async (method: string, params: unknown) => {
+      requests.push({ method, params });
+      if (method === "session/new") return { session_id: "s2" };
+      return {};
+    }),
+  };
+  render(
+    <UnifiedSidebar wsUrl="ws://x" client={client} activeSessionId={null} onActiveChange={() => {}} />,
+  );
+  fireEvent.click(screen.getByRole("button", { name: /新建会话/ }));
+  await waitFor(() => expect(requests.some((r) => r.method === "session/new")).toBe(true));
+  expect(requests.find((r) => r.method === "session/new")?.params).toEqual({});
+});
+
+test("surfaces session/new failures via the error banner", async () => {
+  localStorage.clear();
+  const alpha = createProject("Alpha");
+  updateProject(alpha.id, { workDir: "/repo/alpha" });
+  setCurrentProject(alpha.id);
+  const client = {
+    request: vi.fn(async (method: string) => {
+      if (method === "session/new") throw new Error("-32807 PathNotAllowed: /repo/alpha");
+      return {};
+    }),
+  };
+  render(
+    <UnifiedSidebar wsUrl="ws://x" client={client} activeSessionId={null} onActiveChange={() => {}} />,
+  );
+  fireEvent.click(screen.getByRole("button", { name: /新建会话/ }));
+  expect(await screen.findByRole("alert")).toBeTruthy();
 });
