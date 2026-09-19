@@ -1,18 +1,32 @@
 // displayPrefsStore.ts — persisted per-zone display prefs (fonts, line height,
 // density, reduced motion). Mirrors sidebarPrefsStore.ts recipe: readRaw/writeRaw/
-// safeParse + field-level enum/boolean validation + malformed tolerance +
-// same-tab CustomEvent + cross-tab storage listener. Stored as a single JSON
-// object under DISPLAY_PREFS_KEY.
+// safeParse + field-level validation + malformed tolerance + same-tab CustomEvent
+// + cross-tab storage listener. Stored as a single JSON object under
+// DISPLAY_PREFS_KEY.
+//
+// Font sizes are pixel numbers (v0.17.2) validated/clamped against per-zone
+// FONT_SIZE_LIMITS; the pre-v0.17.2 sm/md/lg/xl scale names migrate to the
+// matching pixel value on load.
 
-export type FontScale = "sm" | "md" | "lg" | "xl";
+export type FontSizeKey = "fontConversation" | "fontLeft" | "fontRight" | "fontCode";
 export type DisplayLineHeight = "compact" | "default" | "relaxed";
 export type DisplayDensity = "default" | "compact";
 
+export type FontSizeLimit = { min: number; max: number; default: number };
+
+/** Per-zone pixel limits — single source for sliders, inputs and validation. */
+export const FONT_SIZE_LIMITS: Record<FontSizeKey, FontSizeLimit> = {
+  fontConversation: { min: 12, max: 24, default: 15 },
+  fontLeft: { min: 10, max: 20, default: 13 },
+  fontRight: { min: 10, max: 20, default: 13 },
+  fontCode: { min: 10, max: 20, default: 12 },
+};
+
 export type DisplayPrefs = {
-  fontConversation: FontScale;
-  fontLeft: FontScale;
-  fontRight: FontScale;
-  fontCode: FontScale;
+  fontConversation: number;
+  fontLeft: number;
+  fontRight: number;
+  fontCode: number;
   lineHeight: DisplayLineHeight;
   density: DisplayDensity;
   reducedMotion: boolean;
@@ -21,16 +35,30 @@ export type DisplayPrefs = {
 export const DISPLAY_PREFS_KEY = "agentj.displayPrefs";
 export const DISPLAY_PREFS_EVENT = "agentj:display-prefs-updated";
 export const DISPLAY_PREFS_DEFAULTS: DisplayPrefs = {
-  fontConversation: "md",
-  fontLeft: "md",
-  fontRight: "md",
-  fontCode: "md",
+  fontConversation: FONT_SIZE_LIMITS.fontConversation.default,
+  fontLeft: FONT_SIZE_LIMITS.fontLeft.default,
+  fontRight: FONT_SIZE_LIMITS.fontRight.default,
+  fontCode: FONT_SIZE_LIMITS.fontCode.default,
   lineHeight: "default",
   density: "default",
   reducedMotion: false,
 };
 
-const FONT_SCALES: readonly FontScale[] = ["sm", "md", "lg", "xl"];
+const FONT_SIZE_KEYS: readonly FontSizeKey[] = [
+  "fontConversation",
+  "fontLeft",
+  "fontRight",
+  "fontCode",
+];
+
+/** Pre-v0.17.2 scale names → px, preserving the old rendering per zone. */
+const LEGACY_FONT_SCALES: Record<FontSizeKey, Record<string, number>> = {
+  fontConversation: { sm: 13, md: 15, lg: 17, xl: 19 },
+  fontLeft: { sm: 12, md: 13, lg: 15, xl: 16 },
+  fontRight: { sm: 12, md: 13, lg: 15, xl: 16 },
+  fontCode: { sm: 11, md: 12, lg: 14, xl: 15 },
+};
+
 const LINE_HEIGHTS: readonly DisplayLineHeight[] = ["compact", "default", "relaxed"];
 const DENSITIES: readonly DisplayDensity[] = ["default", "compact"];
 
@@ -57,8 +85,20 @@ function safeParse<T>(raw: string | null, fallback: T): T {
   }
 }
 
-function isFontScale(value: unknown): value is FontScale {
-  return typeof value === "string" && (FONT_SCALES as readonly string[]).includes(value);
+function clamp(n: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, n));
+}
+
+/** Numeric px clamps to the zone limits; legacy scale names migrate; else null. */
+function normalizeFontSize(key: FontSizeKey, value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    const { min, max } = FONT_SIZE_LIMITS[key];
+    return clamp(Math.round(value), min, max);
+  }
+  if (typeof value === "string" && value in LEGACY_FONT_SCALES[key]) {
+    return LEGACY_FONT_SCALES[key][value];
+  }
+  return null;
 }
 
 function isLineHeight(value: unknown): value is DisplayLineHeight {
@@ -80,13 +120,12 @@ export function loadDisplayPrefs(): DisplayPrefs {
     return { ...DISPLAY_PREFS_DEFAULTS };
   }
   const obj = parsed as Record<string, unknown>;
+  const fonts = {} as Pick<DisplayPrefs, FontSizeKey>;
+  for (const key of FONT_SIZE_KEYS) {
+    fonts[key] = normalizeFontSize(key, obj[key]) ?? DISPLAY_PREFS_DEFAULTS[key];
+  }
   return {
-    fontConversation: isFontScale(obj.fontConversation)
-      ? obj.fontConversation
-      : DISPLAY_PREFS_DEFAULTS.fontConversation,
-    fontLeft: isFontScale(obj.fontLeft) ? obj.fontLeft : DISPLAY_PREFS_DEFAULTS.fontLeft,
-    fontRight: isFontScale(obj.fontRight) ? obj.fontRight : DISPLAY_PREFS_DEFAULTS.fontRight,
-    fontCode: isFontScale(obj.fontCode) ? obj.fontCode : DISPLAY_PREFS_DEFAULTS.fontCode,
+    ...fonts,
     lineHeight: isLineHeight(obj.lineHeight) ? obj.lineHeight : DISPLAY_PREFS_DEFAULTS.lineHeight,
     density: isDensity(obj.density) ? obj.density : DISPLAY_PREFS_DEFAULTS.density,
     reducedMotion: isBoolean(obj.reducedMotion)
@@ -98,13 +137,12 @@ export function loadDisplayPrefs(): DisplayPrefs {
 /** Merges a patch into the stored prefs, persists it and notifies same-tab subscribers. */
 export function saveDisplayPrefs(patch: Partial<DisplayPrefs>): DisplayPrefs {
   const current = loadDisplayPrefs();
+  const fonts = {} as Pick<DisplayPrefs, FontSizeKey>;
+  for (const key of FONT_SIZE_KEYS) {
+    fonts[key] = normalizeFontSize(key, patch[key]) ?? current[key];
+  }
   const next: DisplayPrefs = {
-    fontConversation: isFontScale(patch.fontConversation)
-      ? patch.fontConversation
-      : current.fontConversation,
-    fontLeft: isFontScale(patch.fontLeft) ? patch.fontLeft : current.fontLeft,
-    fontRight: isFontScale(patch.fontRight) ? patch.fontRight : current.fontRight,
-    fontCode: isFontScale(patch.fontCode) ? patch.fontCode : current.fontCode,
+    ...fonts,
     lineHeight: isLineHeight(patch.lineHeight) ? patch.lineHeight : current.lineHeight,
     density: isDensity(patch.density) ? patch.density : current.density,
     reducedMotion: isBoolean(patch.reducedMotion) ? patch.reducedMotion : current.reducedMotion,

@@ -97,6 +97,59 @@
   accent-color: var(--aj-accent);
 }
 
+.aj-settings-font-row {
+  display: grid;
+  grid-template-columns: 74px minmax(0, 1fr) 64px;
+  align-items: center;
+  gap: var(--aj-space-2);
+  color: var(--aj-text);
+  font-size: var(--aj-font-sm);
+}
+
+.aj-settings-font-row__label {
+  color: var(--aj-textMuted);
+}
+
+.aj-settings-range {
+  width: 100%;
+  accent-color: var(--aj-accent);
+  cursor: pointer;
+}
+
+.aj-settings-font-row__value {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.aj-settings-number {
+  width: 100%;
+  min-width: 0;
+  padding: 4px 6px;
+  border: 0.5px solid var(--aj-border);
+  border-radius: var(--aj-radiusCtl);
+  background: var(--aj-panel);
+  color: var(--aj-text);
+  font: inherit;
+  font-size: var(--aj-font-sm);
+  text-align: right;
+}
+
+.aj-settings-number:focus-visible {
+  outline: 2px solid var(--aj-accent);
+  outline-offset: 1px;
+}
+
+.aj-settings-font-unit {
+  color: var(--aj-textMuted);
+}
+
+.aj-settings-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--aj-space-2) var(--aj-space-3);
+}
+
 .aj-settings-toggle {
   display: flex;
   align-items: center;
