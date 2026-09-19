@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test } from "vitest";
+import { beforeEach, describe, expect, it, test } from "vitest";
 import {
   loadProjects,
   createProject,
@@ -10,6 +10,11 @@ import {
   setCollapsed,
   loadCurrentProject,
   setCurrentProject,
+  updateProject,
+  deleteProject,
+  sessionCountForProject,
+  loadProjectDefaults,
+  saveProjectDefaults,
 } from "./projectStore";
 
 beforeEach(() => localStorage.clear());
@@ -151,5 +156,73 @@ describe("projectStore", () => {
     const raw = localStorage.getItem("agentj.projects");
     expect(raw).not.toBeNull();
     expect(JSON.parse(raw!)).toEqual(expect.arrayContaining([expect.objectContaining({ id: "default" })]));
+  });
+});
+
+describe("projectStore extended", () => {
+  it("updateProject enforces a single default project", () => {
+    localStorage.clear();
+    const a = createProject("Alpha");
+    const b = createProject("Beta");
+    updateProject(b.id, { isDefault: true });
+    const list = loadProjects();
+    expect(list.find((p) => p.id === b.id)?.isDefault).toBe(true);
+    expect(list.find((p) => p.id === a.id)?.isDefault).toBeFalsy();
+  });
+  it("deleteProject reassigns sessions and reports the count", () => {
+    localStorage.clear();
+    const p = createProject("Gamma");
+    assignSession("s1", p.id); assignSession("s2", p.id); assignSession("s3", p.id);
+    expect(sessionCountForProject(p.id)).toBe(3);
+    expect(deleteProject(p.id)).toEqual({ reassigned: 3 });
+    expect(loadProjects().some((x) => x.id === p.id)).toBe(false);
+    expect(getProjectForSession("s1")).toBe("default");
+  });
+  it("refuses to delete the Inbox project", () => {
+    localStorage.clear();
+    loadProjects();
+    expect(deleteProject("default")).toBeNull();
+    expect(loadProjects().some((x) => x.id === "default")).toBe(true);
+  });
+  it("loadCurrentProject falls back to the default project", () => {
+    localStorage.clear();
+    const b = createProject("Beta");
+    updateProject(b.id, { isDefault: true });
+    localStorage.removeItem("agentj.currentProject");
+    expect(loadCurrentProject()).toBe(b.id);
+  });
+  it("persists project defaults with tolerant parsing", () => {
+    localStorage.clear();
+    expect(loadProjectDefaults()).toEqual({ workDir: null });
+    saveProjectDefaults({ workDir: "/repo" });
+    expect(loadProjectDefaults()).toEqual({ workDir: "/repo" });
+    localStorage.setItem("agentj.projectDefaults", "{oops");
+    expect(loadProjectDefaults()).toEqual({ workDir: null });
+  });
+  it("tolerates legacy records without the new fields", () => {
+    localStorage.clear();
+    localStorage.setItem("agentj.projects", JSON.stringify([
+      { id: "default", name: "Inbox", createdAt: 0 },
+      { id: "p1", name: "Legacy", createdAt: 1 },
+    ]));
+    const list = loadProjects();
+    expect(list.find((p) => p.id === "p1")).toMatchObject({ name: "Legacy" });
+    expect(list.find((p) => p.id === "p1")?.workDir).toBeUndefined();
+  });
+  it("dedups names through updateProject", () => {
+    localStorage.clear();
+    createProject("Alpha");
+    const beta = createProject("Beta");
+    updateProject(beta.id, { name: "Alpha" });
+    expect(loadProjects().find((p) => p.id === beta.id)?.name).toBe("Alpha (2)");
+  });
+  it("recomputes current and default when deleting the default project", () => {
+    localStorage.clear();
+    const beta = createProject("Beta");
+    updateProject(beta.id, { isDefault: true });
+    setCurrentProject(beta.id);
+    expect(deleteProject(beta.id)).toEqual({ reassigned: 0 });
+    expect(loadCurrentProject()).toBe("default");
+    expect(loadProjects().some((p) => p.isDefault)).toBe(false);
   });
 });
