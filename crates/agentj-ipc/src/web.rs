@@ -202,16 +202,87 @@ fn auth_routes(router: axum::Router, web: std::sync::Arc<WebConfig>) -> axum::Ro
         .route("/logout", axum::routing::post(logout_post))
 }
 
-/// Build the HTTP router for one accepted connection: the `/ws` upgrade route
-/// plus — when a dist was resolved — the static SPA surface. Cache headers are
-/// applied per service (`Router::layer` would leak them onto `/ws`), the root
+/// Whether the hybrid login gate applies to this request (design D2): a dist is
+/// served, a token is configured, the peer is remote and no valid session
+/// cookie was presented. Loopback peers and token-less servers stay open.
+pub fn gate_required(
+    web: &WebConfig,
+    peer: std::net::SocketAddr,
+    headers: &axum::http::HeaderMap,
+) -> bool {
+    web.enabled()
+        && web.token.is_some()
+        && !peer_is_loopback(peer)
+        && !session_cookie(headers).is_some_and(|sid| web.is_valid_session(sid))
+}
+
+/// Login-gate middleware for one static mount. `nest_service` strips the mount
+/// prefix before the inner service (and this layer) runs, so `mount` re-attaches
+/// it — the redirect must carry the full same-origin path.
+async fn gate(
+    web: std::sync::Arc<WebConfig>,
+    peer: std::net::SocketAddr,
+    mount: &'static str,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    if gate_required(&web, peer, req.headers()) {
+        let full_path = format!("{mount}{}", req.uri().path());
+        return redirect_found(&format!("/login?next={}", pct_encode(&full_path)));
+    }
+    next.run(req).await
+}
+
+/// Mount the static SPA surface (D6: cache headers + login gate wrapped around
+/// each service individually — `Router::layer` would leak onto `/ws`). The root
 /// mount is `fallback_service` (unknown paths -> index.html, 200) because
 /// `nest_service("/")` panics.
+fn static_surface(
+    router: axum::Router,
+    web: std::sync::Arc<WebConfig>,
+    peer: std::net::SocketAddr,
+    dist: &std::path::Path,
+) -> axum::Router {
+    use tower::Layer as _;
+    let spa = tower_http::services::ServeDir::new(dist).fallback(
+        tower_http::services::ServeFile::new(dist.join("index.html")),
+    );
+    let spa = tower_http::set_header::SetResponseHeaderLayer::overriding(
+        axum::http::header::CACHE_CONTROL,
+        axum::http::HeaderValue::from_static("no-cache"),
+    )
+    .layer(spa);
+    let assets = tower_http::set_header::SetResponseHeaderLayer::overriding(
+        axum::http::header::CACHE_CONTROL,
+        axum::http::HeaderValue::from_static("public, max-age=31536000, immutable"),
+    )
+    .layer(tower_http::services::ServeDir::new(dist.join("assets")));
+    let gate_assets = {
+        let web = web.clone();
+        axum::middleware::from_fn(move |req, next| {
+            let web = web.clone();
+            async move { gate(web, peer, "/assets", req, next).await }
+        })
+    };
+    let gate_spa = {
+        let web = web.clone();
+        axum::middleware::from_fn(move |req, next| {
+            let web = web.clone();
+            async move { gate(web, peer, "", req, next).await }
+        })
+    };
+    router
+        .nest_service("/assets", gate_assets.layer(assets))
+        .fallback_service(gate_spa.layer(spa))
+}
+
+/// Build the HTTP router for one accepted connection: the `/ws` upgrade route
+/// plus — when a dist was resolved — the statically gated SPA surface. `/ws`,
+/// `/login` and `/logout` are never behind the gate (no redirect loop).
 pub fn build_router(
     state: std::sync::Arc<crate::ws::WsServerState>,
     peer: std::net::SocketAddr,
 ) -> axum::Router {
-    use tower::Layer as _;
     let ws_route = axum::routing::get({
         let state = state.clone();
         move |axum::extract::Query(q): axum::extract::Query<crate::ws::WsQuery>,
@@ -223,20 +294,7 @@ pub fn build_router(
     let mut router = axum::Router::new().route("/ws", ws_route);
     router = auth_routes(router, state.web.clone());
     if let Some(dist) = state.web.dist.clone() {
-        let spa = tower_http::services::ServeDir::new(&dist).fallback(
-            tower_http::services::ServeFile::new(dist.join("index.html")),
-        );
-        let spa = tower_http::set_header::SetResponseHeaderLayer::overriding(
-            axum::http::header::CACHE_CONTROL,
-            axum::http::HeaderValue::from_static("no-cache"),
-        )
-        .layer(spa);
-        let assets = tower_http::set_header::SetResponseHeaderLayer::overriding(
-            axum::http::header::CACHE_CONTROL,
-            axum::http::HeaderValue::from_static("public, max-age=31536000, immutable"),
-        )
-        .layer(tower_http::services::ServeDir::new(dist.join("assets")));
-        router = router.nest_service("/assets", assets).fallback_service(spa);
+        router = static_surface(router, state.web.clone(), peer, &dist);
     }
     router
 }
@@ -439,5 +497,87 @@ mod tests {
         assert_eq!(s, axum::http::StatusCode::OK);
         assert!(body.contains("action=\"/login\""), "form action: {body}");
         assert!(body.contains("value=\"/foo\""), "hidden next: {body}");
+    }
+
+    #[tokio::test]
+    async fn remote_peer_without_cookie_is_redirected_to_login() {
+        let dist = temp_dist("gate");
+        let state = test_state(crate::web::WebConfig::new(
+            Some(dist.clone()),
+            Some("secret".into()),
+        ));
+        let remote: std::net::SocketAddr = "203.0.113.7:41000".parse().unwrap();
+        let (s, h, _) = get(crate::web::build_router(state.clone(), remote), "/").await;
+        assert_eq!(s, axum::http::StatusCode::FOUND);
+        assert_eq!(
+            h.get(axum::http::header::LOCATION).unwrap(),
+            "/login?next=/"
+        );
+        let (s, _, _) = get(crate::web::build_router(state.clone(), remote), "/login").await;
+        assert_eq!(s, axum::http::StatusCode::OK);
+        std::fs::remove_dir_all(&dist).ok();
+    }
+    #[tokio::test]
+    async fn loopback_and_cookie_paths_pass_the_gate() {
+        let dist = temp_dist("gate-pass");
+        let web = crate::web::WebConfig::new(Some(dist.clone()), Some("secret".into()));
+        let sid = web.issue_session();
+        let state = test_state(web);
+        let local: std::net::SocketAddr = "127.0.0.1:5555".parse().unwrap();
+        let (s, _, _) = get(crate::web::build_router(state.clone(), local), "/").await;
+        assert_eq!(s, axum::http::StatusCode::OK);
+        let remote: std::net::SocketAddr = "203.0.113.7:41000".parse().unwrap();
+        use tower::util::ServiceExt;
+        let res = crate::web::build_router(state, remote)
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/")
+                    .header(axum::http::header::COOKIE, format!("agentj_session={sid}"))
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), axum::http::StatusCode::OK);
+        std::fs::remove_dir_all(&dist).ok();
+    }
+    #[tokio::test]
+    async fn forged_cookie_and_asset_requests_are_gated() {
+        let dist = temp_dist("gate-forged");
+        let state = test_state(crate::web::WebConfig::new(
+            Some(dist.clone()),
+            Some("secret".into()),
+        ));
+        let remote: std::net::SocketAddr = "203.0.113.7:41000".parse().unwrap();
+        use tower::util::ServiceExt;
+        let res = crate::web::build_router(state, remote)
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/assets/app.js")
+                    .header(axum::http::header::COOKIE, "agentj_session=forged")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            axum::http::StatusCode::FOUND,
+            "forged cookie must redirect"
+        );
+        assert_eq!(
+            res.headers().get(axum::http::header::LOCATION).unwrap(),
+            "/login?next=/assets/app.js"
+        );
+        std::fs::remove_dir_all(&dist).ok();
+    }
+    #[tokio::test]
+    async fn no_token_remote_peer_passes_without_login() {
+        let dist = temp_dist("gate-notoken");
+        let state = test_state(crate::web::WebConfig::new(Some(dist.clone()), None));
+        let remote: std::net::SocketAddr = "203.0.113.7:41000".parse().unwrap();
+        let (s, _, _) = get(crate::web::build_router(state, remote), "/").await;
+        assert_eq!(s, axum::http::StatusCode::OK);
+        std::fs::remove_dir_all(&dist).ok();
     }
 }
