@@ -151,6 +151,36 @@
   gap: 8px;
 }
 
+/* SessionListMenu (v0.17.0): menu anchored left with flyouts mirrored to the right. */
+.aj-sidebar__menu-wrap {
+  position: relative;
+  display: inline-flex;
+}
+.aj-sidebar__menu-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.aj-sidebar__menu {
+  right: auto;
+  left: 0;
+}
+.aj-menu__flyout--right {
+  right: auto;
+  left: calc(100% + 6px);
+}
+.aj-menu__flyout--right::before {
+  right: auto;
+  left: -8px;
+}
+.aj-menu__item--danger {
+  color: var(--aj-error);
+}
+.aj-menu__item[aria-disabled="true"] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .aj-right-toggle {
   display: none;
 }
