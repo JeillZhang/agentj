@@ -13,6 +13,9 @@ test("renders counter, pill states and rows", () => {
   ];
   const { container } = render(<TodoPanel items={items} />);
   expect(container.querySelector(".right-section")).not.toBeNull();
+  const section = container.querySelector(".right-section") as HTMLElement;
+  expect(section).toHaveAttribute("data-section", "todo");
+  expect(section).toHaveAttribute("data-open", "true");
   expect(screen.getByText("2 / 4")).toBeInTheDocument();
   expect(screen.getAllByText("已完成").length).toBe(2);
   expect(screen.getByText("进行中")).toBeInTheDocument();
@@ -34,6 +37,7 @@ test("section collapses when the title button is clicked", () => {
   expect(container.querySelector(".todo-list")).not.toBeNull();
   fireEvent.click(toggle);
   expect(container.querySelector(".todo-list")).toBeNull();
+  expect(container.querySelector(".right-section")).not.toHaveAttribute("data-open");
   expect(screen.getByText("任务")).toBeInTheDocument();
   expect(screen.getByText("2 / 4")).toBeInTheDocument();
   expect(toggle).toHaveAttribute("aria-expanded", "false");

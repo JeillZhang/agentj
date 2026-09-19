@@ -68,9 +68,29 @@ test("collapsed right panel drops the shell to the 40px rail on wide layouts", (
   const wide = mediaBodies(layoutCss, "@media (min-width: 1024px)");
   const match = /\.aj-workspace--right-collapsed\s+\.aj-shell__right\s*\{([^}]*)\}/.exec(wide);
   expect(match).not.toBeNull();
-  expect(match?.[1]).toMatch(/flex-basis:\s*40px/);
-  expect(match?.[1]).toMatch(/min-width:\s*0/);
-  expect(match?.[1]).toMatch(/max-width:\s*40px/);
+  expect(match?.[1]).toMatch(/width:\s*40px/);
+  expect(match?.[1]).not.toMatch(/flex-basis/);
+  expect(match?.[1]).not.toMatch(/min-width/);
+  expect(match?.[1]).not.toMatch(/max-width/);
+});
+
+test("right column animates width from the base rule with no CSS clamp", () => {
+  const base = /\.aj-shell__right\s*\{([^}]*)\}/.exec(layoutCss)?.[1] ?? "";
+  expect(base).toMatch(/flex:\s*0 1 auto/);
+  expect(base).toMatch(/width:\s*var\(--aj-right-w/);
+  expect(base).toMatch(/min-width:\s*0/);
+  expect(base).toMatch(/max-width:\s*none/);
+});
+
+test("right panel width transition lives in the ≥1024 media and is disabled while dragging", () => {
+  const wide = mediaBodies(layoutCss, "@media (min-width: 1024px)");
+  const animated = /\.aj-shell__right\s*\{([^}]*transition:\s*width[^}]*)\}/.exec(wide);
+  expect(animated).not.toBeNull();
+  expect(animated?.[1]).toMatch(/transition:\s*width\s+var\(--aj-motion\)/);
+  const guard =
+    /\.aj-splitter\[data-side="right"\]\[data-dragging="true"\]\s*~\s*\.aj-shell__right\s*\{([^}]*)\}/.exec(wide);
+  expect(guard).not.toBeNull();
+  expect(guard?.[1]).toMatch(/transition:\s*none/);
 });
 
 test("rightCollapsed marks the root with aj-workspace--right-collapsed", () => {

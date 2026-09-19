@@ -46,12 +46,16 @@ export const COMPOSER_KEYS = {
 export const ASK_COLLAPSED_KEY = "agentj.ask.collapsed";
 export const FAVORITES_KEY = "agentj.favorites";
 export const RIGHT_SECTIONS_KEY = "agentj.layout.rightSections";
+export const RIGHT_SECTIONS_UPDATED_EVENT = "agentj:right-sections-updated";
+export const RIGHT_SECTION_SPLIT_KEY = "agentj.layout.rightSectionSplit";
 export const LAYOUT_UPDATED_EVENT = "agentj:layout-updated";
 
 const LAYOUT_TABS: readonly LeftTab[] = ["sessions", "files"];
 const COMPOSER_AGENTS: readonly ComposerAgent[] = ["build", "plan", "explore"];
 const ENTROPY_MIN = 0;
 const ENTROPY_MAX = 2;
+const SPLIT_MIN_RATIO = 0.15;
+const SPLIT_MAX_RATIO = 0.85;
 
 function readRaw(key: string): string | null {
   try {
@@ -64,6 +68,12 @@ function readRaw(key: string): string | null {
 function writeRaw(key: string, value: string): void {
   try {
     localStorage.setItem(key, value);
+  } catch {}
+}
+
+function removeRaw(key: string): void {
+  try {
+    localStorage.removeItem(key);
   } catch {}
 }
 
@@ -211,4 +221,39 @@ export function saveRightSections(state: RightSectionsState): void {
 
 export function setRightSection(id: RightSectionId, open: boolean): void {
   saveRightSections({ ...loadRightSections(), [id]: open });
+  if (typeof window === "undefined") return;
+  try {
+    window.dispatchEvent(new CustomEvent(RIGHT_SECTIONS_UPDATED_EVENT));
+  } catch {}
+}
+
+export function subscribeRightSections(cb: () => void): () => void {
+  if (typeof window === "undefined") return () => {};
+  const onUpdated = (): void => cb();
+  const onStorage = (event: StorageEvent): void => {
+    if (event.key == null || event.key === RIGHT_SECTIONS_KEY) cb();
+  };
+  window.addEventListener(RIGHT_SECTIONS_UPDATED_EVENT, onUpdated);
+  window.addEventListener("storage", onStorage);
+  return () => {
+    window.removeEventListener(RIGHT_SECTIONS_UPDATED_EVENT, onUpdated);
+    window.removeEventListener("storage", onStorage);
+  };
+}
+
+export function loadRightSectionSplit(): number | null {
+  const raw = readRaw(RIGHT_SECTION_SPLIT_KEY);
+  if (raw == null || raw.trim() === "") return null;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return null;
+  return clamp(n, SPLIT_MIN_RATIO, SPLIT_MAX_RATIO);
+}
+
+export function saveRightSectionSplit(ratio: number | null): void {
+  if (ratio === null) {
+    removeRaw(RIGHT_SECTION_SPLIT_KEY);
+    return;
+  }
+  if (!Number.isFinite(ratio)) return;
+  writeRaw(RIGHT_SECTION_SPLIT_KEY, String(clamp(ratio, SPLIT_MIN_RATIO, SPLIT_MAX_RATIO)));
 }

@@ -6,16 +6,18 @@
   min-width: 0;
   flex: 1 1 auto;
   min-height: 0;
+  align-self: flex-end;
   background: var(--aj-sidebar);
-  border-left: 0.5px solid var(--aj-border);
   display: flex;
   flex-direction: column;
-  transition: width var(--aj-motion) var(--aj-ease);
   overflow: hidden;
 }
 
-.aj-right--collapsed {
-  width: 40px;
+@media (max-width: 1023px) {
+  .aj-right {
+    width: 100%;
+    align-self: stretch;
+  }
 }
 
 .aj-right--collapsed .aj-right__body {
@@ -32,13 +34,15 @@
   flex-shrink: 0;
 }
 
-.aj-right--collapsed .aj-right__head {
-  padding: 0;
-  justify-content: center;
-}
+@media (min-width: 1024px) {
+  .aj-right--collapsed .aj-right__head {
+    justify-content: flex-end;
+    padding: 0 4px 0 0;
+  }
 
-.aj-right--collapsed .aj-right__title {
-  display: none;
+  .aj-right--collapsed .aj-right__title {
+    display: none;
+  }
 }
 
 .aj-right__title {
@@ -69,7 +73,7 @@
 .aj-right__body {
   flex: 1;
   min-height: 0;
-  overflow-y: auto;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
 }
@@ -77,11 +81,20 @@
 /* ---- sections ---- */
 
 .right-section {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  flex: 0 0 auto;
   padding: 0;
 }
 
 .right-section + .right-section {
   border-top: 0.5px solid var(--aj-border);
+}
+
+.right-section[data-open="true"] {
+  flex: 1 1 auto;
 }
 
 .sec-head {
@@ -101,6 +114,7 @@
   cursor: pointer;
   margin: 0;
   width: 100%;
+  flex-shrink: 0;
 }
 
 .sec-head:hover {
@@ -111,8 +125,47 @@
   padding: 0 12px 10px;
 }
 
+.right-section[data-open="true"] > .sec-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+
 .sec-body:empty {
   padding: 0;
+}
+
+.aj-right__body[data-both-open="true"][data-split="custom"] > .right-section[data-section="todo"] {
+  flex: 0 0 calc(var(--aj-split, 0.5) * 100%);
+}
+
+.aj-right__body[data-both-open="true"][data-split="custom"] > .right-section[data-section="changes"] {
+  flex: 1 1 0;
+}
+
+.right-resizer {
+  flex: 0 0 6px;
+  height: 6px;
+  cursor: row-resize;
+  touch-action: none;
+  user-select: none;
+  position: relative;
+}
+
+.right-resizer::after {
+  content: "";
+  position: absolute;
+  inset: 2px 0;
+  background: var(--aj-border);
+  opacity: 0;
+  transition: opacity var(--aj-motion) var(--aj-ease);
+}
+
+.right-resizer:hover::after,
+.right-resizer:focus-visible::after,
+.right-resizer[data-dragging="true"]::after {
+  opacity: 1;
+  background: var(--aj-accent);
 }
 
 .sec-head .count {
@@ -387,7 +440,7 @@ button.fc:hover {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .aj-right {
+  .right-resizer::after {
     transition: none;
   }
 

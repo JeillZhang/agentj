@@ -66,7 +66,7 @@ export default function ChangeList({ changes }: ChangeListProps) {
   const [expandedPath, setExpandedPath] = useState<string | null>(null);
 
   return (
-    <div className="right-section">
+    <div className="right-section" data-section="changes" data-open={open ? "true" : undefined}>
       <button
         type="button"
         className="sec-head"
