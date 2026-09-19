@@ -11,9 +11,6 @@ import ModalDialog from "./ModalDialog";
 import "./topbarmenu.css";
 
 type Props = {
-  model?: string | null;
-  connectionLabel?: string;
-  modules?: string[];
   onConnect: (host: string, port: string, token: string) => void;
   onContinue: (sessionId: string) => void;
 };
@@ -27,13 +24,7 @@ function dispatchPrefs(patch: { sort?: string; filter?: string }): void {
   window.dispatchEvent(new CustomEvent(PREF_EVENT, { detail: patch }));
 }
 
-export default function TopbarMenu({
-  model,
-  connectionLabel = "未连接",
-  modules,
-  onConnect,
-  onContinue,
-}: Props) {
+export default function TopbarMenu({ onConnect, onContinue }: Props) {
   const [open, setOpen] = useState(false);
   const [dialog, setDialog] = useState<DialogKind>(null);
   const [submenu, setSubmenu] = useState<SubmenuKind>(null);
@@ -45,8 +36,6 @@ export default function TopbarMenu({
   const [continueId, setContinueId] = useState("");
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
-
-  const connected = connectionLabel.length > 0 && !connectionLabel.includes("未连接");
 
   useEffect(() => subscribeDemo(setDemo), []);
 
@@ -164,18 +153,6 @@ export default function TopbarMenu({
 
       {open && (
         <div className="aj-menu" role="menu">
-          <div className="aj-menu__status" role="presentation" aria-label="连接状态">
-            <span className="aj-menu__dot" data-state={connected ? "on" : "off"} />
-            <span className="aj-menu__conn">{connectionLabel}</span>
-            {model && <span className="aj-chip aj-chip--model">{model}</span>}
-            {modules?.map((m) => (
-              <span key={m} className="aj-chip">
-                {m}
-              </span>
-            ))}
-          </div>
-          <div className="aj-menu__sep" role="separator" />
-
           <button type="button" role="menuitem" className="aj-menu__item" onClick={() => openDialog("connect")}>
             连接设置…
           </button>

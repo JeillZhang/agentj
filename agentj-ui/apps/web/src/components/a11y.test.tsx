@@ -39,7 +39,7 @@ describe("a11y gates T9", () => {
   });
 
   test("keyboard a11y — project submenu trigger exposes aria-haspopup + aria-expanded", () => {
-    render(<TopbarMenu connectionLabel="未连接" onConnect={() => {}} onContinue={() => {}} />);
+    render(<TopbarMenu onConnect={() => {}} onContinue={() => {}} />);
     fireEvent.click(screen.getByRole("button", { name: "更多" }));
     const trigger = screen.getByRole("menuitem", { name: "项目" });
     expect(trigger).toHaveAttribute("aria-haspopup", "menu");

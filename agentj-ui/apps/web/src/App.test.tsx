@@ -255,27 +255,31 @@ describe("App with mocked SDK transport", () => {
 
   it("renders modules from kernel/status via SDK client", async () => {
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "更多" }));
     await waitFor(() =>
-      expect(screen.getByText("test-mod: running")).toBeInTheDocument(),
+      expect(document.querySelector('.aj-status-light[data-state="connected"]')).not.toBeNull(),
     );
+    fireEvent.mouseEnter(screen.getByTestId("connection-status"));
+    expect(await screen.findByText("test-mod: running")).toBeInTheDocument();
   });
 
   it("shows connected status after successful kernel/status", async () => {
     render(<App />);
     await waitFor(() =>
-      expect(screen.getByText("connected")).toBeInTheDocument(),
+      expect(document.querySelector('.aj-status-light[data-state="connected"]')).not.toBeNull(),
     );
   });
 
-  it("topbar menu reflects real modules and connection state from kernel/status", async () => {
+  it("connection status panel reflects real modules and connection state", async () => {
     render(<App />);
-    await waitFor(() => expect(screen.getByText("connected")).toBeInTheDocument());
-    fireEvent.click(screen.getByRole("button", { name: "更多" }));
-    const menu = screen.getByRole("menu");
-    expect(await within(menu).findByText("test-mod: running")).toBeInTheDocument();
-    expect(within(menu).getByText(/已连接 ws:\/\//)).toBeInTheDocument();
-    expect(within(menu).queryByText("未连接")).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(document.querySelector('.aj-status-light[data-state="connected"]')).not.toBeNull(),
+    );
+    fireEvent.mouseEnter(screen.getByTestId("connection-status"));
+    const panel = await screen.findByRole("tooltip", { name: "连接状态" });
+    expect(within(panel).getByText(/已连接 ws:\/\//)).toBeInTheDocument();
+    expect(within(panel).getByText("deepseek-chat")).toBeInTheDocument();
+    expect(within(panel).getByText("test-mod: running")).toBeInTheDocument();
+    expect(within(panel).queryByText("未连接")).not.toBeInTheDocument();
   });
 
   it("applies token to wsUrl via topbar connect dialog", async () => {
@@ -303,7 +307,9 @@ describe("App with mocked SDK transport", () => {
   it("does not banner on compatible minor drift (client 0.12.1 vs server 0.13.0)", async () => {
     shared.initVersion.value = "0.13.0";
     render(<App />);
-    await screen.findByText("connected");
+    await waitFor(() =>
+      expect(document.querySelector('.aj-status-light[data-state="connected"]')).not.toBeNull(),
+    );
     expect(document.querySelector(".aj-banner")).toBeNull();
   });
 
@@ -648,7 +654,9 @@ describe("App shell + history rebuild", () => {
     expect(connectionLight("kernel unreachable on ws://x", true)).toBe("unreachable");
     expect(connectionLight("connecting to kernel on ws://x…", false)).toBe("connecting");
     render(<App />);
-    await screen.findByText("connected");
+    await waitFor(() =>
+      expect(document.querySelector('.aj-status-light[data-state="connected"]')).not.toBeNull(),
+    );
     const light = () => document.querySelector<HTMLElement>(".aj-status-light")!;
     expect(light()).not.toBeNull();
     expect(light().dataset.state).toBe("connected");
@@ -778,6 +786,13 @@ describe("T2 App Shell grid + popover + scrim", () => {
     expect(css).toContain("rgba(0,0,0,.24)");
     expect(css).toContain("280px");
     expect(css).toContain("var(--aj-space-4)");
+  });
+  it("topbar stacks above the sidebar so its dropdown panels stay visible", () => {
+    const p = join(dirname(fileURLToPath(import.meta.url)), "components/layout.css");
+    const css = readFileSync(p, "utf8");
+    const topbarZ = Number(css.match(/\.aj-topbar\s*\{[^}]*z-index:\s*(\d+)/)?.[1] ?? "0");
+    const sidebarZ = Number(css.match(/\.aj-sidebar\s*\{[^}]*z-index:\s*(\d+)/)?.[1] ?? "0");
+    expect(topbarZ).toBeGreaterThan(sidebarZ);
   });
 });
 

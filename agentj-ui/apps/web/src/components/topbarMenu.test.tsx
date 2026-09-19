@@ -8,12 +8,10 @@ test("menu items, demo toggle and prefs events", () => {
   const onConnect = vi.fn();
   const prefs: unknown[] = [];
   window.addEventListener("agentj:sidebar-prefs", (e) => prefs.push((e as CustomEvent).detail));
-  render(<TopbarMenu model="deepseek-chat" connectionLabel="已连接 ws://127.0.0.1:4096" onConnect={onConnect} onContinue={() => {}} />);
+  render(<TopbarMenu onConnect={onConnect} onContinue={() => {}} />);
   const trigger = screen.getByRole("button", { name: "更多" });
   expect(trigger).toHaveAttribute("aria-haspopup", "menu");
   fireEvent.click(trigger);
-  expect(screen.getByText(/已连接 ws:/)).toBeInTheDocument(); // status section
-  expect(screen.getByText(/deepseek-chat/)).toBeInTheDocument();
   for (const label of ["连接设置…", "项目", "继续会话…", "收藏会话", "排序", "过滤", "演示数据", "设置", "帮助"]) {
     expect(screen.getByText(label)).toBeInTheDocument();
   }
@@ -25,9 +23,18 @@ test("menu items, demo toggle and prefs events", () => {
   localStorage.clear();
 });
 
+test("open menu carries no connection status block", () => {
+  render(<TopbarMenu onConnect={() => {}} onContinue={() => {}} />);
+  fireEvent.click(screen.getByRole("button", { name: "更多" }));
+  const menu = screen.getByRole("menu");
+  expect(within(menu).queryByText(/已连接|未连接/)).toBeNull();
+  expect(within(menu).queryByText("deepseek-chat")).toBeNull();
+  expect(within(menu).queryByLabelText("连接状态")).toBeNull();
+});
+
 test("connect dialog hosts ConnectionBar and roundtrips", () => {
   const onConnect = vi.fn();
-  render(<TopbarMenu model="deepseek-chat" connectionLabel="未连接" onConnect={onConnect} onContinue={() => {}} />);
+  render(<TopbarMenu onConnect={onConnect} onContinue={() => {}} />);
   fireEvent.click(screen.getByRole("button", { name: "更多" }));
   fireEvent.click(screen.getByText("连接设置…"));
   const dialog = screen.getByLabelText("connection"); // ConnectionBar section aria-label
@@ -38,7 +45,7 @@ test("connect dialog hosts ConnectionBar and roundtrips", () => {
 });
 
 test("connect dialog is portaled to document.body", () => {
-  render(<TopbarMenu connectionLabel="未连接" onConnect={() => {}} onContinue={() => {}} />);
+  render(<TopbarMenu onConnect={() => {}} onContinue={() => {}} />);
   fireEvent.click(screen.getByRole("button", { name: "更多" }));
   fireEvent.click(screen.getByText("连接设置…"));
   const dialog = screen.getByLabelText("连接设置");
@@ -47,7 +54,7 @@ test("connect dialog is portaled to document.body", () => {
 });
 
 test("connect dialog closes on backdrop mousedown but stays open on card mousedown", () => {
-  render(<TopbarMenu connectionLabel="未连接" onConnect={() => {}} onContinue={() => {}} />);
+  render(<TopbarMenu onConnect={() => {}} onContinue={() => {}} />);
 
   fireEvent.click(screen.getByRole("button", { name: "更多" }));
   fireEvent.click(screen.getByText("连接设置…"));
@@ -62,7 +69,7 @@ test("connect dialog closes on backdrop mousedown but stays open on card mousedo
 });
 
 test("continue dialog is portaled to document.body", () => {
-  render(<TopbarMenu connectionLabel="未连接" onConnect={() => {}} onContinue={() => {}} />);
+  render(<TopbarMenu onConnect={() => {}} onContinue={() => {}} />);
   fireEvent.click(screen.getByRole("button", { name: "更多" }));
   fireEvent.click(screen.getByText("继续会话…"));
   const dialog = screen.getByLabelText("继续会话");
@@ -71,7 +78,7 @@ test("continue dialog is portaled to document.body", () => {
 
 test("项目 sits directly after 连接设置… in the menu", () => {
   localStorage.clear();
-  render(<TopbarMenu connectionLabel="未连接" onConnect={() => {}} onContinue={() => {}} />);
+  render(<TopbarMenu onConnect={() => {}} onContinue={() => {}} />);
   fireEvent.click(screen.getByRole("button", { name: "更多" }));
   const labels = screen.getAllByRole("menuitem").map((el) => el.textContent ?? "");
   const idx = labels.findIndex((text) => text.includes("连接设置"));
@@ -84,7 +91,7 @@ test("项目 submenu lists projects and marks the current one", () => {
   localStorage.clear();
   const alpha = createProject("Alpha");
   setCurrentProject(alpha.id);
-  render(<TopbarMenu connectionLabel="未连接" onConnect={() => {}} onContinue={() => {}} />);
+  render(<TopbarMenu onConnect={() => {}} onContinue={() => {}} />);
   fireEvent.click(screen.getByRole("button", { name: "更多" }));
   fireEvent.click(screen.getByRole("menuitem", { name: "项目" }));
   const group = screen.getByRole("group", { name: "项目" });
@@ -98,7 +105,7 @@ test("项目 submenu lists projects and marks the current one", () => {
 test("clicking a project persists it and closes the menu", () => {
   localStorage.clear();
   const beta = createProject("Beta");
-  render(<TopbarMenu connectionLabel="未连接" onConnect={() => {}} onContinue={() => {}} />);
+  render(<TopbarMenu onConnect={() => {}} onContinue={() => {}} />);
   fireEvent.click(screen.getByRole("button", { name: "更多" }));
   fireEvent.click(screen.getByRole("menuitem", { name: "项目" }));
   fireEvent.click(within(screen.getByRole("group", { name: "项目" })).getByRole("menuitemradio", { name: /Beta/ }));
@@ -109,7 +116,7 @@ test("clicking a project persists it and closes the menu", () => {
 
 test("＋ 添加项目 opens the dialog and creates + selects the project", () => {
   localStorage.clear();
-  render(<TopbarMenu connectionLabel="未连接" onConnect={() => {}} onContinue={() => {}} />);
+  render(<TopbarMenu onConnect={() => {}} onContinue={() => {}} />);
   fireEvent.click(screen.getByRole("button", { name: "更多" }));
   fireEvent.click(screen.getByRole("menuitem", { name: "项目" }));
   fireEvent.click(screen.getByRole("menuitem", { name: "＋ 添加项目" }));

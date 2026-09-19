@@ -15,7 +15,9 @@
   background: color-mix(in srgb, var(--aj-panel) 92%, transparent);
   position: sticky;
   top: 0;
-  z-index: 5;
+  /* Above the sidebar (z-index: 10) so topbar dropdowns (connection panel,
+     ⋯ menu) paint over it instead of being clipped underneath. */
+  z-index: 20;
   flex-shrink: 0;
 }
 
@@ -32,14 +34,27 @@
   line-height: 1;
   letter-spacing: -0.01em;
 }
-.aj-topbar__brand .aj-statusline {
+/* Status light + hover panel: enlarged 24px hit area keeps the 8px dot visual. */
+.aj-status-hover {
+  position: relative;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  color: var(--aj-textMuted);
-  margin: 0;
-  white-space: nowrap;
+}
+.aj-status-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  cursor: default;
+}
+.aj-status-trigger:focus-visible {
+  outline: 2px solid var(--aj-accent);
+  outline-offset: 1px;
 }
 .aj-status-light {
   width: 8px;
@@ -53,6 +68,55 @@
 .aj-status-light[data-state="connected"] { background: var(--aj-success); }
 .aj-status-light[data-state="connecting"],
 .aj-status-light[data-state="unreachable"] { background: var(--aj-warning); }
+
+.aj-status-panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 220px;
+  max-width: 340px;
+  padding: 10px;
+  background: var(--aj-panel);
+  border: 0.5px solid var(--aj-border);
+  border-radius: var(--aj-radiusCard);
+  box-shadow: var(--aj-shadowRaised);
+  z-index: var(--aj-z-dialog);
+  font-size: 12px;
+  color: var(--aj-textMuted);
+}
+/* Bridge the 6px gap so the pointer can travel from the light into the panel. */
+.aj-status-panel::before {
+  content: "";
+  position: absolute;
+  top: -8px;
+  left: 0;
+  right: 0;
+  height: 8px;
+}
+.aj-status-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.aj-status-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.aj-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  flex-shrink: 0;
+  background: var(--aj-textCaption);
+}
+.aj-status-dot[data-state="on"] { background: var(--aj-success); }
+.aj-status-dot[data-state="off"] { background: var(--aj-warning); }
 
 .aj-topbar__center {
   display: flex;

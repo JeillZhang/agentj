@@ -200,7 +200,7 @@ test("project picked in TopbarMenu is inherited by the next new session via agen
   const { client: c } = makeClient([], "s-new");
   render(
     <>
-      <TopbarMenu connectionLabel="未连接" onConnect={() => {}} onContinue={() => {}} />
+      <TopbarMenu onConnect={() => {}} onContinue={() => {}} />
       <UnifiedSidebar wsUrl="ws://x" client={c as never} activeSessionId={null} onActiveChange={() => {}} />
     </>,
   );

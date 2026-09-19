@@ -14,6 +14,7 @@ import ApprovalDialog from "./ApprovalDialog";
 import type { ApprovalRequest } from "./ApprovalDialog";
 import RunPanel from "./RunPanel";
 import TopbarMenu from "./components/TopbarMenu";
+import ConnectionStatus from "./components/ConnectionStatus";
 import UnifiedSidebar from "./components/UnifiedSidebar";
 import WorkspaceShell from "./components/WorkspaceShell";
 import RightPanel from "./components/RightPanel";
@@ -441,20 +442,16 @@ export default function App() {
       <header className="aj-topbar" role="banner">
         <div className="aj-topbar__brand">
           <h1>agentj</h1>
-          <p className="aj-statusline">
-            <span className="aj-status-light" data-state={connState} aria-hidden="true" />
-            <span className="aj-status-text">{status}</span>
-          </p>
+          <ConnectionStatus
+            state={connState}
+            label={connState === "connected" ? `已连接 ${wsUrl}` : "未连接"}
+            model={modelName}
+            modules={modules.map((m) => `${m.id}: ${m.state}`)}
+          />
         </div>
         <div className="aj-topbar__center" aria-hidden="true" />
         <div className="aj-topbar__actions">
-          <TopbarMenu
-            model={modelName}
-            connectionLabel={connState === "connected" ? `已连接 ${wsUrl}` : "未连接"}
-            modules={modules.map((m) => `${m.id}: ${m.state}`)}
-            onConnect={handleConnect}
-            onContinue={setActiveSessionIdAndHydrate}
-          />
+          <TopbarMenu onConnect={handleConnect} onContinue={setActiveSessionIdAndHydrate} />
           <button type="button" aria-label="toggle sessions" className="aj-button aj-drawer-toggle" aria-expanded={drawerOpen} aria-controls="aj-sidebar" onClick={() => setDrawerOpen((o) => !o)}><Menu size={16} aria-hidden="true" /></button>
           <button type="button" aria-label="toggle theme" className="aj-icon-btn" onClick={() => setTheme((t) => THEME_CYCLE[t])}>
             {theme === "dark" ? <Moon size={16} aria-hidden="true" /> : theme === "light" ? <Sun size={16} aria-hidden="true" /> : <Monitor size={16} aria-hidden="true" />}
