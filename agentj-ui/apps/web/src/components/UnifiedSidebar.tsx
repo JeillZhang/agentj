@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ChevronDown, ChevronRight, Eraser, Folder, FolderOpen, Search, Star, Trash2 } from "lucide-react";
+import { Eraser, Search, Star, Trash2 } from "lucide-react";
 import {
   METHODS,
   ResponseRouter,
@@ -8,14 +8,9 @@ import {
 } from "@agentj/sdk";
 import {
   assignSession,
-  createProject,
   getProjectForSession,
-  groupSessionsByProject,
-  loadCollapsed,
   loadCurrentProject,
   loadProjects,
-  setCollapsed,
-  setCurrentProject,
 } from "../projectStore";
 import type { Project } from "../projectStore";
 import { loadFavorites, loadLayout, saveLayout, toggleFavorite } from "../layoutStore";
@@ -37,7 +32,6 @@ type ListRow = {
 type SidebarSort = "updated" | "created";
 type SidebarFilter = "all" | "favorites";
 
-const SUBGROUP_TITLES: Array<"Today" | "Previous 7 days" | "Older"> = ["Today", "Previous 7 days", "Older"];
 const VIRTUAL_PAGE = 50;
 
 function toMs(ts: unknown): number | null {
@@ -70,53 +64,6 @@ function formatTime(ts: unknown): string {
   yesterday.setDate(now.getDate() - 1);
   if (d.toDateString() === yesterday.toDateString()) return `昨天 ${clock}`;
   return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${clock}`;
-}
-
-function SessionListItem({
-  row,
-  activeSessionId,
-  onContinue,
-  onDelete,
-  deleteDisabled,
-}: {
-  row: ListRow;
-  activeSessionId: string | null;
-  onContinue: (id: string) => void;
-  onDelete: (id: string) => void;
-  deleteDisabled?: boolean;
-}) {
-  return (
-    <li className="aj-session-item">
-      <button
-        type="button"
-        className="aj-session-del aj-session-row__del"
-        aria-label="删除会话"
-        disabled={deleteDisabled}
-        onClick={(e) => {
-          e.stopPropagation();
-          onDelete(row.id);
-        }}
-      >
-        <Trash2 size={14} aria-hidden="true" />
-      </button>
-      <button
-        type="button"
-        tabIndex={0}
-        aria-selected={row.id === activeSessionId}
-        className={`aj-session-row${row.id === activeSessionId ? " aj-session-row--active" : ""}`}
-        onClick={() => void onContinue(row.id)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" || e.key === " ") {
-            e.preventDefault();
-            void onContinue(row.id);
-          }
-        }}
-      >
-        <span className="aj-session-state" data-state={row.state} />
-        <span className="aj-session-id">{row.preview ?? row.id}</span>
-      </button>
-    </li>
-  );
 }
 
 function rowsFromList(sessions: Array<Record<string, unknown>>): ListRow[] {
@@ -190,7 +137,6 @@ export default function UnifiedSidebar({
   unreachable = false,
 }: Props) {
   const [projects, setProjects] = useState<Project[]>(() => loadProjects());
-  const [collapsed, setCollapsedState] = useState<Record<string, boolean>>(() => loadCollapsed());
   const [query, setQuery] = useState("");
   const [listRows, setListRows] = useState<ListRow[]>([]);
   const [favorites, setFavorites] = useState<string[]>(() => loadFavorites());
@@ -203,10 +149,7 @@ export default function UnifiedSidebar({
     sort: "updated",
     filter: "all",
   });
-  const [visibleCounts, setVisibleCounts] = useState<Record<string, number>>({});
   const [flatVisible, setFlatVisible] = useState(VIRTUAL_PAGE);
-  const [addOpen, setAddOpen] = useState(false);
-  const [addName, setAddName] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<{ ids: string[]; mode: "one" | "all" } | null>(null);
 
   useEffect(() => subscribeDemo(setDemo), []);
@@ -215,16 +158,17 @@ export default function UnifiedSidebar({
     const handler = () => {
       try {
         setProjects(loadProjects());
-        setCollapsedState(loadCollapsed());
         setFavorites(loadFavorites());
         setCurrentProjectId(loadCurrentProject());
       } catch {}
     };
     window.addEventListener("storage", handler);
     window.addEventListener("agentj:projects-updated", handler as EventListener);
+    window.addEventListener("agentj:current-project-updated", handler as EventListener);
     return () => {
       window.removeEventListener("storage", handler);
       window.removeEventListener("agentj:projects-updated", handler as EventListener);
+      window.removeEventListener("agentj:current-project-updated", handler as EventListener);
     };
   }, []);
 
@@ -325,14 +269,6 @@ export default function UnifiedSidebar({
     setFlatVisible(VIRTUAL_PAGE);
   }, [query, prefs]);
 
-  const toggleCollapsed = useCallback((projectId: string) => {
-    setCollapsedState((prev) => {
-      const next = { ...prev, [projectId]: !prev[projectId] };
-      setCollapsed(next);
-      return next;
-    });
-  }, []);
-
   const handleContinue = useCallback(
     async (sid: string) => {
       const trimmed = sid.trim();
@@ -413,23 +349,6 @@ export default function UnifiedSidebar({
     setDeleteTarget({ ids: deletableIds, mode: "all" });
   }, [deletableIds]);
 
-  const grouped = useMemo(() => {
-    try {
-      return groupSessionsByProject(listRows as never[]);
-    } catch {
-      return {} as Record<string, { project: Project; sessions: ListRow[]; subgroups: Record<string, ListRow[]> }>;
-    }
-  }, [listRows, projects]);
-
-  const defaultSubgroupIndex = useMemo(() => {
-    const g = (grouped as Record<string, { subgroups?: Record<string, ListRow[]> }>).default;
-    const map = new Map<string, string>();
-    for (const title of SUBGROUP_TITLES) {
-      for (const r of g?.subgroups?.[title] ?? []) map.set(r.id, title);
-    }
-    return map;
-  }, [grouped]);
-
   const projectsById = useMemo(() => new Map(projects.map((p) => [p.id, p])), [projects]);
 
   const metaFor = useCallback(
@@ -454,152 +373,6 @@ export default function UnifiedSidebar({
 
   const visibleFlat = flatRows.slice(0, flatVisible);
   const hasMoreFlat = flatRows.length > visibleFlat.length;
-
-  const filteredForProject = useCallback(
-    (projectId: string): ListRow[] => {
-      const g = (grouped as Record<string, { sessions: ListRow[] }>)[projectId];
-      const rows = g?.sessions ?? [];
-      const q = query.trim().toLowerCase();
-      if (!q) return rows;
-      return rows.filter((r) => r.id.toLowerCase().includes(q) || (r.preview ?? "").toLowerCase().includes(q));
-    },
-    [grouped, query],
-  );
-
-  const onAddProject = () => {
-    setAddName("");
-    setAddOpen(true);
-  };
-
-  const submitAddProject = useCallback(() => {
-    const t = addName.trim();
-    if (!t) return;
-    try {
-      const p = createProject(t);
-      setProjects(loadProjects());
-      setCurrentProject(p.id);
-      setCurrentProjectId(p.id);
-      setAddOpen(false);
-    } catch {
-      setAddOpen(true);
-    }
-  }, [addName]);
-
-  const showMore = useCallback((projectId: string) => {
-    setVisibleCounts((prev) => ({ ...prev, [projectId]: (prev[projectId] ?? VIRTUAL_PAGE) + VIRTUAL_PAGE }));
-  }, []);
-
-  const renderProjectGroups = () =>
-    projects.map((project) => {
-      const isCollapsed = !!collapsed[project.id];
-      const rows = filteredForProject(project.id);
-      const visible = visibleCounts[project.id] ?? VIRTUAL_PAGE;
-      const sliced = rows.length > VIRTUAL_PAGE ? rows.slice(0, visible) : rows;
-      const hasMore = rows.length > sliced.length;
-      const count = rows.length;
-      const bodyId = `aj-project-body-${project.id}`;
-      return (
-        <div key={project.id} className="aj-project-group">
-          <button
-            type="button"
-            className="aj-project-row"
-            aria-expanded={!isCollapsed}
-            aria-controls={bodyId}
-            aria-label={`${project.name} folder`}
-            tabIndex={0}
-            onClick={() => toggleCollapsed(project.id)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" || e.key === " ") {
-                e.preventDefault();
-                toggleCollapsed(project.id);
-              }
-            }}
-          >
-            <span className="aj-project-row__chevron" aria-hidden="true">
-              {isCollapsed ? <ChevronRight size={16} /> : <ChevronDown size={16} />}
-            </span>
-            <span className="aj-project-row__icon" aria-hidden="true">
-              {isCollapsed ? <Folder size={16} /> : <FolderOpen size={16} />}
-            </span>
-            <span className="aj-project-row__name">{project.name}</span>
-            <span className="aj-project-row__count">{count}</span>
-          </button>
-          {!isCollapsed && (
-            <div className="aj-project-group__body" id={bodyId}>
-              {rows.length === 0 ? (
-                <div className="aj-project-empty">
-                  <p className="aj-empty">No sessions yet</p>
-                  <button
-                    type="button"
-                    className="aj-button aj-button--ghost"
-                    onClick={() => void handleNewSession(project.id)}
-                    disabled={busy}
-                  >
-                    New session
-                  </button>
-                </div>
-              ) : (
-                <>
-                  {project.id === "default" ? (
-                    <ul className="aj-session-list" aria-label="session list">
-                      {SUBGROUP_TITLES.flatMap((title) => {
-                        const bucketRows = sliced.filter((r) => (defaultSubgroupIndex.get(r.id) ?? "Today") === title);
-                        if (bucketRows.length === 0) return [];
-                        return [
-                          <li key={`${title}-header`} className="aj-sidebar__subgroup">
-                            <h4 className="aj-sidebar__subgroup-title">{title}</h4>
-                          </li>,
-                          ...bucketRows.map((r) => (
-                            <SessionListItem
-                              key={r.id}
-                              row={r}
-                              activeSessionId={activeSessionId}
-                              onContinue={handleContinue}
-                              onDelete={requestDelete}
-                              deleteDisabled={busy}
-                            />
-                          )),
-                        ];
-                      })}
-                    </ul>
-                  ) : (
-                    <ul aria-label={`sessions for ${project.name}`} className="aj-session-list">
-                      {sliced.map((r) => (
-                        <SessionListItem
-                          key={r.id}
-                          row={r}
-                          activeSessionId={activeSessionId}
-                          onContinue={handleContinue}
-                          onDelete={requestDelete}
-                          deleteDisabled={busy}
-                        />
-                      ))}
-                    </ul>
-                  )}
-                  {hasMore && (
-                    <button
-                      type="button"
-                      className="aj-button aj-button--ghost aj-project-more"
-                      onClick={() => showMore(project.id)}
-                    >
-                      显示更多
-                    </button>
-                  )}
-                  <button
-                    type="button"
-                    className="aj-button aj-button--ghost aj-project-new"
-                    onClick={() => void handleNewSession(project.id)}
-                    disabled={busy}
-                  >
-                    New session
-                  </button>
-                </>
-              )}
-            </div>
-          )}
-        </div>
-      );
-    });
 
   return (
     <section
@@ -714,57 +487,11 @@ export default function UnifiedSidebar({
               显示更多
             </button>
           )}
-          <div className="divider" />
-          <div className="section-label">项目</div>
-          {renderProjectGroups()}
-          {projects.length === 0 && (
-            <div className="aj-project-empty">
-              <p className="aj-empty">No sessions yet</p>
-              <button
-                type="button"
-                className="aj-button"
-                onClick={() => void handleNewSession(currentProjectId)}
-                disabled={busy}
-              >
-                New session
-              </button>
-            </div>
-          )}
         </div>
       ) : (
         <div className="aj-sidebar__body" aria-label="文件">
           <FileTree client={client as RpcClient | null} sessionId={activeSessionId} demo={demo} />
         </div>
-      )}
-      <div className="aj-sidebar__footer">
-        <button type="button" onClick={onAddProject}>
-          + 添加项目
-        </button>
-      </div>
-      {addOpen && (
-        <ModalDialog title="添加项目" onClose={() => setAddOpen(false)}>
-          <div className="aj-field">
-            <label htmlFor="aj-add-project" className="aj-label">
-              项目名称
-            </label>
-            <input
-              id="aj-add-project"
-              className="aj-input"
-              autoFocus
-              value={addName}
-              onChange={(e) => setAddName(e.target.value)}
-              placeholder="项目名称"
-            />
-          </div>
-          <div className="aj-dialog__actions">
-            <button type="button" className="aj-button--ghost" onClick={() => setAddOpen(false)}>
-              取消
-            </button>
-            <button type="button" className="aj-button" disabled={!addName.trim()} onClick={submitAddProject}>
-              添加
-            </button>
-          </div>
-        </ModalDialog>
       )}
       {deleteTarget && (
         <ModalDialog

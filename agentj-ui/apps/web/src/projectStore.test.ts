@@ -47,6 +47,18 @@ describe("projectStore", () => {
     expect(seen).toContain("agentj:projects-updated");
   });
 
+  test("setCurrentProject dispatches agentj:current-project-updated with detail.id", () => {
+    const details: unknown[] = [];
+    const handler = (e: Event) => details.push((e as CustomEvent).detail);
+    window.addEventListener("agentj:current-project-updated", handler);
+    try {
+      setCurrentProject("abc");
+    } finally {
+      window.removeEventListener("agentj:current-project-updated", handler);
+    }
+    expect(details).toContainEqual({ id: "abc" });
+  });
+
   test("rename and empty rejected", () => {
     const p = createProject("Foo");
     renameProject(p.id, "Bar");

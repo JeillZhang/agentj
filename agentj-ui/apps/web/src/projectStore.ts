@@ -33,6 +33,13 @@ function notifyProjectsUpdated(): void {
   } catch {}
 }
 
+function notifyCurrentProjectUpdated(id: string): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.dispatchEvent(new CustomEvent("agentj:current-project-updated", { detail: { id } }));
+  } catch {}
+}
+
 export function loadProjects(): Project[] {
   const raw = (() => {
     try {
@@ -203,6 +210,7 @@ export function setCurrentProject(id: string): void {
   try {
     localStorage.setItem(KEY_CURRENT, id);
   } catch {}
+  notifyCurrentProjectUpdated(id);
 }
 
 // helper to normalize timestamp to ms

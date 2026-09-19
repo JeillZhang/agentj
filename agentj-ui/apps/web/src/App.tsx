@@ -436,11 +436,6 @@ export default function App() {
     return () => document.removeEventListener("keydown", onKey);
   }, [rightDrawerOpen]);
 
-  // expose currentProjectId wiring via window for UnifiedSidebar new session assignment
-  useEffect(() => {
-    (window as unknown as Record<string, unknown>).__agentjCurrentProject = currentProjectId;
-  }, [currentProjectId]);
-
   return (
     <div className="aj-app" data-drawer={drawerOpen ? "open" : "closed"}>
       <header className="aj-topbar" role="banner">
@@ -542,7 +537,7 @@ export default function App() {
                   type="button"
                   className="aj-button aj-hero-trigger"
                   onClick={() => {
-                    const btn = document.querySelector<HTMLButtonElement>(".aj-session-actions button, .aj-project-new");
+                    const btn = document.querySelector<HTMLButtonElement>(".aj-session-actions button");
                     if (btn) btn.click();
                     else window.dispatchEvent(new CustomEvent("agentj:new-session"));
                   }}

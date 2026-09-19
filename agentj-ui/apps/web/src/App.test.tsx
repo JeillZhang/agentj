@@ -599,7 +599,7 @@ describe("App shell + history rebuild", () => {
     shared.historyResult.value = { events: WIRE_CORPUS, next_cursor: null };
     shared.sessionListResult.value = { sessions: [{ session_id: "s1", state: "active", preview: "hi" }] };
     render(<App />);
-    const list = await screen.findByRole("list", { name: "session list" });
+    const list = await screen.findByRole("list", { name: "最近会话" });
     fireEvent.click(await within(list).findByText(/hi/));
     expect(await screen.findByText("hello world")).toBeInTheDocument();
     expect(screen.getByText("in=10 out=5")).toBeInTheDocument();
@@ -609,7 +609,7 @@ describe("App shell + history rebuild", () => {
     shared.historyResult.value = { events: WIRE_CORPUS, next_cursor: null };
     shared.sessionListResult.value = { sessions: [{ session_id: "s1", state: "active", preview: "hi" }] };
     render(<App />);
-    const list = await screen.findByRole("list", { name: "session list" });
+    const list = await screen.findByRole("list", { name: "最近会话" });
     fireEvent.click(await within(list).findByText(/hi/));
     await screen.findByText("hello world");
     fireEvent.click(screen.getByRole("tab", { name: /轨迹/ }));
@@ -638,7 +638,7 @@ describe("App shell + history rebuild", () => {
     const header = document.querySelector(".aj-topbar") as HTMLElement;
     expect(within(header).queryByLabelText("model")).toBeNull();
     expect(within(header).queryByText("deepseek-chat")).toBeNull();
-    const list = await screen.findByRole("list", { name: "session list" });
+    const list = await screen.findByRole("list", { name: "最近会话" });
     fireEvent.click(await within(list).findByText(/hi/));
     await screen.findByText("hello world");
     expect(screen.getAllByText("deepseek-chat").length).toBeGreaterThanOrEqual(2);
