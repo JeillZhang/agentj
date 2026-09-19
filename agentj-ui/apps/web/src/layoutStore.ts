@@ -12,10 +12,12 @@ export type LayoutState = {
 };
 
 export type ComposerAgent = "build" | "plan" | "explore";
+export type ComposerPermission = "ask" | "bypass";
 export type ComposerPrefs = {
   model: string | null;
   agent: ComposerAgent;
   entropy: number;
+  permissionMode: ComposerPermission;
 };
 
 export type RightSectionsState = { todo: boolean; changes: boolean };
@@ -27,7 +29,12 @@ export const LAYOUT_DEFAULTS: LayoutState = {
   leftTab: "sessions",
   rightCollapsed: false,
 };
-export const COMPOSER_DEFAULTS: ComposerPrefs = { model: null, agent: "build", entropy: 0.7 };
+export const COMPOSER_DEFAULTS: ComposerPrefs = {
+  model: null,
+  agent: "build",
+  entropy: 0.7,
+  permissionMode: "ask",
+};
 export const RIGHT_SECTIONS_DEFAULTS: RightSectionsState = { todo: true, changes: true };
 
 export const LAYOUT_KEYS = {
@@ -41,7 +48,10 @@ export const COMPOSER_KEYS = {
   model: "agentj.composer.model",
   agent: "agentj.composer.agent",
   entropy: "agentj.composer.entropy",
+  permissionMode: "agentj.composer.permissionMode",
 } as const;
+
+export const COMPOSER_PERMISSION_MODES: readonly ComposerPermission[] = ["ask", "bypass"];
 
 export const ASK_COLLAPSED_KEY = "agentj.ask.collapsed";
 export const FAVORITES_KEY = "agentj.favorites";
@@ -168,6 +178,11 @@ export function loadComposerPrefs(): ComposerPrefs {
     model: model == null || model === "" ? COMPOSER_DEFAULTS.model : model,
     agent: readEnum(COMPOSER_KEYS.agent, COMPOSER_AGENTS, COMPOSER_DEFAULTS.agent),
     entropy: readNumber(COMPOSER_KEYS.entropy, COMPOSER_DEFAULTS.entropy, ENTROPY_MIN, ENTROPY_MAX),
+    permissionMode: readEnum(
+      COMPOSER_KEYS.permissionMode,
+      COMPOSER_PERMISSION_MODES,
+      COMPOSER_DEFAULTS.permissionMode,
+    ),
   };
 }
 
@@ -176,6 +191,7 @@ export function saveComposerPrefs(patch: Partial<ComposerPrefs>): void {
   writeRaw(COMPOSER_KEYS.model, next.model ?? "");
   writeRaw(COMPOSER_KEYS.agent, next.agent);
   writeRaw(COMPOSER_KEYS.entropy, String(next.entropy));
+  writeRaw(COMPOSER_KEYS.permissionMode, next.permissionMode);
 }
 
 export function loadAskCollapsed(): boolean {

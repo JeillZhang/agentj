@@ -1,5 +1,6 @@
 import { beforeEach, expect, test } from "vitest";
 import { loadLayout, saveLayout, subscribeLayout, loadComposerPrefs, saveComposerPrefs,
+         COMPOSER_PERMISSION_MODES,
          loadAskCollapsed, saveAskCollapsed, loadFavorites, toggleFavorite,
          loadRightSections, saveRightSections, setRightSection,
          loadRightSectionSplit, saveRightSectionSplit, subscribeRightSections } from "./layoutStore";
@@ -33,6 +34,25 @@ test("composer prefs clamp and enum fallback", () => {
   expect(loadComposerPrefs().entropy).toBe(1.2);
   expect(loadComposerPrefs().agent).toBe("plan");
 });
+test("composer permission defaults to ask and roundtrips", () => {
+  expect(loadComposerPrefs().permissionMode).toBe("ask");
+  saveComposerPrefs({ permissionMode: "bypass" });
+  expect(loadComposerPrefs().permissionMode).toBe("bypass");
+  expect(localStorage.getItem("agentj.composer.permissionMode")).toBe("bypass");
+  expect(COMPOSER_PERMISSION_MODES).toEqual(["ask", "bypass"]);
+});
+
+test("composer permission falls back to ask on an invalid stored value", () => {
+  localStorage.setItem("agentj.composer.permissionMode", "bogus");
+  expect(loadComposerPrefs().permissionMode).toBe("ask");
+});
+
+test("saving a model patch preserves permissionMode", () => {
+  saveComposerPrefs({ permissionMode: "bypass" });
+  saveComposerPrefs({ model: "deepseek-chat" });
+  expect(loadComposerPrefs()).toMatchObject({ model: "deepseek-chat", permissionMode: "bypass" });
+});
+
 test("ask collapsed and favorites toggle", () => {
   expect(loadAskCollapsed()).toBe(false);
   saveAskCollapsed(true);

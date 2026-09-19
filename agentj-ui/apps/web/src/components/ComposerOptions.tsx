@@ -1,16 +1,17 @@
 import { useEffect, useRef, useState } from "react";
 import type { ChangeEvent, KeyboardEvent as ReactKeyboardEvent, ReactNode } from "react";
 import OptionPopover from "./OptionPopover";
-import { loadComposerPrefs, saveComposerPrefs } from "../layoutStore";
-import type { ComposerAgent, ComposerPrefs } from "../layoutStore";
+import { COMPOSER_KEYS, loadComposerPrefs, saveComposerPrefs } from "../layoutStore";
+import type { ComposerAgent, ComposerPermission, ComposerPrefs } from "../layoutStore";
 import { loadCurrentProject, loadProjects } from "../projectStore";
 import "./options.css";
 
-type OpenId = "model" | "agent" | "entropy" | null;
+type OpenId = "model" | "agent" | "entropy" | "permission" | null;
 
 type ModelEntry = { name: string; cap: string };
 type AgentEntry = { id: ComposerAgent; label: string; cap: string };
 type EntropyPreset = { value: number; label: string; short: string };
+type PermissionEntry = { id: ComposerPermission; label: string; cap: string };
 
 export const MODEL_LIST: ModelEntry[] = [{ name: "deepseek-chat", cap: "128k 上下文 · 工具调用" }];
 
@@ -24,6 +25,11 @@ const ENTROPY_PRESETS: EntropyPreset[] = [
   { value: 0.2, label: "低温 · 精确", short: "低温" },
   { value: 0.7, label: "均衡 · 推荐", short: "均衡" },
   { value: 1.2, label: "高温 · 发散", short: "高温" },
+];
+
+export const PERMISSION_MODES: PermissionEntry[] = [
+  { id: "ask", label: "逐次确认", cap: "每次工具调用弹窗确认（默认）" },
+  { id: "bypass", label: "自动允许", cap: "自动放行审批请求，不再弹窗（内核强制拒绝仍生效）" },
 ];
 
 export type ComposerOptionsProps = {
@@ -50,9 +56,14 @@ function entropyShortLabel(entropy: number): string {
   return preset ? preset.short : "自定义";
 }
 
+function permissionIndex(mode: ComposerPermission): number {
+  const index = PERMISSION_MODES.findIndex((entry) => entry.id === mode);
+  return index < 0 ? 0 : index;
+}
+
 /**
- * Composer toolbar: model / agent / entropy selectors with exactly one popover
- * open at a time. Preferences persist through layoutStore and the trigger label
+ * Composer toolbar: model / agent / entropy / permission selectors with exactly
+ * one popover open at a time. Preferences persist through layoutStore and the trigger label
  * updates immediately. `children` is the right-aligned slot (RunPanel sends the
  * circular send button in T19).
  */
@@ -65,6 +76,7 @@ export default function ComposerOptions({ model = null, children }: ComposerOpti
   const modelRef = useRef<HTMLButtonElement>(null);
   const agentRef = useRef<HTMLButtonElement>(null);
   const entropyRef = useRef<HTMLButtonElement>(null);
+  const permissionRef = useRef<HTMLButtonElement>(null);
   const appliedProjectRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -89,8 +101,26 @@ export default function ComposerOptions({ model = null, children }: ComposerOpti
     return () => window.removeEventListener("agentj:current-project-updated", onCurrent);
   }, []);
 
+  // Cross-tab sync: another tab toggling bypass writes localStorage, which fires a
+  // `storage` event here (cross-tab only). Re-read the stored mode so this tab's
+  // trigger matches what App auto-allows from at notification time.
+  useEffect(() => {
+    const onStorage = (event: StorageEvent) => {
+      if (event.key !== null && event.key !== COMPOSER_KEYS.permissionMode) return;
+      const mode = loadComposerPrefs().permissionMode;
+      setPrefs((prev) => ({ ...prev, permissionMode: mode }));
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
+
   const modelName = model ?? prefs.model;
-  const triggerRefs = { model: modelRef, agent: agentRef, entropy: entropyRef };
+  const triggerRefs = {
+    model: modelRef,
+    agent: agentRef,
+    entropy: entropyRef,
+    permission: permissionRef,
+  };
 
   const closePopover = (id: Exclude<OpenId, null>) => {
     setOpenId(null);
@@ -117,11 +147,16 @@ export default function ComposerOptions({ model = null, children }: ComposerOpti
       if (!entry) return;
       setPrefs({ ...prefs, agent: entry.id });
       saveComposerPrefs({ agent: entry.id });
-    } else {
+    } else if (id === "entropy") {
       const preset = ENTROPY_PRESETS[index];
       if (!preset) return;
       setPrefs({ ...prefs, entropy: preset.value });
       saveComposerPrefs({ entropy: preset.value });
+    } else {
+      const entry = PERMISSION_MODES[index];
+      if (!entry) return;
+      setPrefs({ ...prefs, permissionMode: entry.id });
+      saveComposerPrefs({ permissionMode: entry.id });
     }
     closePopover(id);
   };
@@ -129,7 +164,8 @@ export default function ComposerOptions({ model = null, children }: ComposerOpti
   const optionCount = (id: Exclude<OpenId, null>): number => {
     if (id === "model") return MODEL_LIST.length;
     if (id === "agent") return AGENT_LIST.length;
-    return ENTROPY_PRESETS.length;
+    if (id === "entropy") return ENTROPY_PRESETS.length;
+    return PERMISSION_MODES.length;
   };
 
   const handleKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
@@ -306,6 +342,54 @@ export default function ComposerOptions({ model = null, children }: ComposerOpti
             onChange={handleSlider}
           />
           <div className="pop-hint">数值越高输出越发散，越低越确定。</div>
+        </OptionPopover>
+      </div>
+
+      <div className="sel-wrap">
+        <button
+          type="button"
+          id="composer-permission-trigger"
+          ref={permissionRef}
+          className="sel"
+          data-mode={prefs.permissionMode}
+          aria-haspopup="listbox"
+          aria-expanded={openId === "permission"}
+          onClick={() => openPanel("permission", permissionIndex(prefs.permissionMode))}
+        >
+          <span className="g">⚑</span>
+          {PERMISSION_MODES[permissionIndex(prefs.permissionMode)].label}
+          <span className="cv">⌄</span>
+        </button>
+        <OptionPopover
+          open={openId === "permission"}
+          onClose={() => closePopover("permission")}
+          anchorRef={permissionRef}
+          className="pop pop-right pop-perm"
+          labelledBy="composer-permission-title"
+          role="listbox"
+          tabIndex={-1}
+          onKeyDown={handleKeyDown}
+        >
+          <div className="pop-title" id="composer-permission-title">权限模式</div>
+          {PERMISSION_MODES.map((entry, index) => {
+            const selected = prefs.permissionMode === entry.id;
+            return (
+              <div
+                key={entry.id}
+                role="option"
+                aria-selected={selected}
+                className={`pop-item${selected ? " sel-item" : ""}${highlight === index ? " hl" : ""}`}
+                onClick={() => selectOption("permission", index)}
+              >
+                <div>
+                  <div className="nm">{entry.label}</div>
+                  <div className="cap">{entry.cap}</div>
+                </div>
+                {selected && <span className="tick">✓</span>}
+              </div>
+            );
+          })}
+          <div className="pop-hint">自动允许仅放行内核已确认可审批的请求。</div>
         </OptionPopover>
       </div>
 

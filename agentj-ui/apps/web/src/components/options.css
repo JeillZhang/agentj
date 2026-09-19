@@ -154,6 +154,7 @@
   display: flex;
   align-items: center;
   gap: 6px;
+  flex-wrap: wrap;
   position: relative;
 }
 
@@ -208,6 +209,11 @@
   border-color: var(--aj-border);
 }
 
+.sel[data-mode="bypass"] {
+  border-color: var(--aj-accent);
+  color: var(--aj-text);
+}
+
 .spacer {
   flex: 1;
 }
@@ -219,6 +225,10 @@
 
 .pop-ent {
   width: 264px;
+}
+
+.pop-perm {
+  width: 220px;
 }
 
 .pop-item.hl,
