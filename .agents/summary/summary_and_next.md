@@ -1,7 +1,7 @@
 # Summary & Next
 
 > 本文件仅保留**当前正在开发**功能设计文档的内容：进度、剩余步骤、遗留问题与下一步。同步更新时**替换**（不要追加）前一功能内容。
-> 当前功能：**v0.19.0 内核托管 Web UI + 文件树状态补强（无 wire 变更）—— T0–T13 全部落地 + 全量门禁通过 + 文档同步完成；PR 由测试验收流程在 `feature/kernel-hosted-web-ui` 分支通过后创建（合并由用户负责）**
+> 当前功能：**v0.19.0 内核托管 Web UI + 文件树状态补强（无 wire 变更）—— T0–T13 全部落地 + 全量门禁通过 + 文档同步 + 测试验收零 Bug 通过；PR 在 `feature/kernel-hosted-web-ui` 分支创建（合并由用户负责）**
 > ——来源=用户请求：① 内核直接托管 Web UI（`serve`/`dashboard` 同端口静态托管 `agentj-ui/apps/web/dist`，
 > 远程打开 `http://<host>:4096/` 即用、WS 同源零配置）；② 文件树状态补强（目录聚合 git 状态字母）。
 > 范围：`agentj-ipc`（新 `web` 模块 / `ws.rs` / `file_list.rs`）+ `agentj-cli`（`--web-dist` 发现与日志）
@@ -51,7 +51,24 @@
 
 > 预置清理：`rm -f ~/.local/share/agentj/sessions/s1.{json,trajectory}`（e2e_permission 硬编码 `s1`
 > 会话，前次运行被中断会 hang —— 预存在环境问题，非本特性引入）。
-> 实机验收（Playwright：本地打开即用 / 远程登录闭环 / `curl -I` 缓存头）由测试验收流程执行并记录。
+
+## 测试验收结果（2026-09-20，零 Bug）
+
+- **门禁 10/10 全绿**（同上表，独立复跑：fmt clean / **591 Rust** / clippy 零警告 / drift 2 /
+  sdk 46 / **web 480（46 files）** / web build clean / tui 71 / version-ok 0.19.0 / desktop-ui-ok）。
+- **探索式 QA 全过**：① 静态托管闭环（`/` 200+no-cache、`/assets` immutable、SPA 未知路径 200、
+  `/ws` 无升级头 400 不回退、错拼 assets 404、启动打印 `web ui on ...`）；② 远程登录门（LAN IP
+  `192.168.3.31` 实测：回环免登录 / 远程 302 `/login?next=/` / 正确 token 颁发无 Max-Age cookie /
+  错 token 401 无 Set-Cookie / 伪造 cookie 302 带 next / `/logout` 撤销 / `next` 白名单
+  `//evil`、`/\evil`、`%2F%09evil`、`https://evil` 全部回落 `/`）；③ WS cookie 通道（curl 手工握手：
+  同源 Origin 101 / 无 Origin 403 / 跨源 403 / `?token=` 旧通道回归 101/403）；④ 文件树目录聚合
+  （临时 git 仓库实测 `docs=M`、`src=D`、`src/deep=D`、clean 文件 None；`file_list` 19 tests +
+  Web `fileTree` 11 tests + 代码确认无 `.dot`）；⑤ 边界（显式无效 `--web-dist` 停止发现 +
+  双 warning + 404 不回落候选；无 dist 404 + hint）。
+- 覆盖说明：本会话无 Playwright MCP，未执行浏览器实机核对；以 curl 级 HTTP 全链路 + 单测 + 代码审查为证。
+- 非 Bug 观察：axum `WebSocketUpgrade` 对非 16 字节 `Sec-WebSocket-Key` 仍接受（既有握手宽容语义，
+  非本特性引入）；`--host 0.0.0.0` 启动日志回显绑定地址（预期行为）。
+- 验收零 Bug → 无 bugfix → **不做 patch bump，工作区保持 0.19.0**。
 
 ## 遗留问题 / 遗留 minors
 
