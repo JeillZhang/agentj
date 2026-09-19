@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import ReactMarkdown from "react-markdown";
+import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
+import rehypeHighlight from "rehype-highlight";
 import { Check, ChevronDown, Clock, Folder, Minus, X } from "lucide-react";
 import { METHODS, parseProgress, RpcClient } from "@agentj/sdk";
 import type { ProgressFrame } from "@agentj/sdk";
+import CodeBlockCard from "./components/CodeBlockCard";
 import ComposerOptions from "./components/ComposerOptions";
 import AskQuestionCard, { type AskAnswer, type AskQuestionView } from "./components/AskQuestionCard";
 import { DEMO_QA_RECORD, DEMO_QUESTION, isDemoEnabled, subscribeDemo } from "./demoData";
@@ -209,7 +211,13 @@ export function ConversationFeed({
           case "ai":
             return (
               <div key={i} className="aj-ai">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>{entry.text}</ReactMarkdown>
+                <ReactMarkdown
+                  remarkPlugins={[remarkGfm]}
+                  rehypePlugins={[rehypeHighlight]}
+                  components={{ pre: CodeBlockCard as Components["pre"] }}
+                >
+                  {entry.text}
+                </ReactMarkdown>
               </div>
             );
           case "tool":
