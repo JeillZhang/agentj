@@ -194,7 +194,7 @@ flowchart LR
 `FileTree` 移除 `.dot` 元素与对应样式；字母 + 色义保留（`.status-M/A/U/D`）；目录行复用同一字母渲染；测试同步（含「无 dot」断言与目录状态用例）。
 
 **D9 SPA fallback 200 语义**
-`ServeDir::fallback(ServeFile::new(index))`（源码确认 200；`not_found_service` 会强制 404）。未知路径（含错拼资产）返回 index 200 —— 单页应用常规行为，记录为已知限制。
+`ServeDir::fallback(ServeFile::new(index))`（源码确认 200；`not_found_service` 会强制 404）。未知**页面**路径返回 index 200；错拼的 `/assets/*` 路径返回 404（assets 子树无 fallback）—— 单页应用常规行为，记录为已知限制。
 
 **D10 版本与门禁**
 工作区 0.18.1 → 0.19.0（feature minor）；`PROTOCOL_VERSION` 保持 0.13.0；`check-version.sh` 同步（Cargo + sdk VERSION + desktop 三处 + methods.json 0.13.0）。
@@ -257,7 +257,7 @@ flowchart LR
 2. 登录无速率限制/锁定（LAN 工具）。
 3. 多段 Range 返回 416（tower-http 语义，无 multipart）。
 4. HTTP 静态请求不受 `max-connections` 限制、不触发停机（既有分类器语义）。
-5. SPA fallback 对未知路径（含错拼资产）返回 index 200——单页应用常规行为。
+5. SPA fallback 对未知**页面**路径返回 index 200；错拼的 `/assets/*` 路径返回 404（assets 子树无 fallback）——单页应用常规行为。
 6. 会话内存态：重启/换 token 即需重新登录（符合预期）。
 
 ## 验收标准
@@ -273,4 +273,10 @@ flowchart LR
 
 ## 实施状态
 
-> 待实现。设计通过评审后由 `/jskill-feature-plan` 产出 TDD 任务拆解；落地后回填版本/门禁/PR。
+> **已落地（v0.19.0）**：工作区 `0.19.0` / `PROTOCOL_VERSION` 保持 `0.13.0`；分支 `feature/kernel-hosted-web-ui`；PR 由验收流程在通过后创建。
+>
+> 门禁清单（全绿）：`cargo fmt` / `cargo test --workspace` / `clippy -D warnings`（零警告）/ drift 2 passed / sdk 46 / web 480 / tui 71 / web build / `./scripts/check-version.sh` 0.19.0 / desktop-ui。
+>
+> 给后续读者的两处实现适配：
+> - (a) **WS cookie 通道如何免 `initialize.token`**：cookie 鉴权通过的连接在服务端装配 initialize 参数时注入 server token——`serve_connection` 的 token 参数已属遗留/冗余，故 cookie 通道客户端无需再传 `initialize.token`；`?token=` 与 `initialize.token` 两通道语义不变。
+> - (b) **T8 e2e 断言**：`e2e_http_static` 除断言 `/assets/*` 状态码外，还**持有 stdout reader**（避免子进程 stdout 提前关闭）。
