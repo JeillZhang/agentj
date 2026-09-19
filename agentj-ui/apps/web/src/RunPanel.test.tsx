@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, fireEvent, within, act, waitFor } from "@testing-library/react";
 import RunPanel, { ConversationFeed, failRun, fmtDuration, reduceRunFeed, type RunEntry } from "./RunPanel.tsx";
 import { createProject, setCurrentProject } from "./projectStore";
@@ -240,6 +240,35 @@ describe("RunPanel composer toolbar", () => {
   });
 });
 
+describe("RunPanel usage double-count guard", () => {
+  it("counts a turn once when a usage frame precedes the run result", async () => {
+    let handler: ((method: string, params: unknown) => void) | null = null;
+    const client = {
+      setNotificationHandler: (h: (method: string, params: unknown) => void) => { handler = h; },
+      removeNotificationHandler: () => { handler = null; },
+      request: async (method: string) => {
+        if (method === METHODS.sessionRun) {
+          return { usage: { prompt_tokens: 300, completion_tokens: 200 } };
+        }
+        return null;
+      },
+    } as unknown as Parameters<typeof RunPanel>[0]["client"];
+
+    const { container } = render(<RunPanel client={client} activeSessionId="s1" />);
+    fireEvent.change(screen.getByLabelText(/prompt/i), { target: { value: "hi" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+    act(() => {
+      handler?.(METHODS.progress, {
+        token: 1,
+        value: { kind: "usage", usage: { prompt_tokens: 300, completion_tokens: 200 } },
+      });
+    });
+    await waitFor(() => expect(screen.getByText("Σ 500")).toBeInTheDocument());
+    await waitFor(() => expect(container.querySelectorAll(".comp-usage").length).toBe(1));
+    expect(screen.getAllByText("Σ 500").length).toBe(1);
+  });
+});
+
 describe("RunPanel demo ask card → QA record", () => {
   it("demo ask card submit appends QA record", () => {
     localStorage.setItem("agentj.demo", "1");
@@ -414,5 +443,48 @@ describe("RunPanel project picker edit", () => {
     fireEvent.click(screen.getByRole("button", { name: "编辑项目 Alpha" }));
     expect(screen.getByRole("dialog", { name: "编辑项目" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "project picker" }).textContent).toContain("Beta");
+  });
+});
+
+describe("RunPanel composer height CSS variable", () => {
+  it("publishes the composer full box height as --aj-composer-h", () => {
+    const captured: { cb: ResizeObserverCallback | null } = { cb: null };
+    const observe = vi.fn();
+    const disconnect = vi.fn();
+    class FakeResizeObserver {
+      constructor(cb: ResizeObserverCallback) {
+        captured.cb = cb;
+      }
+      observe = observe;
+      unobserve = () => {};
+      disconnect = disconnect;
+    }
+    vi.stubGlobal("ResizeObserver", FakeResizeObserver);
+    try {
+      const { container } = render(<RunPanel client={noopClient} activeSessionId="s1" />);
+      const composer = container.querySelector(".aj-composer-card") as HTMLElement;
+      const card = container.querySelector(".aj-card") as HTMLElement;
+      expect(observe).toHaveBeenCalledWith(composer);
+      act(() => {
+        const entry = {
+          target: composer,
+          borderBoxSize: [{ blockSize: 180, inlineSize: 100 }],
+        } as unknown as ResizeObserverEntry;
+        captured.cb?.([entry], {} as ResizeObserver);
+      });
+      expect(card.style.getPropertyValue("--aj-composer-h")).toBe("180px");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("renders without crashing when ResizeObserver is undefined", () => {
+    vi.stubGlobal("ResizeObserver", undefined);
+    try {
+      render(<RunPanel client={noopClient} activeSessionId="s1" />);
+      expect(document.querySelector(".aj-composer-card")).not.toBeNull();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

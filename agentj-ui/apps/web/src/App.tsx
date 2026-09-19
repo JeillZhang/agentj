@@ -25,7 +25,7 @@ import type { RawEvent } from "./Trajectory";
 import heroImg from "./assets/hero.png";
 import { loadCurrentProject, setCurrentProject } from "./projectStore";
 import { loadConnection, saveConnection } from "./connectionStore";
-import { loadLayout, saveLayout, subscribeLayout } from "./layoutStore";
+import { loadComposerPrefs, loadLayout, saveLayout, subscribeLayout } from "./layoutStore";
 import { loadDisplayPrefs, subscribeDisplayPrefs } from "./displayPrefsStore";
 import type { DisplayPrefs } from "./displayPrefsStore";
 import { isDemoEnabled, subscribeDemo, DEMO_TODOS, DEMO_CHANGES } from "./demoData";
@@ -247,6 +247,14 @@ function useApproval(client: RpcClient | null, activeSessionId: string | null) {
       if (!active) return;
       const sid = p.session_id ?? null;
       if (sid && sid !== active) return;
+      if (typeof p.request_id === "string" && loadComposerPrefs().permissionMode === "bypass") {
+        void client
+          .request(METHODS.permissionRespond, { request_id: p.request_id, decision: "allow" })
+          .catch((err) => {
+            console.debug("permission auto-allow failed", err);
+          });
+        return;
+      }
       setPending({ request_id: p.request_id, tool: p.tool, args: p.args, session_id: sid ?? active, reason: p.reason });
       setApprovalError(null);
     };

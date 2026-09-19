@@ -1,7 +1,7 @@
 import "@testing-library/jest-dom/vitest";
 import { beforeEach, expect, test } from "vitest";
 import { act, render, screen, fireEvent } from "@testing-library/react";
-import ComposerOptions from "./ComposerOptions";
+import ComposerOptions, { formatTokenTotal } from "./ComposerOptions";
 import { createProject, setCurrentProject, updateProject } from "../projectStore";
 import { saveComposerPrefs } from "../layoutStore";
 beforeEach(() => localStorage.clear());
@@ -110,4 +110,69 @@ test("applies the current project defaults once on mount", () => {
   render(<ComposerOptions />);
   expect(localStorage.getItem("agentj.composer.model")).toBe("deepseek-chat");
   expect(localStorage.getItem("agentj.composer.agent")).toBe("plan");
+});
+
+test("permission trigger renders with the default label and opens its popover", () => {
+  render(<ComposerOptions model="deepseek-chat" />);
+  const trigger = screen.getByRole("button", { name: /逐次确认/ });
+  expect(trigger).toHaveAttribute("data-mode", "ask");
+  fireEvent.click(trigger);
+  expect(screen.getByText("权限模式")).toBeInTheDocument();
+  expect(trigger.closest(".sel-wrap")?.querySelector(".pop-perm")).not.toBeNull();
+});
+
+test("permission selection persists and updates data-mode", () => {
+  render(<ComposerOptions model="deepseek-chat" />);
+  fireEvent.click(screen.getByRole("button", { name: /逐次确认/ }));
+  fireEvent.click(screen.getByText("自动允许"));
+  expect(localStorage.getItem("agentj.composer.permissionMode")).toBe("bypass");
+  expect(screen.getByRole("button", { name: /自动允许/ })).toHaveAttribute("data-mode", "bypass");
+});
+
+test("permission popover is mutually exclusive with the other selectors", () => {
+  render(<ComposerOptions model="deepseek-chat" />);
+  const permission = screen.getByRole("button", { name: /逐次确认/ });
+  fireEvent.click(permission);
+  expect(document.querySelectorAll(".pop").length).toBe(1);
+  expect(document.querySelector(".pop-perm")).not.toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: /Build/ }));
+  expect(document.querySelectorAll(".pop").length).toBe(1);
+  expect(document.querySelector(".pop-perm")).toBeNull();
+  expect(screen.getByRole("button", { name: /Build/ })).toHaveAttribute("aria-expanded", "true");
+  fireEvent.click(permission);
+  expect(document.querySelectorAll(".pop").length).toBe(1);
+  expect(document.querySelector(".pop-perm")).not.toBeNull();
+});
+
+test("permission popover keyboard navigation selects a mode", () => {
+  render(<ComposerOptions model="deepseek-chat" />);
+  fireEvent.click(screen.getByRole("button", { name: /逐次确认/ }));
+  const pop = document.querySelector(".pop") as HTMLElement;
+  fireEvent.keyDown(pop, { key: "ArrowDown" });
+  fireEvent.keyDown(pop, { key: "Enter" });
+  expect(localStorage.getItem("agentj.composer.permissionMode")).toBe("bypass");
+});
+
+test("usage readout renders the session token total", () => {
+  render(<ComposerOptions model="deepseek-chat" usageTotal={{ prompt: 1200, completion: 345 }} />);
+  expect(screen.getByText("Σ 1.5k")).toBeInTheDocument();
+});
+
+test("usage readout is absent for null or zero totals", () => {
+  const { rerender } = render(<ComposerOptions model="deepseek-chat" usageTotal={null} />);
+  expect(document.querySelector(".comp-usage")).toBeNull();
+  rerender(<ComposerOptions model="deepseek-chat" usageTotal={{ prompt: 0, completion: 0 }} />);
+  expect(document.querySelector(".comp-usage")).toBeNull();
+});
+
+test("formatTokenTotal boundaries", () => {
+  expect(formatTokenTotal(0)).toBe("0");
+  expect(formatTokenTotal(999)).toBe("999");
+  expect(formatTokenTotal(1000)).toBe("1k");
+  expect(formatTokenTotal(12345)).toBe("12.3k");
+  expect(formatTokenTotal(999949)).toBe("999.9k");
+  expect(formatTokenTotal(999950)).toBe("1M");
+  expect(formatTokenTotal(999999)).toBe("1M");
+  expect(formatTokenTotal(1000000)).toBe("1M");
+  expect(formatTokenTotal(1234567)).toBe("1.2M");
 });

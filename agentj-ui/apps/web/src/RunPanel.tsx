@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
@@ -351,6 +351,8 @@ export default function RunPanel({
   const [slashIndex, setSlashIndex] = useState(0);
 
   const pickerRef = useRef<HTMLDivElement | null>(null);
+  const cardRef = useRef<HTMLElement | null>(null);
+  const composerRef = useRef<HTMLDivElement | null>(null);
   const atOpen = atFilter !== null;
 
   const filteredFiles = atFilter !== null
@@ -415,6 +417,24 @@ export default function RunPanel({
     document.addEventListener("mousedown", onDown);
     return () => document.removeEventListener("mousedown", onDown);
   }, [pickerOpen]);
+
+  useLayoutEffect(() => {
+    const card = cardRef.current;
+    const composer = composerRef.current;
+    if (!card || !composer) return;
+    const applyFullBoxHeight = (height: number) => {
+      if (height <= 0) return;
+      card.style.setProperty("--aj-composer-h", `${Math.round(height)}px`);
+    };
+    applyFullBoxHeight(composer.getBoundingClientRect().height);
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver((records) => {
+      const borderBox = records[0]?.borderBoxSize?.[0]?.blockSize;
+      applyFullBoxHeight(typeof borderBox === "number" ? borderBox : composer.getBoundingClientRect().height);
+    });
+    observer.observe(composer);
+    return () => observer.disconnect();
+  }, []);
 
   function handleDraftChange(v: string) {
     setDraft(v);
@@ -549,15 +569,28 @@ export default function RunPanel({
     }
   }
 
+  const usageTotal = useMemo(() => {
+    let prompt = 0;
+    let completion = 0;
+    let found = false;
+    for (const entry of entries) {
+      if (entry.kind !== "usage") continue;
+      found = true;
+      prompt += entry.prompt_tokens;
+      completion += entry.completion_tokens;
+    }
+    return found ? { prompt, completion } : null;
+  }, [entries]);
+
   return (
-    <section aria-label="run" className="aj-card">
+    <section ref={cardRef} aria-label="run" className="aj-card">
       <ConversationFeed
         entries={entries}
         pendingTool={pendingTool}
         model={model}
         elapsedMs={elapsedMs}
       />
-      <div className="aj-composer-card">
+      <div ref={composerRef} className="aj-composer-card">
         <div className="aj-composer__header">
           <div className="aj-composer__picker-wrap" ref={pickerRef}>
             <button
@@ -803,7 +836,7 @@ export default function RunPanel({
             </ul>
           )}
         </div>
-        <ComposerOptions model={model}>
+        <ComposerOptions model={model} usageTotal={usageTotal}>
           <button
             type="button"
             className="send aj-button--send"

@@ -2,13 +2,19 @@
   border-radius: var(--aj-radiusXl);
   background: var(--aj-panel);
   box-shadow: var(--aj-shadowRaised), 0 0 0 1px var(--aj-border);
-  position: sticky;
+  position: absolute;
   bottom: 16px;
+  left: 0;
+  right: 0;
+  width: 75%;
+  /* Narrow viewports: never squeeze the toolbar below a usable width. */
+  min-width: min(340px, calc(100% - 16px));
+  margin: 0 auto;
+  max-height: calc(100% - 32px);
   display: flex;
   flex-direction: column;
   gap: 8px;
   padding: 12px 16px;
-  width: 100%;
   min-height: 120px;
   z-index: 2;
 }
