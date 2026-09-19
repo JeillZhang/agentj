@@ -3,7 +3,8 @@
 // hover flyouts mirrored to open RIGHT, persisting via sidebarPrefsStore.
 // Flyout recipe mirrors TopbarMenu (120ms leave delay, Escape layering, outside
 // mousedown via rootRef, ArrowUp/Down roaming).
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type {
   FocusEvent as ReactFocusEvent,
   KeyboardEvent as ReactKeyboardEvent,
@@ -38,7 +39,10 @@ export default function SessionListMenu({ deletableCount, busy, onCleanup }: Pro
   const [open, setOpen] = useState(false);
   const [flyout, setFlyout] = useState<FlyoutKind>(null);
   const [prefs, setPrefs] = useState<SidebarPrefs>(() => loadSidebarPrefs());
+  // Fixed viewport coordinates for the portaled menu (trigger-relative at open).
+  const [menuPos, setMenuPos] = useState({ top: 0, left: 0 });
   const rootRef = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const filterTriggerRef = useRef<HTMLButtonElement>(null);
   const sortTriggerRef = useRef<HTMLButtonElement>(null);
@@ -95,6 +99,16 @@ export default function SessionListMenu({ deletableCount, busy, onCleanup }: Pro
     });
   }, []);
 
+  const updateMenuPos = useCallback(() => {
+    const rect = triggerRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    setMenuPos({ top: rect.bottom + 6, left: rect.left });
+  }, []);
+
+  useLayoutEffect(() => {
+    if (open) updateMenuPos();
+  }, [open, updateMenuPos]);
+
   useEffect(() => {
     if (!open) return;
     const onKey = (event: KeyboardEvent) => {
@@ -108,15 +122,24 @@ export default function SessionListMenu({ deletableCount, busy, onCleanup }: Pro
       triggerRef.current?.focus();
     };
     const onDown = (event: MouseEvent) => {
-      if (!rootRef.current?.contains(event.target as Node)) closeAll();
+      const target = event.target as Node;
+      if (rootRef.current?.contains(target) || menuRef.current?.contains(target)) return;
+      closeAll();
     };
+    const onResize = () => updateMenuPos();
+    // Scrolling moves the trigger; close rather than let the fixed menu drift.
+    const onScroll = () => closeAll();
     document.addEventListener("keydown", onKey);
     document.addEventListener("mousedown", onDown);
+    window.addEventListener("resize", onResize);
+    document.addEventListener("scroll", onScroll, true);
     return () => {
       document.removeEventListener("keydown", onKey);
       document.removeEventListener("mousedown", onDown);
+      window.removeEventListener("resize", onResize);
+      document.removeEventListener("scroll", onScroll, true);
     };
-  }, [open, flyout, focusWithoutOpening, closeAll]);
+  }, [open, flyout, focusWithoutOpening, closeAll, updateMenuPos]);
 
   const toggleMenu = useCallback(() => {
     cancelClose();
@@ -195,133 +218,140 @@ export default function SessionListMenu({ deletableCount, busy, onCleanup }: Pro
         <MoreHorizontal size={14} aria-hidden="true" />
       </button>
 
-      {open && (
-        <div className="aj-menu aj-sidebar__menu" role="menu">
-          <button
-            type="button"
-            role="menuitem"
-            className="aj-menu__item aj-menu__item--danger"
-            aria-disabled={cleanupDisabled}
-            onClick={runCleanup}
-          >
-            清理所有会话…
-          </button>
-
-          <div className="aj-menu__sep" role="separator" />
-
+      {open &&
+        createPortal(
           <div
-            className="aj-menu__row"
-            onMouseEnter={() => openFlyout("filter")}
-            onMouseLeave={scheduleClose}
-            onBlur={onRowBlur}
+            ref={menuRef}
+            className="aj-menu aj-sidebar__menu"
+            role="menu"
+            style={{ top: menuPos.top, left: menuPos.left }}
           >
             <button
-              ref={filterTriggerRef}
               type="button"
               role="menuitem"
-              className="aj-menu__item"
-              aria-haspopup="menu"
-              aria-expanded={flyout === "filter"}
-              aria-controls="aj-session-menu-filter"
+              className="aj-menu__item aj-menu__item--danger"
+              aria-disabled={cleanupDisabled}
+              onClick={runCleanup}
+            >
+              清理所有会话…
+            </button>
+
+            <div className="aj-menu__sep" role="separator" />
+
+            <div
+              className="aj-menu__row"
               onMouseEnter={() => openFlyout("filter")}
               onMouseLeave={scheduleClose}
-              onMouseDown={onTriggerMouseDown}
-              onFocus={() => {
-                if (!suppressFocusOpenRef.current) openFlyout("filter");
-              }}
-              onClick={() => onTriggerClick("filter")}
+              onBlur={onRowBlur}
             >
-              <span>过滤</span>
-              <span className="aj-menu__chevron" aria-hidden="true">
-                ›
-              </span>
-            </button>
-            {flyout === "filter" && (
-              <div
-                id="aj-session-menu-filter"
-                className="aj-menu__flyout aj-menu__flyout--right"
-                role="menu"
-                aria-label="过滤"
-                onMouseEnter={cancelClose}
+              <button
+                ref={filterTriggerRef}
+                type="button"
+                role="menuitem"
+                className="aj-menu__item"
+                aria-haspopup="menu"
+                aria-expanded={flyout === "filter"}
+                aria-controls="aj-session-menu-filter"
+                onMouseEnter={() => openFlyout("filter")}
                 onMouseLeave={scheduleClose}
-                onKeyDown={onFlyoutKeyDown}
+                onMouseDown={onTriggerMouseDown}
+                onFocus={() => {
+                  if (!suppressFocusOpenRef.current) openFlyout("filter");
+                }}
+                onClick={() => onTriggerClick("filter")}
               >
-                {FILTER_OPTIONS.map((option) => (
-                  <button
-                    key={option.value}
-                    type="button"
-                    role="menuitemradio"
-                    aria-checked={prefs.filter === option.value}
-                    className="aj-menu__item aj-menu__item--sub"
-                    onClick={() => pickFilter(option.value)}
-                  >
-                    <span>{option.label}</span>
-                    {prefs.filter === option.value && (
-                      <span className="aj-menu__state">✓</span>
-                    )}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
+                <span>过滤</span>
+                <span className="aj-menu__chevron" aria-hidden="true">
+                  ›
+                </span>
+              </button>
+              {flyout === "filter" && (
+                <div
+                  id="aj-session-menu-filter"
+                  className="aj-menu__flyout aj-menu__flyout--right"
+                  role="menu"
+                  aria-label="过滤"
+                  onMouseEnter={cancelClose}
+                  onMouseLeave={scheduleClose}
+                  onKeyDown={onFlyoutKeyDown}
+                >
+                  {FILTER_OPTIONS.map((option) => (
+                    <button
+                      key={option.value}
+                      type="button"
+                      role="menuitemradio"
+                      aria-checked={prefs.filter === option.value}
+                      className="aj-menu__item aj-menu__item--sub"
+                      onClick={() => pickFilter(option.value)}
+                    >
+                      <span>{option.label}</span>
+                      {prefs.filter === option.value && (
+                        <span className="aj-menu__state">✓</span>
+                      )}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
 
-          <div
-            className="aj-menu__row"
-            onMouseEnter={() => openFlyout("sort")}
-            onMouseLeave={scheduleClose}
-            onBlur={onRowBlur}
-          >
-            <button
-              ref={sortTriggerRef}
-              type="button"
-              role="menuitem"
-              className="aj-menu__item"
-              aria-haspopup="menu"
-              aria-expanded={flyout === "sort"}
-              aria-controls="aj-session-menu-sort"
+            <div
+              className="aj-menu__row"
               onMouseEnter={() => openFlyout("sort")}
               onMouseLeave={scheduleClose}
-              onMouseDown={onTriggerMouseDown}
-              onFocus={() => {
-                if (!suppressFocusOpenRef.current) openFlyout("sort");
-              }}
-              onClick={() => onTriggerClick("sort")}
+              onBlur={onRowBlur}
             >
-              <span>排序</span>
-              <span className="aj-menu__chevron" aria-hidden="true">
-                ›
-              </span>
-            </button>
-            {flyout === "sort" && (
-              <div
-                id="aj-session-menu-sort"
-                className="aj-menu__flyout aj-menu__flyout--right"
-                role="menu"
-                aria-label="排序"
-                onMouseEnter={cancelClose}
+              <button
+                ref={sortTriggerRef}
+                type="button"
+                role="menuitem"
+                className="aj-menu__item"
+                aria-haspopup="menu"
+                aria-expanded={flyout === "sort"}
+                aria-controls="aj-session-menu-sort"
+                onMouseEnter={() => openFlyout("sort")}
                 onMouseLeave={scheduleClose}
-                onKeyDown={onFlyoutKeyDown}
+                onMouseDown={onTriggerMouseDown}
+                onFocus={() => {
+                  if (!suppressFocusOpenRef.current) openFlyout("sort");
+                }}
+                onClick={() => onTriggerClick("sort")}
               >
-                {SORT_OPTIONS.map((option) => (
-                  <button
-                    key={option.value}
-                    type="button"
-                    role="menuitemradio"
-                    aria-checked={prefs.sort === option.value}
-                    className="aj-menu__item aj-menu__item--sub"
-                    onClick={() => pickSort(option.value)}
-                  >
-                    <span>{option.label}</span>
-                    {prefs.sort === option.value && (
-                      <span className="aj-menu__state">✓</span>
-                    )}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
+                <span>排序</span>
+                <span className="aj-menu__chevron" aria-hidden="true">
+                  ›
+                </span>
+              </button>
+              {flyout === "sort" && (
+                <div
+                  id="aj-session-menu-sort"
+                  className="aj-menu__flyout aj-menu__flyout--right"
+                  role="menu"
+                  aria-label="排序"
+                  onMouseEnter={cancelClose}
+                  onMouseLeave={scheduleClose}
+                  onKeyDown={onFlyoutKeyDown}
+                >
+                  {SORT_OPTIONS.map((option) => (
+                    <button
+                      key={option.value}
+                      type="button"
+                      role="menuitemradio"
+                      aria-checked={prefs.sort === option.value}
+                      className="aj-menu__item aj-menu__item--sub"
+                      onClick={() => pickSort(option.value)}
+                    >
+                      <span>{option.label}</span>
+                      {prefs.sort === option.value && (
+                        <span className="aj-menu__state">✓</span>
+                      )}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>,
+          document.body,
+        )}
     </div>
   );
 }

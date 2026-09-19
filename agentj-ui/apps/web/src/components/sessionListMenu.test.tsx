@@ -8,8 +8,24 @@ function open(): void {
   fireEvent.click(screen.getByRole("button", { name: "会话列表菜单" }));
 }
 
+function renderInSidebar() {
+  return render(
+    <div className="aj-sidebar">
+      <SessionListMenu deletableCount={1} onCleanup={() => {}} />
+    </div>,
+  );
+}
+
 describe("SessionListMenu", () => {
   beforeEach(() => localStorage.clear());
+
+  it("portals the open menu to document.body, outside the sidebar", () => {
+    renderInSidebar();
+    open();
+    const menu = screen.getByRole("menu");
+    expect(document.body.contains(menu)).toBe(true);
+    expect(menu.closest(".aj-sidebar")).toBeNull();
+  });
 
   it("opens and runs the cleanup action", () => {
     const onCleanup = vi.fn();
