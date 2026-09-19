@@ -1,40 +1,70 @@
 # Summary & Next
 
 > 本文件仅保留**当前正在开发**功能设计文档的内容：进度、剩余步骤、遗留问题与下一步。同步更新时**替换**（不要追加）前一功能内容。
-> 当前功能：**Web 工作台体验修复（v0.16.4）—— 状态灯 hover 面板 + 右栏手风琴 + 滚动条 + 弹层/收藏修复（六项）**
-> ——来源=用户反馈：① 左上角仅 agentj + 状态灯；② 连接信息移至状态灯 hover 面板；
-> ③ 右栏折叠=堆叠、展开=向下延展（VSCode 风格）；④ 滚动条美化；⑤ composer 弹层二次点击收起；
-> ⑥ 新建会话不再自动收藏
+> 当前功能：**Web 工作台四项修复（v0.16.5）—— 右栏右→左展开动画 + 成对面板高度调节 + 顶栏菜单重构/设置弹窗 + 文件树图标**
+> ——来源=用户反馈：① 右栏展开应右→左平滑（勿「瞬间展开后列表再向右扩展」）；
+> ②「...」菜单仅保留 项目/继续会话/收藏会话/设置/帮助，排序/过滤/演示数据/连接设置
+> 并入「设置」弹窗（左设置菜单 + 右面板；项目/收藏会话悬停自动向合适方向展开二级菜单）；
+> ③ 任务/文件变更单开铺满页面底部、双开可自行调节高度并记录（刷新不丢）；
+> ④ 文件树 icon 美化（目录 + 按分类的文件 icon）
 
-## v0.16.4: Web 工作台体验修复（六项 + 验收 1 bug）✅（本次完成）
+## v0.16.5: Web 工作台四项修复 ✅（本次完成）
 
-- ✅ **(1)(2) 顶栏状态灯 + hover 连接面板（无协议变更）**：左上角仅 `agentj` + 状态灯
-  （移除 `connected` 状态文字）；新增 `ConnectionStatus` 组件——悬停/聚焦状态灯展开面板
-  （`已连接 ws://…` / 模型 / 模块状态逐行；条件渲染，闭合不在 DOM；`aria-expanded`）；
-  ⋯ 菜单状态/模型/模块区块与分隔线移除（TopbarMenu Props 精简）。
-- ✅ **(3) 右栏 VSCode 手风琴（保留「运行详情」标题 + »）**：「任务」「文件变更」折叠 =
-  36px 紧凑标题行自上而下堆叠、展开 = 内容向下延展；空数据保留标题行（占位符仅展开
-  显示）；展开状态 localStorage 记忆（新 hook `useRightSection` + `agentj.layout.rightSections`
-  读写容错，默认全展开）。
-- ✅ **(4) 滚动条美化**：全局 token 化滚动条（webkit 10px 圆角 thumb `--aj-border`、
-  hover `--aj-textCaption`、track 透明 + content-box 内缩；Firefox `scrollbar-width: thin`
-  + `scrollbar-color`），light/dark 自动跟随；实机 computed 校验通过。
-- ✅ **(5) composer 弹层二次点击收起**：根因 = OptionPopover 文档 `mousedown` 关闭
-  （目标在 `.pop` 外）→ 随后 trigger `click` 重开（两个原生事件之间 React 已重渲染，
-  `openPanel` 闭包读到的 `openId` 已为 null）。修复 = 新增可选 `anchorRef`，mousedown
-  命中触发器时跳过关闭；回归测试用 `fireEvent.mouseDown + click` 复现真实浏览器时序。
-- ✅ **(6) 新建会话不再自动收藏**：`UnifiedSidebar.handleNewSession` 移除
-  `toggleFavorite(sid)`；仅星标按钮触发；App.test 反转为「becomes active but not
-  favorited」。（SessionPanel 为未挂载遗留组件，未动。）
-- ✅ **验收（实机 Playwright，:5173 全栈）发现并修复 1 bug（BUG-007）**：顶栏
-  `z-index: 5` 低于侧栏 `z-index: 10` → 连接 hover 面板/顶栏下拉被侧栏遮挡
-  （elementFromPoint 实测面板中心命中 `.aj-sidebar__body`）。修复 = `.aj-topbar`
-  `z-index: 20`（> 侧栏 10、< dialog 100；移动端抽屉/scrim 均在顶栏下沿以下起始，
-  无布局副作用）+ CSS 契约回归测试（topbar > sidebar）。其余 5 项实机全部通过：
-  折叠堆叠 36px / 展开 / 刷新记忆；滚动条 computed；弹层二次点击 `popCount 0`；
-  新建会话后 `agentj.favorites` 保持 null。
-- ✅ 门禁全绿：cargo fmt / 564 Rust tests / clippy 零警告 / sdk 46 / web 246 → 263 /
-  web build / tui 71 / desktop-ui / check-version 0.16.4。
+- ✅ **(1) 右栏折叠/展开单段右→左平滑动画（无协议变更）**：根因 = 外层
+  `.aj-shell__right` 的 flex-basis/min/max 钳制不可过渡（瞬间到位），内层
+  `.aj-right` width 过渡导致列表内容向右回流扩展（两段式）。修复 = 外层
+  `flex: 0 1 auto; width: var(--aj-right-w); min-width: 0; max-width: none`
+  + ≥1024 `transition: width`（折叠态仅 `width: 40px`，去除钳制）；内层
+  `align-self: flex-end` 固定宽右缘锚定（内容零回流、仅揭示；collapsed 头部
+  `justify-content: flex-end; padding-right: 4px` 使 « 落 40px 可视窗）；抽屉
+  <1024 内层 `width: 100%`；border-left 移到外层；拖拽期间
+  `.aj-splitter[data-side="right"][data-dragging="true"] ~ .aj-shell__right
+  { transition: none }`（sibling 选择器，无 `:has()`）。Oracle 评审纠偏 3 处
+  （`margin-left:auto` 溢出无效 → `align-self`；拖拽比例精确逆映射零漂移；
+  抽屉宽度 100%）。
+- ✅ **(2) 顶栏「...」五项菜单 + 设置弹窗 + 悬停二级菜单**：一级仅
+  项目/继续会话…/收藏会话/设置…/帮助；项目与收藏会话 hover/focus 左向飞出
+  （`aria-haspopup=menu` + aria-expanded、120ms 关闭延迟防桥接缝、Esc 先关
+  飞出层、`suppressFocusOpenRef` 修复焦点归还重开、↑↓ 键盘导航、点击兼容触屏）；
+  排序/过滤/演示数据/连接设置迁入新 `SettingsDialog`（ModalDialog 加宽
+  `.aj-settings` 卡 + 左 `role=tablist` 连接/会话列表/演示数据 + 右 tabpanel，
+  ↑↓/Home/End 漫游焦点）；新 `sidebarPrefsStore`（`agentj.sidebarPrefs` JSON +
+  `agentj:sidebar-prefs-updated` 同 tab 事件 + storage 跨 tab），UnifiedSidebar
+  迁移至 store（删除 legacy 事件与本地 state）；ModalDialog 加性
+  `cardClassName` prop。
+- ✅ **(3) 右栏成对面板（单开铺满 / 双开可调高 + 记忆）**：`.aj-right__body`
+  overflow hidden + `.right-section` flex 列（`data-open=true` → `flex:1 1 auto`；
+  单开铺满至底部，内容内部滚动 `sec-body { flex:1; min-height:0; overflow-y:auto }`）；
+  双开时 RightPanel 在子节点间插入 `role=separator` 水平分隔条（`Children.toArray`
+  首两个 child 视作任务/文件变更）：拖拽比例 = `(clientY − body.top − 3) / body.height`
+  （与 CSS `flex-basis: calc(var(--aj-split) * 100%)` 精确逆映射，零漂移；含 jsdom
+  零矩形 guard）、↑↓ ±2%（Shift ±8%）、双击/Home 复位为自动；持久化
+  `agentj.layout.rightSectionSplit`（0.15–0.85，null=内容自适应）；
+  `useRightSection` 改 `useSyncExternalStore` + `setRightSection` 派发
+  `agentj:right-sections-updated`，RightPanel 订阅两侧状态渲染 `data-both-open/
+  data-split` 与 `--aj-split`；TodoPanel/ChangeList 根加 `data-section/data-open`。
+- ✅ **(4) 文件树图标 + 美化**：新 `fileIcons.ts` 纯映射（code/json/doc/style/
+  config/shell/image/archive/default；大小写不敏感、支持 dotfile；21 单测）；
+  FileTree 目录 Folder/FolderOpen（`dir-icon--open/closed`，accent/muted），文件
+  分类 lucide 图标（`file-icon--*`，aria-hidden 保持可访问名）；`.chev` 改
+  lucide ChevronRight（CSS 旋转）；固定 4 级缩进改内联 `paddingLeft = depth*14+2`
+  （任意深度）；filetree.css token 化行高/hover/focus-visible/分类配色/省略号 +
+  reduced-motion；8 旧测试保留 + 2 新增。
+- ✅ **门禁全绿**：cargo fmt / 564 Rust tests / clippy 零警告 / drift /
+  sdk 46 / web 263 → 308（35 files）/ web build / tui 71 / check-version 0.16.5 /
+  desktop-ui。
+- ✅ **实机验收（Playwright，:5173 + :4096 全栈，demo 模式）4 项全过**：
+  ① 折叠/展开 rAF 采样 13 帧单调过渡（320→40 / 40→320），内层宽恒 320 零回流，
+  computed `transition: width 0.2s` + `align-self: flex-end`；
+  ② 一级菜单恰 5 项、旧项（连接设置/排序/过滤/演示数据）不在其中；项目飞出层
+  当前项 ✓ + 「＋ 添加项目」、收藏飞出层空态；左向定位（飞出右缘 ≤ 菜单左缘）；
+  设置弹窗分类切换、排序/过滤写 `agentj.sidebarPrefs`、连接表单就位、关闭焦点
+  归还「更多」；离开 320ms 内飞出层关闭；
+  ③ 基线双开铺满（gapBottom 0）、拖拽 +120px 时 todo 509/changes 288（1:1）、
+  刷新后逐像素保留（0.6333670610211706）、单开 todo 766px 铺满、重开恢复比例、
+  ↑↓ −2% / Home 复位（键清除 + data-split 移除）；
+  ④ 目录开合图标切换、`file-icon--doc`（README.md）、30px 深缩进、footer
+  「10 个文件 · 3 处变更」不变；console 0 errors。
 
 ## 遗留 / 下一步
 
@@ -42,7 +72,8 @@
   （axum `ServeDir` 托管 `agentj-ui/apps/web/dist`），远程直接打开
   `http://<host>:4096/` 即用、WS 同源零配置；立项时需覆盖：dist 路径发现/
   `--web-dist` 参数、`/` 与 `/ws` 路由共存、token 下静态资源策略、测试与文档。
-- 观察：`.aj-topbar` z-index 提升后，移动端抽屉 scrim（z:9）不再压暗顶栏
-  （顶栏保持可点，属预期行为；jsdom 无法测 stacking，已用 CSS 契约锁定）。
-- 观察（非本批改动）：Vite dev server 不监听 root 外 `packages/sdk`（alias 直连源码）
-  —— 改 SDK 后需重启 dev server（已记入 AGENTS.md Commands 注记）。
+- 观察：移动端抽屉 + 桌面折叠偏好共存时沿用 v0.16.4 行为（body `visibility:
+  hidden` 保持 aria 一致；未改 App 传参）。
+- 观察：`.aj-right__body` 不再整体滚动，改为逐面板内部滚动（双开时各 pane 独立
+  scrollbar）；两区块间原 `right-section + right-section` 边框在插入分隔条时由
+  分隔条取代。
