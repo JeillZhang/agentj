@@ -2,6 +2,7 @@
 pub mod file_list;
 pub mod tcp;
 pub mod trajectory;
+pub mod web;
 pub mod ws;
 
 use agentj_core::artifacts::{
