@@ -1,4 +1,20 @@
-export type Project = { id: string; name: string; createdAt: number };
+export type Project = {
+  id: string;
+  name: string;
+  createdAt: number;
+  workDir?: string | null;
+  isDefault?: boolean;
+  defaultModel?: string | null;
+  defaultAgent?: string | null;
+};
+
+export type ProjectPatch = Partial<
+  Pick<Project, "name" | "workDir" | "isDefault" | "defaultModel" | "defaultAgent">
+>;
+
+export const KEY_PROJECT_DEFAULTS = "agentj.projectDefaults";
+
+export type ProjectDefaults = { workDir: string | null };
 
 const KEY_PROJECTS = "agentj.projects";
 const KEY_MAP = "agentj.projectMap";
@@ -97,30 +113,110 @@ function dedupName(base: string, existing: Set<string>): string {
   return `${base} (${i})`;
 }
 
+function normalizeOptional(value: string | null | undefined): string | null {
+  if (value == null) return null;
+  const trimmed = value.trim();
+  return trimmed ? trimmed : null;
+}
+
 function slug(name: string): string {
   return `${name.toLowerCase().replace(/\W+/g, "-").replace(/^-|-$/g, "") || "project"}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
 }
 
-export function createProject(name: string): Project {
+export function createProject(name: string, workDir?: string): Project {
   const trimmed = validateName(name);
   const projects = loadProjects();
   const names = new Set(projects.map((p) => p.name));
   const finalName = dedupName(trimmed, names);
   const proj: Project = { id: slug(finalName), name: finalName, createdAt: Date.now() };
+  if (workDir !== undefined) proj.workDir = normalizeOptional(workDir);
   projects.push(proj);
   persistProjects(projects);
   notifyProjectsUpdated();
   return proj;
 }
 
-export function renameProject(id: string, newName: string): void {
-  const trimmed = validateName(newName);
+export function updateProject(id: string, patch: ProjectPatch): Project | null {
   const projects = loadProjects();
   const idx = projects.findIndex((p) => p.id === id);
-  if (idx === -1) return;
-  const otherNames = new Set(projects.filter((p) => p.id !== id).map((p) => p.name));
-  projects[idx] = { ...projects[idx], name: dedupName(trimmed, otherNames) };
-  persistProjects(projects);
+  if (idx === -1) return null;
+  const next: Project = { ...projects[idx] };
+  if (patch.name !== undefined) {
+    const trimmed = validateName(patch.name);
+    const otherNames = new Set(projects.filter((p) => p.id !== id).map((p) => p.name));
+    next.name = dedupName(trimmed, otherNames);
+  }
+  if (patch.workDir !== undefined) next.workDir = normalizeOptional(patch.workDir);
+  if (patch.defaultModel !== undefined) next.defaultModel = normalizeOptional(patch.defaultModel);
+  if (patch.defaultAgent !== undefined) next.defaultAgent = normalizeOptional(patch.defaultAgent);
+  if (patch.isDefault !== undefined) next.isDefault = patch.isDefault;
+
+  let list = projects.map((p, i) => (i === idx ? next : p));
+  if (patch.isDefault === true) {
+    list = list.map((p) => (p.id === id ? p : { ...p, isDefault: false }));
+  }
+  persistProjects(list);
+  notifyProjectsUpdated();
+  return next;
+}
+
+export function renameProject(id: string, newName: string): void {
+  updateProject(id, { name: newName });
+}
+
+export function deleteProject(id: string): { reassigned: number } | null {
+  if (id === "default") return null;
+  const projects = loadProjects();
+  if (!projects.some((p) => p.id === id)) return null;
+
+  persistProjects(projects.filter((p) => p.id !== id));
+
+  const map = loadMapRaw();
+  let reassigned = 0;
+  for (const sid of Object.keys(map)) {
+    if (map[sid] === id) {
+      map[sid] = "default";
+      reassigned += 1;
+    }
+  }
+  try {
+    localStorage.setItem(KEY_MAP, JSON.stringify(map));
+  } catch {}
+
+  const collapsed = loadCollapsed();
+  if (id in collapsed) {
+    delete collapsed[id];
+    setCollapsed(collapsed);
+  }
+
+  let currentWasDeleted = false;
+  try {
+    currentWasDeleted = localStorage.getItem(KEY_CURRENT) === id;
+  } catch {}
+  if (currentWasDeleted) {
+    const fallback = getDefaultProject().id;
+    try {
+      localStorage.setItem(KEY_CURRENT, fallback);
+    } catch {}
+    notifyCurrentProjectUpdated(fallback);
+  }
+
+  notifyProjectsUpdated();
+  return { reassigned };
+}
+
+export function sessionCountForProject(id: string): number {
+  const map = loadMapRaw();
+  let count = 0;
+  for (const pid of Object.values(map)) {
+    if (pid === id) count += 1;
+  }
+  return count;
+}
+
+export function getDefaultProject(): Project {
+  const projects = loadProjects();
+  return projects.find((p) => p.isDefault) ?? projects[0] ?? defaultProject();
 }
 
 function loadMapRaw(): Record<string, string> {
@@ -196,11 +292,14 @@ export function loadCurrentProject(): string {
   } catch {
     return "default";
   }
-  if (!raw) return "default";
+  if (raw) {
+    try {
+      const projects = loadProjects();
+      if (projects.some((p) => p.id === raw)) return raw;
+    } catch {}
+  }
   try {
-    const projects = loadProjects();
-    if (projects.some((p) => p.id === raw)) return raw;
-    return "default";
+    return getDefaultProject().id;
   } catch {
     return "default";
   }
@@ -211,6 +310,27 @@ export function setCurrentProject(id: string): void {
     localStorage.setItem(KEY_CURRENT, id);
   } catch {}
   notifyCurrentProjectUpdated(id);
+}
+
+export function loadProjectDefaults(): ProjectDefaults {
+  let raw: string | null = null;
+  try {
+    raw = localStorage.getItem(KEY_PROJECT_DEFAULTS);
+  } catch {
+    return { workDir: null };
+  }
+  const parsed = safeParse<unknown>(raw, null);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return { workDir: null };
+  const workDir = (parsed as Record<string, unknown>).workDir;
+  return { workDir: typeof workDir === "string" ? workDir : null };
+}
+
+export function saveProjectDefaults(patch: Partial<ProjectDefaults>): ProjectDefaults {
+  const next: ProjectDefaults = { ...loadProjectDefaults(), ...patch };
+  try {
+    localStorage.setItem(KEY_PROJECT_DEFAULTS, JSON.stringify(next));
+  } catch {}
+  return next;
 }
 
 // helper to normalize timestamp to ms

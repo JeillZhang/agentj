@@ -35,8 +35,50 @@ describe("fileIconFor", () => {
     ["icon.svg", "image"],
     ["bundle.tar.gz", "archive"],
     ["pnpm-lock.lock", "archive"],
+    ["main.rs", "code"],
+    ["main.go", "code"],
+    ["app.py", "code"],
+    ["Main.java", "code"],
+    ["lib.c", "code"],
+    ["lib.h", "code"],
+    ["lib.cpp", "code"],
+    ["lib.hpp", "code"],
+    ["prog.cs", "code"],
+    ["app.rb", "code"],
+    ["index.php", "code"],
+    ["Main.kt", "code"],
+    ["App.swift", "code"],
+    ["app.scala", "code"],
+    ["init.lua", "code"],
+    ["main.dart", "code"],
+    ["script.r", "code"],
+    ["task.ex", "code"],
+    ["core.exs", "code"],
+    ["main.hs", "code"],
+    ["core.clj", "code"],
+    ["service.proto", "code"],
+    ["schema.graphql", "code"],
+    ["index.html", "code"],
+    ["data.xml", "code"],
+    ["schema.sql", "db"],
+    ["data.db", "db"],
+    ["cache.sqlite", "db"],
   ])("maps %s to category %s", (name, category) => {
     expect(fileIconFor(name).category).toBe(category);
+  });
+
+  test("maps build files by name", () => {
+    for (const name of ["Dockerfile", "Makefile", "CMakeLists.txt"]) {
+      expect(fileIconFor(name).category).toBe("code");
+    }
+  });
+
+  test("resolves the db icon via the renderable-icon pattern", () => {
+    for (const name of ["schema.sql", "data.db"]) {
+      const match = fileIconFor(name);
+      expect(match.category).toBe("db");
+      expect(typeof match.Icon).toBe("object");
+    }
   });
 
   test("is case-insensitive and ignores the surrounding path", () => {
@@ -44,7 +86,6 @@ describe("fileIconFor", () => {
   });
 
   test("falls back to default for unknown extensions and dotless names", () => {
-    expect(fileIconFor("Makefile").category).toBe("default");
     expect(fileIconFor("data.xyz").category).toBe("default");
     expect(fileIconFor("LICENSE").category).toBe("default");
   });

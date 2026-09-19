@@ -34,7 +34,7 @@
   max-width: 100%;
 }
 
-.aj-ai pre {
+.aj-ai pre:not(.aj-code__body) {
   background: var(--aj-codeBg);
   border-radius: 6px;
   padding: 10px;

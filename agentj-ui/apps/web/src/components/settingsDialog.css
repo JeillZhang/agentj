@@ -132,6 +132,22 @@
   outline-offset: 1px;
 }
 
+.aj-settings-foot {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+
+.aj-hint {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--aj-textMuted);
+}
+
+.aj-hint--error {
+  color: var(--aj-error);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .aj-settings-nav__item,
   .aj-settings-switch {

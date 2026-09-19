@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Eraser, Search, Star, Trash2 } from "lucide-react";
+import { Search, Star, Trash2 } from "lucide-react";
 import {
   METHODS,
   ResponseRouter,
@@ -20,6 +20,7 @@ import { isDemoEnabled, subscribeDemo } from "../demoData";
 import SidebarTabs from "./SidebarTabs";
 import FileTree from "./FileTree";
 import ModalDialog from "./ModalDialog";
+import SessionListMenu from "./SessionListMenu";
 import "./sidebar.css";
 import "./session.css";
 
@@ -176,14 +177,16 @@ export default function UnifiedSidebar({
       setError(null);
       try {
         let sid = "";
+        const target = loadProjects().find((p) => p.id === targetProjectId);
+        const params = target?.workDir ? { project_root: target.workDir } : {};
         const rpc = client as RpcClient | null;
         if (rpc && typeof (rpc as unknown as { request?: unknown }).request === "function") {
-          const res = (await (rpc as RpcClient).request(METHODS.sessionNew, {})) as { session_id: string };
+          const res = (await (rpc as RpcClient).request(METHODS.sessionNew, params)) as { session_id: string };
           sid = res.session_id;
         } else {
           const { transport, client: tmp } = openOpClient(wsUrl);
           try {
-            const res = (await tmp.request(METHODS.sessionNew, {})) as { session_id: string };
+            const res = (await tmp.request(METHODS.sessionNew, params)) as { session_id: string };
             sid = res.session_id;
           } finally {
             (transport as unknown as { close?: () => void }).close?.();
@@ -390,16 +393,11 @@ export default function UnifiedSidebar({
             >
               + 新建会话
             </button>
-            <button
-              type="button"
-              className="aj-button--ghost aj-sidebar__cleanup"
-              aria-label="清理会话"
-              disabled={busy || deletableIds.length === 0}
-              onClick={requestCleanup}
-            >
-              <Eraser size={14} aria-hidden="true" />
-              清理
-            </button>
+            <SessionListMenu
+              deletableCount={deletableIds.length}
+              busy={busy}
+              onCleanup={requestCleanup}
+            />
           </div>
           {error && (
             <div role="alert" className="aj-error">

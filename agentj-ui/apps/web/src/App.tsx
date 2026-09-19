@@ -26,6 +26,8 @@ import heroImg from "./assets/hero.png";
 import { loadCurrentProject, setCurrentProject } from "./projectStore";
 import { loadConnection, saveConnection } from "./connectionStore";
 import { loadLayout, saveLayout, subscribeLayout } from "./layoutStore";
+import { loadDisplayPrefs, subscribeDisplayPrefs } from "./displayPrefsStore";
+import type { DisplayPrefs } from "./displayPrefsStore";
 import { isDemoEnabled, subscribeDemo, DEMO_TODOS, DEMO_CHANGES } from "./demoData";
 import { applyFileChange, changesFromHistory } from "./changes";
 import type { FileChangeRow } from "./changes";
@@ -356,6 +358,16 @@ export default function App() {
     else el.dataset.theme = theme;
     try { localStorage.setItem("agentj.theme-mode", theme); } catch {}
   }, [theme]);
+
+  useEffect(() => {
+    const apply = (prefs: DisplayPrefs) => {
+      const el = document.documentElement;
+      if (prefs.reducedMotion) el.dataset.reducedMotion = "true";
+      else delete el.dataset.reducedMotion;
+    };
+    apply(loadDisplayPrefs());
+    return subscribeDisplayPrefs(apply);
+  }, []);
 
   useEffect(() => {
     if (activeSessionId) {

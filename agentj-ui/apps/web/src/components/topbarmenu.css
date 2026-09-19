@@ -151,6 +151,55 @@
   gap: 8px;
 }
 
+/* SessionListMenu (v0.17.0): the menu is portaled to body and positioned
+   fixed from its trigger so it escapes the sidebar overflow clipping;
+   flyouts stay anchored right of their row inside the portaled menu. */
+.aj-sidebar__menu-wrap {
+  display: inline-flex;
+}
+.aj-sidebar__menu-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.aj-sidebar__menu {
+  position: fixed;
+  right: auto;
+}
+.aj-menu__flyout--right {
+  right: auto;
+  left: calc(100% + 6px);
+}
+.aj-menu__flyout--right::before {
+  right: auto;
+  left: -8px;
+}
+/* Narrow-viewport variant (BUG-008): fly out to the LEFT of the row; explicit
+   mirror of --right because the base .aj-menu__flyout already right-anchors. */
+.aj-menu__flyout--left {
+  left: auto;
+  right: calc(100% + 6px);
+}
+.aj-menu__flyout--left::before {
+  left: auto;
+  right: -8px;
+}
+/* BUG-008: at narrow viewports the portaled session menu sits near the right
+   edge, so a 200px left flyout would still leave the left edge of the screen;
+   shrink only these short flyouts so the left-flipped variant fits fully. */
+@media (max-width: 480px) {
+  .aj-sidebar__menu .aj-menu__flyout {
+    min-width: 160px;
+  }
+}
+.aj-menu__item--danger {
+  color: var(--aj-error);
+}
+.aj-menu__item[aria-disabled="true"] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .aj-right-toggle {
   display: none;
 }

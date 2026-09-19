@@ -1,14 +1,18 @@
 import { useEffect, useRef, useState } from "react";
-import ReactMarkdown from "react-markdown";
+import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Check, ChevronDown, Clock, Folder, Minus, X } from "lucide-react";
+import rehypeHighlight from "rehype-highlight";
+import { Check, ChevronDown, Clock, Folder, Minus, Pencil, X } from "lucide-react";
 import { METHODS, parseProgress, RpcClient } from "@agentj/sdk";
 import type { ProgressFrame } from "@agentj/sdk";
+import CodeBlockCard from "./components/CodeBlockCard";
 import ComposerOptions from "./components/ComposerOptions";
 import AskQuestionCard, { type AskAnswer, type AskQuestionView } from "./components/AskQuestionCard";
+import ProjectEditDialog from "./components/ProjectEditDialog";
 import { DEMO_QA_RECORD, DEMO_QUESTION, isDemoEnabled, subscribeDemo } from "./demoData";
 import { loadAskCollapsed, saveAskCollapsed } from "./layoutStore";
 import { createProject, loadCurrentProject, loadProjects, setCurrentProject } from "./projectStore";
+import type { Project } from "./projectStore";
 
 export type RunEntry =
   | { kind: "user"; text: string }
@@ -209,7 +213,13 @@ export function ConversationFeed({
           case "ai":
             return (
               <div key={i} className="aj-ai">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>{entry.text}</ReactMarkdown>
+                <ReactMarkdown
+                  remarkPlugins={[remarkGfm]}
+                  rehypePlugins={[rehypeHighlight]}
+                  components={{ pre: CodeBlockCard as Components["pre"] }}
+                >
+                  {entry.text}
+                </ReactMarkdown>
               </div>
             );
           case "tool":
@@ -334,6 +344,7 @@ export default function RunPanel({
   const currentProjectName = projects.find((p) => p.id === currentId)?.name ?? "Inbox";
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerIndex, setPickerIndex] = useState(0);
+  const [editingProject, setEditingProject] = useState<Project | null>(null);
   const [atFilter, setAtFilter] = useState<string | null>(null);
   const [atIndex, setAtIndex] = useState(0);
   const [slashOpen, setSlashOpen] = useState(false);
@@ -615,7 +626,18 @@ export default function RunPanel({
                     }}
                     onMouseEnter={() => setPickerIndex(idx)}
                   >
-                    {p.name}
+                    <span className="aj-composer__picker-name">{p.name}</span>
+                    <button
+                      type="button"
+                      className="aj-composer__picker-edit"
+                      aria-label={`编辑项目 ${p.name}`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setEditingProject(p);
+                      }}
+                    >
+                      <Pencil size={12} aria-hidden="true" />
+                    </button>
                   </li>
                 ))}
                 <li
@@ -638,6 +660,13 @@ export default function RunPanel({
               </ul>
             )}
           </div>
+          {editingProject && (
+            <ProjectEditDialog
+              project={editingProject}
+              onClose={() => setEditingProject(null)}
+              onSaved={() => setProjects(loadProjects())}
+            />
+          )}
           {model !== undefined && model !== null && model !== "" && (
             <span className="aj-chip aj-chip--model">{model}</span>
           )}

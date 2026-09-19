@@ -1,0 +1,97 @@
+/* settingsProjectPanel.css — project settings panel (global defaults + project
+   list + inline edit + guarded delete). Tokens only. */
+
+.aj-settings-project-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--aj-space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.aj-settings-project {
+  display: flex;
+  align-items: center;
+  gap: var(--aj-space-2);
+  padding: var(--aj-space-2) var(--aj-space-3);
+  border: 0.5px solid var(--aj-border);
+  border-radius: var(--aj-radiusCard);
+  transition: background var(--aj-motion) var(--aj-ease);
+}
+
+.aj-settings-project:hover {
+  background: var(--aj-raised);
+}
+
+.aj-settings-project__info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.aj-settings-project__title {
+  display: flex;
+  align-items: center;
+  gap: var(--aj-space-2);
+  min-width: 0;
+}
+
+.aj-settings-project__name {
+  overflow: hidden;
+  color: var(--aj-text);
+  font-size: var(--aj-font-sm);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.aj-settings-project__badge {
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--aj-accentTint);
+  color: var(--aj-accent);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.aj-settings-project__path {
+  overflow: hidden;
+  color: var(--aj-textMuted);
+  font-family: var(--aj-mono);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.aj-settings-project__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--aj-space-1);
+  flex-shrink: 0;
+}
+
+.aj-settings-project__actions .aj-icon-btn {
+  width: 28px;
+  height: 28px;
+}
+
+.aj-settings-project__actions .aj-icon-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.aj-dialog__text {
+  margin: 0;
+  color: var(--aj-textMuted);
+  font-size: var(--aj-font-sm);
+  line-height: 1.6;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .aj-settings-project {
+    transition: none;
+  }
+}

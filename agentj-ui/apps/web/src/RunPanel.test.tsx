@@ -379,3 +379,40 @@ describe("RunPanel project picker label follows project changes", () => {
     expect(screen.getByRole("button", { name: /project picker/i })).toHaveTextContent("MenuPick");
   });
 });
+
+describe("ConversationFeed code fences", () => {
+  it("renders fenced code as a CodeBlockCard", () => {
+    const entries = [{ kind: "ai" as const, text: "```rust\nfn main() {}\n```" }];
+    const { container } = render(<ConversationFeed entries={entries} />);
+    expect(container.querySelector(".aj-code")).not.toBeNull();
+    expect(container.querySelector(".aj-code__lang")?.textContent).toBe("rust");
+    expect(screen.getByRole("button", { name: "复制代码" })).toBeTruthy();
+    expect(container.querySelector(".hljs-keyword")).not.toBeNull();
+  });
+  it("keeps inline code inline", () => {
+    const entries = [{ kind: "ai" as const, text: "use `cargo test` now" }];
+    const { container } = render(<ConversationFeed entries={entries} />);
+    expect(container.querySelector(".aj-code")).toBeNull();
+    expect(container.querySelector(".aj-ai code")).not.toBeNull();
+  });
+
+  it("renders an unclosed fence as a code card (streaming)", () => {
+    const entries = [{ kind: "ai" as const, text: "```rust\nfn main() {" }];
+    const { container } = render(<ConversationFeed entries={entries} />);
+    expect(container.querySelector(".aj-code")).not.toBeNull();
+  });
+});
+
+describe("RunPanel project picker edit", () => {
+  it("edits a project from the picker without switching", async () => {
+    localStorage.clear();
+    createProject("Alpha");
+    const beta = createProject("Beta");
+    setCurrentProject(beta.id);
+    render(<RunPanel client={null} activeSessionId={null} initialEntries={[]} />);
+    fireEvent.click(screen.getByRole("button", { name: "project picker" }));
+    fireEvent.click(screen.getByRole("button", { name: "编辑项目 Alpha" }));
+    expect(screen.getByRole("dialog", { name: "编辑项目" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "project picker" }).textContent).toContain("Beta");
+  });
+});

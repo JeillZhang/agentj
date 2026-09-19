@@ -8,7 +8,13 @@ import type {
   MouseEvent as ReactMouseEvent,
 } from "react";
 import { loadFavorites } from "../layoutStore";
-import { createProject, loadCurrentProject, loadProjects, setCurrentProject } from "../projectStore";
+import {
+  createProject,
+  loadCurrentProject,
+  loadProjectDefaults,
+  loadProjects,
+  setCurrentProject,
+} from "../projectStore";
 import type { Project } from "../projectStore";
 import ModalDialog from "./ModalDialog";
 import SettingsDialog from "./SettingsDialog";
@@ -32,6 +38,7 @@ export default function TopbarMenu({ onConnect, onContinue }: Props) {
   const [projects, setProjects] = useState<Project[]>(() => loadProjects());
   const [currentProjectId, setCurrentProjectId] = useState<string>(() => loadCurrentProject());
   const [addName, setAddName] = useState("");
+  const [addWorkDir, setAddWorkDir] = useState("");
   const [continueId, setContinueId] = useState("");
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -110,15 +117,6 @@ export default function TopbarMenu({ onConnect, onContinue }: Props) {
     triggerRef.current?.focus();
   }, []);
 
-  useEffect(() => {
-    if (!dialog) return;
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") closeDialog();
-    };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [dialog, closeDialog]);
-
   const openMenu = useCallback(() => {
     cancelClose();
     setFavorites(loadFavorites());
@@ -157,6 +155,7 @@ export default function TopbarMenu({ onConnect, onContinue }: Props) {
 
   const openAddProject = useCallback(() => {
     setAddName("");
+    setAddWorkDir(loadProjectDefaults().workDir ?? "");
     setOpen(false);
     setDialog("addProject");
   }, []);
@@ -164,13 +163,14 @@ export default function TopbarMenu({ onConnect, onContinue }: Props) {
   const submitAddProject = useCallback(() => {
     const name = addName.trim();
     if (!name) return;
-    const created = createProject(name);
+    const created = createProject(name, addWorkDir.trim());
     setCurrentProject(created.id);
     setCurrentProjectId(created.id);
     setProjects(loadProjects());
     setAddName("");
+    setAddWorkDir("");
     setDialog(null);
-  }, [addName]);
+  }, [addName, addWorkDir]);
 
   const onRowBlur = useCallback((event: ReactFocusEvent<HTMLDivElement>) => {
     if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setFlyout(null);
@@ -389,6 +389,18 @@ export default function TopbarMenu({ onConnect, onContinue }: Props) {
               value={addName}
               onChange={(e) => setAddName(e.target.value)}
               placeholder="项目名称"
+            />
+          </div>
+          <div className="aj-field">
+            <label htmlFor="aj-add-project-dir" className="aj-label">
+              工作目录
+            </label>
+            <input
+              id="aj-add-project-dir"
+              className="aj-input"
+              value={addWorkDir}
+              onChange={(e) => setAddWorkDir(e.target.value)}
+              placeholder="/path/to/project"
             />
           </div>
           <div className="aj-dialog__actions">

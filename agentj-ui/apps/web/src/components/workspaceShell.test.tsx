@@ -1,8 +1,9 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { beforeEach, expect, test, vi } from "vitest";
-import { render, fireEvent, screen } from "@testing-library/react";
+import { render, fireEvent, screen, act } from "@testing-library/react";
 import WorkspaceShell from "./WorkspaceShell";
+import { saveDisplayPrefs } from "../displayPrefsStore";
 
 const layoutCss = readFileSync(join(import.meta.dirname, "layout.css"), "utf8");
 
@@ -101,4 +102,24 @@ test("rightCollapsed marks the root with aj-workspace--right-collapsed", () => {
   const root = container.querySelector(".aj-workspace") as HTMLElement;
   expect(root.classList.contains("aj-workspace--right-collapsed")).toBe(true);
   expect(root.classList.contains("aj-workspace--right-open")).toBe(false);
+});
+
+test("injects display font vars and density", () => {
+  render(
+    <WorkspaceShell right={<div />} rightCollapsed={false} onRightCollapsedChange={() => {}}>
+      <div>l</div>
+      <div>c</div>
+    </WorkspaceShell>,
+  );
+  const root = document.querySelector(".aj-workspace") as HTMLElement;
+  expect(root.style.getPropertyValue("--aj-font-conv")).toBe("15px");
+  expect(root.style.getPropertyValue("--aj-font-left")).toBe("13px");
+  expect(root.style.getPropertyValue("--aj-font-right")).toBe("13px");
+  expect(root.style.getPropertyValue("--aj-font-code")).toBe("12px");
+  expect(root.style.getPropertyValue("--aj-lh-conv")).toBe("1.55");
+  expect(root.dataset.density).toBe("default");
+  act(() => { saveDisplayPrefs({ fontConversation: "lg", density: "compact", lineHeight: "relaxed" }); });
+  expect(root.style.getPropertyValue("--aj-font-conv")).toBe("17px");
+  expect(root.style.getPropertyValue("--aj-lh-conv")).toBe("1.8");
+  expect(root.dataset.density).toBe("compact");
 });
