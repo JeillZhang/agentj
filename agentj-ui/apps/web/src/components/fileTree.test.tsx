@@ -170,7 +170,7 @@ test("applies per-category icon modifiers to files", async () => {
     { name: "data.json", path: "data.json", kind: "file", git_status: null },
     { name: "readme.md", path: "readme.md", kind: "file", git_status: null },
     { name: "logo.png", path: "logo.png", kind: "file", git_status: null },
-    { name: "Makefile", path: "Makefile", kind: "file", git_status: null },
+    { name: "data.xyz", path: "data.xyz", kind: "file", git_status: null },
   ];
   const client = mockClient(() => ({ entries, truncated: false }));
   const { container } = render(<FileTree client={client} sessionId="s1" demo={false} />);
