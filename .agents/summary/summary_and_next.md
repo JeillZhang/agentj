@@ -39,7 +39,7 @@
 | 门禁 | 结果 |
 |---|---|
 | `cargo fmt --check` | clean |
-| `cargo test --workspace` | **586 passed / 0 failed** |
+| `cargo test --workspace` | **591 passed / 0 failed** |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 零警告 |
 | `cargo test -p agentj-protocol -- drift` | 2 passed |
 | `npm --prefix agentj-ui test --workspace=@agentj/sdk` | 46 passed |
@@ -64,6 +64,10 @@
   不触发停机（既有分类器语义）。
 - 会话内存态：重启 / 换 token 即需重新登录（符合预期）。
 - 文档 nit（可选）：`ipc-protocol.md` 静态面可再补 `/logout` 与 `next` 白名单示例。
+- 复核修复（Phase-5 Oracle）：v4-mapped loopback 已修（`peer_is_loopback` 认 `::ffff:127.0.0.1`）；
+  login `next` 白名单已加固（拒绝反斜杠/控制字符）；`supply_initialize_token` 已补单测。
+  遗留可选项：会话集合无上限/TTL、无 dist 时 `/login` 仍挂载、gate 重定向不保留查询串、
+  `initialize` 缺 `params` 时不注入 token。
 
 ## 下一步
 

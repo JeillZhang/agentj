@@ -201,7 +201,7 @@
 > 目录行 `StatusCell` 渲染状态字母、移除冗余圆点。测试补充：agentj-ipc `web` 单测
 > （静态/缓存头/SPA 落回/登录门/cookie 放行/伪造 cookie/dist 缺失/无 token 直出）+
 > `e2e_http_static`（断言 `/assets/*` 状态码并**持有 stdout reader** 防子进程 stdout 提前关闭）。
-> cargo fmt / **586 Rust tests** / clippy 零警告 / drift 2 passed / sdk 46 /
+> cargo fmt / **591 Rust tests** / clippy 零警告 / drift 2 passed / sdk 46 /
 > **web 480 tests（46 files）** / web build / tui 71 / check-version **0.19.0** / desktop-ui。
 > PROTOCOL_VERSION 保持 0.13.0；工作区 0.18.1 → 0.19.0。
 > (17 crates + agentj-ui monorepo：Web / TUI / Desktop + SDK + tokens，
@@ -219,7 +219,7 @@ v0.19.0 已落地：**内核托管 Web UI + 文件树状态补强（无 wire 变
 WS cookie 第三通道（有效会话 + 同源 Origin 免 `initialize.token`）；
 (2) CLI `serve`/`dashboard --web-dist <PATH>` 四级发现 + 启动打印 `http://<host>:<port>/`；
 (3) `file/list` 目录 `git_status` 聚合后代最高优先级字母（`U>D>M>A`）+ Web `FileTree`
-目录行状态字母、移除冗余圆点。cargo fmt / **586 Rust tests** / clippy 零警告 /
+目录行状态字母、移除冗余圆点。cargo fmt / **591 Rust tests** / clippy 零警告 /
 drift 2 passed / sdk 46 / **web 480 tests（46 files）** / web build / tui 71 /
 check-version **0.19.0** / desktop-ui；PROTOCOL_VERSION 保持 0.13.0；工作区 0.18.1 → 0.19.0）。
 v0.18.1 已落地：**token 统计位置与拆分修复（用户直报，纯前端无协议变更）**
@@ -367,7 +367,7 @@ Desktop：Tauri v2 壳套 `apps/web` 产物，四件套 deb/AppImage/dmg/msi，
 ## Commands
 
 - `cargo test --workspace` — 全量测试
-  （586 passed / 0 failed；含 bus 密封 + FileBackedStore/Config/CLI 单测
+  （591 passed / 0 failed；含 bus 密封 + FileBackedStore/Config/CLI 单测
   + e2e_cli/e2e_permission/e2e_serve/e2e_ws/e2e_http_static 密封测试）
 - `cargo clippy --workspace --all-targets -- -D warnings` — lint 门禁（零警告）
 - `cargo bench -p agentj-model` — 模型流式基准（criterion）
