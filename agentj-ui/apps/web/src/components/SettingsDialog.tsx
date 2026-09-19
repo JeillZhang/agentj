@@ -58,7 +58,7 @@ export default function SettingsDialog({ onConnect, onClose }: Props) {
   );
 
   return (
-    <ModalDialog title="设置" onClose={onClose} cardClassName="aj-settings">
+    <ModalDialog title="设置" onClose={onClose} cardClassName="aj-settings" minWidth={560}>
       <div className="aj-settings-body">
         <div className="aj-settings-nav" role="tablist" aria-orientation="vertical" aria-label="设置分类">
           {CATEGORIES.map((category) => (

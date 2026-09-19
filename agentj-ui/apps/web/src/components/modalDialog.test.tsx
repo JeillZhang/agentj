@@ -164,3 +164,20 @@ test("resizing cannot shrink a dialog below the minimum size", () => {
   expect(frame.style.height).toBe("200px");
   fireEvent.pointerUp(se, { pointerId: 1 });
 });
+
+test("honors per-dialog minimum size overrides", () => {
+  render(
+    <ModalDialog title="A" onClose={() => {}} minWidth={480} minHeight={300}>
+      <p />
+    </ModalDialog>,
+  );
+  const dialog = screen.getByLabelText("A");
+  const frame = dialog.querySelector(".aj-dialog-frame") as HTMLElement;
+  stubRect(frame, { left: 100, top: 100, width: 560, height: 400 });
+  const se = seHandle(dialog);
+  fireEvent.pointerDown(se, { clientX: 660, clientY: 500, pointerId: 1 });
+  fireEvent.pointerMove(se, { clientX: -4000, clientY: -4000, pointerId: 1 });
+  expect(frame.style.width).toBe("480px");
+  expect(frame.style.height).toBe("300px");
+  fireEvent.pointerUp(se, { pointerId: 1 });
+});

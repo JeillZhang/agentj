@@ -11,6 +11,8 @@ export type ModalDialogProps = {
   children: ReactNode;
   /** Optional modifier appended to `.aj-dialog-frame` (e.g. a wider settings card). */
   cardClassName?: string;
+  minWidth?: number;
+  minHeight?: number;
 };
 
 // Module-level stack of mounted dialogs (bottom → top). Only the top-most
@@ -32,7 +34,14 @@ type DragState = { start: DialogRect; handle: ResizeHandle; x: number; y: number
  * ignored. The frame is resizable from its four edges and four corners.
  * Styling comes entirely from the existing `.aj-dialog*` classes.
  */
-export default function ModalDialog({ title, onClose, children, cardClassName }: ModalDialogProps) {
+export default function ModalDialog({
+  title,
+  onClose,
+  children,
+  cardClassName,
+  minWidth,
+  minHeight,
+}: ModalDialogProps) {
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
 
@@ -87,10 +96,14 @@ export default function ModalDialog({ title, onClose, children, cardClassName }:
     const drag = dragRef.current;
     if (!drag) return;
     setRect(
-      resizeRect(drag.start, drag.handle, event.clientX - drag.x, event.clientY - drag.y, {
-        width: window.innerWidth,
-        height: window.innerHeight,
-      }),
+      resizeRect(
+        drag.start,
+        drag.handle,
+        event.clientX - drag.x,
+        event.clientY - drag.y,
+        { width: window.innerWidth, height: window.innerHeight },
+        { minWidth, minHeight },
+      ),
     );
   };
 

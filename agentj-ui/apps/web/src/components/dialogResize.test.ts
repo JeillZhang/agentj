@@ -80,6 +80,14 @@ describe("resizeRect", () => {
     expect(capped.top).toBe(MARGIN);
   });
 
+  it("honors custom min size limits while anchoring the opposite edge", () => {
+    const se = resizeRect(START, "se", -5000, -5000, VIEWPORT, { minWidth: 560, minHeight: 300 });
+    expect(se).toMatchObject({ width: 560, height: 300 });
+    const west = resizeRect(START, "w", 5000, 0, VIEWPORT, { minWidth: 560 });
+    expect(west.width).toBe(560);
+    expect(west.left).toBe(START.left + START.width - 560);
+  });
+
   it("never leaves the rect outside the viewport margins", () => {
     const rect = resizeRect({ left: 1000, top: 740, width: 400, height: 300 }, "e", 100, 100, VIEWPORT);
     expect(rect.left).toBeGreaterThanOrEqual(MARGIN);

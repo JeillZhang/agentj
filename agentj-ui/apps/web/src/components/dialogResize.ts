@@ -4,6 +4,8 @@ export type DialogRect = { left: number; top: number; width: number; height: num
 
 export type ViewportSize = { width: number; height: number };
 
+export type DialogSizeLimits = { minWidth?: number; minHeight?: number };
+
 export const RESIZE_HANDLES: readonly ResizeHandle[] = [
   "n",
   "e",
@@ -30,7 +32,10 @@ export function resizeRect(
   dx: number,
   dy: number,
   viewport: ViewportSize,
+  limits: DialogSizeLimits = {},
 ): DialogRect {
+  const minWidth = limits.minWidth ?? DIALOG_MIN_WIDTH;
+  const minHeight = limits.minHeight ?? DIALOG_MIN_HEIGHT;
   const anchorRight = start.left + start.width;
   const anchorBottom = start.top + start.height;
   let { left, top, width, height } = start;
@@ -46,17 +51,17 @@ export function resizeRect(
     height = start.height - dy;
   }
 
-  if (width < DIALOG_MIN_WIDTH) {
-    width = DIALOG_MIN_WIDTH;
+  if (width < minWidth) {
+    width = minWidth;
     if (handle.includes("w")) left = anchorRight - width;
   }
-  if (height < DIALOG_MIN_HEIGHT) {
-    height = DIALOG_MIN_HEIGHT;
+  if (height < minHeight) {
+    height = minHeight;
     if (handle.includes("n")) top = anchorBottom - height;
   }
 
-  const maxWidth = Math.max(DIALOG_MIN_WIDTH, viewport.width - 2 * DIALOG_VIEWPORT_MARGIN);
-  const maxHeight = Math.max(DIALOG_MIN_HEIGHT, viewport.height - 2 * DIALOG_VIEWPORT_MARGIN);
+  const maxWidth = Math.max(minWidth, viewport.width - 2 * DIALOG_VIEWPORT_MARGIN);
+  const maxHeight = Math.max(minHeight, viewport.height - 2 * DIALOG_VIEWPORT_MARGIN);
   if (width > maxWidth) {
     width = maxWidth;
     if (handle.includes("w")) left = anchorRight - width;
