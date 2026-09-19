@@ -1,5 +1,5 @@
-import { useState } from "react";
 import type { TodoView } from "../todoState";
+import { useRightSection } from "../rightSections";
 
 export type TodoPanelProps = {
   items: TodoView[];
@@ -22,43 +22,39 @@ const STATUS_META: Record<TodoView["status"], StatusMeta> = {
 
 /** Right-panel 任务 section: counter + read-only todo rows. Styles live in rightpanel.css (T10). */
 export default function TodoPanel({ items }: TodoPanelProps) {
-  const [open, setOpen] = useState(true);
+  const [open, toggle] = useRightSection("todo");
   const completed = items.filter((item) => item.status === "completed").length;
   return (
     <div className="right-section">
-      {items.length === 0 ? (
-        <p className="aj-empty">待协议支持</p>
-      ) : (
-        <>
-          <button
-            type="button"
-            className="sec-head"
-            aria-expanded={open}
-            aria-controls="todo-section-body"
-            onClick={() => setOpen((prev) => !prev)}
-          >
-            <span>任务</span>
-            <span className="count">{completed} / {items.length}</span>
-            <span className="sec-chev" aria-hidden="true">{open ? "▾" : "▸"}</span>
-          </button>
-          <div id="todo-section-body" className="sec-body">
-            {open && (
-              <div className="todo-list">
-                {items.map((item) => {
-                  const meta = STATUS_META[item.status] ?? STATUS_META.pending;
-                  return (
-                    <div className="aj-todo" key={item.id}>
-                      <span className={`cb ${meta.cb}`}>{meta.done ? "✓" : ""}</span>
-                      <span className="todo-label">{item.content}</span>
-                      <span className={`pill-st ${meta.pill}`}>{meta.label}</span>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
+      <button
+        type="button"
+        className="sec-head"
+        aria-expanded={open}
+        aria-controls="todo-section-body"
+        onClick={toggle}
+      >
+        <span>任务</span>
+        <span className="count">{completed} / {items.length}</span>
+        <span className="sec-chev" aria-hidden="true">{open ? "▾" : "▸"}</span>
+      </button>
+      <div id="todo-section-body" className="sec-body">
+        {open && (items.length === 0 ? (
+          <p className="aj-empty">待协议支持</p>
+        ) : (
+          <div className="todo-list">
+            {items.map((item) => {
+              const meta = STATUS_META[item.status] ?? STATUS_META.pending;
+              return (
+                <div className="aj-todo" key={item.id}>
+                  <span className={`cb ${meta.cb}`}>{meta.done ? "✓" : ""}</span>
+                  <span className="todo-label">{item.content}</span>
+                  <span className={`pill-st ${meta.pill}`}>{meta.label}</span>
+                </div>
+              );
+            })}
           </div>
-        </>
-      )}
+        ))}
+      </div>
     </div>
   );
 }

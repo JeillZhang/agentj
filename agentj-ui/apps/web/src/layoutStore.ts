@@ -18,6 +18,9 @@ export type ComposerPrefs = {
   entropy: number;
 };
 
+export type RightSectionsState = { todo: boolean; changes: boolean };
+export type RightSectionId = keyof RightSectionsState;
+
 export const LAYOUT_DEFAULTS: LayoutState = {
   leftWidth: 256,
   rightWidth: 320,
@@ -25,6 +28,7 @@ export const LAYOUT_DEFAULTS: LayoutState = {
   rightCollapsed: false,
 };
 export const COMPOSER_DEFAULTS: ComposerPrefs = { model: null, agent: "build", entropy: 0.7 };
+export const RIGHT_SECTIONS_DEFAULTS: RightSectionsState = { todo: true, changes: true };
 
 export const LAYOUT_KEYS = {
   leftWidth: "agentj.layout.leftWidth",
@@ -41,6 +45,7 @@ export const COMPOSER_KEYS = {
 
 export const ASK_COLLAPSED_KEY = "agentj.ask.collapsed";
 export const FAVORITES_KEY = "agentj.favorites";
+export const RIGHT_SECTIONS_KEY = "agentj.layout.rightSections";
 export const LAYOUT_UPDATED_EVENT = "agentj:layout-updated";
 
 const LAYOUT_TABS: readonly LeftTab[] = ["sessions", "files"];
@@ -186,4 +191,24 @@ export function toggleFavorite(id: string): string[] {
   const next = ids.includes(id) ? ids.filter((v) => v !== id) : [...ids, id];
   saveFavorites(next);
   return next;
+}
+
+export function loadRightSections(): RightSectionsState {
+  const parsed = safeParse<unknown>(readRaw(RIGHT_SECTIONS_KEY), null);
+  if (parsed == null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return { ...RIGHT_SECTIONS_DEFAULTS };
+  }
+  const obj = parsed as Record<string, unknown>;
+  return {
+    todo: typeof obj.todo === "boolean" ? obj.todo : RIGHT_SECTIONS_DEFAULTS.todo,
+    changes: typeof obj.changes === "boolean" ? obj.changes : RIGHT_SECTIONS_DEFAULTS.changes,
+  };
+}
+
+export function saveRightSections(state: RightSectionsState): void {
+  writeRaw(RIGHT_SECTIONS_KEY, JSON.stringify(state));
+}
+
+export function setRightSection(id: RightSectionId, open: boolean): void {
+  saveRightSections({ ...loadRightSections(), [id]: open });
 }

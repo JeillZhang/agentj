@@ -1,6 +1,7 @@
 import { beforeEach, expect, test } from "vitest";
 import { loadLayout, saveLayout, subscribeLayout, loadComposerPrefs, saveComposerPrefs,
-         loadAskCollapsed, saveAskCollapsed, loadFavorites, toggleFavorite } from "./layoutStore";
+         loadAskCollapsed, saveAskCollapsed, loadFavorites, toggleFavorite,
+         loadRightSections, saveRightSections, setRightSection } from "./layoutStore";
 beforeEach(() => localStorage.clear());
 test("defaults and clamps", () => {
   expect(loadLayout()).toEqual({ leftWidth: 256, rightWidth: 320, leftTab: "sessions", rightCollapsed: false });
@@ -54,4 +55,30 @@ test("storage events re-read with clamping", () => {
   window.dispatchEvent(new StorageEvent("storage", { key: "agentj.layout.leftWidth", newValue: "999" }));
   expect(seen.at(-1)?.leftWidth).toBe(420);
   unsub();
+});
+
+test("right sections default to open when absent", () => {
+  expect(loadRightSections()).toEqual({ todo: true, changes: true });
+});
+
+test("right sections roundtrip and preserve the other section", () => {
+  saveRightSections({ todo: false, changes: true });
+  expect(loadRightSections()).toEqual({ todo: false, changes: true });
+  setRightSection("changes", false);
+  expect(loadRightSections()).toEqual({ todo: false, changes: false });
+  expect(localStorage.getItem("agentj.layout.rightSections"))
+    .toBe(JSON.stringify({ todo: false, changes: false }));
+  setRightSection("todo", true);
+  expect(loadRightSections()).toEqual({ todo: true, changes: false });
+});
+
+test("right sections tolerate malformed values", () => {
+  localStorage.setItem("agentj.layout.rightSections", "{not json");
+  expect(loadRightSections()).toEqual({ todo: true, changes: true });
+  localStorage.setItem("agentj.layout.rightSections", JSON.stringify("bogus"));
+  expect(loadRightSections()).toEqual({ todo: true, changes: true });
+  localStorage.setItem("agentj.layout.rightSections", JSON.stringify({ todo: "yes" }));
+  expect(loadRightSections()).toEqual({ todo: true, changes: true });
+  localStorage.setItem("agentj.layout.rightSections", JSON.stringify({ todo: false }));
+  expect(loadRightSections()).toEqual({ todo: false, changes: true });
 });
