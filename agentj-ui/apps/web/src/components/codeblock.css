@@ -1,0 +1,132 @@
+/* CodeBlockCard (T7) — fenced code card with header controls + hljs theme.
+   Tokens only, no raw hex. hljs classes map to existing semantic tokens. */
+
+.aj-code {
+  margin: 0;
+  background: var(--aj-codeBg);
+  border: 0.5px solid var(--aj-border);
+  border-radius: var(--aj-radiusCard);
+  overflow: hidden;
+}
+
+.aj-code__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  height: 28px;
+  padding: 0 8px 0 6px;
+  border-bottom: 0.5px solid var(--aj-border);
+}
+
+.aj-code__toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--aj-textMuted);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.aj-code__toggle:hover {
+  color: var(--aj-text);
+}
+
+.aj-code__toggle:focus-visible,
+.aj-code__copy:focus-visible {
+  outline: 2px solid var(--aj-accent);
+  outline-offset: 1px;
+  border-radius: var(--aj-radiusCtl);
+}
+
+.aj-code__lang {
+  color: var(--aj-textMuted);
+  font-size: 11px;
+  text-transform: lowercase;
+}
+
+.aj-code__actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.aj-code__status {
+  font-size: 11px;
+  color: var(--aj-textMuted);
+}
+
+.aj-code__copy {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--aj-textMuted);
+  cursor: pointer;
+  border-radius: var(--aj-radiusCtl);
+}
+
+.aj-code__copy:hover {
+  color: var(--aj-text);
+}
+
+.aj-code__body {
+  margin: 0;
+  padding: 10px 12px;
+  overflow-x: auto;
+  font-size: var(--aj-font-code, 12px);
+  line-height: 1.55;
+  color: var(--aj-text);
+}
+
+/* Nested inline-code styling is neutralized: the block itself is the code surface. */
+.aj-code__body code {
+  background: none;
+  border: 0;
+  padding: 0;
+  font-size: inherit;
+}
+
+/* --- hljs semantic mapping (existing tokens, no new tokens) --- */
+.aj-code .hljs-keyword,
+.aj-code .hljs-literal,
+.aj-code .hljs-selector-tag {
+  color: var(--aj-accent);
+}
+
+.aj-code .hljs-string,
+.aj-code .hljs-attr {
+  color: var(--aj-success);
+}
+
+.aj-code .hljs-number,
+.aj-code .hljs-built_in,
+.aj-code .hljs-type {
+  color: var(--aj-warning);
+}
+
+.aj-code .hljs-comment,
+.aj-code .hljs-quote {
+  color: var(--aj-textMuted);
+  font-style: italic;
+}
+
+.aj-code .hljs-title,
+.aj-code .hljs-function,
+.aj-code .hljs-section {
+  color: var(--aj-text);
+  font-weight: 600;
+}
+
+.aj-code .hljs-tag,
+.aj-code .hljs-deletion {
+  color: var(--aj-error);
+}
