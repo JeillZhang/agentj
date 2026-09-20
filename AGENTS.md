@@ -204,6 +204,32 @@
 > cargo fmt / **591 Rust tests** / clippy 零警告 / drift 2 passed / sdk 46 /
 > **web 480 tests（46 files）** / web build / tui 71 / check-version **0.19.0** / desktop-ui。
 > PROTOCOL_VERSION 保持 0.13.0；工作区 0.18.1 → 0.19.0。
+> v0.20.0 Web 加固 + TUI Files 视图（四项，无 wire 变更，PROTOCOL_VERSION 保持 0.13.0）：
+> (1) `serve_connection` 遗留 token 参数清理（`TcpIpcServer` 死 token 字段一并移除；
+> `WsServerState.token`/`WsQuery.token`/`?token=`/`initialize.token` 语义不变）；
+> (2) 登录限流——新 `agentj-ipc` `login_limiter` 模块（按来源 IP 计数，第 5 次失败起锁定
+> 30s、×2、封顶 900s；`429 + Retry-After`（秒，向上取整 ≥1）；锁定期不校验 token 且新尝试
+> 升级锁定；成功清零；idle_ttl 1800s 懒淘汰；max_tracked 1024 淘汰；回环同样计数）+
+> `/login` POST 接线（`auth_routes` 透传 peer）；(3) 版本探测与 SRI——`apps/web/build/
+> version-sri.ts` + `version-sri-plugin.ts`（`writeBundle` 生成 `dist/version.json`
+> （product/protocol/build_time，单一真源 = sdk config）+ 入口 HTML 同源 script/stylesheet/
+> modulepreload 注入 `sha384` `integrity`，本地引用缺失即构建失败；零新依赖）；内核
+> `WebConfig` 读取 `DistVersion` + `startup_warnings()`（缺失/不可解析/不一致三类启动警告，
+> 不阻断服务）+ 未鉴权 `GET /version`（200 JSON + `Cache-Control: no-store`，显式路由优先于
+> SPA fallback）+ `TcpIpcServer::web_config()`；CLI `serve` 启动打印 dist 版本警告 +
+> `e2e_http_static` 覆盖；Web `ConnectionStatus` 版本行「版本 UI x · 内核 y」（不一致
+> `data-state="warn"` + `⚠` + warning 色）、`App` 消费 `initialize.server_info.version`、
+> SDK barrel 导出 `VERSION`；(4) TUI Files 视图——`files.ts` 纯函数（flatten/format/color/
+> updateNode 等）+ `files.tsx` `FilesView` + `useFileTree`（懒加载 `file/list` depth=1、
+> stale-reply 代际守卫、collapse 保留子树、refresh 根+已展开、会话切换清空重取、不持久化）+
+> `sidebar.tsx` Threads/Files 切换（`f`）+ `app.tsx` 键位（`f` 切换 / `j,k,↑,↓` 移动 /
+> `Enter,l,→` 目录开合 / `h,←` 收起或跳父级 / `r` 刷新）+ mock kernel `file/list` + e2e；
+> 目录聚合状态字母色义 M→warning、A→success、U→textCaption、D→error。Oracle 全量复核
+> PASS（无 must-fix）+ 修复波（TUI stale-reply 守卫 + 父级跳转 clamp + Web warn 色 CSS
+> 契约测试）。cargo fmt / **604 Rust tests** / clippy 零警告 / drift 2 passed / sdk **47** /
+> **web 491 tests（47 files）** / web build / tui **85 tests（17 files）** / check-version
+> **0.20.0** / desktop-ui；无第三方新增依赖；PROTOCOL_VERSION 保持 0.13.0；
+> 工作区 0.19.0 → 0.20.0。
 > (17 crates + agentj-ui monorepo：Web / TUI / Desktop + SDK + tokens，
 > npm workspaces `apps/*`+`packages/*`，共享 SDK + protocol + tokens，
 > WebSocket 网关同端口复用，后端零改造，frontend stays in-repo)
@@ -211,6 +237,26 @@
 ## Project Status
 
 AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + 可插拔模块」架构。
+v0.20.0 已落地：**Web 加固 + TUI Files 视图（四项，无 wire 变更）**
+（(1) `serve_connection` 遗留 token 参数清理（`TcpIpcServer` 死 token 字段一并移除），
+`WsServerState.token`/`WsQuery.token`/`?token=`/`initialize.token` 语义不变；
+(2) 登录限流：新 `agentj-ipc` `login_limiter`（按来源 IP 计数，第 5 次失败起锁定 30s、
+×2、封顶 900s；`429 + Retry-After`（秒，ceil ≥1）；锁定期不校验 token 且新尝试升级锁定；
+成功清零；idle_ttl 1800s 懒淘汰；max_tracked 1024 淘汰；回环同样计数）+ `/login` POST
+接线（`auth_routes` 透传 peer）；(3) 版本探测与 SRI：`apps/web/build/version-sri.ts` +
+`version-sri-plugin.ts`（`writeBundle` 生成 `dist/version.json` + 入口 HTML 同源引用注入
+`sha384` `integrity`，缺失即构建失败；零新依赖）+ 内核 `WebConfig` 读 `DistVersion` +
+`startup_warnings()`（缺失/不可解析/不一致）+ 未鉴权 `GET /version`（200 JSON + `no-store`，
+显式路由优先于 SPA fallback）+ `TcpIpcServer::web_config()` + CLI 启动警告 + Web
+`ConnectionStatus` 版本行（UI/内核不一致 warn）+ SDK barrel 导出 `VERSION`；
+(4) TUI Files 视图：`files.ts` 纯函数 + `FilesView` + `useFileTree`（懒加载 `file/list`
+depth=1、stale-reply 代际守卫、collapse 保留子树、refresh 根+已展开、会话切换清空重取、
+不持久化）+ Threads/Files 切换（`f`）+ 键位（j/k/Enter/h/r 等）+ mock kernel e2e。
+Oracle 全量复核 PASS（无 must-fix）+ 修复波（TUI stale-reply 守卫 + 父级跳转 clamp +
+Web warn 色 CSS 契约测试）。cargo fmt / **604 Rust tests** / clippy 零警告 / drift 2 passed /
+sdk **47** / **web 491 tests（47 files）** / web build / tui **85 tests（17 files）** /
+check-version **0.20.0** / desktop-ui；无第三方新增依赖；PROTOCOL_VERSION 保持 0.13.0；
+工作区 0.19.0 → 0.20.0）。
 v0.19.0 已落地：**内核托管 Web UI + 文件树状态补强（无 wire 变更）**
 （(1) `agentj-ipc` 新 `web` 模块：同端口静态托管内置 Web UI（`/assets` immutable 长缓存 /
 根 `no-cache` / SPA fallback 未知页面 200；`/ws` 与 `/login`/`/logout` 不在门后）+
@@ -367,7 +413,7 @@ Desktop：Tauri v2 壳套 `apps/web` 产物，四件套 deb/AppImage/dmg/msi，
 ## Commands
 
 - `cargo test --workspace` — 全量测试
-  （591 passed / 0 failed；含 bus 密封 + FileBackedStore/Config/CLI 单测
+  （604 passed / 0 failed；含 bus 密封 + FileBackedStore/Config/CLI 单测
   + e2e_cli/e2e_permission/e2e_serve/e2e_ws/e2e_http_static 密封测试）
 - `cargo clippy --workspace --all-targets -- -D warnings` — lint 门禁（零警告）
 - `cargo bench -p agentj-model` — 模型流式基准（criterion）
@@ -377,19 +423,19 @@ Desktop：Tauri v2 壳套 `apps/web` 产物，四件套 deb/AppImage/dmg/msi，
   （`schemas/*.json` → `agentj-ui/packages/protocol/types.d.ts`）
 - `npm --prefix agentj-ui run build --workspace=@agentj/protocol` — `tsc --noEmit` 校验
 - `npm --prefix agentj-ui test --workspace=@agentj/sdk` — SDK 单测（client/router/transports/config，
-  46 tests）
+  47 tests）
 - `npm --prefix agentj-ui run generate --workspace=@agentj/sdk` — 生成 `METHODS` 常量
   （`protocol/methods.json` → `agentj-ui/packages/sdk/src/methods.ts`）
-- `npm --prefix agentj-ui test --workspace=@agentj/web` — Web 单测（vitest，480 tests / 46 files）
+- `npm --prefix agentj-ui test --workspace=@agentj/web` — Web 单测（vitest，491 tests / 47 files）
 - `npm --prefix agentj-ui run build --workspace=@agentj/web` — Web 构建（`tsc -b && vite build`）
   > 注意：Vite dev server 不监听 root 之外的 `packages/sdk` 源（alias 直连源码）；
   > 改动 SDK 后须重启 dev server，否则运行陈旧的 `METHODS`（v0.16.3「加载中」根因）。
   > Web 新依赖 `rehype-highlight`（hljs common 语言集，随 `npm --prefix agentj-ui install`
   > + lockfile 落地，v0.17.0）。
-- `bun --cwd agentj-ui/apps/tui test` — TUI 单测（含 mock WS e2e，71 tests）
+- `bun --cwd agentj-ui/apps/tui test` — TUI 单测（含 mock WS e2e，85 tests / 17 files）
 - `./agentj-ui/apps/desktop/check-artifacts.sh linux` — Desktop 产物校验
 - `node agentj-ui/apps/desktop/check-desktop-ui.mjs` — Desktop 前端产物/配置一致性校验
-- `./scripts/check-version.sh` — 版本一致性（Cargo + sdk VERSION + desktop 均为 0.19.0，
+- `./scripts/check-version.sh` — 版本一致性（Cargo + sdk VERSION + desktop 均为 0.20.0，
   PROTOCOL_VERSION 0.13.0 + `protocol/methods.json` 版本 0.13.0）
 
 ### CI Pipelines (GitHub Actions)
@@ -443,13 +489,20 @@ Desktop：Tauri v2 壳套 `apps/web` 产物，四件套 deb/AppImage/dmg/msi，
   + 静态 `ServeDir`/SPA fallback；两静态服务各自包裹 cache 层与登录门，避免
   `Router::layer` 波及 `/ws`）+ 不透明会话 cookie / Origin 同源 / `next` 白名单 +
   WS cookie 第三通道（`WsConnection::with_init_token` + `supply_initialize_token`
-  为 cookie 通道注入 server token；`serve_connection` token 参数遗留）
+  为 cookie 通道注入 server token）
+  + **v0.20.0 加固**：`login_limiter` 按来源 IP 失败计数/指数锁定（第 5 次起 30s、
+  ×2、封顶 900s；`429 + Retry-After`；idle_ttl 1800s / max_tracked 1024 淘汰；
+  回环同样计数）+ `DistVersion` 读取 + `startup_warnings()`（缺失/不可解析/不一致
+  三类启动警告）+ 未鉴权 `GET /version`（200 JSON + `no-store`，显式路由优先于
+  SPA fallback）+ `web_config()` 访问器；`serve_connection`/`TcpIpcServer` 遗留
+  token 参数与死字段清理
   + question notifier/settle hook 接线
   + `error.data` 透传 + 非法请求回显可确定 id（`-32600`；语法错误 `-32700`+null，v0.16.3）；
-  v0.19.0 新增依赖 `tower-http`（fs/set-header）+ `uuid`（v4））。
+  v0.19.0 新增依赖 `tower-http`（fs/set-header）+ `uuid`（v4）；v0.20.0 无新依赖）。
 - `agentj-cli`：`agentj` 二进制（run/serve/dashboard，模块注册进 Kernel，
   agentj-question 的 stdio 与 `serve --port` 两条装配路径；v0.19.0 `serve`/`dashboard`
-  新增 `--web-dist <PATH>` 四级发现 + 启动打印 `http://<host>:<port>/` + 缺失告警）。
+  新增 `--web-dist <PATH>` 四级发现 + 启动打印 `http://<host>:<port>/` + 缺失告警；
+  v0.20.0 经 `web_config().startup_warnings()` 启动打印 dist 版本警告，不阻断服务）。
 - `agentj-plugin-fixture`（dev-only）：插件 cdylib 测试夹具。
 - `schemas/*.json`：51 JSON Schema（schemars 生成，提交件 + drift 门禁）。
 - `protocol/methods.json`：方法注册表（method ↔ schema/方向/类型）。
@@ -459,9 +512,10 @@ Desktop：Tauri v2 壳套 `apps/web` 产物，四件套 deb/AppImage/dmg/msi，
   为 drift 门禁后第一门）。
 - `agentj-ui/packages/sdk`：共享 SDK（`src/client.ts` RpcClient +
   `src/router.ts` ResponseRouter/RpcTransport + `src/config.ts`
-   `VERSION="0.19.0"` + `PROTOCOL_VERSION="0.13.0"` + `resolveWsUrl` + `src/methods.ts` METHODS
+   `VERSION="0.20.0"` + `PROTOCOL_VERSION="0.13.0"` + `resolveWsUrl` + `src/methods.ts` METHODS
   + `transports/websocket.ts` WebSocketTransport
-  + `transports/tcp.ts` TcpTransport；`RpcClient.request` 拦截空/未定义 method（v0.16.3），
+  + `transports/tcp.ts` TcpTransport；`RpcClient.request` 拦截空/未定义 method（v0.16.3）；
+  v0.20.0 `index.ts` barrel 导出 `VERSION`（Web `ConnectionStatus` 消费），
   被 Web/TUI/Desktop 同源消费）。
 - `agentj-ui/packages/tokens`：共享语义 tokens（`palette.ts` 24 keys × dark/light + `SEMANTIC_KEYS` + `LAYOUT` 常量块（left/right 宽度/splitter/topbar/gap），`tokens.css/tokens.json/docs/ui-tokens.md` 生成，radius 类 keys kebab→camel 迁移，三端约束）。
 - `agentj-ui/apps/web`：Web 前端（Vite + React 19，消费 `@agentj/sdk` + `@agentj/tokens` + `lucide-react`；
@@ -494,17 +548,26 @@ Desktop：Tauri v2 壳套 `apps/web` 产物，四件套 deb/AppImage/dmg/msi，
   会话 token 总量 `Σ` 读出（`formatTokenTotal`；v0.18.1 起移至 composer header
   模型 chip 右侧并拆分 输入/输出 —— `tokenUsage.ts` `formatUsageSummary`/
   `formatUsageTitle` + `.aj-composer__header-meta`）；
+  **v0.20.0 版本/SRI**：`build/version-sri.ts` + `version-sri-plugin.ts`
+  （`writeBundle` 生成 `dist/version.json`（单一真源 = sdk config）+ 入口 HTML
+  同源 script/stylesheet/modulepreload 注入 `sha384` `integrity`，缺失即构建失败）+
+  `ConnectionStatus` 版本行「版本 UI x · 内核 y」（`App` 消费
+  `initialize.server_info.version`；不一致 `data-state="warn"` + `⚠`）；
   `layoutStore` 宽度/面板持久化，
   `todoState`/`changes` reducer，`deriveChanges` 半推导退役；
   布局/会话/Composer/对话/轨迹/Hero/对话框拆 `components/*.css`，vitest + vite build）。
 - `agentj-ui/apps/tui`：TUI 前端（Bun + @opentui/react，全功能：
   connection/session/composer/runview/permission/palette/models/
   completion/theme/usage + runview 只读 TODO 区块（revision 门控） +
-  mock WS e2e + sidebar 文本版 UnifiedSidebar 32char；`testRender` 快照）。
+  mock WS e2e + sidebar 文本版 UnifiedSidebar 32char；`testRender` 快照；
+  v0.20.0 Files 视图：`files.ts` 纯函数（flatten/format/color/updateNode）+
+  `files.tsx` `FilesView` + `useFileTree`（懒加载 `file/list` depth=1、
+  stale-reply 代际守卫、collapse 保留子树、refresh 根+已展开、会话切换清空重取、
+  不持久化）+ Threads/Files 切换（`f`）+ 键位 `j,k,↑,↓`/`Enter,l,→`/`h,←`/`r`）。
 - `agentj-ui/apps/desktop`：Desktop 壳（Tauri v2，`frontendDist` →
-    `../../web/dist`，与 workspace 版本同源 `0.19.0`，四件套打包）。
+    `../../web/dist`，与 workspace 版本同源 `0.20.0`，四件套打包）。
 - `agentj-ui/` 根：`package.json` workspaces `["apps/*","packages/*"]`
-  （frontend stays in-repo，前端不拆独立仓，与 Rust 共享 0.19.0）。
+  （frontend stays in-repo，前端不拆独立仓，与 Rust 共享 0.20.0）。
 - **守护内核（v0.4 已实现）**：统一 Connection 抽象 + `serve --port`
   常驻多客户端 + `run --attach` + `dashboard`（见 daemon-kernel 设计文档）。
 
