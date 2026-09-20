@@ -88,6 +88,17 @@ function handlePermissionRespond(ws: WebSocket, id: number | undefined): void {
   }, 20);
 }
 
+function handleFileList(ws: WebSocket, msg: { id?: number; params?: Record<string, unknown> }): void {
+  const path = (msg.params?.["path"] as string | null | undefined) ?? null;
+  const entries = path
+    ? [{ name: "main.rs", path: "src/main.rs", kind: "file", git_status: "M" }]
+    : [
+        { name: "src", path: "src", kind: "dir", git_status: "M" },
+        { name: "README.md", path: "README.md", kind: "file", git_status: null },
+      ];
+  reply(ws, msg.id, { entries, truncated: false });
+}
+
 function handleMessage(
   ws: WebSocket,
   msg: { id?: number; method?: string; params?: Record<string, unknown> },
@@ -114,6 +125,10 @@ function handleMessage(
   }
   if (msg.method === "permission/respond") {
     handlePermissionRespond(ws, msg.id);
+    return;
+  }
+  if (msg.method === "file/list") {
+    handleFileList(ws, msg);
     return;
   }
   if (msg.id !== undefined) reply(ws, msg.id, {});

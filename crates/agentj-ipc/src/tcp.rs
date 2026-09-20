@@ -128,7 +128,6 @@ impl Default for TcpBindOptions {
 pub struct TcpIpcServer {
     listener: TcpListener,
     shared: Arc<IpcServer>,
-    token: Option<String>,
     max_connections: usize,
     active: Arc<AtomicUsize>,
     ws_state: Arc<crate::ws::WsServerState>,
@@ -161,7 +160,6 @@ impl TcpIpcServer {
         Ok(Self {
             listener,
             shared: shared.clone(),
-            token: options.token.clone(),
             max_connections: options.max_connections,
             active: Arc::new(AtomicUsize::new(0)),
             ws_state: Arc::new(crate::ws::WsServerState {
@@ -190,6 +188,11 @@ impl TcpIpcServer {
         Arc::clone(&self.shared)
     }
 
+    /// The web surface config bound to this server (dist version facts live here).
+    pub fn web_config(&self) -> Arc<crate::web::WebConfig> {
+        Arc::clone(&self.ws_state.web)
+    }
+
     /// Accept loop: refuse connections beyond `max_connections` by closing the
     /// socket; when the LAST connection drops, signal kernel shutdown (决策 #3).
     pub async fn run(&mut self) -> Result<(), IpcError> {
@@ -204,7 +207,6 @@ impl TcpIpcServer {
                     }
                     self.active.fetch_add(1, Ordering::SeqCst);
                     let shared = Arc::clone(&self.shared);
-                    let token = self.token.clone();
                     let active = Arc::clone(&self.active);
                     let ws_state = Arc::clone(&self.ws_state);
                     tokio::spawn(async move {
@@ -217,7 +219,7 @@ impl TcpIpcServer {
                         } else {
                             if let Ok(conn) = TcpConnection::new(stream) {
                                 let _ = Arc::clone(&shared)
-                                    .serve_connection(Box::new(conn), token.as_deref())
+                                    .serve_connection(Box::new(conn))
                                     .await;
                             }
                             active.fetch_sub(1, Ordering::SeqCst);
@@ -461,6 +463,36 @@ mod tests {
 
         drop(held);
         handle.abort();
+    }
+
+    #[tokio::test]
+    async fn web_config_exposes_the_dist_version() {
+        let dir = std::env::temp_dir().join(format!("agentj-tcp-web-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("index.html"), "<html></html>").unwrap();
+        std::fs::write(
+            dir.join("version.json"),
+            "{\"product_version\":\"9.9.9\",\"protocol_version\":\"9.9.9\"}",
+        )
+        .unwrap();
+        let server = TcpIpcServer::bind(
+            "127.0.0.1:0",
+            Kernel::new(),
+            crate::test_support::stub_session(),
+            None,
+            None,
+            TcpBindOptions {
+                web_dist: Some(dir.clone()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let version = server.web_config().dist_version().cloned().expect("parsed");
+        assert_eq!(version.product_version, "9.9.9");
+        assert!(version.build_time.is_none(), "build_time is optional");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[tokio::test]

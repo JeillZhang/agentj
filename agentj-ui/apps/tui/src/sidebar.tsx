@@ -1,8 +1,12 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { FilesView } from "./files.tsx";
+import type { FilesViewProps } from "./files.tsx";
 
 export const SIDEBAR_WIDTH = 32;
+
+export type SidebarView = "threads" | "files";
 
 // Config dir mirrors session.tsx / theme.tsx
 export function getConfigDir(): string {
@@ -143,6 +147,9 @@ export type SidebarProps = {
   onToggle?: (id: string) => void;
   query?: string;
   width?: number;
+  view?: SidebarView;
+  filesProps?: FilesViewProps;
+  focusMode?: "composer" | "sidebar";
 };
 
 function countForProject(project: Project, sessions: SidebarSession[], allProjects: Project[]): number {
@@ -170,7 +177,7 @@ function truncate(s: string, max: number): string {
 }
 
 export default function Sidebar(props: SidebarProps) {
-  const { projects, sessions, activeId, collapsed = {}, query, width } = props;
+  const { projects, sessions, activeId, collapsed = {}, query, width, view, focusMode } = props;
   const w = width ?? SIDEBAR_WIDTH;
 
   // query filtering for sessions (case-insensitive on id/preview)
@@ -185,13 +192,26 @@ export default function Sidebar(props: SidebarProps) {
     <box flexDirection="column" width={w} border borderStyle="single" padding={1} flexShrink={0}>
       {/* Header */}
       <box flexDirection="column" marginBottom={1}>
-        <text>Threads</text>
-        <text>{q ? `⌕ ${query}` : "⌕ Search sessions"}</text>
+        <text>{view === "files" ? "Files" : "Threads"}</text>
+        {view === "files" && focusMode === "sidebar" ? (
+          <>
+            <text>r refresh · f threads</text>
+            <text>tab: compose</text>
+          </>
+        ) : view === "files" ? (
+          <text>tab: sidebar</text>
+        ) : focusMode === "sidebar" ? (
+          <text>tab: compose</text>
+        ) : (
+          <text>{q ? `⌕ ${query}` : "⌕ Search sessions"}</text>
+        )}
       </box>
 
-      {/* Body - project groups */}
+      {/* Body - files tree or project groups */}
       <box flexDirection="column" flexGrow={1}>
-        {projects.length === 0 ? (
+        {view === "files" && props.filesProps ? (
+          <FilesView {...props.filesProps} width={innerWidth} />
+        ) : projects.length === 0 ? (
           <text>No projects</text>
         ) : (
           projects.map((project) => {

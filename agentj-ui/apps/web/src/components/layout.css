@@ -102,6 +102,7 @@
   gap: 6px;
   min-width: 0;
 }
+.aj-status-row[data-state="warn"] { color: var(--aj-warning); }
 .aj-status-text {
   min-width: 0;
   overflow: hidden;

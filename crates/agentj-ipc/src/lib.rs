@@ -1,5 +1,6 @@
 //! Unified Connection abstraction (design 决策 #1/#2) — transport-agnostic serve.
 pub mod file_list;
+pub(crate) mod login_limiter;
 pub mod tcp;
 pub mod trajectory;
 pub mod web;
@@ -1335,7 +1336,6 @@ impl IpcServer {
     pub async fn serve_connection(
         self: Arc<Self>,
         conn: Box<dyn Connection>,
-        _token: Option<&str>,
     ) -> Result<(), IpcError> {
         let conn_id = conn.id();
         // Register a send-only handle so broadcasts / owner-directed routing
@@ -2475,7 +2475,7 @@ mod tests {
         server.attach_question_notifier();
         let (conn, log, tx) = scripted_conn("tcp-owner");
         let s = Arc::clone(&server);
-        let task = tokio::spawn(async move { s.serve_connection(Box::new(conn), None).await });
+        let task = tokio::spawn(async move { s.serve_connection(Box::new(conn)).await });
         tx.send(r#"{"jsonrpc":"2.0","id":1,"method":"session/new"}"#.to_string())
             .await
             .unwrap();
@@ -4281,9 +4281,9 @@ mod tests {
         let (conn_a, log_a, tx_a) = scripted_conn("tcp-A");
         let (conn_b, log_b, tx_b) = scripted_conn("tcp-B");
         let s = Arc::clone(&server);
-        let task_a = tokio::spawn(async move { s.serve_connection(Box::new(conn_a), None).await });
+        let task_a = tokio::spawn(async move { s.serve_connection(Box::new(conn_a)).await });
         let s = Arc::clone(&server);
-        let task_b = tokio::spawn(async move { s.serve_connection(Box::new(conn_b), None).await });
+        let task_b = tokio::spawn(async move { s.serve_connection(Box::new(conn_b)).await });
         let init = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocol_version":"0.4.0"}}"#;
         tx_a.send(init.to_string()).await.unwrap();
         tx_b.send(init.to_string()).await.unwrap();
@@ -4306,7 +4306,7 @@ mod tests {
         let server = Arc::new(stub_bus_server());
         let (conn_a, log_a, tx_a) = scripted_conn("tcp-A");
         let s = Arc::clone(&server);
-        let task_a = tokio::spawn(async move { s.serve_connection(Box::new(conn_a), None).await });
+        let task_a = tokio::spawn(async move { s.serve_connection(Box::new(conn_a)).await });
         tx_a.send(r#"{"jsonrpc":"2.0","id":1,"method":"session/new"}"#.to_string())
             .await
             .unwrap();
@@ -4357,9 +4357,9 @@ mod tests {
         let (conn_a, log_a, tx_a) = scripted_conn("tcp-A");
         let (conn_b, _log_b, tx_b) = scripted_conn("tcp-B");
         let s = Arc::clone(&server);
-        let task_a = tokio::spawn(async move { s.serve_connection(Box::new(conn_a), None).await });
+        let task_a = tokio::spawn(async move { s.serve_connection(Box::new(conn_a)).await });
         let s = Arc::clone(&server);
-        let task_b = tokio::spawn(async move { s.serve_connection(Box::new(conn_b), None).await });
+        let task_b = tokio::spawn(async move { s.serve_connection(Box::new(conn_b)).await });
 
         // Subscriber A: initialize → session/new → session/subscribe, then idle.
         tx_a.send(

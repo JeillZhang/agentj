@@ -169,11 +169,6 @@ pub(crate) async fn ws_upgrade(
     }
     state.active_ws.fetch_add(1, Ordering::SeqCst);
     let state = state.clone(); // clone the Arc for the upgraded task
-    let required = if cookie_authed {
-        None
-    } else {
-        state.token.clone()
-    };
     let supplied = if cookie_authed {
         state.token.clone()
     } else {
@@ -183,7 +178,7 @@ pub(crate) async fn ws_upgrade(
         let conn = WsConnection::new(socket, peer.to_string()).with_init_token(supplied);
         // 设计 D7: WS 连接走既有 serve_connection（注册表/订阅/鉴权零改动）。
         let _ = Arc::clone(&state.shared)
-            .serve_connection(Box::new(conn), required.as_deref())
+            .serve_connection(Box::new(conn))
             .await;
         state.active_ws.fetch_sub(1, Ordering::SeqCst);
     })

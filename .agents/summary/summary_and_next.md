@@ -1,94 +1,103 @@
 # Summary & Next
 
 > 本文件仅保留**当前正在开发**功能设计文档的内容：进度、剩余步骤、遗留问题与下一步。同步更新时**替换**（不要追加）前一功能内容。
-> 当前功能：**v0.19.0 内核托管 Web UI + 文件树状态补强（无 wire 变更）—— T0–T13 全部落地 + 全量门禁通过 + 文档同步 + 测试验收零 Bug 通过；PR 在 `feature/kernel-hosted-web-ui` 分支创建（合并由用户负责）**
-> ——来源=用户请求：① 内核直接托管 Web UI（`serve`/`dashboard` 同端口静态托管 `agentj-ui/apps/web/dist`，
-> 远程打开 `http://<host>:4096/` 即用、WS 同源零配置）；② 文件树状态补强（目录聚合 git 状态字母）。
-> 范围：`agentj-ipc`（新 `web` 模块 / `ws.rs` / `file_list.rs`）+ `agentj-cli`（`--web-dist` 发现与日志）
-> + `agentj-ui/apps/web`（`FileTree`）+ 文档；**Rust / SDK 协议零 wire 改动**；
-> `PROTOCOL_VERSION` 保持 `0.13.0`；工作区 0.18.1 → 0.19.0。
+> 当前功能：**v0.20.0 Web 加固 + TUI Files 视图（四项，无 wire 变更）—— 实机/HTTP 验收通过（v0.20.1 验收修复，bugfix）**
+> ——来源=用户请求：① `serve_connection` 遗留 token 参数清理；② 登录失败限流（429/Retry-After）；
+> ③ 内核托管 dist 的版本探测 / 资产完整性（SRI）；④ TUI Files 视图（懒加载 `file/list`）。
+> 范围：`agentj-ipc`（新 `login_limiter` / `web.rs` / `tcp.rs` / `ws.rs`）+ `agentj-cli`（启动 dist 版本警告）
+> + `agentj-ui/apps/web`（`build/version-sri*` + `ConnectionStatus` + `App`）+ `agentj-ui/packages/sdk`（`VERSION` 导出）
+> + `agentj-ui/apps/tui`（Files 视图）；**Rust / SDK 协议零 wire 改动**；
+> `PROTOCOL_VERSION` 保持 `0.13.0`；工作区 0.19.0 → 0.20.0 → **0.20.1**（验收 patch）。
 
-## v0.19.0: 内核托管 Web UI + 文件树状态补强 ✅（本次完成）
+## v0.20.1: 验收修复 ✅（本次完成）
 
-- ✅ **T0/T1 文件树目录聚合**：`agentj-ipc` `file/list` 目录 `git_status` 聚合后代最高优先级字母
-  （`aggregate_dir_status`：`U>D>M>A>Unknown`，前缀 `"{dir}/"` 严格匹配，`srcx/` 不误伤 `src/`）；
-  Web `FileTree` 目录行 `StatusCell` 渲染状态字母、移除冗余圆点。
-- ✅ **T2/T3 同端口静态托管**：新 `web` 模块（`WebConfig` + `build_router`）在 `ws_router` 上
-  `nest_service("/assets", ServeDir)`（immutable 长缓存）+ `fallback_service(ServeDir::fallback(
-  ServeFile(index.html)))`（根 `no-cache`、未知页面 200）；`/ws`、`/login`、`/logout` 显式路由优先
-  且不在门后；两静态服务各自包裹 cache 层与登录门（`Router::layer` 会波及 `/ws`）。
-- ✅ **T4/T5 混合鉴权登录门**：回环 peer / 未配置 token 直出；非回环 + token 且无有效 cookie →
-  `302 /login?next=<同源相对路径>`（`safe_next` 白名单 + `pct_encode`；错拼 `/assets/*` 仍 404）；
-  内嵌无 JS 登录页 POST 校验后颁发不透明会话（`uuid`，内存 `RwLock<HashSet>`，重启即失效）经
-  `Set-Cookie: agentj_session=<id>; HttpOnly; SameSite=Lax; Path=/`（无 Max-Age）；`/logout` 撤销。
-- ✅ **T6 WS cookie 第三通道**：有效会话 cookie + 同源 `Origin`（`origin_matches_host` 去 scheme
-  比 Host）免 `?token=`/`initialize.token`；`serve_connection` token 参数遗留，服务端为 cookie 通道
-  装配 initialize 参数时注入 server token（`WsConnection::with_init_token` + `supply_initialize_token`）。
-- ✅ **T7/T8 CLI + e2e**：`serve`/`dashboard --web-dist <PATH>` 四级发现（显式 flag/env 无效即停并
-  告警 → cwd `agentj-ui/apps/web/dist` → exe 相对两档）+ 启动打印 `http://<host>:<port>/`；
-  `e2e_http_static`（断言 `/assets/*` 状态码并持有 stdout reader 防子进程 stdout 提前关闭）。
-- ✅ **T9–T11 版本**：Rust workspace 0.18.1 → 0.19.0（`Cargo.toml`/`Cargo.lock`/`check-version.sh`）+
-  sdk `VERSION` 0.19.0（含断言测试）+ desktop 三处 0.19.0。
-- ✅ **T12 协议文档**：`docs/specs/ipc-protocol.md` §2.3 HTTP 静态面 + 0.19.0 changelog + 设计文档
-  实施状态回填。
-- ✅ **T13 全量门禁 + 文档同步（本次）**：10 项门禁全部通过（见下）；`README.md` / `AGENTS.md` /
-  本文件同步 v0.19.0；文档提交 `docs: auto-sync AGENTS.md, README.md, summary after kernel-hosted web ui (v0.19.0)`。
+- ✅ **实机/HTTP 验收 PASS（2026-09-21，v0.20.0 四项全过）**：
+  - ① 登录限流：第 5 次失败 → `429 + Retry-After 30`；锁定期新尝试继续升级锁定；
+    到期后 302 + cookie；成功登录清零；开放重定向守卫（`next` 白名单）。
+  - ② 版本探测与 SRI：`sha384` 复算匹配；缺失/不一致启动警告；`GET /version` 未鉴权 +
+    `no-store` + 不走 SPA fallback（无 dist 时 null）。
+  - ③ `serve_connection` 清理：`?token=` 403/101、cookie + Origin 通道、回环直通、签名清理。
+  - ④ TUI Files 视图（懒加载 / 键位 / 状态字母）。
+- ✅ **BUG-009（high）**：新增全局 `f` 快捷键劫持 composer 输入 → 修复为
+  `composer ⇄ sidebar` 焦点模型（Tab 切换焦点；单字母快捷键仅 sidebar 焦点生效）——
+  commit `5eea70e`。
+- ✅ **BUG-010（low）**：sidebar 提示词在焦点模型下宣传失效键位 → 提示与焦点模型对齐——
+  commit `12ec55a`。
+- ✅ 两 bug 均回归 verified、零新增 bug；验收 patch：工作区 0.20.0 → 0.20.1
+  （`chore: bump the version to 0.20.1`）+ 文档同步（本提交）。
+- ✅ 版本：`Cargo.toml`/`Cargo.lock`/`check-version.sh`/sdk `VERSION`/desktop ×3 + 两侧
+  lockfile 全部 0.20.1；`PROTOCOL_VERSION` 保持 0.13.0。
 
-## 验证结果（T13 全量门禁，2026-09-20）
+## v0.20.0: Web 加固 + TUI Files 视图 ✅（前置，已验收）
+
+- ✅ **① `serve_connection` 遗留 token 参数清理**：`serve_connection` 与 `TcpIpcServer`
+  的 token 参数/死字段全部移除（v0.19.0 cookie 第三通道后已无调用方）；
+  `WsServerState.token` / `WsQuery.token` / `?token=` / `initialize.token` 语义不变，
+  WS 三鉴权通道（query token / initialize token / 会话 cookie + 同源 Origin）行为不变。
+- ✅ **② 登录限流**：新 `agentj-ipc` `login_limiter` 模块——按来源 IP 计数
+  （`Mutex<HashMap>`，`now: Instant` 注入可测），第 5 次失败起锁定 30s、之后 ×2、封顶 900s；
+  锁定期请求直接 `429 + Retry-After`（秒，`div_ceil(1000)` 向上取整、≥1）且不校验 token，
+  锁定期内新失败继续升级锁定；成功登录清零；idle_ttl 1800s 懒淘汰；max_tracked 1024
+  淘汰最旧条目；回环同样计数（无特殊分支）。`/login` POST 接线（`auth_routes` 透传 peer IP）。
+- ✅ **③ 版本探测与 SRI**：`agentj-ui/apps/web/build/version-sri.ts` 纯函数
+  （`injectSri` / `buildVersionJson` / `finalizeDist`）+ `version-sri-plugin.ts`
+  （Vite `writeBundle`：生成 `dist/version.json`（product/protocol/build_time，单一真源 =
+  `packages/sdk/src/config.ts`）+ 入口 HTML 同源 script/stylesheet/modulepreload 注入
+  `sha384` `integrity`；本地引用缺失即构建失败；零新依赖）；内核 `WebConfig` 读取
+  `DistVersion` + `startup_warnings()`（缺失/不可解析/不一致三类启动警告，不阻断服务）+
+  未鉴权 `GET /version`（200 JSON + `Cache-Control: no-store`，显式路由优先于 SPA fallback）+
+  `TcpIpcServer::web_config()`；CLI `serve` 启动打印警告 + `e2e_http_static` 覆盖；
+  Web `ConnectionStatus` 版本行「版本 UI x · 内核 y」（不一致 `data-state="warn"` + `⚠` +
+  warning 色）、`App` 消费 `initialize.server_info.version`、SDK barrel（`index.ts`）导出 `VERSION`。
+- ✅ **④ TUI Files 视图**：`files.ts` 纯函数（flatten/format/color/updateNode 等）+
+  `files.tsx` `FilesView` + `useFileTree`（懒加载 `file/list` depth=1、stale-reply
+  代际守卫、collapse 保留子树、refresh 根+已展开、会话切换清空重取、不持久化）+
+  `sidebar.tsx` Threads/Files 切换（`f`）+ `app.tsx` 键位（`f` 切换 / `j,k,↑,↓` 移动 /
+  `Enter,l,→` 目录开合 / `h,←` 收起或跳父级 / `r` 刷新）+ mock kernel `file/list` + e2e；
+  目录聚合状态字母色义 M→warning、A→success、U→textCaption、D→error。
+- ✅ **T20 全量门禁 + 文档同步**：10 项门禁全部通过（见下）；README / AGENTS /
+  本文件同步 v0.20.0；文档提交
+  `docs: auto-sync AGENTS.md, README.md, summary after web hardening and tui files (v0.20.0)`。
+- ✅ **Oracle 全量复核 PASS（无 must-fix）** + 修复波：TUI stale-reply 守卫
+  （`fix(tui): drop file-list replies from stale sessions`）+ 父级跳转 clamp
+  （`fix(tui): ignore parent-row jumps that are not visible`）+ Web 版本不一致行 warn 色
+  （`fix(web): color the version mismatch row with the warning token`，含 CSS 契约测试）。
+
+## 验证结果（验收轮门禁，2026-09-21）
 
 | 门禁 | 结果 |
 |---|---|
-| `cargo fmt --check` | clean |
-| `cargo test --workspace` | **591 passed / 0 failed** |
+| `cargo fmt --check` | clean（T20 后 Rust 源无改动） |
+| `cargo test --workspace` | **604 passed / 0 failed** |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 零警告 |
 | `cargo test -p agentj-protocol -- drift` | 2 passed |
-| `npm --prefix agentj-ui test --workspace=@agentj/sdk` | 46 passed |
-| `npm --prefix agentj-ui test --workspace=@agentj/web` | **480 passed / 46 files** |
-| `npm --prefix agentj-ui run build --workspace=@agentj/web` | clean（tsc -b && vite build） |
-| `bun --cwd agentj-ui/apps/tui test` | 71 passed |
-| `./scripts/check-version.sh` | version-ok（0.19.0） |
+| `npm --prefix agentj-ui test --workspace=@agentj/sdk` | 47 passed（6 files） |
+| `npm --prefix agentj-ui test --workspace=@agentj/web` | **491 passed / 47 files** |
+| `npm --prefix agentj-ui run build --workspace=@agentj/web` | clean（`dist/version.json` + `sha384` integrity 已注入） |
+| `bun --cwd agentj-ui/apps/tui test` | **88 passed / 17 files**（BUG-009/010 回归 +3） |
+| `./scripts/check-version.sh` | version-ok（**0.20.1**） |
 | `node agentj-ui/apps/desktop/check-desktop-ui.mjs` | desktop-ui-ok |
 
 > 预置清理：`rm -f ~/.local/share/agentj/sessions/s1.{json,trajectory}`（e2e_permission 硬编码 `s1`
 > 会话，前次运行被中断会 hang —— 预存在环境问题，非本特性引入）。
-
-## 测试验收结果（2026-09-20，零 Bug）
-
-- **门禁 10/10 全绿**（同上表，独立复跑：fmt clean / **591 Rust** / clippy 零警告 / drift 2 /
-  sdk 46 / **web 480（46 files）** / web build clean / tui 71 / version-ok 0.19.0 / desktop-ui-ok）。
-- **探索式 QA 全过**：① 静态托管闭环（`/` 200+no-cache、`/assets` immutable、SPA 未知路径 200、
-  `/ws` 无升级头 400 不回退、错拼 assets 404、启动打印 `web ui on ...`）；② 远程登录门（LAN IP
-  `192.168.3.31` 实测：回环免登录 / 远程 302 `/login?next=/` / 正确 token 颁发无 Max-Age cookie /
-  错 token 401 无 Set-Cookie / 伪造 cookie 302 带 next / `/logout` 撤销 / `next` 白名单
-  `//evil`、`/\evil`、`%2F%09evil`、`https://evil` 全部回落 `/`）；③ WS cookie 通道（curl 手工握手：
-  同源 Origin 101 / 无 Origin 403 / 跨源 403 / `?token=` 旧通道回归 101/403）；④ 文件树目录聚合
-  （临时 git 仓库实测 `docs=M`、`src=D`、`src/deep=D`、clean 文件 None；`file_list` 19 tests +
-  Web `fileTree` 11 tests + 代码确认无 `.dot`）；⑤ 边界（显式无效 `--web-dist` 停止发现 +
-  双 warning + 404 不回落候选；无 dist 404 + hint）。
-- 覆盖说明：本会话无 Playwright MCP，未执行浏览器实机核对；以 curl 级 HTTP 全链路 + 单测 + 代码审查为证。
-- 非 Bug 观察：axum `WebSocketUpgrade` 对非 16 字节 `Sec-WebSocket-Key` 仍接受（既有握手宽容语义，
-  非本特性引入）；`--host 0.0.0.0` 启动日志回显绑定地址（预期行为）。
-- 验收零 Bug → 无 bugfix → **不做 patch bump，工作区保持 0.19.0**。
+> 验收状态：**PASS**（实机/HTTP：429/Retry-After + 锁定升级/到期/清零/重定向守卫；dist
+> `integrity` + `version.json` 复算匹配；`GET /version`；TUI Files 视图）；2 bugs 已修复并回归。
 
 ## 遗留问题 / 遗留 minors
 
-- 登录无速率限制/锁定（LAN 工具定位；候选：失败计数 + 指数退避）。
-- `ServeDir` 跟随符号链接（不 canonicalize）—— dist 为本地构建产物，接受；如需 containment 另立。
-- 错拼的 `/assets/*` 返回 404（assets 子树无 SPA fallback）—— 单页应用常规行为，已记录为已知限制。
-- WS cookie 通道的 token 注入适配：`serve_connection` 的 token 参数已属遗留/冗余（cookie 通道由服务端
-  注入 `initialize.token`）—— 清理该遗留参数为后续重构候选。
-- 多段 Range 返回 416（tower-http 语义，无 multipart）；HTTP 静态请求不受 `max-connections` 限制、
-  不触发停机（既有分类器语义）。
-- 会话内存态：重启 / 换 token 即需重新登录（符合预期）。
-- 文档 nit（可选）：`ipc-protocol.md` 静态面可再补 `/logout` 与 `next` 白名单示例。
-- 复核修复（Phase-5 Oracle）：v4-mapped loopback 已修（`peer_is_loopback` 认 `::ffff:127.0.0.1`）；
-  login `next` 白名单已加固（拒绝反斜杠/控制字符）；`supply_initialize_token` 已补单测。
-  遗留可选项：会话集合无上限/TTL、无 dist 时 `/login` 仍挂载、gate 重定向不保留查询串、
-  `initialize` 缺 `params` 时不注入 token。
+- WS `?token=` 通道未限流（设计范围：限流仅覆盖 `/login` POST；query token 属既有通道语义）。
+- 代理/NAT 共享 IP：反向代理后所有客户端共享源 IP，锁定影响整组；未支持代理头解析（LAN 直连定位）。
+- `/version` 未鉴权：向未登录者暴露版本号（非机密；与登录页同策略，设计取舍）。
+- `build/version-sri.test.ts` 未纳入 `tsc` 类型检查：`tsconfig.node.json` 仅 include
+  `vite.config.ts`，测试文件不在引用图内（由 vitest 运行）；如需纳入另立 tsconfig。
+- 设计已知限制（见 design 文档）：SRI 仅覆盖入口 HTML 直接引用资产；内核不校验哈希
+  （SRI 由浏览器执行）；TUI 32 字符侧栏缩进上限 6 层；Files 展开状态不持久化；
+  Enter 于文件无动作（仅展示）。
+- ~~全局快捷键与 composer 输入拦截~~：已由 BUG-009 `composer ⇄ sidebar` 焦点模型修复
+  （Tab 切换焦点、单字母快捷键仅 sidebar 焦点生效），BUG-010 同步提示词。
 
 ## 下一步
 
-- PR 由测试验收流程在 `feature/kernel-hosted-web-ui` 分支通过后创建（合并由用户负责）。
-- 后续特性候选：① WS cookie 通道遗留 token 参数清理（`serve_connection` 去 token arg）；
-  ② 登录失败速率限制 / 退避；③ 内核托管 dist 的版本探测 / 资产完整性（SRI）；
-  ④ 目录聚合状态在 TUI 侧栏的呈现。
+- 创建 PR（验收通过后由流程自动创建，**合并由用户负责**）。
+- 后续候选：① 登录限流可观测性（日志/指标）；② SRI 覆盖动态 chunk（构建侧 hash 清单）；
+  ③ TUI Files 搜索/过滤与展开状态持久化；④ Web 端焦点模型对齐（单字母快捷键分层目前仅 TUI）。
