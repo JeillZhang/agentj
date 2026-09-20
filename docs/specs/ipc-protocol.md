@@ -50,6 +50,11 @@ WebSocket 与 raw TCP 同端口共存，通过连接分类器按首字节区分 
 - **入口**：`ws://127.0.0.1:<port>/ws`（与 raw TCP 同端口共存，连接分类器按首字节区分 HTTP 与 NDJSON）。
 - **帧语义**：每条 WebSocket Text 消息 = 一条 JSON-RPC 消息（原生帧，无 `\n` 分隔）。
 - **鉴权双通道**：upgrade 阶段 `?token=` 校验（不匹配 → HTTP 403）；连接后 `initialize.token` 经 `auth_gate` 复验（`-32806 NotAuthorized`）。
+- **Web UI 静态托管（HTTP 层，v0.19.0）**：`agentj serve --web-dist <dist>`（或 `AGENTJ_WEB_DIST` / 自动发现 `<cwd>/agentj-ui/apps/web/dist` / 可执行文件相对路径）在**同一端口**托管 Web UI：`/` 返回 `index.html`、`/assets/*` 长缓存（`Cache-Control: public, max-age=31536000, immutable`）、未知页面路径回落 index（200；`/assets/*` 子树无回落，错拼资产 404）。`--web-dist` / `AGENTJ_WEB_DIST` 显式来源无效 → 警告 + 静态面禁用（**不静默回落**自动发现）；自动发现全部落空 → 404 + 启动 hint。
+- **登录门（HTTP 层，v0.19.0）**：`/login`（`GET` 内嵌表单 / `POST` 校验 token）与 `/logout`（`POST` 撤销会话 + 清 cookie）；会话 cookie 名 `agentj_session`，值为不透明随机 ID（服务端内存集合，重启失效），属性 `HttpOnly; SameSite=Lax; Path=/`（会话 cookie，无 `Max-Age`）。
+- **静态资源鉴权（HTTP 层，v0.19.0）**：非回环 peer 且已配置 token 时静态资源经登录门——无/无效 cookie → `302 /login?next=<同源相对路径>`；回环 peer 免登录；未配置 token 免登录。
+- **WS cookie 通道（HTTP 层，v0.19.0）**：`/ws` upgrade 除既有双通道外新增第三条通道——cookie（须携带**同源** `Origin`，其 authority 必须等于 `Host`）+ 有效会话即可升级；cookie 通道连接免 `initialize.token`。`?token=` 与 `initialize.token` 两通道语义不变；无有效通道仍 403。
+- **说明**：以上均为 **HTTP 层行为**；wire 契约、方法/schema 与 `PROTOCOL_VERSION`（`0.13.0`）不变。
 - **生命周期**：WS 连接不参与「最后连接断开 → 全局关闭」（浏览器会话短，不决定内核存亡）；`max_connections` 对 WS 独立计数。
 
 ### 2.4 消息大小上限
@@ -928,6 +933,13 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 - **`session/new` 加性参数** `SessionNewParams.project_root`（可选绝对目录，canonicalize 后随会话持久化；缺省 = 进程 CWD）；旧客户端不传 params 行为不变。
 - **新增值枚举**：`FileKind`、`TodoStatus`、`FileChangeKind`（均带 `Unknown` 变体容忍前向值，见 §9.1）；schema 计数 38 → 51。
 - 全部为**加性变更（只加不改）**，此前客户端零破坏；协议版本 minor 递增 `0.12.1 → 0.13.0`。
+
+#### 0.19.0（内核托管 Web UI：HTTP 静态托管 + 混合鉴权 + 文件树目录聚合状态）
+
+- **wire 零变化**：方法面、`schemas/*` 与 `PROTOCOL_VERSION`（保持 `0.13.0`）均不变；新增能力全部位于 **HTTP 层**。
+- **HTTP 面新增**：同一端口静态托管 Web UI（`serve --web-dist <dist>` / `AGENTJ_WEB_DIST` / 自动发现；`/` → `index.html`、`/assets/*` 长缓存、未知页面路径回落 index 200）；混合鉴权（非回环 peer + token 时静态资源经登录门：`/login` 内嵌表单 + `agentj_session` 不透明会话 cookie（`HttpOnly; SameSite=Lax`）+ `/logout` 撤销）；WebSocket `/ws` 新增 cookie 通道（须同源 `Origin`），`?token=` 与 `initialize.token` 通道不变。
+- **文件树目录聚合状态**：`file/list` 结果的目录项填充**既有可选字段** `FileEntry.git_status`（后裔前缀聚合，优先级 `U > D > M > A`），schema 与 wire 契约零变化。
+- 全部为 HTTP 层新增 + 存量可选字段填充，此前客户端零破坏；工作区 `0.18.1 → 0.19.0`。
 
 #### 后续版本
 
