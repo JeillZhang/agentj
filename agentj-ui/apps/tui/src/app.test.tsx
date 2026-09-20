@@ -216,3 +216,82 @@ describe("App connection screen", () => {
     expect(rendered).not.toContain("[object Object]");
   });
 });
+
+test("files view lazy-loads the tree and expands directories", async () => {
+  const requests: Array<{ method: string; params: Record<string, unknown> }> = [];
+  let router: ResponseRouter | null = null;
+  type Handle = TransportHandle & { send: (l: string) => Promise<string> };
+  const handle: Handle = {
+    close() {},
+    async send(line: string): Promise<string> {
+      const req = JSON.parse(line) as { id: number; method: string; params: Record<string, unknown> };
+      requests.push({ method: req.method, params: req.params ?? {} });
+      let result: unknown = {};
+      if (req.method === METHODS.sessionNew) result = { session_id: "s1" };
+      if (req.method === METHODS.fileList) {
+        result = req.params?.path
+          ? { entries: [{ name: "main.rs", path: "src/main.rs", kind: "file", git_status: "D" }], truncated: false }
+          : { entries: [
+              { name: "src", path: "src", kind: "dir", git_status: "M" },
+              { name: "README.md", path: "README.md", kind: "file", git_status: null },
+            ], truncated: false };
+      }
+      return JSON.stringify({ jsonrpc: "2.0", id: req.id, result });
+    },
+  };
+  const createHandle = (_url: string, r: ResponseRouter): TransportHandle => {
+    router = r;
+    queueMicrotask(() => act(() => handle.onStatusChange?.("open")));
+    return handle;
+  };
+  const setup = await testRender(<App createTransport={createHandle} backoffBaseMs={60000} />, {});
+  const input = getInput(setup);
+  await act(async () => { await setup.waitFor(() => setup.captureCharFrame().toLowerCase().includes("connected")); });
+  // no active session yet: f opens Files with a placeholder and fires no request
+  await act(async () => { input.press("f"); await setup.flush(); });
+  await act(async () => { await setup.waitFor(() => setup.captureCharFrame().includes("select a session")); });
+  expect(requests.some((r) => r.method === METHODS.fileList)).toBe(false);
+  await act(async () => { input.press("f"); await setup.flush(); });
+  await act(async () => { input.press("down"); await setup.flush(); });
+  await act(async () => { input.press("enter"); await setup.flush(); });   // creates s1
+  await act(async () => { await setup.waitFor(() => setup.captureCharFrame().includes("s1")); });
+  await act(async () => { input.press("f"); await setup.flush(); });
+  await act(async () => {
+    await setup.waitFor(() => requests.some((r) => r.method === METHODS.fileList));
+  });
+  expect(requests.find((r) => r.method === METHODS.fileList)?.params).toEqual({
+    session_id: "s1", path: null, depth: 1,
+  });
+  await act(async () => { await setup.waitFor(() => setup.captureCharFrame().includes("src")); });
+  await act(async () => { input.press("enter"); await setup.flush(); });   // expand src
+  await act(async () => {
+    await setup.waitFor(() => requests.some((r) => r.method === METHODS.fileList && r.params.path === "src"));
+  });
+  await act(async () => { await setup.waitFor(() => setup.captureCharFrame().includes("main.rs")); });
+  // j selects the child row; h jumps back up to the parent dir row
+  await act(async () => { input.press("j"); await setup.flush(); });
+  await act(async () => { await setup.waitFor(() => /●\s+main\.rs/.test(setup.captureCharFrame())); });
+  await act(async () => { input.press("h"); await setup.flush(); });
+  await act(async () => { await setup.waitFor(() => /●\s*▼\s*src/.test(setup.captureCharFrame())); });
+  // h on the expanded dir collapses it; l re-expands from the cached children (no new request)
+  const beforeCollapse = requests.filter((r) => r.method === METHODS.fileList).length;
+  await act(async () => { input.press("h"); await setup.flush(); });
+  await act(async () => { await setup.waitFor(() => !setup.captureCharFrame().includes("main.rs")); });
+  await act(async () => { input.press("l"); await setup.flush(); });
+  await act(async () => { await setup.waitFor(() => setup.captureCharFrame().includes("main.rs")); });
+  expect(requests.filter((r) => r.method === METHODS.fileList).length).toBe(beforeCollapse);
+  // r refreshes the root and re-fetches expanded dirs
+  const beforeRefresh = requests.filter((r) => r.method === METHODS.fileList).length;
+  await act(async () => { input.press("r"); await setup.flush(); });
+  await act(async () => {
+    await setup.waitFor(() =>
+      requests.filter((r) => r.method === METHODS.fileList).length >= beforeRefresh + 2);
+  });
+  const refreshed = requests.filter((r) => r.method === METHODS.fileList).slice(beforeRefresh);
+  expect(refreshed.some((r) => r.params.path === null)).toBe(true);
+  expect(refreshed.some((r) => r.params.path === "src")).toBe(true);
+  await act(async () => { input.press("f"); await setup.flush(); });
+  await act(async () => { await setup.waitFor(() => setup.captureCharFrame().includes("Threads")); });
+  act(() => setup.renderer.destroy());
+  void router;
+});

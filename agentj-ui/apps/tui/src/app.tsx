@@ -21,7 +21,9 @@ import { Palette } from "./palette.tsx";
 import { ModelSelector, useModelConfig } from "./models.tsx";
 import { ThemeProvider, useTheme } from "./theme.tsx";
 import Sidebar, { SIDEBAR_WIDTH, loadCollapsed, loadProjects, saveCollapsed } from "./sidebar.tsx";
-import type { Project } from "./sidebar.tsx";
+import type { Project, SidebarView } from "./sidebar.tsx";
+import { useFileTree } from "./files.tsx";
+import { clampSelection, flattenVisible, moveSelection, parentPath } from "./files.ts";
 export interface TransportHandle {
   onStatusChange?: (s: TransportStatus) => void;
   close(): void;
@@ -348,6 +350,16 @@ function AppInner({ url, createTransport, backoffBaseMs = 1000 }: AppProps) {
   const modelConfig = useModelConfig(client);
   const [transcriptRows, setTranscriptRows] = useState<TranscriptRow[]>([]);
   const [todos, setTodos] = useState<TodoState>(EMPTY_TODOS);
+  const [sidebarView, setSidebarView] = useState<SidebarView>("threads");
+  const [filesIdx, setFilesIdx] = useState(0);
+  const fileTree = useFileTree(client, sidebarView === "files" ? st.activeId : null);
+  const filesRows = useMemo(() => flattenVisible(fileTree.nodes ?? []), [fileTree.nodes]);
+  useEffect(() => {
+    setFilesIdx((v) => clampSelection(v, filesRows.length));
+  }, [filesRows.length]);
+  useEffect(() => {
+    setFilesIdx(0);
+  }, [st.activeId]);
   useEffect(() => {
     setTranscriptRows([]);
     setTodos(EMPTY_TODOS);
@@ -422,6 +434,49 @@ function AppInner({ url, createTransport, backoffBaseMs = 1000 }: AppProps) {
     if (paletteCtrl.paletteQuery !== null || paletteCtrl.modelOpen || permReq) return;
     const name = (key.name ?? "").toLowerCase();
     const seq = key.sequence ?? "";
+    if (name === "f") {
+      setSidebarView((v) => (v === "files" ? "threads" : "files"));
+      return;
+    }
+    if (sidebarView === "files") {
+      const rows = filesRows;
+      const dirRow = rows[filesIdx];
+      const toggleDir = (): void => {
+        if (!dirRow || dirRow.node.kind !== "dir") return;
+        if (dirRow.node.expanded) fileTree.collapse(dirRow.node.path);
+        else fileTree.toggle(dirRow.node);
+      };
+      if (name === "j" || name === "down" || seq === "\u001B[B") {
+        setFilesIdx((v) => moveSelection(v, 1, rows.length));
+        return;
+      }
+      if (name === "k" || name === "up" || seq === "\u001B[A") {
+        setFilesIdx((v) => moveSelection(v, -1, rows.length));
+        return;
+      }
+      if (name === "return" || name === "enter" || seq === "\r" || seq === "\n") {
+        toggleDir();
+        return;
+      }
+      if (name === "l" || name === "right" || seq === "\u001B[C") {
+        toggleDir();
+        return;
+      }
+      if (name === "h" || name === "left" || seq === "\u001B[D") {
+        if (!dirRow) return;
+        if (dirRow.node.kind === "dir" && dirRow.node.expanded) {
+          fileTree.collapse(dirRow.node.path);
+          return;
+        }
+        const parent = parentPath(dirRow.node.path);
+        if (parent) setFilesIdx(rows.findIndex((r) => r.node.path === parent));
+        return;
+      }
+      if (name === "r") {
+        void fileTree.refresh();
+        return;
+      }
+    }
     if (name === "j" || name === "down" || seq === "\u001B[B") {
       setSidebarIdx((v) => Math.min(sidebarEntries.length - 1, v + 1));
       return;
@@ -480,6 +535,15 @@ function AppInner({ url, createTransport, backoffBaseMs = 1000 }: AppProps) {
           onToggle={handleToggle}
           onSelect={handleSelect}
           width={SIDEBAR_WIDTH}
+          view={sidebarView}
+          filesProps={{
+            nodes: fileTree.nodes,
+            selected: filesIdx,
+            error: fileTree.error,
+            truncated: fileTree.truncated,
+            noSession: st.activeId === null,
+            width: 0,
+          }}
         />
         <box flexDirection="column" flexGrow={1} paddingLeft={1}>
           {status === "open" && st.activeId === null && !permReq && !paletteCtrl.modelOpen && paletteCtrl.paletteQuery === null ? (
