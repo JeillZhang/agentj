@@ -1,6 +1,8 @@
 import { expect, test } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import ConnectionStatus from "./ConnectionStatus";
 
 const base = {
@@ -79,4 +81,10 @@ test("omits the version row when no versions are provided", () => {
   render(<ConnectionStatus {...base} />);
   fireEvent.mouseEnter(screen.getByTestId("connection-status"));
   expect(screen.queryByTestId("status-versions")).toBeNull();
+});
+
+test("layout.css colors the version mismatch row with the warning token", () => {
+  const css = readFileSync(join(import.meta.dirname, "layout.css"), "utf8");
+  const rule = /\.aj-status-row\[data-state="warn"\]\s*\{[^}]*color:\s*var\(--aj-warning\)/;
+  expect(css).toMatch(rule);
 });
