@@ -53,3 +53,30 @@ test("unreachable state drops model/modules and shows the idle dot", () => {
   expect(panel).not.toHaveTextContent("deepseek-chat");
   expect(panel.querySelector(".aj-status-dot")).toHaveAttribute("data-state", "off");
 });
+
+test("shows UI and kernel versions with a mismatch warning", () => {
+  render(<ConnectionStatus {...base} uiVersion="0.20.0" serverVersion="0.20.0" />);
+  fireEvent.mouseEnter(screen.getByTestId("connection-status"));
+  const row = screen.getByTestId("status-versions");
+  expect(row).toHaveTextContent("版本 UI 0.20.0 · 内核 0.20.0");
+  expect(row).toHaveAttribute("data-state", "ok");
+});
+
+test("warns on a version mismatch and shows unknown when the server is unknown", () => {
+  const { rerender } = render(
+    <ConnectionStatus {...base} uiVersion="0.20.0" serverVersion="0.19.0" />,
+  );
+  fireEvent.mouseEnter(screen.getByTestId("connection-status"));
+  expect(screen.getByTestId("status-versions")).toHaveAttribute("data-state", "warn");
+  expect(screen.getByTestId("status-versions")).toHaveTextContent("⚠");
+  fireEvent.mouseLeave(screen.getByTestId("connection-status"));
+  rerender(<ConnectionStatus {...base} uiVersion="0.20.0" serverVersion={null} />);
+  fireEvent.mouseEnter(screen.getByTestId("connection-status"));
+  expect(screen.getByTestId("status-versions")).toHaveTextContent("内核 未知");
+});
+
+test("omits the version row when no versions are provided", () => {
+  render(<ConnectionStatus {...base} />);
+  fireEvent.mouseEnter(screen.getByTestId("connection-status"));
+  expect(screen.queryByTestId("status-versions")).toBeNull();
+});
