@@ -270,7 +270,7 @@ SRI 由浏览器强制执行；内核侧哈希校验需新直接依赖且威胁�
 | ④ 无活动会话 | Files 视图显示占位提示；`f` 仍可切换 |
 | ④ `file/list` 返回错误（如 `-32802`/`-32807`） | 内联错误行（红字，含错误信息）；树保持可用 |
 | ④ 目录加载中 / 空目录 | 加载中 → 暗色 `…` 行；空 → 暗色 `(empty)` 行 |
-| ④ `truncated: true` | 该目录子级末尾追加暗色 `…（已截断）` 行 |
+| ④ `truncated: true` | 该目录子级末尾追加暗色 `… (truncated)` 行 |
 | ④ 会话切换 / 删除 | 清空树与选中态；`activeId` 变化路径统一处理 |
 | ① 删除参数 | 无运行时错误路径；编译期由 clippy dead-code 兜底 |
 
@@ -347,3 +347,13 @@ SRI 由浏览器强制执行；内核侧哈希校验需新直接依赖且威胁�
 7. **④ 32 字符侧栏**：缩进上限 6 层、名称按字符预算截断；极深路径不可读全名。
 8. **④ 展开状态不持久化**：会话切换/重启后回到根层（显式取舍，见 D11）。
 9. **④ 无文件操作**：Enter 于文件无动作（仅展示）；不做搜索/过滤。
+
+## 实施状态
+
+- **落地版本**：工作区 `0.20.0`（`PROTOCOL_VERSION` 保持 `0.13.0`，无 wire 变更）；分支 `feature/web-hardening-and-tui-files`。
+- **门禁（全绿）**：
+  - `cargo fmt` / `cargo test --workspace` / `cargo clippy --workspace --all-targets -- -D warnings` / `cargo test -p agentj-protocol -- drift`（2 passed）
+  - SDK / Web / TUI 三端套件（sdk 46；web 与 tui 新增后全绿）
+  - `npm --prefix agentj-ui run build --workspace=@agentj/web`
+  - `./scripts/check-version.sh`（`0.20.0`）
+  - `node agentj-ui/apps/desktop/check-desktop-ui.mjs`

@@ -54,6 +54,8 @@ WebSocket 与 raw TCP 同端口共存，通过连接分类器按首字节区分 
 - **登录门（HTTP 层，v0.19.0）**：`/login`（`GET` 内嵌表单 / `POST` 校验 token）与 `/logout`（`POST` 撤销会话 + 清 cookie）；会话 cookie 名 `agentj_session`，值为不透明随机 ID（服务端内存集合，重启失效），属性 `HttpOnly; SameSite=Lax; Path=/`（会话 cookie，无 `Max-Age`）。
 - **静态资源鉴权（HTTP 层，v0.19.0）**：非回环 peer 且已配置 token 时静态资源经登录门——无/无效 cookie → `302 /login?next=<同源相对路径>`；回环 peer 免登录；未配置 token 免登录。
 - **WS cookie 通道（HTTP 层，v0.19.0）**：`/ws` upgrade 除既有双通道外新增第三条通道——cookie（须携带**同源** `Origin`，其 authority 必须等于 `Host`）+ 有效会话即可升级；cookie 通道连接免 `initialize.token`。`?token=` 与 `initialize.token` 两通道语义不变；无有效通道仍 403。
+- **版本探针 `GET /version`（HTTP 层，v0.20.0，未鉴权）**：返回 `200 application/json` 且 `Cache-Control: no-store`；JSON 形状 `{product_version, protocol_version, dist_present, dist: {product_version, protocol_version, build_time} | null}`（`product_version` = 内核二进制版本，`protocol_version` = 编译期协议常量；`dist` = 挂载 dist 的 `version.json` 事实，缺失或不可解析时为 `null`，此时仍返回 200）。与 `/login` 同类显式注册为路由（**不置于登录门后**），并**优先于 SPA fallback**——否则会被 `index.html` 以 200 吞掉。
+- **登录限流（HTTP 层，v0.20.0）**：`/login` POST 按来源 IP 计数失败尝试，第 5 次失败起指数锁定（`min(30s × 2^(n−5), 900s)`，即 30s 起、×2、封顶 15min）；锁定期响应 `429` + `Retry-After: <秒，向上取整、≥1>`，且**不校验 token**（避免时序侧信道），锁定期内的新尝试继续升级锁定；登录成功清零。内存态、无持久化，重启即清空。
 - **说明**：以上均为 **HTTP 层行为**；wire 契约、方法/schema 与 `PROTOCOL_VERSION`（`0.13.0`）不变。
 - **生命周期**：WS 连接不参与「最后连接断开 → 全局关闭」（浏览器会话短，不决定内核存亡）；`max_connections` 对 WS 独立计数。
 
@@ -940,6 +942,13 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 - **HTTP 面新增**：同一端口静态托管 Web UI（`serve --web-dist <dist>` / `AGENTJ_WEB_DIST` / 自动发现；`/` → `index.html`、`/assets/*` 长缓存、未知页面路径回落 index 200）；混合鉴权（非回环 peer + token 时静态资源经登录门：`/login` 内嵌表单 + `agentj_session` 不透明会话 cookie（`HttpOnly; SameSite=Lax`）+ `/logout` 撤销）；WebSocket `/ws` 新增 cookie 通道（须同源 `Origin`），`?token=` 与 `initialize.token` 通道不变。
 - **文件树目录聚合状态**：`file/list` 结果的目录项填充**既有可选字段** `FileEntry.git_status`（后裔前缀聚合，优先级 `U > D > M > A`），schema 与 wire 契约零变化。
 - 全部为 HTTP 层新增 + 存量可选字段填充，此前客户端零破坏；工作区 `0.18.1 → 0.19.0`。
+
+#### 0.20.0（内核托管面加固 + TUI 文件视图：HTTP 面与构建工具链）
+
+- **wire 零变化**：方法面、`schemas/*` 与 `PROTOCOL_VERSION`（保持 `0.13.0`）均不变；新增能力全部位于 **HTTP 层与构建工具链**（`GET /version` 为 HTTP 静态面路由，**非** JSON-RPC 方法）。
+- **HTTP 面新增**：`GET /version` 未鉴权版本探针（`200 application/json` + `Cache-Control: no-store`，返回内核 `product_version`/`protocol_version` 与 dist 版本事实 `dist_present`/`dist`；显式路由优先于 SPA fallback、不置于登录门后）；`/login` POST 登录限流（按来源 IP 计数，第 5 次失败起指数锁定 30s ×2 封顶 15min，`429 + Retry-After`（秒、向上取整、≥1），锁定期不校验 token 且新尝试升级锁定，成功清零）。
+- **构建工具链新增**：web 构建生成 `dist/version.json`（`product_version`/`protocol_version`/`build_time`）并向入口 HTML 同源引用注入 `sha384` `integrity`（本地引用缺失即构建失败）；内核启动比对 dist 版本，缺失/不可解析/不一致 → 启动警告（**不阻断服务**）。
+- 另含**纯前端** TUI 侧栏 `Files` 视图（复用既有 `file/list`，无 wire 变化）；全部为 HTTP 层与构建期新增，此前客户端零破坏；工作区 `0.19.0 → 0.20.0`。
 
 #### 后续版本
 
