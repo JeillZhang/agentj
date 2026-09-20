@@ -353,12 +353,14 @@ SRI 由浏览器强制执行；内核侧哈希校验需新直接依赖且威胁�
 
 ## 实施状态
 
-- **落地版本**：工作区 `0.20.0`（`PROTOCOL_VERSION` 保持 `0.13.0`，无 wire 变更）；分支 `feature/web-hardening-and-tui-files`。
+- **落地版本**：工作区 `0.20.1`（验收 patch；`PROTOCOL_VERSION` 保持 `0.13.0`，无 wire 变更）；分支 `feature/web-hardening-and-tui-files`。
 - **门禁（全绿）**：
   - `cargo fmt` / `cargo test --workspace` / `cargo clippy --workspace --all-targets -- -D warnings` / `cargo test -p agentj-protocol -- drift`（2 passed）
-  - SDK / Web / TUI 三端套件（sdk 47；web 491（47 files）与 tui 85（17 files）新增后全绿）
+  - SDK / Web / TUI 三端套件（sdk 47；web 491（47 files）与 tui 88（17 files）新增后全绿）
   - `npm --prefix agentj-ui run build --workspace=@agentj/web`
-  - `./scripts/check-version.sh`（`0.20.0`）
+  - `./scripts/check-version.sh`（`0.20.1`）
   - `node agentj-ui/apps/desktop/check-desktop-ui.mjs`
+
+- **实机/HTTP 验收（2026-09-21）PASS**：登录限流（429/Retry-After + 锁定升级/到期/清零/重定向守卫）/ 版本探测与 SRI / `serve_connection` 清理 / TUI Files 视图四项全过；发现并修复 BUG-009（high：全局 `f` 快捷键劫持 composer 输入 → `composer ⇄ sidebar` 焦点模型，`5eea70e`）与 BUG-010（low：sidebar 提示词对齐焦点模型，`12ec55a`），均回归 verified、零新增 bug；TUI 85 → 88 tests（17 files）。
 
 - **Oracle 全量复核 PASS（无 must-fix）** + 修复波（TUI stale-reply 守卫 + 父级跳转 clamp + Web 版本不一致行 warn 色 + CSS 契约测试）。
