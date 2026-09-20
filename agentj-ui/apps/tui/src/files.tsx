@@ -1,5 +1,5 @@
 // agentj-ui/apps/tui/src/files.tsx (new)
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { METHODS } from "@agentj/sdk";
 import type { RpcClient } from "@agentj/sdk";
 import { useTheme } from "./theme.tsx";
@@ -58,6 +58,7 @@ export function useFileTree(client: RpcClient | null, sessionId: string | null) 
   const [nodes, setNodes] = useState<FileNode[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [truncated, setTruncated] = useState(false);
+  const generation = useRef(0);
 
   const request = useCallback(async (path: string | null): Promise<FileListReply> => {
     if (!client || !sessionId) throw new Error("no active session");
@@ -67,27 +68,33 @@ export function useFileTree(client: RpcClient | null, sessionId: string | null) 
   }, [client, sessionId]);
 
   const loadDir = useCallback(async (path: string): Promise<void> => {
+    const started = generation.current;
     try {
       const reply = await request(path);
+      if (generation.current !== started) return;
       setNodes((prev) => updateNode(prev ?? [], path, (n) => ({
         ...n, loading: false, expanded: true, error: null,
         truncated: Boolean(reply.truncated),
         children: (reply.entries ?? []).map(buildFileNode),
       })));
     } catch (e) {
+      if (generation.current !== started) return;
       setNodes((prev) => updateNode(prev ?? [], path, (n) => ({ ...n, loading: false, error: messageOf(e) })));
     }
   }, [request]);
 
   const loadRoot = useCallback(async (): Promise<void> => {
+    const started = generation.current;
     setNodes(null);
     setError(null);
     setTruncated(false);
     try {
       const reply = await request(null);
+      if (generation.current !== started) return;
       setNodes((reply.entries ?? []).map(buildFileNode));
       setTruncated(Boolean(reply.truncated));
     } catch (e) {
+      if (generation.current !== started) return;
       setError(messageOf(e));
       setNodes([]);
     }
@@ -115,11 +122,16 @@ export function useFileTree(client: RpcClient | null, sessionId: string | null) 
       }
     };
     walk(nodes);
+    const started = generation.current;
     await loadRoot();
-    for (const path of expanded) await loadDir(path);
+    for (const path of expanded) {
+      if (generation.current !== started) return;
+      await loadDir(path);
+    }
   }, [nodes, loadRoot, loadDir]);
 
   useEffect(() => {
+    generation.current += 1;
     if (!sessionId) {
       setNodes(null);
       setError(null);

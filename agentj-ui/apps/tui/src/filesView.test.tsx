@@ -1,9 +1,11 @@
 // agentj-ui/apps/tui/src/filesView.test.tsx
 import { describe, expect, test } from "bun:test";
 import { testRender } from "@opentui/react/test-utils";
-import { act } from "react";
+import { act, useState } from "react";
+import type { RpcClient } from "@agentj/sdk";
 import { ThemeProvider } from "./theme.tsx";
-import { FilesView } from "./files.tsx";
+import { FilesView, useFileTree } from "./files.tsx";
+import { flattenVisible } from "./files.ts";
 import type { FileNode } from "./files.ts";
 
 function node(partial: Partial<FileNode> & { name: string; path: string; kind: "file" | "dir" }): FileNode {
@@ -90,5 +92,74 @@ describe("FilesView", () => {
     expect(failedFrame).toContain("PathNotAllowed");
     expect(failedFrame).toContain("gone");
     act(() => failedDir.renderer.destroy());
+  });
+});
+
+type Deferred = { promise: Promise<unknown>; resolve: (value: unknown) => void };
+
+function deferred(): Deferred {
+  let resolve!: (value: unknown) => void;
+  const promise = new Promise<unknown>((res) => { resolve = res; });
+  return { promise, resolve };
+}
+
+type FileListCall = { session: unknown; deferred: Deferred };
+
+function fakeClient(calls: FileListCall[]): RpcClient {
+  return {
+    request: (_method: string, params: Record<string, unknown>) => {
+      const pending = deferred();
+      calls.push({ session: params.session_id, deferred: pending });
+      return pending.promise;
+    },
+  } as unknown as RpcClient;
+}
+
+function FilesProbe({ client, control }: {
+  client: RpcClient | null;
+  control: { setSession: (sessionId: string | null) => void };
+}) {
+  const [sessionId, setSessionId] = useState<string | null>("s1");
+  control.setSession = setSessionId;
+  const tree = useFileTree(client, sessionId);
+  const rows = flattenVisible(tree.nodes ?? []);
+  return (
+    <box flexDirection="column">
+      {rows.map((row) => <text key={row.node.path}>{row.node.name}</text>)}
+    </box>
+  );
+}
+
+describe("useFileTree", () => {
+  test("drops a file-list reply that resolves after the session changed", async () => {
+    const calls: FileListCall[] = [];
+    const control = { setSession: (_: string | null) => {} };
+    const setup = await testRender(
+      <ThemeProvider><FilesProbe client={fakeClient(calls)} control={control} /></ThemeProvider>,
+      { width: 40, height: 10 },
+    );
+    await act(async () => { await setup.flush(); });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.session).toBe("s1");
+
+    act(() => control.setSession("s2"));
+    await act(async () => { await setup.flush(); });
+    expect(calls).toHaveLength(2);
+    expect(calls[1]!.session).toBe("s2");
+
+    // s1's late reply must never patch s2's tree.
+    await act(async () => {
+      calls[0]!.deferred.resolve({ entries: [{ name: "s1-only.txt", path: "s1-only.txt", kind: "file" }] });
+    });
+    await act(async () => { await setup.flush(); });
+    expect(setup.captureCharFrame()).not.toContain("s1-only.txt");
+
+    // s2's own reply still lands normally.
+    await act(async () => {
+      calls[1]!.deferred.resolve({ entries: [{ name: "s2-only.txt", path: "s2-only.txt", kind: "file" }] });
+    });
+    await act(async () => { await setup.flush(); });
+    expect(setup.captureCharFrame()).toContain("s2-only.txt");
+    act(() => setup.renderer.destroy());
   });
 });
