@@ -403,9 +403,35 @@ fn static_surface(
         .fallback_service(gate_spa.layer(spa))
 }
 
+/// Unauthenticated version probe: reports this server's product/protocol
+/// versions plus the optional facts read from the mounted dist, so a remote
+/// client can detect a stale UI without holding a session cookie. Registered as
+/// an explicit route (like `/login`), so the login gate and the SPA fallback
+/// never answer it.
+async fn version_handler(web: std::sync::Arc<WebConfig>) -> axum::response::Response {
+    let dist = web.dist_version();
+    let body = serde_json::json!({
+        "product_version": env!("CARGO_PKG_VERSION"),
+        "protocol_version": agentj_protocol::PROTOCOL_VERSION,
+        "dist_present": web.dist.is_some(),
+        "dist": dist.map(|v| serde_json::json!({
+            "product_version": v.product_version,
+            "protocol_version": v.protocol_version,
+            "build_time": v.build_time,
+        })),
+    });
+    let mut res = axum::Json(body).into_response();
+    res.headers_mut().insert(
+        axum::http::header::CACHE_CONTROL,
+        axum::http::HeaderValue::from_static("no-store"),
+    );
+    res
+}
+
 /// Build the HTTP router for one accepted connection: the `/ws` upgrade route
 /// plus — when a dist was resolved — the statically gated SPA surface. `/ws`,
-/// `/login` and `/logout` are never behind the gate (no redirect loop).
+/// `/login`, `/logout` and `/version` are never behind the gate (no redirect
+/// loop; the version probe stays readable for remote peers).
 pub fn build_router(
     state: std::sync::Arc<crate::ws::WsServerState>,
     peer: std::net::SocketAddr,
@@ -419,7 +445,16 @@ pub fn build_router(
             async move { crate::ws::ws_upgrade(state, q, peer, ws, headers).await }
         }
     });
-    let mut router = axum::Router::new().route("/ws", ws_route);
+    let version_route = {
+        let web = state.web.clone();
+        move || {
+            let web = web.clone();
+            async move { version_handler(web).await }
+        }
+    };
+    let mut router = axum::Router::new()
+        .route("/ws", ws_route)
+        .route("/version", axum::routing::get(version_route));
     router = auth_routes(router, state.web.clone(), peer);
     if let Some(dist) = state.web.dist.clone() {
         router = static_surface(router, state.web.clone(), peer, &dist);
@@ -526,6 +561,55 @@ mod tests {
         for d in [aligned, mismatched, legacy, broken] {
             std::fs::remove_dir_all(&d).ok();
         }
+    }
+
+    #[tokio::test]
+    async fn version_endpoint_reports_server_and_dist_versions() {
+        let dist = temp_dist("version-route");
+        std::fs::write(
+            dist.join("version.json"),
+            "{\"product_version\":\"0.0.1-test\",\"protocol_version\":\"0.0.1\",\"build_time\":\"2026-09-20T00:00:00Z\"}",
+        ).unwrap();
+        let state = test_state(crate::web::WebConfig::new(
+            Some(dist.clone()),
+            Some("secret".into()),
+        ));
+        let remote: std::net::SocketAddr = "203.0.113.7:41000".parse().unwrap();
+        let (s, h, b) = get(crate::web::build_router(state, remote), "/version").await;
+        assert_eq!(s, axum::http::StatusCode::OK);
+        assert_eq!(
+            h.get(axum::http::header::CACHE_CONTROL).unwrap(),
+            "no-store"
+        );
+        assert!(
+            h.get(axum::http::header::CONTENT_TYPE)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with("application/json")
+        );
+        assert!(
+            !b.contains("agentj-index"),
+            "/version must not fall back to the SPA: {b}"
+        );
+        let v: serde_json::Value = serde_json::from_str(&b).unwrap();
+        assert_eq!(v["product_version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(v["protocol_version"], agentj_protocol::PROTOCOL_VERSION);
+        assert_eq!(v["dist_present"], true);
+        assert_eq!(v["dist"]["product_version"], "0.0.1-test");
+        assert_eq!(v["dist"]["build_time"], "2026-09-20T00:00:00Z");
+        std::fs::remove_dir_all(&dist).ok();
+    }
+
+    #[tokio::test]
+    async fn version_endpoint_without_dist_reports_null_dist() {
+        let state = test_state(crate::web::WebConfig::disabled());
+        let peer: std::net::SocketAddr = "203.0.113.7:41000".parse().unwrap();
+        let (s, _, b) = get(crate::web::build_router(state, peer), "/version").await;
+        assert_eq!(s, axum::http::StatusCode::OK);
+        let v: serde_json::Value = serde_json::from_str(&b).unwrap();
+        assert_eq!(v["dist_present"], false);
+        assert!(v["dist"].is_null());
     }
 
     fn test_state(web: crate::web::WebConfig) -> std::sync::Arc<crate::ws::WsServerState> {
