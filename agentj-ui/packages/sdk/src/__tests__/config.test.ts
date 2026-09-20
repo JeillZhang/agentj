@@ -65,4 +65,9 @@ describe("config", () => {
       "ws://127.0.0.1:4096/ws",
     );
   });
+
+  it("re-exports VERSION through the package barrel", async () => {
+    const barrel = (await import("../index.js")) as { VERSION?: string };
+    expect(barrel.VERSION).toBe(VERSION);
+  });
 });
