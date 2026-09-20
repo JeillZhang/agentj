@@ -4,6 +4,7 @@ import { act } from "react";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { ThemeProvider } from "./theme.tsx";
 
 describe("Sidebar", () => {
   test("renders Threads and projects", async () => {
@@ -86,7 +87,8 @@ describe("Sidebar", () => {
         expect(mod.loadCollapsed()).toEqual({ foo: false, bar: true });
       }
     } finally {
-      process.env.XDG_CONFIG_HOME = prevXdg;
+      if (prevXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+      else process.env.XDG_CONFIG_HOME = prevXdg;
       fs.rmSync(tmp, { recursive: true, force: true });
     }
   });
@@ -124,6 +126,28 @@ describe("Sidebar", () => {
     // active session should show ●
     expect(frame).toMatch(/●/);
     expect(frame).toMatch(/hi/);
+    act(() => setup.renderer.destroy());
+  });
+
+  test("files view renders the tree and the switch hint", async () => {
+    const { default: Sidebar } = await import("./sidebar.tsx");
+    const nodes = [
+      { name: "src", path: "src", kind: "dir" as const, gitStatus: "M" as const, expanded: false,
+        loading: false, error: null, truncated: false, children: null },
+    ];
+    const setup = await testRender(
+      <ThemeProvider>
+        <Sidebar projects={[]} sessions={[]} view="files"
+          filesProps={{ nodes, selected: 0, error: null, truncated: false, noSession: false, width: 28 }} />
+      </ThemeProvider>,
+      { width: 80, height: 24 },
+    );
+    await act(async () => { await setup.flush(); });
+    const frame = setup.captureCharFrame();
+    expect(frame).toMatch(/Files/);
+    expect(frame).toMatch(/r refresh/);
+    expect(frame).toMatch(/src/);
+    expect(frame).toMatch(/M/);
     act(() => setup.renderer.destroy());
   });
 });
