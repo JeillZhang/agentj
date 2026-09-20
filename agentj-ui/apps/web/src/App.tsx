@@ -4,6 +4,7 @@ import {
   PROTOCOL_VERSION,
   ResponseRouter,
   RpcClient,
+  VERSION,
   WebSocketTransport,
   resolveWsUrl,
   parseProgress,
@@ -166,6 +167,7 @@ function useSharedKernel(wsUrl: string, seq: number) {
   const [banner, setBanner] = useState<string | null>(null);
   const [unreachable, setUnreachable] = useState(false);
   const [modelName, setModelName] = useState<string | null>(null);
+  const [serverVersion, setServerVersion] = useState<string | null>(null);
   const [client, setClient] = useState<RpcClient | null>(null);
   const transportRef = useRef<WebSocketTransport | null>(null);
 
@@ -190,6 +192,7 @@ function useSharedKernel(wsUrl: string, seq: number) {
       .initialize(PROTOCOL_VERSION)
       .then((res) => {
         if (cancelled) return;
+        setServerVersion(res.server_info?.version ?? null);
         if (!isProtocolCompatible(PROTOCOL_VERSION, res.protocol_version)) {
           setBanner(`expected ${PROTOCOL_VERSION}, got ${res.protocol_version}`);
         } else if (res.protocol_version !== PROTOCOL_VERSION) {
@@ -222,7 +225,7 @@ function useSharedKernel(wsUrl: string, seq: number) {
     };
   }, [wsUrl, seq]);
 
-  return { client, modules, status, banner, unreachable, modelName };
+  return { client, modules, status, banner, unreachable, modelName, serverVersion };
 }
 
 function useApproval(client: RpcClient | null, activeSessionId: string | null) {
@@ -279,7 +282,8 @@ function useApproval(client: RpcClient | null, activeSessionId: string | null) {
 export default function App() {
   const [wsUrl, setWsUrl] = useState(initialWsUrl);
   const [connectSeq, setConnectSeq] = useState(0);
-  const { client: sharedClient, modules, status, banner, unreachable, modelName } = useSharedKernel(wsUrl, connectSeq);
+  const { client: sharedClient, modules, status, banner, unreachable, modelName, serverVersion } =
+    useSharedKernel(wsUrl, connectSeq);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const { pending, approvalError, respond, close } = useApproval(sharedClient, activeSessionId);
   const [theme, setTheme] = useState<ThemeMode>(storedThemeMode() ?? "system");
@@ -467,6 +471,8 @@ export default function App() {
             label={connState === "connected" ? `已连接 ${wsUrl}` : "未连接"}
             model={modelName}
             modules={modules.map((m) => `${m.id}: ${m.state}`)}
+            uiVersion={VERSION}
+            serverVersion={serverVersion}
           />
         </div>
         <div className="aj-topbar__center" aria-hidden="true" />
