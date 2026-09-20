@@ -9,11 +9,40 @@ use crate::login_limiter::{LoginLimiter, Throttle};
 /// Cookie carrying the opaque session id issued after a successful login.
 pub const SESSION_COOKIE: &str = "agentj_session";
 
+/// Version facts written by the UI build into `dist/version.json`, so the
+/// kernel can flag a dist that predates (or postdates) this server.
+#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
+pub struct DistVersion {
+    pub product_version: String,
+    pub protocol_version: String,
+    #[serde(default)]
+    pub build_time: Option<String>,
+}
+
+/// Read `version.json` from the resolved dist. A missing dist or a missing file
+/// is normal (legacy build) and yields no error; only a read/parse failure does.
+fn read_dist_version(dist: Option<&std::path::Path>) -> (Option<DistVersion>, Option<String>) {
+    let Some(dir) = dist else { return (None, None) };
+    let path = dir.join("version.json");
+    if !path.is_file() {
+        return (None, None);
+    }
+    match std::fs::read_to_string(&path) {
+        Ok(raw) => match serde_json::from_str::<DistVersion>(&raw) {
+            Ok(version) => (Some(version), None),
+            Err(e) => (None, Some(e.to_string())),
+        },
+        Err(e) => (None, Some(e.to_string())),
+    }
+}
+
 /// Static-web-UI runtime config: resolved dist directory plus the optional
 /// access token and the in-memory set of issued sessions (D3, no persistence).
 pub struct WebConfig {
     pub dist: Option<std::path::PathBuf>,
     pub token: Option<String>,
+    dist_version: Option<DistVersion>,
+    dist_version_error: Option<String>,
     sessions: std::sync::RwLock<std::collections::HashSet<String>>,
     login_limiter: LoginLimiter,
 }
@@ -24,9 +53,12 @@ impl WebConfig {
     }
     /// Empty-string tokens normalize to `None` (no auth configured).
     pub fn new(dist: Option<std::path::PathBuf>, token: Option<String>) -> Self {
+        let (dist_version, dist_version_error) = read_dist_version(dist.as_deref());
         Self {
             dist,
             token: token.filter(|t| !t.is_empty()),
+            dist_version,
+            dist_version_error,
             sessions: std::sync::RwLock::new(std::collections::HashSet::new()),
             login_limiter: LoginLimiter::new(),
         }
@@ -39,6 +71,41 @@ impl WebConfig {
     /// The static web UI is served only when a dist directory was resolved.
     pub fn enabled(&self) -> bool {
         self.dist.is_some()
+    }
+    pub fn dist_version(&self) -> Option<&DistVersion> {
+        self.dist_version.as_ref()
+    }
+    /// Startup diagnostics: empty when aligned or no dist is configured.
+    pub fn startup_warnings(&self) -> Vec<String> {
+        if self.dist.is_none() {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        match (&self.dist_version, &self.dist_version_error) {
+            (Some(v), _) => {
+                let product = env!("CARGO_PKG_VERSION");
+                if v.product_version != product {
+                    out.push(format!(
+                        "warning: web dist was built for agentj {} but this server is {}; rebuild the UI",
+                        v.product_version, product
+                    ));
+                }
+                let protocol = agentj_protocol::PROTOCOL_VERSION;
+                if v.protocol_version != protocol {
+                    out.push(format!(
+                        "warning: web dist targets protocol {} but this server speaks {}; rebuild the UI",
+                        v.protocol_version, protocol
+                    ));
+                }
+            }
+            (None, Some(err)) => out.push(format!(
+                "warning: web dist version.json is unreadable ({err}); rebuild the UI"
+            )),
+            (None, None) => out.push(
+                "warning: web dist has no version.json (stale build?); rebuild the UI".to_string(),
+            ),
+        }
+        out
     }
     pub fn issue_session(&self) -> String {
         let id = uuid::Uuid::new_v4().to_string();
@@ -405,6 +472,60 @@ mod tests {
         std::fs::write(dir.join("index.html"), "<html>agentj-index</html>").unwrap();
         std::fs::write(dir.join("assets/app.js"), "console.log(1)").unwrap();
         dir
+    }
+
+    fn write_version_json(dir: &std::path::Path, product: &str, protocol: &str) {
+        std::fs::write(
+            dir.join("version.json"),
+            format!(
+                "{{\"product_version\":\"{product}\",\"protocol_version\":\"{protocol}\",\
+                 \"build_time\":\"t\"}}"
+            ),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn startup_warnings_cover_aligned_missing_and_mismatched_dists() {
+        let aligned = temp_dist("ver-aligned");
+        write_version_json(
+            &aligned,
+            env!("CARGO_PKG_VERSION"),
+            agentj_protocol::PROTOCOL_VERSION,
+        );
+        let web = WebConfig::new(Some(aligned.clone()), None);
+        assert!(web.dist_version().is_some());
+        assert!(
+            web.startup_warnings().is_empty(),
+            "{:?}",
+            web.startup_warnings()
+        );
+
+        let mismatched = temp_dist("ver-mismatch");
+        write_version_json(&mismatched, "0.0.1-test", "0.0.1");
+        let warnings = WebConfig::new(Some(mismatched.clone()), None).startup_warnings();
+        assert_eq!(warnings.len(), 2);
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("0.0.1-test") && w.contains(env!("CARGO_PKG_VERSION")))
+        );
+        assert!(warnings.iter().any(|w| w.contains("protocol")));
+
+        let legacy = temp_dist("ver-legacy"); // no version.json
+        let warnings = WebConfig::new(Some(legacy.clone()), None).startup_warnings();
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("version.json"));
+
+        let broken = temp_dist("ver-broken");
+        std::fs::write(broken.join("version.json"), "{not json").unwrap();
+        let warnings = WebConfig::new(Some(broken.clone()), None).startup_warnings();
+        assert!(warnings[0].contains("unreadable"), "{warnings:?}");
+
+        assert!(WebConfig::disabled().startup_warnings().is_empty());
+        for d in [aligned, mismatched, legacy, broken] {
+            std::fs::remove_dir_all(&d).ok();
+        }
     }
 
     fn test_state(web: crate::web::WebConfig) -> std::sync::Arc<crate::ws::WsServerState> {
