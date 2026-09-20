@@ -353,7 +353,9 @@ SRI 由浏览器强制执行；内核侧哈希校验需新直接依赖且威胁�
 - **落地版本**：工作区 `0.20.0`（`PROTOCOL_VERSION` 保持 `0.13.0`，无 wire 变更）；分支 `feature/web-hardening-and-tui-files`。
 - **门禁（全绿）**：
   - `cargo fmt` / `cargo test --workspace` / `cargo clippy --workspace --all-targets -- -D warnings` / `cargo test -p agentj-protocol -- drift`（2 passed）
-  - SDK / Web / TUI 三端套件（sdk 46；web 与 tui 新增后全绿）
+  - SDK / Web / TUI 三端套件（sdk 47；web 491（47 files）与 tui 85（17 files）新增后全绿）
   - `npm --prefix agentj-ui run build --workspace=@agentj/web`
   - `./scripts/check-version.sh`（`0.20.0`）
   - `node agentj-ui/apps/desktop/check-desktop-ui.mjs`
+
+- **Oracle 全量复核 PASS（无 must-fix）** + 修复波（TUI stale-reply 守卫 + 父级跳转 clamp + Web 版本不一致行 warn 色 + CSS 契约测试）。
