@@ -128,7 +128,6 @@ impl Default for TcpBindOptions {
 pub struct TcpIpcServer {
     listener: TcpListener,
     shared: Arc<IpcServer>,
-    token: Option<String>,
     max_connections: usize,
     active: Arc<AtomicUsize>,
     ws_state: Arc<crate::ws::WsServerState>,
@@ -161,7 +160,6 @@ impl TcpIpcServer {
         Ok(Self {
             listener,
             shared: shared.clone(),
-            token: options.token.clone(),
             max_connections: options.max_connections,
             active: Arc::new(AtomicUsize::new(0)),
             ws_state: Arc::new(crate::ws::WsServerState {
@@ -204,7 +202,6 @@ impl TcpIpcServer {
                     }
                     self.active.fetch_add(1, Ordering::SeqCst);
                     let shared = Arc::clone(&self.shared);
-                    let token = self.token.clone();
                     let active = Arc::clone(&self.active);
                     let ws_state = Arc::clone(&self.ws_state);
                     tokio::spawn(async move {
@@ -217,7 +214,7 @@ impl TcpIpcServer {
                         } else {
                             if let Ok(conn) = TcpConnection::new(stream) {
                                 let _ = Arc::clone(&shared)
-                                    .serve_connection(Box::new(conn), token.as_deref())
+                                    .serve_connection(Box::new(conn))
                                     .await;
                             }
                             active.fetch_sub(1, Ordering::SeqCst);
