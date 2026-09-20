@@ -14,6 +14,7 @@ dependencies = [
  "agentj-mcp",
  "agentj-model",
  "agentj-permission",
+ "agentj-protocol",
  "agentj-question",
  "agentj-session",
  "agentj-skills",

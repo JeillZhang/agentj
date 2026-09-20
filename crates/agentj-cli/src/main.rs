@@ -314,6 +314,9 @@ async fn serve_tcp(
              --workspace=@agentj/web` or pass --web-dist <PATH>"
         ),
     }
+    for warning in tcp.web_config().startup_warnings() {
+        eprintln!("{warning}");
+    }
     if let Some(warning) = warning {
         eprintln!("{warning}");
     }
