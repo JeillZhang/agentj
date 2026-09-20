@@ -149,6 +149,7 @@ export type SidebarProps = {
   width?: number;
   view?: SidebarView;
   filesProps?: FilesViewProps;
+  focusMode?: "composer" | "sidebar";
 };
 
 function countForProject(project: Project, sessions: SidebarSession[], allProjects: Project[]): number {
@@ -176,7 +177,7 @@ function truncate(s: string, max: number): string {
 }
 
 export default function Sidebar(props: SidebarProps) {
-  const { projects, sessions, activeId, collapsed = {}, query, width, view } = props;
+  const { projects, sessions, activeId, collapsed = {}, query, width, view, focusMode } = props;
   const w = width ?? SIDEBAR_WIDTH;
 
   // query filtering for sessions (case-insensitive on id/preview)
@@ -192,9 +193,11 @@ export default function Sidebar(props: SidebarProps) {
       {/* Header */}
       <box flexDirection="column" marginBottom={1}>
         <text>{view === "files" ? "Files" : "Threads"}</text>
-        {view === "files"
-          ? <text>r refresh · f threads</text>
-          : <text>{q ? `⌕ ${query}` : "⌕ Search sessions"}</text>}
+        {focusMode === "sidebar"
+          ? <text>tab: compose</text>
+          : view === "files"
+            ? <text>r refresh · f threads</text>
+            : <text>{q ? `⌕ ${query}` : "⌕ Search sessions"}</text>}
       </box>
 
       {/* Body - files tree or project groups */}

@@ -352,6 +352,7 @@ function AppInner({ url, createTransport, backoffBaseMs = 1000 }: AppProps) {
   const [todos, setTodos] = useState<TodoState>(EMPTY_TODOS);
   const [sidebarView, setSidebarView] = useState<SidebarView>("threads");
   const [filesIdx, setFilesIdx] = useState(0);
+  const [focus, setFocus] = useState<"composer" | "sidebar">("composer");
   const fileTree = useFileTree(client, sidebarView === "files" ? st.activeId : null);
   const filesRows = useMemo(() => flattenVisible(fileTree.nodes ?? []), [fileTree.nodes]);
   useEffect(() => {
@@ -434,6 +435,24 @@ function AppInner({ url, createTransport, backoffBaseMs = 1000 }: AppProps) {
     if (paletteCtrl.paletteQuery !== null || paletteCtrl.modelOpen || permReq) return;
     const name = (key.name ?? "").toLowerCase();
     const seq = key.sequence ?? "";
+    const isTab = name === "tab" || seq === "\t" || seq === "\x09";
+    const isEsc = name === "escape" || seq === "\u001B" || seq === "\x1b";
+    const composerVisible =
+      status === "open" &&
+      st.activeId !== null &&
+      !permReq &&
+      !paletteCtrl.modelOpen &&
+      paletteCtrl.paletteQuery === null;
+    if (focus !== "sidebar") {
+      // Composer focus: only Tab leaves the composer. The mounted composer owns
+      // Tab when its completion overlay is visible, so switch only when absent.
+      if (isTab && !composerVisible) setFocus("sidebar");
+      return;
+    }
+    if (isTab || isEsc) {
+      setFocus("composer");
+      return;
+    }
     if (name === "f") {
       setSidebarView((v) => (v === "files" ? "threads" : "files"));
       return;
@@ -547,6 +566,7 @@ function AppInner({ url, createTransport, backoffBaseMs = 1000 }: AppProps) {
             noSession: st.activeId === null,
             width: 0,
           }}
+          focusMode={focus}
         />
         <box flexDirection="column" flexGrow={1} paddingLeft={1}>
           {status === "open" && st.activeId === null && !permReq && !paletteCtrl.modelOpen && paletteCtrl.paletteQuery === null ? (
@@ -558,7 +578,12 @@ function AppInner({ url, createTransport, backoffBaseMs = 1000 }: AppProps) {
               {st.info ? <text style={{ fg: palette.textMuted }}>{st.info}</text> : null}
               <RunTranscript rows={transcriptRows} todos={todos.items} />
               {!permReq && !paletteCtrl.modelOpen && paletteCtrl.paletteQuery === null ? (
-                <Composer onSubmit={handleSubmit} placeholder="send a message" />
+                <Composer
+                  onSubmit={handleSubmit}
+                  placeholder="send a message"
+                  disabled={focus !== "composer"}
+                  onFocusSidebar={() => setFocus("sidebar")}
+                />
               ) : null}
             </box>
           ) : null}

@@ -8,6 +8,7 @@ export type ComposerProps = {
   placeholder?: string;
   disabled?: boolean;
   files?: string[];
+  onFocusSidebar?: () => void;
 };
 
 export type HistoryStore = {
@@ -111,6 +112,7 @@ function useComposerKeys(
   onSubmit: (s: string) => void,
   store: HistoryStore,
   c: CompletionState | null,
+  onFocusSidebar?: () => void,
 ) {
   useKeyboard((key) => {
     if (disabled) return;
@@ -140,11 +142,12 @@ function useComposerKeys(
     if (isEsc) { ref.current?.setText(""); store.setIdx(-1); return; }
     if (isUp) { store.handleUp(); return; }
     if (isDown) store.handleDown();
+    if (isTab) onFocusSidebar?.();
   });
 }
 
 export function Composer(props: ComposerProps): React.ReactNode {
-  const { onSubmit, placeholder, disabled, files } = props;
+  const { onSubmit, placeholder, disabled, files, onFocusSidebar } = props;
   const ref = useRef<TextareaRenderable>(null);
   const store = useHistoryStore(ref);
   const ac = useAtCompletion(ref, files);
@@ -152,7 +155,7 @@ export function Composer(props: ComposerProps): React.ReactNode {
     show: true, matches: ac.matches, idx: ac.completionIdx,
     setIdx: ac.setCompletionIdx, insert: ac.insertChosen, dismiss: ac.dismiss,
   } : null;
-  useComposerKeys(ref, disabled, onSubmit, store, cState);
+  useComposerKeys(ref, disabled, onSubmit, store, cState, onFocusSidebar);
   const onTextareaSubmit = useCallback(() => {
     const raw = ref.current?.plainText ?? "";
     const trimmed = raw.trim();

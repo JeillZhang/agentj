@@ -19,6 +19,7 @@ function getInput(setup: TestRendererSetup) {
       else if (k === "up") setup.mockInput.pressArrow("up");
       else if (k === "enter" || k === "return") setup.mockInput.pressEnter();
       else if (k === "esc" || k === "escape") setup.mockInput.pressEscape();
+      else if (k === "tab") setup.mockInput.pressTab();
       else setup.mockInput.pressKey(k);
     };
   }
@@ -247,7 +248,9 @@ test("files view lazy-loads the tree and expands directories", async () => {
   const setup = await testRender(<App createTransport={createHandle} backoffBaseMs={60000} />, {});
   const input = getInput(setup);
   await act(async () => { await setup.waitFor(() => setup.captureCharFrame().toLowerCase().includes("connected")); });
-  // no active session yet: f opens Files with a placeholder and fires no request
+  // Tab enters sidebar focus (composer mode keeps letters in the composer);
+  // with no active session yet, f opens Files with a placeholder and fires no request
+  await act(async () => { input.press("tab"); await setup.flush(); });
   await act(async () => { input.press("f"); await setup.flush(); });
   await act(async () => { await setup.waitFor(() => setup.captureCharFrame().includes("select a session")); });
   expect(requests.some((r) => r.method === METHODS.fileList)).toBe(false);
@@ -292,6 +295,66 @@ test("files view lazy-loads the tree and expands directories", async () => {
   expect(refreshed.some((r) => r.params.path === "src")).toBe(true);
   await act(async () => { input.press("f"); await setup.flush(); });
   await act(async () => { await setup.waitFor(() => setup.captureCharFrame().includes("Threads")); });
+  act(() => setup.renderer.destroy());
+  void router;
+});
+
+test("BUG-009: typing in the composer never triggers sidebar/file shortcuts", async () => {
+  const requests: Array<{ method: string; params: Record<string, unknown> }> = [];
+  let router: ResponseRouter | null = null;
+  type Handle = TransportHandle & { send: (l: string) => Promise<string> };
+  const handle: Handle = {
+    close() {},
+    async send(line: string): Promise<string> {
+      const req = JSON.parse(line) as { id: number; method: string; params: Record<string, unknown> };
+      requests.push({ method: req.method, params: req.params ?? {} });
+      let result: unknown = {};
+      if (req.method === METHODS.sessionNew) result = { session_id: "s1" };
+      if (req.method === METHODS.fileList) {
+        result = { entries: [{ name: "src", path: "src", kind: "dir", git_status: "M" }], truncated: false };
+      }
+      return JSON.stringify({ jsonrpc: "2.0", id: req.id, result });
+    },
+  };
+  const createHandle = (_url: string, r: ResponseRouter): TransportHandle => {
+    router = r;
+    queueMicrotask(() => act(() => handle.onStatusChange?.("open")));
+    return handle;
+  };
+  const setup = await testRender(<App createTransport={createHandle} backoffBaseMs={60000} />, {});
+  const input = getInput(setup);
+  await act(async () => { await setup.waitFor(() => setup.captureCharFrame().toLowerCase().includes("connected")); });
+  // create an active session so the composer is visible (SessionList: down + enter)
+  await act(async () => { input.press("down"); await setup.flush(); });
+  await act(async () => { input.press("enter"); await setup.flush(); });
+  await act(async () => { await setup.waitFor(() => setup.captureCharFrame().includes("s1")); });
+  expect(setup.captureCharFrame()).toContain("Threads");
+  // typing "of" (contains f) must not toggle the sidebar to Files
+  await act(async () => { await input.type("of"); await setup.flush(); });
+  let frame = setup.captureCharFrame();
+  expect(frame).toContain("Threads");
+  expect(frame).not.toContain("Files");
+  expect(frame).toContain("of");
+  expect(requests.filter((r) => r.method === METHODS.fileList)).toHaveLength(0);
+  // typing " for" (f would toggle, r would refresh) must not switch views or fetch files
+  await act(async () => { await input.type(" for"); await setup.flush(); });
+  frame = setup.captureCharFrame();
+  expect(frame).toContain("Threads");
+  expect(frame).not.toContain("Files");
+  expect(frame).toContain("of for");
+  expect(requests.filter((r) => r.method === METHODS.fileList)).toHaveLength(0);
+  // typing "need" (contains n) must not create another session
+  await act(async () => { await input.type(" need"); await setup.flush(); });
+  expect(requests.filter((r) => r.method === METHODS.sessionNew)).toHaveLength(1);
+  // Enter submits the full composer text unchanged
+  await act(async () => { input.press("enter"); await setup.flush(); });
+  await act(async () => {
+    await setup.waitFor(() => requests.some((r) => r.method === METHODS.sessionRun));
+  });
+  expect(requests.find((r) => r.method === METHODS.sessionRun)?.params).toEqual({
+    session_id: "s1",
+    content: "of for need",
+  });
   act(() => setup.renderer.destroy());
   void router;
 });
