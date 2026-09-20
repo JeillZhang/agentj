@@ -193,11 +193,18 @@ export default function Sidebar(props: SidebarProps) {
       {/* Header */}
       <box flexDirection="column" marginBottom={1}>
         <text>{view === "files" ? "Files" : "Threads"}</text>
-        {focusMode === "sidebar"
-          ? <text>tab: compose</text>
-          : view === "files"
-            ? <text>r refresh · f threads</text>
-            : <text>{q ? `⌕ ${query}` : "⌕ Search sessions"}</text>}
+        {view === "files" && focusMode === "sidebar" ? (
+          <>
+            <text>r refresh · f threads</text>
+            <text>tab: compose</text>
+          </>
+        ) : view === "files" ? (
+          <text>tab: sidebar</text>
+        ) : focusMode === "sidebar" ? (
+          <text>tab: compose</text>
+        ) : (
+          <text>{q ? `⌕ ${query}` : "⌕ Search sessions"}</text>
+        )}
       </box>
 
       {/* Body - files tree or project groups */}
