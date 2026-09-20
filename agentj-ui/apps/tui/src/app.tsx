@@ -469,7 +469,10 @@ function AppInner({ url, createTransport, backoffBaseMs = 1000 }: AppProps) {
           return;
         }
         const parent = parentPath(dirRow.node.path);
-        if (parent) setFilesIdx(rows.findIndex((r) => r.node.path === parent));
+        if (parent) {
+          const idx = rows.findIndex((r) => r.node.path === parent);
+          if (idx >= 0) setFilesIdx(idx);
+        }
         return;
       }
       if (name === "r") {
