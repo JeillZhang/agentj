@@ -27,6 +27,7 @@ use agentj_skills::load_skills;
 use agentj_tools::builtins::register_builtins;
 
 mod license;
+mod logging;
 
 #[derive(Parser)]
 #[command(name = "agentj", version, about = "AgentJ — AI coding agent")]
@@ -375,7 +376,7 @@ async fn run_attached(url: &str, prompt: &str) -> anyhow::Result<()> {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt::init();
+    logging::init();
     let cli = Cli::parse();
 
     let config =

@@ -24,7 +24,7 @@ clap = { version = "4", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "net"] }
 tracing = "0.1"
-tracing-subscriber = "0.3"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 agentj-skills = { path = "../agentj-skills" }
 agentj-mcp = { path = "../agentj-mcp" }
 agentj-license = { path = "../agentj-license" }
