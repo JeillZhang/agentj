@@ -58,7 +58,7 @@ const SEARCH_RESULT_LIMIT = 100;
 
 function withSearchQuery(state: SearchState, query: string): SearchState {
   const { rows, total } = filterEntries(state.index, query, SEARCH_RESULT_LIMIT);
-  return { ...state, query, rows, total, error: null, idx: 0 };
+  return { ...state, query, rows, total, idx: 0 };
 }
 
 type SearchKey =
@@ -466,7 +466,7 @@ function AppInner({ url, createTransport, backoffBaseMs = 1000 }: AppProps) {
   useEffect(() => {
     advanceReveal();
   }, [advanceReveal]);
-  const loadSearchIndex = useCallback(async (query: string): Promise<void> => {
+  const loadSearchIndex = useCallback(async (): Promise<void> => {
     const sid = st.activeId;
     if (!client || !sid) return;
     try {
@@ -476,7 +476,8 @@ function AppInner({ url, createTransport, backoffBaseMs = 1000 }: AppProps) {
       const entries = reply.entries ?? [];
       const index = buildSearchIndex(entries.slice(0, MAX_SEARCH_INDEX));
       const truncated = Boolean(reply.truncated) || entries.length > MAX_SEARCH_INDEX;
-      setSearch((prev) => (prev ? withSearchQuery({ ...prev, index, truncated, error: null }, query) : prev));
+      setSearch((prev) =>
+        prev ? withSearchQuery({ ...prev, index, truncated, error: null }, prev.query) : prev);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setSearch((prev) => (prev ? { ...prev, index: [], rows: [], total: 0, idx: 0, error: msg } : prev));
@@ -486,7 +487,7 @@ function AppInner({ url, createTransport, backoffBaseMs = 1000 }: AppProps) {
     if (st.activeId === null) return;
     st.setErr(null);
     setSearch({ query: "", index: [], rows: [], total: 0, truncated: false, error: null, idx: 0 });
-    void loadSearchIndex("");
+    void loadSearchIndex();
   }, [st.activeId, st.setErr, loadSearchIndex]);
   const beginReveal = useCallback((path: string): void => {
     setSearch(null);
@@ -603,7 +604,7 @@ function AppInner({ url, createTransport, backoffBaseMs = 1000 }: AppProps) {
           beginReveal(decision.path);
           return;
         case "rebuild":
-          void loadSearchIndex(search.query);
+          void loadSearchIndex();
           return;
         case "append":
           setSearch((prev) => (prev ? withSearchQuery(prev, prev.query + decision.ch) : prev));

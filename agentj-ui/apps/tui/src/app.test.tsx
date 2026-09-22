@@ -95,6 +95,7 @@ type FakeKernel = {
   calls: KernelCall[];
   drop: (path: string) => void;
   failDepthEight: (times: number) => void;
+  deferDepthEight: () => () => void;
   handle: TransportHandle & { send: (line: string) => Promise<string> };
 };
 
@@ -102,6 +103,7 @@ function fakeKernel(): FakeKernel {
   const calls: KernelCall[] = [];
   const dropped = new Set<string>();
   let depthEightFailures = 0;
+  const depthEightGates: Array<PromiseWithResolvers<void>> = [];
   const live = (path: string): RawFileEntry[] =>
     (KERNEL_TREE[path] ?? []).filter((e) => !dropped.has(e.path));
   const flat = (): RawFileEntry[] => ["", "src", "src/components"].flatMap((p) => live(p));
@@ -116,6 +118,8 @@ function fakeKernel(): FakeKernel {
       if (req.method === METHODS.fileList) {
         const depth = typeof params.depth === "number" ? params.depth : 1;
         if (depth >= 8) {
+          const gate = depthEightGates.shift();
+          if (gate) await gate.promise;
           if (depthEightFailures > 0) {
             depthEightFailures -= 1;
             throw new Error("index unavailable");
@@ -132,6 +136,11 @@ function fakeKernel(): FakeKernel {
     calls,
     drop: (path) => dropped.add(path),
     failDepthEight: (times) => { depthEightFailures = times; },
+    deferDepthEight: () => {
+      const gate = Promise.withResolvers<void>();
+      depthEightGates.push(gate);
+      return () => { gate.resolve(); };
+    },
     handle,
   };
 }
@@ -595,6 +604,49 @@ describe("files search mode", () => {
       await setup.waitFor(() => !setup.captureCharFrame().includes("index unavailable"));
     });
     expect(depthEightCalls(kernel)).toHaveLength(2);
+    await act(async () => {
+      await setup.waitFor(() => setup.captureCharFrame().includes("main.rs"));
+    });
+    act(() => setup.renderer.destroy());
+  });
+
+  test("keeps the query typed while the index request is in flight", async () => {
+    const kernel = fakeKernel();
+    const { setup, input } = await renderApp(kernel);
+    await openFilesSidebar(setup, input);
+    const release = kernel.deferDepthEight();
+    await act(async () => { input.press("s"); await setup.flush(); });
+    await act(async () => {
+      await setup.waitFor(() => depthEightCalls(kernel).length === 1);
+    });
+    // the depth-8 reply is unresolved: every keystroke must stay in the query
+    await act(async () => { await input.type("main"); await setup.flush(); });
+    await act(async () => { release(); await setup.flush(); });
+    await act(async () => {
+      await setup.waitFor(() => setup.captureCharFrame().includes("main.rs"));
+    });
+    expect(depthEightCalls(kernel)).toHaveLength(1);
+    expect(setup.captureCharFrame()).not.toContain("README.md");
+    act(() => setup.renderer.destroy());
+  });
+
+  test("keeps the failed-index error while typing and clears it only after r", async () => {
+    const kernel = fakeKernel();
+    const { setup, input } = await renderApp(kernel);
+    await openFilesSidebar(setup, input);
+    kernel.failDepthEight(1);
+    await act(async () => { input.press("s"); await setup.flush(); });
+    await act(async () => {
+      await setup.waitFor(() => setup.captureCharFrame().includes("index unavailable"));
+    });
+    await act(async () => { await input.type("main"); await setup.flush(); });
+    await repaint(setup);
+    // C2: keystrokes must not hide the failure; only a successful r clears it
+    expect(setup.captureCharFrame()).toContain("index unavailable");
+    await act(async () => { input.press("r"); await setup.flush(); });
+    await act(async () => {
+      await setup.waitFor(() => !setup.captureCharFrame().includes("index unavailable"));
+    });
     await act(async () => {
       await setup.waitFor(() => setup.captureCharFrame().includes("main.rs"));
     });
