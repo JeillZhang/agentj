@@ -7,6 +7,8 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
+use tracing::{debug, info, warn};
+
 #[derive(Clone, Debug)]
 pub(crate) struct Policy {
     pub(crate) free_attempts: u32,
@@ -81,11 +83,21 @@ impl LoginLimiter {
 
     pub(crate) fn check(&self, ip: IpAddr, now: Instant) -> Throttle {
         self.counters.attempts.fetch_add(1, Ordering::Relaxed);
-        let mut entries = self.entries.lock().expect("login limiter");
-        Self::prune_idle(&mut entries, ip, self.policy.idle_ttl, now);
-        entries
-            .get(&ip)
-            .map_or(Throttle::Allow, |e| Self::status(e, now))
+        let throttle = {
+            let mut entries = self.entries.lock().expect("login limiter");
+            Self::prune_idle(&mut entries, ip, self.policy.idle_ttl, now);
+            entries
+                .get(&ip)
+                .map_or(Throttle::Allow, |e| Self::status(e, now))
+        };
+        if let Throttle::Locked { retry_after } = &throttle {
+            debug!(
+                ip = %ip,
+                retry_after_secs = retry_after.as_secs(),
+                "login blocked while locked"
+            );
+        }
+        throttle
     }
 
     pub(crate) fn record_failure(&self, ip: IpAddr, now: Instant) -> Throttle {
@@ -108,12 +120,22 @@ impl LoginLimiter {
         entry.failures = entry.failures.saturating_add(1);
         entry.last = now;
         if entry.failures < self.policy.free_attempts {
+            debug!(ip = %ip, failures = entry.failures, "login failure");
             return Throttle::Allow;
         }
         let lockout = self.lockout_for(entry.failures);
         entry.locked_until = Some(now + lockout);
-        if !was_locked {
+        let retry_after_secs = lockout.as_secs();
+        if was_locked {
+            debug!(ip = %ip, retry_after_secs, "login lockout extended");
+        } else {
             self.counters.lockouts.fetch_add(1, Ordering::Relaxed);
+            warn!(
+                ip = %ip,
+                failures = entry.failures,
+                retry_after_secs,
+                "login lockout"
+            );
         }
         Throttle::Locked {
             retry_after: lockout,
@@ -121,7 +143,13 @@ impl LoginLimiter {
     }
 
     pub(crate) fn record_success(&self, ip: IpAddr) {
-        self.entries.lock().expect("login limiter").remove(&ip);
+        let prior_failures = self
+            .entries
+            .lock()
+            .expect("login limiter")
+            .remove(&ip)
+            .map_or(0, |entry| entry.failures);
+        info!(ip = %ip, prior_failures, "login ok");
     }
 
     #[allow(dead_code)] // consumed by T2 (/version login_limiter block); remove there
@@ -332,6 +360,103 @@ mod tests {
             (snap.failures, snap.tracked_ips),
             (3, 0),
             "cumulative counters never reset"
+        );
+    }
+
+    #[derive(Clone, Default)]
+    struct CaptureWriter(std::sync::Arc<Mutex<Vec<u8>>>);
+
+    impl std::io::Write for CaptureWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for CaptureWriter {
+        type Writer = CaptureWriter;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    fn capture() -> (CaptureWriter, tracing::subscriber::DefaultGuard) {
+        let buf = CaptureWriter::default();
+        let sub = tracing_subscriber::fmt()
+            .with_writer(buf.clone())
+            .with_ansi(false)
+            .with_max_level(tracing::Level::DEBUG)
+            .finish();
+        let guard = tracing::subscriber::set_default(sub);
+        (buf, guard)
+    }
+
+    fn captured(buf: &CaptureWriter) -> String {
+        String::from_utf8(buf.0.lock().unwrap().clone()).unwrap()
+    }
+
+    #[test]
+    fn lockout_emits_warn_and_success_emits_info() {
+        let (buf, _guard) = capture();
+        let limiter = LoginLimiter::with_policy(Policy {
+            free_attempts: 1,
+            ..Policy::default()
+        });
+        let t0 = Instant::now();
+        let ip = ip("203.0.113.5");
+        let _ = limiter.record_failure(ip, t0);
+        limiter.record_success(ip);
+        let out = captured(&buf);
+        assert!(out.contains("login lockout"), "warn expected: {out}");
+        assert!(out.contains("ip=203.0.113.5"), "ip field expected: {out}");
+        assert!(
+            out.contains("retry_after_secs=30"),
+            "retry_after_secs field expected: {out}"
+        );
+        assert!(out.contains("login ok"), "info expected: {out}");
+        assert!(
+            out.contains("prior_failures=1"),
+            "prior_failures field expected: {out}"
+        );
+    }
+
+    #[test]
+    fn ordinary_failure_and_blocked_attempt_emit_debug_lines() {
+        let (buf, _guard) = capture();
+        let limiter = LoginLimiter::with_policy(Policy {
+            free_attempts: 3,
+            ..Policy::default()
+        });
+        let t0 = Instant::now();
+        let who = ip("198.51.100.44");
+        assert_eq!(limiter.record_failure(who, t0), Throttle::Allow);
+        let _ = limiter.record_failure(who, at(t0, 1));
+        let _ = limiter.record_failure(who, at(t0, 2)); // 3rd failure locks
+        assert!(matches!(
+            limiter.check(who, at(t0, 3)),
+            Throttle::Locked { .. }
+        ));
+        let out = captured(&buf);
+        let failure_line = out
+            .lines()
+            .find(|line| line.contains("login failure"))
+            .unwrap_or_else(|| panic!("DEBUG failure line expected: {out}"));
+        assert!(
+            failure_line.contains("DEBUG"),
+            "ordinary failure must be DEBUG: {failure_line}"
+        );
+        let blocked_line = out
+            .lines()
+            .find(|line| line.contains("login blocked while locked"))
+            .unwrap_or_else(|| panic!("DEBUG blocked line expected: {out}"));
+        assert!(
+            blocked_line.contains("DEBUG"),
+            "blocked attempt must be DEBUG: {blocked_line}"
         );
     }
 }
