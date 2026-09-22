@@ -169,6 +169,14 @@ async function pressEscape(setup: TestRendererSetup, input: AppInput): Promise<v
   });
 }
 
+// opentui's incremental diff keeps stale glyphs when a text cell shrinks to a
+// space, so a same-size resize is used to force a clean repaint before reading
+// hint text that changes with the sidebar view.
+async function repaint(setup: TestRendererSetup): Promise<void> {
+  setup.resize(setup.renderer.width, setup.renderer.height);
+  await act(async () => { await setup.flush(); });
+}
+
 async function openFilesSidebar(setup: TestRendererSetup, input: AppInput): Promise<void> {
   await act(async () => { input.press("down"); await setup.flush(); });
   await act(async () => { input.press("enter"); await setup.flush(); });
@@ -641,6 +649,28 @@ describe("files search mode", () => {
     await act(async () => { await input.type("zzz"); await setup.flush(); });
     await act(async () => { input.press("enter"); await setup.flush(); });
     expect(setup.captureCharFrame()).toContain("type filter");
+    act(() => setup.renderer.destroy());
+  });
+
+  test("sidebar advertises the search hint while searching and restores it after", async () => {
+    const kernel = fakeKernel();
+    const { setup, input } = await renderApp(kernel);
+    await openFilesSidebar(setup, input);
+    await repaint(setup);
+    // Files view with sidebar focus advertises the normal shortcut hint
+    expect(setup.captureCharFrame()).toContain("s search");
+    await act(async () => { input.press("s"); await setup.flush(); });
+    await act(async () => {
+      await setup.waitFor(() => setup.captureCharFrame().includes("esc back"));
+    });
+    await repaint(setup);
+    // search mode must replace the shortcut hint in the sidebar header
+    expect(setup.captureCharFrame()).toContain("esc back");
+    expect(setup.captureCharFrame()).not.toContain("s search");
+    await pressEscape(setup, input); // empty query exits search
+    await repaint(setup);
+    expect(setup.captureCharFrame()).toContain("s search");
+    expect(setup.captureCharFrame()).not.toContain("esc back");
     act(() => setup.renderer.destroy());
   });
 

@@ -744,6 +744,7 @@ function AppInner({ url, createTransport, backoffBaseMs = 1000 }: AppProps) {
               : undefined,
           }}
           focusMode={focus}
+          searchMode={search ? { query: search.query } : null}
         />
         <box flexDirection="column" flexGrow={1} paddingLeft={1}>
           {status === "open" && st.activeId === null && !permReq && !paletteCtrl.modelOpen && paletteCtrl.paletteQuery === null ? (
