@@ -1,12 +1,16 @@
 // agentj-ui/apps/web/build/version-sri.test.ts
 import { describe, expect, it } from "vitest";
+import { createHash } from "node:crypto";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildVersionJson, finalizeDist, injectSri } from "./version-sri";
+import { buildManifestJson, buildVersionJson, finalizeDist, hashAssets, injectSri } from "./version-sri";
 
 const APP_JS = "console.log(1)\n";
 const EXPECTED = "sha384-M203vLCvZdI2DAFEpVs3YNPxNFNtwrWrHY9XrXkEzOjLmndNNAWAdMk0uRYc2i2r";
+const PNG_BYTES = "png-bytes";
+const PNG_EXPECTED = "sha384-Zr9/9I1pUeAiv6hwcUHaiFN6msCnUawgATCH+CEtwy5d1vC1Nz++Vne89D3L1Kwy";
+const VERSIONS = { productVersion: "0.21.0", protocolVersion: "0.13.0", buildTime: "2026-09-22T00:00:00Z" };
 
 it("injects sha384 integrity for local script and stylesheet refs", () => {
   const html = [
@@ -61,4 +65,53 @@ it("buildVersionJson emits the documented snake_case shape", () => {
   expect(JSON.parse(raw)).toEqual({
     product_version: "1.2.3", protocol_version: "0.13.0", build_time: "t",
   });
+});
+
+it("hashes known bytes into sha384-base64 digests keyed by path", () => {
+  const hashes = hashAssets([
+    { path: "/assets/a.js", bytes: Buffer.from(APP_JS) },
+    { path: "/assets/hero.png", bytes: Buffer.from(PNG_BYTES) },
+  ]);
+  expect(hashes).toEqual({ "/assets/a.js": EXPECTED, "/assets/hero.png": PNG_EXPECTED });
+});
+
+it("buildManifestJson emits the documented manifest shape", () => {
+  const raw = buildManifestJson({ "/b.js": "sha384-b", "/a.js": "sha384-a" });
+  expect(JSON.parse(raw)).toEqual({
+    algorithm: "sha384",
+    assets: { "/a.js": "sha384-a", "/b.js": "sha384-b" },
+  });
+  expect(raw.endsWith("\n")).toBe(true);
+  expect(raw).toContain('\n  "algorithm": "sha384"');
+});
+
+it("writes a manifest covering bundle files and the rewritten index.html", () => {
+  const dir = mkdtempSync(join(tmpdir(), "sri-manifest-"));
+  writeFileSync(join(dir, "index.html"), `<script type="module" src="/assets/a.js"></script>`);
+  mkdirSync(join(dir, "assets"));
+  writeFileSync(join(dir, "assets/a.js"), "console.log(1)");
+  writeFileSync(join(dir, "assets/hero.png"), "png-bytes");
+  const result = finalizeDist(dir, VERSIONS, ["assets/a.js", "assets/hero.png"]);
+  const manifest = JSON.parse(readFileSync(join(dir, "asset-manifest.json"), "utf8"));
+  expect(manifest.algorithm).toBe("sha384");
+  expect(Object.keys(manifest.assets).sort()).toEqual(["/assets/a.js", "/assets/hero.png", "/index.html"]);
+  expect(manifest.assets["/assets/a.js"]).toBe(result.hashes["/assets/a.js"]);
+  const rewritten = readFileSync(join(dir, "index.html"), "utf8");
+  expect(rewritten).toContain(`integrity="${result.hashes["/assets/a.js"]}"`);
+  const rewrittenDigest = `sha384-${createHash("sha384").update(rewritten).digest("base64")}`;
+  expect(manifest.assets["/index.html"]).toBe(rewrittenDigest);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+it("excludes version.json and asset-manifest.json from the manifest", () => {
+  const dir = mkdtempSync(join(tmpdir(), "sri-exclude-"));
+  writeFileSync(join(dir, "index.html"), `<script src="/assets/a.js"></script>`);
+  mkdirSync(join(dir, "assets"));
+  writeFileSync(join(dir, "assets/a.js"), APP_JS);
+  writeFileSync(join(dir, "version.json"), "{}");
+  writeFileSync(join(dir, "asset-manifest.json"), "{}");
+  finalizeDist(dir, VERSIONS, ["assets/a.js", "version.json", "asset-manifest.json"]);
+  const manifest = JSON.parse(readFileSync(join(dir, "asset-manifest.json"), "utf8"));
+  expect(Object.keys(manifest.assets).sort()).toEqual(["/assets/a.js", "/index.html"]);
+  rmSync(dir, { recursive: true, force: true });
 });
