@@ -19,8 +19,10 @@ import { loadSidebarPrefs, subscribeSidebarPrefs } from "../sidebarPrefsStore";
 import type { SidebarPrefs } from "../sidebarPrefsStore";
 import { isDemoEnabled, subscribeDemo } from "../demoData";
 import { moveSelection, tabIndexFor } from "../hooks/useRovingFocus";
+import { useShortcutScope } from "../hooks/useShortcutScope";
 import SidebarTabs from "./SidebarTabs";
 import FileTree from "./FileTree";
+import type { FileTreeHandle } from "./FileTree";
 import ModalDialog from "./ModalDialog";
 import SessionListMenu from "./SessionListMenu";
 import "./sidebar.css";
@@ -163,6 +165,8 @@ export default function UnifiedSidebar({
   const [deleteTarget, setDeleteTarget] = useState<{ ids: string[]; mode: "one" | "all" } | null>(null);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const listRef = useRef<HTMLUListElement>(null);
+  const rootRef = useRef<HTMLElement>(null);
+  const fileTreeRef = useRef<FileTreeHandle>(null);
 
   useEffect(() => subscribeDemo(setDemo), []);
 
@@ -390,8 +394,47 @@ export default function UnifiedSidebar({
     [visibleFlat, rovingIndex],
   );
 
+  const moveActiveSelection = useCallback(
+    (delta: number) => {
+      if (tab === "files") {
+        fileTreeRef.current?.moveBy(delta);
+        return;
+      }
+      const ids = visibleFlat.map((r) => r.id);
+      if (ids.length === 0) return;
+      const next = moveSelection(rovingIndex, delta, ids.length);
+      if (next < 0 || next >= ids.length) return;
+      setSelectedSessionId(ids[next]);
+      focusSessionRow(listRef.current, ids[next]);
+    },
+    [tab, visibleFlat, rovingIndex],
+  );
+
+  const toggleTab = useCallback(() => {
+    const next = tab === "sessions" ? "files" : "sessions";
+    saveLayout({ leftTab: next });
+    setTab(next);
+  }, [tab]);
+
+  const shortcutHandlers = useMemo(
+    () => ({
+      f: toggleTab,
+      n: () => void handleNewSession(currentProjectId),
+      r: () => {
+        if (tab === "files") fileTreeRef.current?.refresh();
+      },
+      j: () => moveActiveSelection(1),
+      k: () => moveActiveSelection(-1),
+      Escape: () => document.getElementById("aj-prompt")?.focus(),
+    }),
+    [toggleTab, handleNewSession, currentProjectId, tab, moveActiveSelection],
+  );
+
+  useShortcutScope(rootRef, shortcutHandlers);
+
   return (
     <section
+      ref={rootRef}
       aria-label="sidebar"
       className={`aj-sidebar${unreachable ? " aj-sidebar--unreachable" : ""}`}
       id="aj-sidebar"
@@ -508,7 +551,12 @@ export default function UnifiedSidebar({
         </div>
       ) : (
         <div className="aj-sidebar__body" aria-label="文件">
-          <FileTree client={client as RpcClient | null} sessionId={activeSessionId} demo={demo} />
+          <FileTree
+            ref={fileTreeRef}
+            client={client as RpcClient | null}
+            sessionId={activeSessionId}
+            demo={demo}
+          />
         </div>
       )}
       {deleteTarget && (
