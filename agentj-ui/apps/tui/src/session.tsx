@@ -1,44 +1,24 @@
 import { useCallback, useEffect, useState } from "react";
 import { useKeyboard } from "@opentui/react";
-import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 import { METHODS } from "@agentj/sdk";
 import type { RpcClient } from "@agentj/sdk";
+import { getConfigDir, readJsonFile, writeJsonFile } from "./config.ts";
 
-export function getConfigDir(): string {
-  const xdg = process.env.XDG_CONFIG_HOME;
-  if (xdg && xdg.length > 0) return path.join(xdg, "agentj");
-  try {
-    return path.join(os.homedir(), ".config", "agentj");
-  } catch {
-    return path.join("/tmp", "agentj");
-  }
-}
+export { getConfigDir };
 
 export function getHistoryPath(): string {
   return path.join(getConfigDir(), "session-history.json");
 }
 
 export function loadSessionHistory(): string[] {
-  try {
-    const p = getHistoryPath();
-    if (!fs.existsSync(p)) return [];
-    const raw = fs.readFileSync(p, "utf8");
-    const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter((v): v is string => typeof v === "string");
-  } catch {
-    return [];
-  }
+  const parsed = readJsonFile<unknown>("session-history.json");
+  if (!Array.isArray(parsed)) return [];
+  return parsed.filter((v): v is string => typeof v === "string");
 }
 
 export function saveSessionHistory(ids: string[]): void {
-  try {
-    const p = getHistoryPath();
-    fs.mkdirSync(path.dirname(p), { recursive: true });
-    fs.writeFileSync(p, JSON.stringify(ids, null, 2), "utf8");
-  } catch {}
+  writeJsonFile("session-history.json", ids);
 }
 
 export function addToHistory(ids: string[], id: string): string[] {
