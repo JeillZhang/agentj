@@ -12,11 +12,17 @@ const fileTreeSpies = vi.hoisted(() => ({ refresh: vi.fn(), moveBy: vi.fn() }));
 vi.mock("./FileTree", async () => {
   const React = await import("react");
   const FileTreeMock = React.forwardRef<unknown, Record<string, unknown>>(function FileTreeMock(_props, ref) {
+    const treeRef = React.useRef<HTMLDivElement>(null);
     React.useImperativeHandle(ref, () => ({
-      moveBy: fileTreeSpies.moveBy,
+      // Mirror the real FileTree: moveBy (j/k) moves focus onto the focused row,
+      // so the shortcut scope gate keeps following the real focus path in tests.
+      moveBy: (delta: number) => {
+        fileTreeSpies.moveBy(delta);
+        treeRef.current?.focus();
+      },
       refresh: fileTreeSpies.refresh,
     }));
-    return React.createElement("div", { "data-testid": "file-tree-mock", tabIndex: -1 });
+    return React.createElement("div", { "data-testid": "file-tree-mock", tabIndex: -1, ref: treeRef });
   });
   return { default: FileTreeMock };
 });
@@ -425,6 +431,30 @@ it("keeps focus inside the sidebar after f switches to the files tab (BUG-011)",
   expect(fileTreeSpies.moveBy).toHaveBeenCalledWith(1);
   fireEvent.keyDown(document, { key: "k" });
   expect(fileTreeSpies.moveBy).toHaveBeenCalledWith(-1);
+});
+
+it("keeps focus inside the sidebar after r refreshes the tree from a row (BUG-012)", async () => {
+  const { flat } = await renderShortcutSidebar();
+  const sidebar = document.getElementById("aj-sidebar") as HTMLElement;
+  (flat.querySelector(".aj-sess") as HTMLElement).focus();
+  fireEvent.keyDown(document, { key: "f" });
+  const filesTab = screen.getByRole("tab", { name: "文件" });
+  // j/k move focus onto a tree row (the mock mirrors moveBy focusing the row).
+  fireEvent.keyDown(document, { key: "j" });
+  expect(sidebar.contains(document.activeElement)).toBe(true);
+  // r reloads the tree; a real FileTree unmounts its rows into a loading state,
+  // so the sidebar must park focus on the always-mounted files tab button or the
+  // scope gate (focus inside the sidebar) would kill every following shortcut.
+  fireEvent.keyDown(document, { key: "r" });
+  expect(fileTreeSpies.refresh).toHaveBeenCalledTimes(1);
+  expect(document.activeElement).toBe(filesTab);
+  // j/k/Esc keep firing from the parked focus.
+  fireEvent.keyDown(document, { key: "j" });
+  expect(fileTreeSpies.moveBy).toHaveBeenLastCalledWith(1);
+  fireEvent.keyDown(document, { key: "k" });
+  expect(fileTreeSpies.moveBy).toHaveBeenLastCalledWith(-1);
+  fireEvent.keyDown(document, { key: "Escape" });
+  expect(document.activeElement?.id).toBe("aj-prompt");
 });
 
 it("returns focus to the composer with Escape", async () => {

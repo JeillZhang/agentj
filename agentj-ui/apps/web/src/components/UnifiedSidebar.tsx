@@ -425,7 +425,14 @@ export default function UnifiedSidebar({
       f: toggleTab,
       n: () => void handleNewSession(currentProjectId),
       r: () => {
-        if (tab === "files") fileTreeRef.current?.refresh();
+        if (tab === "files") {
+          // refresh reloads every expanded directory; the real FileTree swaps
+          // the tree into a loading state and remounts its rows, which would
+          // drop focus from the focused row to <body> and out of the shortcut
+          // scope. Park focus on the always-mounted files tab button (BUG-012).
+          rootRef.current?.querySelector<HTMLButtonElement>('[data-tab="files"]')?.focus();
+          fileTreeRef.current?.refresh();
+        }
       },
       j: () => moveActiveSelection(1),
       k: () => moveActiveSelection(-1),
