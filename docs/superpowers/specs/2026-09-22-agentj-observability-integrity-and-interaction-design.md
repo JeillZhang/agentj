@@ -416,10 +416,17 @@ Web 的 Tab 是原生导航键；照搬 TUI 的「Tab 切换焦点」会阻断 t
   | `npm --prefix agentj-ui run build --workspace=@agentj/web` | clean（`dist/version.json` + `asset-manifest.json` + sha384 integrity 已注入） |
   | `./scripts/check-version.sh` | version-ok（**0.21.0**） |
   | `node agentj-ui/apps/desktop/check-desktop-ui.mjs` | desktop-ui-ok |
-- **验收（live acceptance）**：**未执行 —— 显式延后至 `jskill-test-acceptance` 阶段**
-  （实机 Playwright / TUI / curl 验收：Web 焦点作用域与 roving 键盘导航、TUI 搜索/跳转/
-  展开持久化、`GET /version` 的 `login_limiter`/`integrity` 加性块、`RUST_LOG` 日志下探）。
-  本阶段以自动化门禁为退出标准（计划 Global Constraints）。
+
+  > 验收修复后复跑：web **537 → 539 passed（50 files）**（BUG-011 新增回归用例 + 强化既有
+  > 2 用例；BUG-012 新增回归用例）；其余门禁计数不变（Rust 622 / sdk 47 / tui 130）。
+- **验收（live acceptance）**：**已执行 PASS（`jskill-test-acceptance`，2026-09-23）**——
+  测试轮 1 发现 **BUG-011（low）**（`f` 切换侧栏视图后焦点掉出侧栏 `<body>`，后续
+  `j`/`k`/`r`/`Esc` 失效直至重新点击/Tab）→ 修复 `89396f3`（`SidebarTabs` 活动 tab 按钮
+  `data-tab` + `UnifiedSidebar.toggleTab` 切换后 park 焦点）；回归轮 1 verified，但发现同类
+  **BUG-012（low）**（焦点在文件树行按 `r` 刷新 → 树卸载重挂、焦点掉出侧栏；BUG-011 同类、
+  `r` 路径未覆盖）→ 修复 `71245d5`（`r` handler 在 `refresh()` 前 park 焦点到 files tab 按钮）；
+  回归轮 2 verified、零新 Bug；实机 Playwright（chromium headless）+ HTTP/TUI 全过；版本
+  0.21.0 → **0.21.1**（bugfix，无协议变更）。
 - **Phase 5 全分支复核（Oracle）+ 修复波**：复核 PASS-WITH-MUST-FIX，3 项发现已修复
   （C1 TUI 搜索在途输入被索引回包覆盖 / C2 索引错误态被按键清除 / C3 空 `RUST_LOG`
   回退 ERROR 默认；`5cdb534`、`22fcc7e`）并通过 scoped 复核；上表为修复波后全量

@@ -1,7 +1,7 @@
 # Summary & Next
 
 > 本文件仅保留**当前正在开发**功能设计文档的内容：进度、剩余步骤、遗留问题与下一步。同步更新时**替换**（不要追加）前一功能内容。
-> 当前功能：**v0.21.0 限流可观测 + 资产完整性 + TUI 搜索 + Web 焦点作用域（四项，无 wire 变更）**
+> 当前功能：**v0.21.0 限流可观测 + 资产完整性 + TUI 搜索 + Web 焦点作用域（四项，无 wire 变更）+ v0.21.1 验收修复**
 > ——来源：用户请求（四项增强）；设计文档
 > `docs/superpowers/specs/2026-09-22-agentj-observability-integrity-and-interaction-design.md`
 > + 实现计划 `docs/superpowers/plans/2026-09-22-agentj-observability-integrity-and-interaction-plan.md`
@@ -10,9 +10,9 @@
 > + `agentj-cli`（日志 `EnvFilter`）+ `agentj-ui/apps/web`（`build/version-sri*` 资产清单 +
 > 侧栏快捷键作用域）+ `agentj-ui/apps/tui`（Files 搜索 + 展开持久化 + `config.ts` 抽取）；
 > **Rust / SDK 协议零 wire 改动**；`PROTOCOL_VERSION` 保持 `0.13.0`；
-> 工作区 0.20.1 → **0.21.0**（feature minor）。
+> 工作区 0.20.1 → **0.21.0**（feature minor）→ **0.21.1**（验收 bugfix patch）。
 
-## v0.21.0: 限流可观测 + 资产完整性 + TUI 搜索 + Web 焦点作用域 ✅（本次完成）
+## v0.21.0: 限流可观测 + 资产完整性 + TUI 搜索 + Web 焦点作用域 ✅（feature 已落地）
 
 - ✅ **① 登录限流可观测性**：`agentj-ipc` `login_limiter` 在状态变化点发 tracing 事件
   （锁定**新触发** `warn`、成功登录 `info`、逐次失败/锁定期拒绝 `debug`），进程内
@@ -46,6 +46,23 @@
   回退 ERROR 默认）已修复（`5cdb534`、`22fcc7e`）并通过 scoped 复核；下表为修复波后
   全量复跑结果（Rust 621 → 622、TUI 128 → 130，其余不变）。
 
+## v0.21.1: 验收修复（BUG-011 / BUG-012）✅（本次完成，bugfix 无协议变更）
+
+- ✅ **实机验收（`jskill-test-acceptance`）已执行 PASS**：Playwright（chromium headless）/
+  HTTP / TUI 全过；两个 Bug 均在实机 + jsdom 套件独立复现与验证。
+- ✅ **BUG-011（low，`89396f3`）**：按 `f` 切换侧栏视图后焦点掉出侧栏（`<body>`），
+  后续 `j`/`k`/`r`/`Esc` 失效直至重新点击/Tab 进入。修复：`SidebarTabs` tab 按钮加
+  `data-tab`，`UnifiedSidebar.toggleTab` 切换后把焦点 park 到始终挂载的活动 tab 按钮
+  （新增回归用例 + 强化既有 2 用例，web 538 tests）；回归轮 1 verified。
+- ✅ **BUG-012（low，`71245d5`）**：焦点在文件树行（`j`/`k` 移动后）按 `r` 刷新 → 树卸载重挂、
+  焦点掉出侧栏（BODY），后续 `j`/`k`/`Esc` 失效（BUG-011 同类、`r` 路径未覆盖）。修复：
+  `r` handler 在 `refresh()` 前把焦点 park 到 files tab 按钮（同模式；web 539 tests / 50 files）；
+  回归轮 2 verified、零新 Bug。
+- ✅ **回归收敛**：测试轮 1（发现 BUG-011）→ 修复 → 回归轮 1（verified + 发现同类 BUG-012）
+  → 修复 → 回归轮 2（verified，零新 Bug）。
+- ℹ️ **越范围观察（不记为 Bug）**：`n` 新建会话后侧栏列表不即时刷新（`listRows` 仅 mount 时
+  拉取一次）为 v0.21 之前既有行为，非本特性引入。
+
 ## 验证结果（全量门禁，2026-09-23）
 
 | 门禁 | 结果 |
@@ -55,16 +72,17 @@
 | `cargo clippy --workspace --all-targets -- -D warnings` | 零警告 |
 | `cargo test -p agentj-protocol -- drift` | 2 passed |
 | `npm --prefix agentj-ui test --workspace=@agentj/sdk` | 47 passed（6 files） |
-| `npm --prefix agentj-ui test --workspace=@agentj/web` | **537 passed（50 files）**（491 → 537） |
+| `npm --prefix agentj-ui test --workspace=@agentj/web` | **539 passed（50 files）**（491 → 537 → 539；验收修复后复跑） |
 | `bun --cwd agentj-ui/apps/tui test` | **130 passed（19 files）**（88 → 130） |
 | `npm --prefix agentj-ui run build --workspace=@agentj/web` | clean（`dist/version.json` + `asset-manifest.json` + sha384 integrity 已注入） |
-| `./scripts/check-version.sh` | version-ok（**0.21.0**） |
+| `./scripts/check-version.sh` | version-ok（**0.21.1**，bump 后） |
 | `node agentj-ui/apps/desktop/check-desktop-ui.mjs` | desktop-ui-ok |
 
 > 环境预置清理：`rm -f ~/.local/share/agentj/sessions/s1.{json,trajectory}`
 > （e2e_permission 硬编码 `s1` 会话，前次运行被中断会 hang —— 预存在环境问题，非本特性引入）。
-> 验收状态：**自动化门禁全绿**；实机验收（Playwright / TUI / curl）显式延后至
-> `jskill-test-acceptance` 阶段执行（计划 Global Constraints：自动化门禁为本计划退出标准）。
+> 验收状态：**已执行 PASS**（`jskill-test-acceptance`，2026-09-23）；上表为复核修复波 +
+> 验收修复后复跑结果（622 Rust / 47 sdk / 539 web（50 files）/ 130 tui（19 files）；
+> `check-version` 于 bump 后为 0.21.1）。
 
 ## 遗留问题 / 已知限制
 
@@ -94,9 +112,8 @@
 
 ## 下一步
 
-- 进入 **`jskill-test-acceptance`** 阶段：实机验收（Playwright Web 快捷键作用域/文件树键盘
-  导航；TUI 搜索/跳转/持久化；HTTP `curl /version` 读取 `login_limiter`/`integrity`）→
-  通过后由流程自动创建 PR（**合并由用户负责**）。
+- **等待流程自动创建 PR**（`jskill-test-acceptance` 验收通过后由流程创建）；
+  **合并由用户负责**（用户手动合并）。
 - 后续候选：① 限流可观测扩展（per-IP 明细/指标导出）；② 资产清单扩展
   （`public/` 透传 + 运行期抽检）；③ TUI 搜索增强（服务端搜索、展开状态跨会话共享）；
   ④ Web 键位模型收口（D17 菜单 roving 统一重构 + 侧栏快捷键提示）。
