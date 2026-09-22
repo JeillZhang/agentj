@@ -1,8 +1,12 @@
 import "@testing-library/jest-dom/vitest";
-import { expect, test } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { expect, test, vi } from "vitest";
+import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
+import { createRef } from "react";
 import type { RpcClient } from "@agentj/sdk";
 import FileTree from "./FileTree";
+import type { FileTreeHandle } from "./FileTree";
+import { visiblePaths } from "./fileTreeNav";
+import type { NavEntry } from "./fileTreeNav";
 
 type Call = { method: string; params: Record<string, unknown> };
 
@@ -34,6 +38,22 @@ function mockClient(
   } as unknown as RpcClient;
 }
 
+/** `vi.fn`-backed client double so tests can assert exact request arguments. */
+function fakeClient(byPath: Record<string, RawEntry[]>) {
+  const request = vi.fn(async (_method: string, params: Record<string, unknown> = {}) => {
+    const key = (params.path as string | undefined) ?? "";
+    return { entries: byPath[key] ?? [], truncated: false };
+  });
+  return { client: { request } as unknown as RpcClient, request };
+}
+
+/** Returns the `role="tree"` container or throws while the tree is still loading. */
+function getTree(container: HTMLElement): HTMLElement {
+  const tree = container.querySelector<HTMLElement>('[role="tree"]');
+  if (!tree) throw new Error("tree not rendered");
+  return tree;
+}
+
 test("lazy-loads a directory on expand and caches children", async () => {
   const calls: Call[] = [];
   const client = mockClient((path) => ({ entries: path ? CHILDREN : ROOT, truncated: false }), calls);
@@ -47,7 +67,7 @@ test("lazy-loads a directory on expand and caches children", async () => {
   expect("path" in calls[0].params).toBe(false);
   expect(screen.queryByText("App.tsx")).toBeNull();
 
-  fireEvent.click(screen.getByRole("button", { name: /src/ }));
+  fireEvent.click(screen.getByRole("treeitem", { name: /src/ }));
   await screen.findByText("App.tsx");
   expect(calls).toHaveLength(2);
   expect(calls[1].method).toBe("file/list");
@@ -56,9 +76,9 @@ test("lazy-loads a directory on expand and caches children", async () => {
   expect(calls[1].params.depth).toBe(1);
 
   // collapse then re-expand reuses the cached children (no third request)
-  fireEvent.click(screen.getByRole("button", { name: /src/ }));
+  fireEvent.click(screen.getByRole("treeitem", { name: /src/ }));
   expect(screen.queryByText("App.tsx")).toBeNull();
-  fireEvent.click(screen.getByRole("button", { name: /src/ }));
+  fireEvent.click(screen.getByRole("treeitem", { name: /src/ }));
   await screen.findByText("App.tsx");
   expect(calls).toHaveLength(2);
 });
@@ -76,7 +96,7 @@ test("shows retry after failure and re-requests the same path", async () => {
 
   render(<FileTree client={client} sessionId="s1" demo={false} />);
   await screen.findByText("src");
-  fireEvent.click(screen.getByRole("button", { name: /src/ }));
+  fireEvent.click(screen.getByRole("treeitem", { name: /src/ }));
   await screen.findByText("加载失败");
 
   fireEvent.click(screen.getByRole("button", { name: "重试" }));
@@ -91,7 +111,7 @@ test("renders M/A/U/D git letters from git_status and no dot", async () => {
   const client = mockClient((path) => ({ entries: path ? CHILDREN : ROOT, truncated: false }), calls);
   const { container } = render(<FileTree client={client} sessionId="s1" demo={false} />);
   await screen.findByText("src");
-  fireEvent.click(screen.getByRole("button", { name: /src/ }));
+  fireEvent.click(screen.getByRole("treeitem", { name: /src/ }));
   await screen.findByText("App.tsx");
   expect(container.querySelector(".status-M")).not.toBeNull();
   expect(container.querySelector(".status-A")).not.toBeNull();
@@ -150,7 +170,7 @@ test("uses demo fixtures without requests", () => {
   render(<FileTree client={client} sessionId="s1" demo />);
   expect(screen.getByText(/10 个文件 · 3 处变更/)).toBeInTheDocument();
   expect(screen.queryByText("apps/")).toBeNull();
-  fireEvent.click(screen.getByRole("button", { name: /agentj-ui/ }));
+  fireEvent.click(screen.getByRole("treeitem", { name: /agentj-ui/ }));
   expect(screen.getByText("apps/")).toBeInTheDocument();
   expect(calls).toHaveLength(0);
 });
@@ -160,14 +180,14 @@ test("dir icon swaps Folder/FolderOpen with the expanded state", async () => {
   render(<FileTree client={client} sessionId="s1" demo={false} />);
   await screen.findByText("src");
 
-  const collapsed = screen.getByRole("button", { name: /src/ });
+  const collapsed = screen.getByRole("treeitem", { name: /src/ });
   expect(collapsed.querySelector(".dir-icon--closed")).not.toBeNull();
   expect(collapsed.querySelector(".dir-icon--open")).toBeNull();
 
   fireEvent.click(collapsed);
   await screen.findByText("App.tsx");
 
-  const expanded = screen.getByRole("button", { name: /src/ });
+  const expanded = screen.getByRole("treeitem", { name: /src/ });
   expect(expanded).toHaveAttribute("aria-expanded", "true");
   expect(expanded.querySelector(".dir-icon--open")).not.toBeNull();
   expect(expanded.querySelector(".dir-icon--closed")).toBeNull();
@@ -191,4 +211,170 @@ test("applies per-category icon modifiers to files", async () => {
   expect(container.querySelector(".file-icon--doc")).not.toBeNull();
   expect(container.querySelector(".file-icon--image")).not.toBeNull();
   expect(container.querySelector(".file-icon--default")).not.toBeNull();
+});
+
+// --- T20: keyboard navigation -------------------------------------------------
+
+const NAV_ENTRIES: Map<string, NavEntry[]> = new Map([
+  [
+    "",
+    [
+      { path: "src", kind: "dir" },
+      { path: "README.md", kind: "file" },
+    ],
+  ],
+  [
+    "src",
+    [
+      { path: "src/App.tsx", kind: "file" },
+      { path: "src/utils", kind: "dir" },
+    ],
+  ],
+  ["src/utils", [{ path: "src/utils/helper.ts", kind: "file" }]],
+]);
+
+const NAV_ROOT: RawEntry[] = [
+  { name: "src", path: "src", kind: "dir", git_status: null },
+  { name: "README.md", path: "README.md", kind: "file", git_status: null },
+];
+
+const NAV_CHILDREN: RawEntry[] = [
+  { name: "App.tsx", path: "src/App.tsx", kind: "file", git_status: null },
+  { name: "utils", path: "src/utils", kind: "dir", git_status: null },
+];
+
+const NAV_NESTED: RawEntry[] = [
+  { name: "helper.ts", path: "src/utils/helper.ts", kind: "file", git_status: null },
+];
+
+test("visiblePaths walks depth-first with dirs before recursion and only expanded children", () => {
+  expect(visiblePaths(NAV_ENTRIES, new Set())).toEqual(["src", "README.md"]);
+  expect(visiblePaths(NAV_ENTRIES, new Set(["src"]))).toEqual([
+    "src",
+    "src/App.tsx",
+    "src/utils",
+    "README.md",
+  ]);
+  expect(visiblePaths(NAV_ENTRIES, new Set(["src", "src/utils"]))).toEqual([
+    "src",
+    "src/App.tsx",
+    "src/utils",
+    "src/utils/helper.ts",
+    "README.md",
+  ]);
+  expect(visiblePaths(new Map(), new Set(["src"]))).toEqual([]);
+});
+
+test("moves selection with ArrowDown and toggles with Enter", async () => {
+  const { client, request } = fakeClient({ "": NAV_ROOT, src: NAV_CHILDREN });
+  const { getByText, container } = render(<FileTree client={client} sessionId="s1" demo={false} />);
+  await waitFor(() => expect(getByText("src")).toBeTruthy());
+  getByText("src").focus();
+  fireEvent.keyDown(getTree(container), { key: "ArrowDown" });
+  expect(document.activeElement?.textContent).toContain("README.md");
+  fireEvent.keyDown(getTree(container), { key: "ArrowUp" });
+  expect(document.activeElement?.textContent).toContain("src");
+  fireEvent.keyDown(getTree(container), { key: "Enter" });
+  fireEvent.keyDown(getTree(container), { key: "End" });
+  expect(document.activeElement?.textContent).toContain("README.md");
+  await waitFor(() =>
+    expect(request).toHaveBeenCalledWith("file/list", expect.objectContaining({ path: "src" })),
+  );
+});
+
+test("rows expose role=treeitem with aria-selected and dirs carry aria-expanded", async () => {
+  const { client } = fakeClient({ "": NAV_ROOT, src: NAV_CHILDREN });
+  const { container } = render(<FileTree client={client} sessionId="s1" demo={false} />);
+  await screen.findByText("src");
+  const tree = getTree(container);
+  expect(tree).toBeTruthy();
+  expect(container.querySelectorAll('[role="treeitem"]')).toHaveLength(2);
+
+  const dir = screen.getByRole("treeitem", { name: /^src$/ });
+  expect(dir).toHaveAttribute("aria-expanded", "false");
+  expect(dir).toHaveAttribute("aria-selected", "false");
+  expect(dir).toHaveAttribute("tabindex", "0");
+
+  fireEvent.keyDown(tree, { key: "End" });
+  const file = screen.getByRole("treeitem", { name: /README\.md/ });
+  expect(file).toHaveAttribute("aria-selected", "true");
+  expect(file).toHaveAttribute("tabindex", "0");
+  expect(dir).toHaveAttribute("tabindex", "-1");
+
+  fireEvent.click(dir);
+  await screen.findByText("App.tsx");
+  expect(dir).toHaveAttribute("aria-expanded", "true");
+});
+
+test("Home and End jump to the first and last visible row", async () => {
+  const { client } = fakeClient({ "": NAV_ROOT, src: NAV_CHILDREN });
+  const { container } = render(<FileTree client={client} sessionId="s1" demo={false} />);
+  await screen.findByText("src");
+  const tree = getTree(container);
+
+  fireEvent.keyDown(tree, { key: "End" });
+  expect(document.activeElement?.textContent).toContain("README.md");
+  fireEvent.keyDown(tree, { key: "Home" });
+  expect(document.activeElement?.textContent).toContain("src");
+});
+
+test("Space toggles, ArrowRight expands and ArrowLeft collapses or jumps to the parent", async () => {
+  const { client } = fakeClient({ "": NAV_ROOT, src: NAV_CHILDREN, "src/utils": NAV_NESTED });
+  const { container } = render(<FileTree client={client} sessionId="s1" demo={false} />);
+  await screen.findByText("src");
+  const tree = getTree(container);
+
+  fireEvent.keyDown(tree, { key: "ArrowDown" });
+  fireEvent.keyDown(tree, { key: "ArrowUp" });
+  fireEvent.keyDown(tree, { key: "ArrowRight" });
+  await screen.findByText("App.tsx");
+  expect(screen.getByRole("treeitem", { name: /^src$/ })).toHaveAttribute("aria-expanded", "true");
+
+  fireEvent.keyDown(tree, { key: "ArrowDown" });
+  fireEvent.keyDown(tree, { key: "ArrowDown" });
+  expect(document.activeElement?.textContent).toContain("utils");
+  fireEvent.keyDown(tree, { key: " " });
+  await screen.findByText("helper.ts");
+  expect(screen.getByRole("treeitem", { name: /^utils$/ })).toHaveAttribute("aria-expanded", "true");
+
+  // ArrowLeft on an expanded dir collapses it without moving
+  fireEvent.keyDown(tree, { key: "ArrowLeft" });
+  expect(screen.queryByText("helper.ts")).toBeNull();
+  expect(document.activeElement?.textContent).toContain("utils");
+
+  // ArrowLeft on a collapsed dir jumps to the parent dir
+  fireEvent.keyDown(tree, { key: "ArrowLeft" });
+  expect(document.activeElement?.textContent).toContain("src");
+
+  // ArrowLeft on a file jumps to its parent dir
+  fireEvent.keyDown(tree, { key: "ArrowDown" });
+  expect(document.activeElement?.textContent).toContain("App.tsx");
+  fireEvent.keyDown(tree, { key: "ArrowLeft" });
+  expect(document.activeElement?.textContent).toContain("src");
+});
+
+test("imperative handle moves the selection and refreshes root plus expanded dirs", async () => {
+  const { client, request } = fakeClient({ "": NAV_ROOT, src: NAV_CHILDREN });
+  const ref = createRef<FileTreeHandle>();
+  const { container } = render(<FileTree ref={ref} client={client} sessionId="s1" demo={false} />);
+  await screen.findByText("src");
+  await waitFor(() => expect(request).toHaveBeenCalledTimes(1));
+
+  act(() => ref.current?.moveBy(1));
+  expect(document.activeElement?.textContent).toContain("README.md");
+  act(() => ref.current?.moveBy(-1));
+  expect(document.activeElement?.textContent).toContain("src");
+
+  fireEvent.keyDown(getTree(container), { key: "Enter" });
+  await screen.findByText("App.tsx");
+
+  await act(async () => {
+    ref.current?.refresh();
+  });
+  await waitFor(() => {
+    const rootCalls = request.mock.calls.filter(([, params]) => !params || !("path" in params));
+    const srcCalls = request.mock.calls.filter(([, params]) => params?.path === "src");
+    expect(rootCalls).toHaveLength(2);
+    expect(srcCalls).toHaveLength(2);
+  });
 });
