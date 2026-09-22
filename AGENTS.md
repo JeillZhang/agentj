@@ -1,6 +1,6 @@
 # AGENTS.md
 
-> Updated 2026-09-20 — v0.15.1 协议扩展（三栏工作台真实数据源）+ v0.15.2 session/status dispatch 修复 + v0.16.0 Web 工作台体验修复 + v0.16.1 跟随修复 + v0.16.2 远程访问修复 + v0.16.3 Web 工作台修复（项目菜单 + 文件树）+ v0.16.4 Web 工作台体验修复（状态灯 hover 面板 + 右栏手风琴 + 滚动条）+ v0.16.5 Web 工作台四项修复（右栏右→左展开动画 + 任务/文件变更高度可调 + 顶栏菜单重构/设置弹窗 + 文件树图标）+ v0.17.0 Web 工作台六项增强（代码卡片 + 显示设置 + 文件树图标 + 会话列表菜单 + 项目编辑 + 设置项目面板）+ v0.17.1 验收修复（BUG-008 窄视口菜单/飞出层夹取）+ v0.17.2 界面修复（显示设置字号 px 滑杆/数字输入 + 弹窗边框/四角缩放）+ v0.18.0 Web 三项增强（composer 75% 居中浮动 + 权限选择自动允许 + 会话 token 总量）+ v0.18.1 token 统计修复（读出移至 header 模型 chip 右侧 + 输入/输出 拆分）+ v0.19.0 内核托管 Web UI + 文件树状态补强（同端口静态托管 + 混合鉴权登录门 + WS cookie 通道 + 文件树目录聚合状态）+ v0.20.0 Web 加固 + TUI Files 视图（四项，无 wire 变更）+ v0.20.1 验收修复（BUG-009 焦点模型 + BUG-010 提示词）
+> Updated 2026-09-20 — v0.15.1 协议扩展（三栏工作台真实数据源）+ v0.15.2 session/status dispatch 修复 + v0.16.0 Web 工作台体验修复 + v0.16.1 跟随修复 + v0.16.2 远程访问修复 + v0.16.3 Web 工作台修复（项目菜单 + 文件树）+ v0.16.4 Web 工作台体验修复（状态灯 hover 面板 + 右栏手风琴 + 滚动条）+ v0.16.5 Web 工作台四项修复（右栏右→左展开动画 + 任务/文件变更高度可调 + 顶栏菜单重构/设置弹窗 + 文件树图标）+ v0.17.0 Web 工作台六项增强（代码卡片 + 显示设置 + 文件树图标 + 会话列表菜单 + 项目编辑 + 设置项目面板）+ v0.17.1 验收修复（BUG-008 窄视口菜单/飞出层夹取）+ v0.17.2 界面修复（显示设置字号 px 滑杆/数字输入 + 弹窗边框/四角缩放）+ v0.18.0 Web 三项增强（composer 75% 居中浮动 + 权限选择自动允许 + 会话 token 总量）+ v0.18.1 token 统计修复（读出移至 header 模型 chip 右侧 + 输入/输出 拆分）+ v0.19.0 内核托管 Web UI + 文件树状态补强（同端口静态托管 + 混合鉴权登录门 + WS cookie 通道 + 文件树目录聚合状态）+ v0.20.0 Web 加固 + TUI Files 视图（四项，无 wire 变更）+ v0.20.1 验收修复（BUG-009 焦点模型 + BUG-010 提示词）+ v0.21.0 限流可观测 + 资产完整性 + TUI 搜索 + Web 焦点作用域（四项，无 wire 变更）
 > `file/list` 沙箱化目录懒加载 + git 状态点；`$/progress` 新增 `kind:"todo"`
 > （全量快照 + 会话内单调 `revision`）与 `kind:"file_change"`（write 自研行级
 > diff / bash git 前后采样，unified diff ≤64 KiB）；`$/askQuestion` +
@@ -248,6 +248,26 @@
 ## Project Status
 
 AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + 可插拔模块」架构。
+v0.21.0 已落地：**限流可观测 + 资产完整性 + TUI 搜索 + Web 焦点作用域（四项，无 wire 变更）**
+（① 登录限流可观测性——`agentj-ipc` `login_limiter` 在状态变化点发 tracing 事件（锁定**新触发**
+`warn`、成功登录 `info`、逐次失败/锁定期拒绝 `debug`），`AtomicU64` 聚合计数经 `GET /version`
+加性 `login_limiter` 块暴露（`attempts`/`failures`/`lockouts`/`blocked`/`locked_now`/`tracked_ips`，
+无 per-IP 明细），CLI 日志订阅器改 `EnvFilter`（`RUST_LOG` 可配，未设默认 `info`，行为与 v0.20.0
+逐字一致），限流策略语义（429/Retry-After/锁定升级/清零）零变化；② 资产完整性——构建期
+`apps/web/build/version-sri*` 生成 `dist/asset-manifest.json`（`sha384` 覆盖全部 Rollup bundle
+产物含动态 chunk + SRI 注入后的 `index.html`，单遍哈希与 SRI `integrity` 逐字节一致；排除
+`version.json`/自身/`public/` 透传），内核 `WebConfig` 启动逐文件校验并并入 `startup_warnings()`
+（缺失/不可解析/不符/文件缺失，警告不阻断服务），摘要进 `GET /version` 加性 `integrity` 块
+（`manifest_present`/`checked`/`mismatched`/`missing`）；③ TUI Files 搜索——`s` 进入搜索
+（`file/list {path:null, depth:8}` 单请求扁平索引 ≤2000 + 客户端过滤），可打印字符过滤
+（含 `f`/`n`，吞键）、`Esc` 非空清空/空退出、`Enter` 跳转并展开祖先、`r` 重建、`truncated`
+显示 `· partial`，展开状态经新 `filetree.json` 按本地项目键持久化（per-key ≤100、恢复 ≤50、
+失效路径静默跳过、陈旧键清理）；④ Web 焦点作用域——新 `useShortcutScope`（焦点在侧栏内、
+目标非可编辑、非 IME、无修饰键、无模态/菜单才生效）提供 `f`/`n`/`r`/`j`/`k`/`Esc`，文件树/
+会话列表 roving tabindex 键盘导航，`ModalDialog` 开关焦点恢复，**Tab 保持原生**且 composer
+输入零误触。门禁全绿：cargo fmt / cargo test --workspace / clippy 零警告 / drift 2 passed /
+sdk 47 / web / tui / web build / check-version 0.21.0 / desktop-ui；PROTOCOL_VERSION 保持
+0.13.0；工作区 0.20.1 → 0.21.0）。
 v0.20.1 已落地：**验收修复（BUG-009/BUG-010，bugfix，无协议变更）**
 （实机/HTTP 验收 v0.20.0 四项全过：登录限流（第 5 次失败 429 + Retry-After 30s、锁定
 升级、到期 302 + cookie、成功清零、开放重定向守卫）/ 版本探测与 SRI（sha384 复算匹配、
