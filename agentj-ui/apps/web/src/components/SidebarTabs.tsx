@@ -37,6 +37,7 @@ export default function SidebarTabs({ tab, onChange }: SidebarTabsProps) {
           }}
           type="button"
           role="tab"
+          data-tab={id}
           aria-selected={tab === id}
           tabIndex={tab === id ? 0 : -1}
           className={tab === id ? "active" : ""}

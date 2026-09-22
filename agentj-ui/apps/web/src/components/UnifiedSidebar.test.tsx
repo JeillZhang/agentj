@@ -410,6 +410,23 @@ it("toggles the sidebar tab with f and persists it", async () => {
   expect(localStorage.getItem("agentj.layout.leftTab")).toBe("files");
 });
 
+it("keeps focus inside the sidebar after f switches to the files tab (BUG-011)", async () => {
+  const { flat } = await renderShortcutSidebar();
+  const sidebar = document.getElementById("aj-sidebar") as HTMLElement;
+  (flat.querySelector(".aj-sess") as HTMLElement).focus();
+  fireEvent.keyDown(document, { key: "f" });
+  expect(screen.getByRole("tab", { name: "文件" })).toHaveAttribute("aria-selected", "true");
+  // The view swap must not drop focus out of the sidebar: the previously focused
+  // session row unmounts, so the scope gate (focus inside `#aj-sidebar`) would
+  // otherwise kill every following single-letter shortcut.
+  expect(sidebar.contains(document.activeElement)).toBe(true);
+  // Subsequent j/k must keep working from the real focus path (no manual focus).
+  fireEvent.keyDown(document, { key: "j" });
+  expect(fileTreeSpies.moveBy).toHaveBeenCalledWith(1);
+  fireEvent.keyDown(document, { key: "k" });
+  expect(fileTreeSpies.moveBy).toHaveBeenCalledWith(-1);
+});
+
 it("returns focus to the composer with Escape", async () => {
   const { flat } = await renderShortcutSidebar();
   (flat.querySelector(".aj-sess") as HTMLElement).focus();
@@ -421,7 +438,6 @@ it("refreshes the file tree with r on the files tab", async () => {
   const { flat } = await renderShortcutSidebar();
   (flat.querySelector(".aj-sess") as HTMLElement).focus();
   fireEvent.keyDown(document, { key: "f" });
-  screen.getByTestId("file-tree-mock").focus();
   fireEvent.keyDown(document, { key: "r" });
   expect(fileTreeSpies.refresh).toHaveBeenCalledTimes(1);
 });
@@ -447,7 +463,6 @@ it("moves the file tree selection with j and k on the files tab", async () => {
   const { flat } = await renderShortcutSidebar();
   (flat.querySelector(".aj-sess") as HTMLElement).focus();
   fireEvent.keyDown(document, { key: "f" });
-  screen.getByTestId("file-tree-mock").focus();
   fireEvent.keyDown(document, { key: "j" });
   expect(fileTreeSpies.moveBy).toHaveBeenCalledWith(1);
   fireEvent.keyDown(document, { key: "k" });

@@ -414,6 +414,10 @@ export default function UnifiedSidebar({
     const next = tab === "sessions" ? "files" : "sessions";
     saveLayout({ leftTab: next });
     setTab(next);
+    // The previously focused session row unmounts on the view swap, which would
+    // drop focus to <body> and exit the shortcut scope. Park focus on the active
+    // tab button (always mounted) so j/k/r/Esc keep firing.
+    rootRef.current?.querySelector<HTMLButtonElement>(`[data-tab="${next}"]`)?.focus();
   }, [tab]);
 
   const shortcutHandlers = useMemo(
