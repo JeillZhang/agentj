@@ -14,10 +14,20 @@ function isEditable(el: Element): boolean {
 }
 
 /**
+ * True while a modal dialog is present in the document. ModalDialog keeps focus
+ * on its opener (it only records/restores it), so focus can stay inside the
+ * sidebar scope behind the modal; this guard suppresses shortcuts in that case.
+ */
+function hasOpenModal(): boolean {
+  return document.querySelector('[role="dialog"][aria-modal="true"]') !== null;
+}
+
+/**
  * Registers document-level keydown shortcuts that only fire while focus is
  * inside `ref` (the sidebar scope) and the focused element is not editable.
  *
  * Gating (see plan Global Constraint 5):
+ * - no modal dialog is open,
  * - focus must be inside the scope ref,
  * - INPUT / TEXTAREA / SELECT / contenteditable targets are ignored,
  * - ctrl / meta / alt modifiers and IME composition are ignored,
@@ -30,6 +40,7 @@ export function useShortcutScope(
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.ctrlKey || event.metaKey || event.altKey || event.isComposing) return;
+      if (hasOpenModal()) return;
       const active = document.activeElement;
       if (!active || !ref.current?.contains(active)) return;
       if (isEditable(active)) return;

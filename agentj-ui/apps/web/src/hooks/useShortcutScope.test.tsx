@@ -88,6 +88,49 @@ describe("useShortcutScope", () => {
     expect(onF).toHaveBeenCalledTimes(1);
   });
 
+  it("suppresses shortcuts while a modal dialog is open, even with focus in scope", () => {
+    const onF = vi.fn();
+    const { getByTestId } = render(
+      <Scope onF={onF}>
+        <button data-testid="inside">in</button>
+      </Scope>,
+    );
+    getByTestId("inside").focus();
+
+    const modal = document.createElement("div");
+    modal.setAttribute("role", "dialog");
+    modal.setAttribute("aria-modal", "true");
+    document.body.appendChild(modal);
+
+    fireEvent.keyDown(document, { key: "f" });
+    expect(onF).not.toHaveBeenCalled();
+
+    modal.remove();
+    fireEvent.keyDown(document, { key: "f" });
+    expect(onF).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not preventDefault while a modal dialog is open", () => {
+    const onF = vi.fn();
+    const { getByTestId } = render(
+      <Scope onF={onF}>
+        <button data-testid="inside">in</button>
+      </Scope>,
+    );
+    getByTestId("inside").focus();
+
+    const modal = document.createElement("div");
+    modal.setAttribute("role", "dialog");
+    modal.setAttribute("aria-modal", "true");
+    document.body.appendChild(modal);
+
+    const event = new KeyboardEvent("keydown", { key: "f", bubbles: true, cancelable: true });
+    document.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(false);
+    expect(onF).not.toHaveBeenCalled();
+    modal.remove();
+  });
+
   it("detaches the document listener on unmount", () => {
     const onF = vi.fn();
     const { getByTestId, unmount } = render(
