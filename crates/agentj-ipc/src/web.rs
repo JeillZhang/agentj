@@ -554,14 +554,15 @@ fn static_surface(
 }
 
 /// Unauthenticated version probe: reports this server's product/protocol
-/// versions, the optional facts read from the mounted dist and the aggregate
-/// login-limiter counters, so a remote client or operator can detect a stale UI
-/// and observe throttling without holding a session cookie. Registered as
-/// an explicit route (like `/login`), so the login gate and the SPA fallback
-/// never answer it.
+/// versions, the optional facts read from the mounted dist, the aggregate
+/// login-limiter counters and the startup integrity summary, so a remote client
+/// or operator can detect a stale UI and observe throttling without holding a
+/// session cookie. Registered as an explicit route (like `/login`), so the login
+/// gate and the SPA fallback never answer it.
 async fn version_handler(web: std::sync::Arc<WebConfig>) -> axum::response::Response {
     let dist = web.dist_version();
     let counters = web.login_limiter.counters(Instant::now());
+    let integrity = web.integrity();
     let body = serde_json::json!({
         "product_version": env!("CARGO_PKG_VERSION"),
         "protocol_version": agentj_protocol::PROTOCOL_VERSION,
@@ -578,6 +579,12 @@ async fn version_handler(web: std::sync::Arc<WebConfig>) -> axum::response::Resp
             "blocked": counters.blocked,
             "locked_now": counters.locked_now,
             "tracked_ips": counters.tracked_ips,
+        },
+        "integrity": {
+            "manifest_present": integrity.manifest_present,
+            "checked": integrity.checked,
+            "mismatched": integrity.mismatched,
+            "missing": integrity.missing,
         },
     });
     let mut res = axum::Json(body).into_response();
@@ -1004,6 +1011,32 @@ mod tests {
         assert_eq!(v["login_limiter"]["blocked"], 1);
         assert_eq!(v["login_limiter"]["locked_now"], 1);
         assert_eq!(v["login_limiter"]["tracked_ips"], 1);
+    }
+
+    #[tokio::test]
+    async fn version_reports_asset_integrity_summary() {
+        let remote: std::net::SocketAddr = "203.0.113.7:41000".parse().unwrap();
+        let dir = temp_dist("version-integrity");
+        fs::write(dir.join("index.html"), b"<html></html>").unwrap();
+        write_manifest(&dir, &[("/index.html", &sha384_b64(b"<html></html>"))]);
+        let state = test_state(crate::web::WebConfig::new(Some(dir.clone()), None));
+        let (s, _, b) = get(crate::web::build_router(state, remote), "/version").await;
+        assert_eq!(s, axum::http::StatusCode::OK);
+        let v: serde_json::Value = serde_json::from_str(&b).unwrap();
+        assert_eq!(v["integrity"]["manifest_present"], true);
+        assert!(v["integrity"]["checked"].as_u64().unwrap() > 0);
+        assert_eq!(v["integrity"]["mismatched"], 0);
+        assert_eq!(v["integrity"]["missing"], 0);
+        std::fs::remove_dir_all(&dir).ok();
+
+        let bare = temp_dist("version-integrity-bare");
+        let state = test_state(crate::web::WebConfig::new(Some(bare.clone()), None));
+        let (s, _, b) = get(crate::web::build_router(state, remote), "/version").await;
+        assert_eq!(s, axum::http::StatusCode::OK);
+        let v: serde_json::Value = serde_json::from_str(&b).unwrap();
+        assert_eq!(v["integrity"]["manifest_present"], false);
+        assert_eq!(v["integrity"]["checked"], 0);
+        std::fs::remove_dir_all(&bare).ok();
     }
 
     fn test_state(web: crate::web::WebConfig) -> std::sync::Arc<crate::ws::WsServerState> {
