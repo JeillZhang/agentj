@@ -52,4 +52,30 @@ describe("mock kernel file/list", () => {
     ws.close();
     await k.close();
   }, 10000);
+
+  test("depth 8 returns the flat search fixture", async () => {
+    const k = await startMockKernel();
+    const { WebSocket } = await import("ws");
+    const ws = new WebSocket(k.url) as unknown as Ws;
+    await new Promise<void>((resolve, reject) => {
+      (ws as unknown as { on: (e: string, f: () => void) => void }).on("open", () => resolve());
+      (ws as unknown as { on: (e: string, f: (err: Error) => void) => void }).on("error", (err) =>
+        reject(err),
+      );
+    });
+    await rpc(ws, 1, "initialize", { protocol_version: "0.13.0" });
+    const res = (await rpc(ws, 2, "file/list", { session_id: "s1", depth: 8 })) as {
+      entries: Array<{ path: string; kind: string; git_status: string | null }>;
+      truncated: boolean;
+    };
+    const paths = res.entries.map((e) => e.path);
+    expect(paths).toContain("src/main.rs");
+    expect(paths).toContain("docs/readme.md");
+    const listCall = k.calls.find((c) => c.method === "file/list");
+    expect(listCall).toMatchObject({ depth: 8, session_id: "s1" });
+    expect(res.entries.some((e) => e.kind === "dir")).toBe(true);
+    expect(res.truncated).toBe(false);
+    ws.close();
+    await k.close();
+  }, 10000);
 });
