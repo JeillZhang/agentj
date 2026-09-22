@@ -1,12 +1,17 @@
 // agentj-ui/apps/tui/src/filesView.test.tsx
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { testRender } from "@opentui/react/test-utils";
+import type { TestRendererSetup } from "@opentui/core/testing";
 import { act, useState } from "react";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { RpcClient } from "@agentj/sdk";
 import { ThemeProvider } from "./theme.tsx";
 import { FilesView, useFileTree } from "./files.tsx";
 import { flattenVisible } from "./files.ts";
-import type { FileNode } from "./files.ts";
+import type { FileNode, RawFileEntry } from "./files.ts";
+import { loadFileTreePrefs, saveFileTreePrefs } from "./filetreePrefs.ts";
 
 function node(partial: Partial<FileNode> & { name: string; path: string; kind: "file" | "dir" }): FileNode {
   return {
@@ -130,7 +135,140 @@ function FilesProbe({ client, control }: {
   );
 }
 
+type TreeCall = { path: string | null; depth: number };
+
+type PendingReply = { path: string | null; resolve: (value: unknown) => void };
+
+function treeReply(tree: Record<string, string[]>, path: string | null) {
+  const entries: RawFileEntry[] = path === null
+    ? Object.keys(tree)
+        .filter((p) => !p.includes("/"))
+        .map((p) => ({ name: p, path: p, kind: "dir" as const }))
+    : (tree[path] ?? []).map((name) => ({ name, path: `${path}/${name}`, kind: "dir" as const }));
+  return { entries, truncated: false };
+}
+
+function manualTreeClient(tree: Record<string, string[]>) {
+  const calls: TreeCall[] = [];
+  const pending: PendingReply[] = [];
+  const client = {
+    request: (_method: string, params: Record<string, unknown>) =>
+      new Promise((resolve) => {
+        const path = (params.path as string | null | undefined) ?? null;
+        calls.push({ path, depth: params.depth as number });
+        pending.push({ path, resolve });
+      }),
+  } as unknown as RpcClient;
+  const settle = async (setup: TestRendererSetup): Promise<void> => {
+    await act(async () => { await setup.flush(); });
+    for (let i = 0; i < 25 && pending.length > 0; i += 1) {
+      const call = pending.shift()!;
+      await act(async () => { call.resolve(treeReply(tree, call.path)); });
+      await act(async () => { await setup.flush(); });
+    }
+  };
+  return { client, calls, settle };
+}
+
+type TreeControl = {
+  toggle: (node: FileNode) => void;
+  collapse: (path: string) => void;
+  find: (path: string) => FileNode | null;
+};
+
+function TreeProbe({ client, sessionId, projectKey, control }: {
+  client: RpcClient;
+  sessionId: string;
+  projectKey: string;
+  control?: TreeControl;
+}) {
+  const tree = useFileTree(client, sessionId, projectKey);
+  if (control) {
+    control.toggle = tree.toggle;
+    control.collapse = tree.collapse;
+    control.find = (path) =>
+      flattenVisible(tree.nodes ?? []).find((row) => row.node.path === path)?.node ?? null;
+  }
+  const rows = flattenVisible(tree.nodes ?? []);
+  return (
+    <box flexDirection="column">
+      {rows.map((row) => (
+        <text key={`${row.node.path}#${row.note ? "note" : "row"}`}>
+          {row.note ? row.note.text : row.node.path}
+        </text>
+      ))}
+    </box>
+  );
+}
+
+function renderTree(client: RpcClient, control?: TreeControl) {
+  return testRender(
+    <ThemeProvider><TreeProbe client={client} sessionId="s1" projectKey="p1" control={control} /></ThemeProvider>,
+    { width: 40, height: 12 },
+  );
+}
+
+const TREE: Record<string, string[]> = { src: ["components"], "src/components": [] };
+
 describe("useFileTree", () => {
+  let configDir: string;
+  let prevXdg: string | undefined;
+
+  beforeEach(() => {
+    prevXdg = process.env.XDG_CONFIG_HOME;
+    configDir = mkdtempSync(join(tmpdir(), "aj-filetree-view-"));
+    process.env.XDG_CONFIG_HOME = configDir;
+  });
+
+  afterEach(() => {
+    if (prevXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = prevXdg;
+    rmSync(configDir, { recursive: true, force: true });
+  });
+
+  test("restores persisted expanded paths depth-ascending after the root load", async () => {
+    saveFileTreePrefs({ expanded: { p1: ["src", "src/components"] } }, ["p1"]);
+    const { client, calls, settle } = manualTreeClient(TREE);
+    const setup = await renderTree(client);
+    await settle(setup);
+    expect(calls.map((c) => c.path)).toEqual([null, "src", "src/components"]);
+    expect(calls.filter((c) => c.path === "src")).toHaveLength(1);
+    const frame = setup.captureCharFrame();
+    expect(frame).toContain("src");
+    expect(frame).toContain("src/components");
+    act(() => setup.renderer.destroy());
+  });
+
+  test("skips a persisted path that no longer exists and still restores the rest", async () => {
+    saveFileTreePrefs({ expanded: { p1: ["src", "gone/deep", "src/components"] } }, ["p1"]);
+    const { client, calls, settle } = manualTreeClient(TREE);
+    const setup = await renderTree(client);
+    await settle(setup);
+    expect(calls.some((c) => c.path === "gone" || c.path === "gone/deep")).toBe(false);
+    const frame = setup.captureCharFrame();
+    expect(frame).toContain("src/components");
+    expect(frame).not.toContain("error");
+    act(() => setup.renderer.destroy());
+  });
+
+  test("persists the live expanded set on toggle and collapse", async () => {
+    const { client, settle } = manualTreeClient(TREE);
+    const control: TreeControl = { toggle: () => {}, collapse: () => {}, find: () => null };
+    const setup = await renderTree(client, control);
+    await settle(setup);
+
+    act(() => control.toggle(control.find("src")!));
+    expect(loadFileTreePrefs().expanded.p1).toEqual(["src"]);
+    await settle(setup);
+
+    act(() => control.toggle(control.find("src/components")!));
+    expect(loadFileTreePrefs().expanded.p1).toEqual(["src", "src/components"]);
+
+    act(() => control.collapse("src"));
+    expect(loadFileTreePrefs().expanded.p1).toEqual([]);
+    act(() => setup.renderer.destroy());
+  });
+
   test("drops a file-list reply that resolves after the session changed", async () => {
     const calls: FileListCall[] = [];
     const control = { setSession: (_: string | null) => {} };
