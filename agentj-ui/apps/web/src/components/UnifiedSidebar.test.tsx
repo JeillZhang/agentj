@@ -313,3 +313,59 @@ test("surfaces session/new failures via the error banner", async () => {
   fireEvent.click(screen.getByRole("button", { name: /新建会话/ }));
   expect(await screen.findByRole("alert")).toBeTruthy();
 });
+
+const rovingSessions = [
+  { session_id: "s1", state: "active", preview: "one", updated_at: "3" },
+  { session_id: "s2", state: "active", preview: "two", updated_at: "2" },
+  { session_id: "s3", state: "active", preview: "three", updated_at: "1" },
+];
+
+async function renderRovingSidebar() {
+  localStorage.clear();
+  const { client: c } = makeClient(rovingSessions);
+  const view = render(
+    <UnifiedSidebar wsUrl="ws://x" client={c as never} activeSessionId={null} onActiveChange={() => {}} />,
+  );
+  const flat = view.container.querySelector('[aria-label="最近会话"]') as HTMLElement;
+  await within(flat).findByText("one");
+  return { flat, rows: flat.querySelectorAll<HTMLElement>(".aj-sess") };
+}
+
+it("uses a roving tabindex so only the selected session row is tabbable", async () => {
+  const { rows } = await renderRovingSidebar();
+  expect(rows.length).toBe(3);
+  await waitFor(() => expect(rows[0]).toHaveAttribute("tabindex", "0"));
+  expect(rows[1]).toHaveAttribute("tabindex", "-1");
+  expect(rows[2]).toHaveAttribute("tabindex", "-1");
+  localStorage.clear();
+});
+
+it("moves focus with arrow keys across session rows", async () => {
+  const { rows } = await renderRovingSidebar();
+  rows[0].focus();
+  fireEvent.keyDown(rows[0], { key: "ArrowDown" });
+  expect(document.activeElement).toBe(rows[1]);
+  await waitFor(() => expect(rows[1]).toHaveAttribute("tabindex", "0"));
+  expect(rows[0]).toHaveAttribute("tabindex", "-1");
+  fireEvent.keyDown(rows[1], { key: "ArrowUp" });
+  expect(document.activeElement).toBe(rows[0]);
+  localStorage.clear();
+});
+
+it("continues the focused session on Enter", async () => {
+  localStorage.clear();
+  const onActive = vi.fn();
+  const { calls, client: c } = makeClient(rovingSessions);
+  const { container } = render(
+    <UnifiedSidebar wsUrl="ws://x" client={c as never} activeSessionId={null} onActiveChange={onActive} />,
+  );
+  const flat = container.querySelector('[aria-label="最近会话"]') as HTMLElement;
+  const title = await within(flat).findByText("two");
+  const row = title.closest(".aj-sess") as HTMLElement;
+  row.focus();
+  fireEvent.keyDown(row, { key: "Enter" });
+  await waitFor(() => expect(onActive).toHaveBeenCalledWith("s2"));
+  const statusCalls = calls.filter((call) => call.method === "session/status");
+  expect(statusCalls.some((call) => call.params.session_id === "s2")).toBe(true);
+  localStorage.clear();
+});
