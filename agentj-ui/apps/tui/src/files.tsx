@@ -1,12 +1,14 @@
 // agentj-ui/apps/tui/src/files.tsx (new)
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { METHODS } from "@agentj/sdk";
 import type { RpcClient } from "@agentj/sdk";
+import type { ScrollBoxRenderable } from "@opentui/core";
 import { useTheme } from "./theme.tsx";
 import {
-  buildFileNode, flattenVisible, formatFileRowParts, MAX_INDENT_DEPTH, statusLetterColor, updateNode,
+  buildFileNode, flattenVisible, formatFileRowParts, formatSearchRowParts, MAX_INDENT_DEPTH,
+  parentPath, statusLetterColor, updateNode,
 } from "./files.ts";
-import type { FileNode, RawFileEntry } from "./files.ts";
+import type { FileNode, RawFileEntry, SearchEntry } from "./files.ts";
 import { DEFAULT_PROJECT_KEY, loadFileTreePrefs, saveFileTreePrefs } from "./filetreePrefs.ts";
 
 const MAX_RESTORE_PATHS = 50;
@@ -35,6 +37,15 @@ function ancestorPaths(path: string): string[] {
 
 export type FileListReply = { entries?: RawFileEntry[]; truncated?: boolean };
 
+export type FilesSearchState = {
+  active: boolean;
+  query: string;
+  rows: SearchEntry[];
+  total: number;
+  truncated: boolean;
+  error: string | null;
+};
+
 export type FilesViewProps = {
   nodes: FileNode[] | null;
   selected: number;
@@ -42,39 +53,94 @@ export type FilesViewProps = {
   truncated: boolean;
   noSession: boolean;
   width: number;
+  search?: FilesSearchState;
 };
+
+export const SEARCH_HINT = "type filter · enter jump · esc back";
 
 function messageOf(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
-export function FilesView({ nodes, selected, error, truncated, noSession, width }: FilesViewProps) {
+function SearchRow({ row, width, selected }: { row: SearchEntry; width: number; selected: boolean }) {
   const { palette } = useTheme();
+  const parts = formatSearchRowParts(row, width, selected);
+  const letterColor = statusLetterColor(row.gitStatus, palette) ?? palette.textMuted;
+  const parent = parentPath(row.path);
+  const suffix = parent ? ` ${parent}/` : "";
+  const at = suffix ? parts.body.lastIndexOf(suffix) : -1;
+  return (
+    <box flexDirection="row">
+      {at === -1
+        ? <text style={{ fg: palette.textMuted }}>{parts.body}</text>
+        : (
+          <>
+            <text style={{ fg: palette.text }}>{parts.body.slice(0, at)}</text>
+            <text style={{ fg: palette.textMuted }}>{parts.body.slice(at)}</text>
+          </>
+        )}
+      {parts.letter ? <text style={{ fg: letterColor }}>{parts.letter}</text> : null}
+    </box>
+  );
+}
+
+export function FilesView(props: FilesViewProps) {
+  const { nodes, selected, error, truncated, noSession, width, search } = props;
+  const { palette } = useTheme();
+  const scrollRef = useRef<ScrollBoxRenderable>(null);
+  const searching = search?.active === true;
+  const treeRows = searching ? [] : flattenVisible(nodes ?? []);
+  const rowCount = searching ? (search?.rows.length ?? 0) : treeRows.length;
+
+  useLayoutEffect(() => {
+    const target = scrollRef.current;
+    if (!target) return;
+    try {
+      target.scrollTop = Math.max(0, selected - 2);
+    } catch {}
+  }, [selected, rowCount, searching]);
+
   if (noSession) return <text style={{ fg: palette.textMuted }}>select a session to browse files</text>;
-  if (!nodes && !error) return <text style={{ fg: palette.textMuted }}>loading…</text>;
-  const rows = flattenVisible(nodes ?? []);
+  if (!nodes && !error && !searching) return <text style={{ fg: palette.textMuted }}>loading…</text>;
+  if (searching && search) {
+    const hint = search.truncated ? `${SEARCH_HINT} · partial` : SEARCH_HINT;
+    return (
+      <box flexDirection="column" flexGrow={1}>
+        <text style={{ fg: palette.textMuted }}>{hint}</text>
+        {search.error ? <text style={{ fg: palette.error }}>{`error: ${search.error}`}</text> : null}
+        <scrollbox ref={scrollRef} flexGrow={1} style={{ flexGrow: 1 }} contentOptions={{ minHeight: 0 }}>
+          {search.rows.map((row, i) => (
+            <SearchRow key={row.path} row={row} width={width} selected={i === selected} />
+          ))}
+        </scrollbox>
+      </box>
+    );
+  }
+  const rows = treeRows;
   return (
     <box flexDirection="column" flexGrow={1}>
       {error ? <text style={{ fg: palette.error }}>{`error: ${error}`}</text> : null}
       {nodes !== null && nodes.length === 0 ? <text style={{ fg: palette.textMuted }}>(empty)</text> : null}
-      {rows.map((row, i) => {
-        if (row.note) {
-          const color = row.note.kind === "error" ? palette.error : palette.textMuted;
-          const indent = "  ".repeat(Math.min(row.depth, MAX_INDENT_DEPTH) + 1);
-          return <text key={`${row.node.path}#note`} style={{ fg: color }}>{`${indent}${row.note.text}`}</text>;
-        }
-        const parts = formatFileRowParts(row, width, i === selected);
-        const nameColor = row.node.kind === "dir" ? palette.text : palette.textMuted;
-        const letterColor = statusLetterColor(row.node.gitStatus, palette) ?? nameColor;
-        return (
-          <box key={row.node.path} flexDirection="row">
-            <text style={{ fg: nameColor }}>{parts.body}</text>
-            {parts.letter ? <text style={{ fg: letterColor }}>{parts.letter}</text> : null}
-            {row.node.loading ? <text style={{ fg: palette.textMuted }}> …</text> : null}
-          </box>
-        );
-      })}
-      {truncated ? <text style={{ fg: palette.textMuted }}>… (truncated)</text> : null}
+      <scrollbox ref={scrollRef} flexGrow={1} style={{ flexGrow: 1 }} contentOptions={{ minHeight: 0 }}>
+        {rows.map((row, i) => {
+          if (row.note) {
+            const color = row.note.kind === "error" ? palette.error : palette.textMuted;
+            const indent = "  ".repeat(Math.min(row.depth, MAX_INDENT_DEPTH) + 1);
+            return <text key={`${row.node.path}#note`} style={{ fg: color }}>{`${indent}${row.note.text}`}</text>;
+          }
+          const parts = formatFileRowParts(row, width, i === selected);
+          const nameColor = row.node.kind === "dir" ? palette.text : palette.textMuted;
+          const letterColor = statusLetterColor(row.node.gitStatus, palette) ?? nameColor;
+          return (
+            <box key={row.node.path} flexDirection="row">
+              <text style={{ fg: nameColor }}>{parts.body}</text>
+              {parts.letter ? <text style={{ fg: letterColor }}>{parts.letter}</text> : null}
+              {row.node.loading ? <text style={{ fg: palette.textMuted }}> …</text> : null}
+            </box>
+          );
+        })}
+        {truncated ? <text style={{ fg: palette.textMuted }}>… (truncated)</text> : null}
+      </scrollbox>
     </box>
   );
 }

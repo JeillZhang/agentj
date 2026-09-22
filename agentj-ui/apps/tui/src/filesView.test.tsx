@@ -10,7 +10,7 @@ import type { RpcClient } from "@agentj/sdk";
 import { ThemeProvider } from "./theme.tsx";
 import { FilesView, useFileTree } from "./files.tsx";
 import { flattenVisible } from "./files.ts";
-import type { FileNode, RawFileEntry } from "./files.ts";
+import type { FileNode, RawFileEntry, SearchEntry } from "./files.ts";
 import { loadFileTreePrefs, saveFileTreePrefs } from "./filetreePrefs.ts";
 
 function node(partial: Partial<FileNode> & { name: string; path: string; kind: "file" | "dir" }): FileNode {
@@ -99,6 +99,89 @@ describe("FilesView", () => {
     act(() => failedDir.renderer.destroy());
   });
 });
+
+describe("FilesView search mode", () => {
+  const TWO_ROWS: SearchEntry[] = [
+    { name: "main.rs", path: "src/main.rs", kind: "file", gitStatus: "M" },
+    { name: "main.md", path: "docs/main.md", kind: "file", gitStatus: null },
+  ];
+
+  test("renders matching rows with parent dirs, letters and the selected marker", async () => {
+    const setup = await renderView({
+      nodes: null, selected: 1, error: null, truncated: false, noSession: false, width: 28,
+      search: { active: true, query: "ma", rows: TWO_ROWS, total: 2, truncated: true, error: null },
+    });
+    const frame = setup.captureCharFrame();
+    const lines = frame.split("\n");
+    expect(frame).toContain("type filter · enter jump · esc back · partial");
+    expect(frame).toContain("main.rs");
+    expect(frame).toContain("src/");
+    expect(frame).toContain("main.md");
+    expect(frame).toContain("docs/");
+    const unselected = lines.find((l) => l.includes("main.rs"))!;
+    const selected = lines.find((l) => l.includes("main.md"))!;
+    expect(unselected).not.toContain("●");
+    expect(selected).toContain("●");
+    expect(unselected).toContain("M");
+    act(() => setup.renderer.destroy());
+  });
+
+  test("renders an inline error row while the hint line stays visible", async () => {
+    const setup = await renderView({
+      nodes: null, selected: 0, error: null, truncated: false, noSession: false, width: 28,
+      search: { active: true, query: "ma", rows: [], total: 0, truncated: false, error: "file/list failed" },
+    });
+    const frame = setup.captureCharFrame();
+    expect(frame).toContain("file/list failed");
+    expect(frame).toContain("esc back");
+    expect(frame).not.toContain("partial");
+    act(() => setup.renderer.destroy());
+  });
+
+  test("keeps the tree path when search is absent or inactive", async () => {
+    const setup = await renderView({
+      nodes: [node({ name: "src", path: "src", kind: "dir", gitStatus: "M" })],
+      selected: 0, error: null, truncated: false, noSession: false, width: 28,
+      search: { active: false, query: "", rows: [], total: 0, truncated: false, error: null },
+    });
+    const frame = setup.captureCharFrame();
+    expect(frame).toContain("src");
+    expect(frame).not.toContain("type filter");
+    act(() => setup.renderer.destroy());
+  });
+
+  test("scrolls the results so a distant selection stays visible", async () => {
+    const control = { setSelected: (_: number) => {} };
+    const setup = await testRender(
+      <ThemeProvider><SearchScrollProbe control={control} /></ThemeProvider>, { width: 60, height: 12 },
+    );
+    await act(async () => { await setup.flush(); });
+    expect(setup.captureCharFrame()).toContain("file00");
+    act(() => control.setSelected(30));
+    await act(async () => { await setup.flush(); });
+    const frame = setup.captureCharFrame();
+    expect(frame).toContain("file30");
+    expect(frame).not.toContain("file00");
+    act(() => setup.renderer.destroy());
+  });
+});
+
+function SearchScrollProbe({ control }: { control: { setSelected: (n: number) => void } }) {
+  const [selected, setSelected] = useState(0);
+  control.setSelected = setSelected;
+  const rows: SearchEntry[] = Array.from({ length: 40 }, (_, i) => ({
+    name: `file${String(i).padStart(2, "0")}.ts`,
+    path: `src/file${String(i).padStart(2, "0")}.ts`,
+    kind: "file",
+    gitStatus: null,
+  }));
+  return (
+    <FilesView
+      nodes={null} selected={selected} error={null} truncated={false} noSession={false} width={28}
+      search={{ active: true, query: "file", rows, total: rows.length, truncated: false, error: null }}
+    />
+  );
+}
 
 type Deferred = { promise: Promise<unknown>; resolve: (value: unknown) => void };
 
