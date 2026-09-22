@@ -153,6 +153,66 @@ describe("Sidebar", () => {
     act(() => setup.renderer.destroy());
   });
 
+  test("advertises search hint in sidebar focus and in search mode", async () => {
+    const { default: Sidebar } = await import("./sidebar.tsx");
+    const baseProps = { projects: [], sessions: [] };
+    const filesProps = { nodes: [], selected: 0, error: null, truncated: false, noSession: false, width: 28 };
+    const focused = await testRender(
+      <ThemeProvider>
+        <Sidebar {...baseProps} view="files" focusMode="sidebar" searchMode={null} filesProps={filesProps} />
+      </ThemeProvider>,
+      { width: 80, height: 24 },
+    );
+    await act(async () => {
+      await focused.flush();
+    });
+    const frame = focused.captureCharFrame();
+    expect(frame).toContain("s search");
+    expect(frame).toContain("r refresh");
+    expect(frame).toContain("f threads");
+    expect(frame).toContain("tab: compose");
+    act(() => focused.renderer.destroy());
+
+    const searching = await testRender(
+      <ThemeProvider>
+        <Sidebar {...baseProps} view="files" focusMode="sidebar" searchMode={{ query: "ma" }} filesProps={filesProps} />
+      </ThemeProvider>,
+      { width: 80, height: 24 },
+    );
+    await act(async () => {
+      await searching.flush();
+    });
+    const searchFrame = searching.captureCharFrame();
+    expect(searchFrame).toContain("esc back");
+    expect(searchFrame).not.toContain("s search");
+    act(() => searching.renderer.destroy());
+  });
+
+  test("search mode in composer focus does not advertise dead search keys", async () => {
+    const { default: Sidebar } = await import("./sidebar.tsx");
+    const setup = await testRender(
+      <ThemeProvider>
+        <Sidebar
+          projects={[]}
+          sessions={[]}
+          view="files"
+          focusMode="composer"
+          searchMode={{ query: "ma" }}
+          filesProps={{ nodes: [], selected: 0, error: null, truncated: false, noSession: false, width: 28 }}
+        />
+      </ThemeProvider>,
+      { width: 80, height: 24 },
+    );
+    await act(async () => {
+      await setup.flush();
+    });
+    const frame = setup.captureCharFrame();
+    expect(frame).not.toContain("esc back");
+    expect(frame).not.toContain("s search");
+    expect(frame).toContain("tab: sidebar");
+    act(() => setup.renderer.destroy());
+  });
+
   test("files view in composer focus does not advertise dead sidebar keys", async () => {
     const { default: Sidebar } = await import("./sidebar.tsx");
     const nodes = [

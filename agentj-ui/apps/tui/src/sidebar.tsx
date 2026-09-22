@@ -1,5 +1,5 @@
 import * as path from "node:path";
-import { FilesView } from "./files.tsx";
+import { FilesView, SEARCH_HINT } from "./files.tsx";
 import type { FilesViewProps } from "./files.tsx";
 import { getConfigDir, readJsonFile, writeJsonFile } from "./config.ts";
 
@@ -103,6 +103,7 @@ export type SidebarProps = {
   view?: SidebarView;
   filesProps?: FilesViewProps;
   focusMode?: "composer" | "sidebar";
+  searchMode?: { query: string } | null;
 };
 
 function countForProject(project: Project, sessions: SidebarSession[], allProjects: Project[]): number {
@@ -130,7 +131,7 @@ function truncate(s: string, max: number): string {
 }
 
 export default function Sidebar(props: SidebarProps) {
-  const { projects, sessions, activeId, collapsed = {}, query, width, view, focusMode } = props;
+  const { projects, sessions, activeId, collapsed = {}, query, width, view, focusMode, searchMode } = props;
   const w = width ?? SIDEBAR_WIDTH;
 
   // query filtering for sessions (case-insensitive on id/preview)
@@ -146,9 +147,12 @@ export default function Sidebar(props: SidebarProps) {
       {/* Header */}
       <box flexDirection="column" marginBottom={1}>
         <text>{view === "files" ? "Files" : "Threads"}</text>
-        {view === "files" && focusMode === "sidebar" ? (
+        {view === "files" && focusMode === "sidebar" && searchMode ? (
+          <text>{SEARCH_HINT}</text>
+        ) : view === "files" && focusMode === "sidebar" ? (
           <>
-            <text>r refresh · f threads</text>
+            <text>s search · r refresh</text>
+            <text>f threads</text>
             <text>tab: compose</text>
           </>
         ) : view === "files" ? (
