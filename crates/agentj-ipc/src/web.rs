@@ -2,6 +2,8 @@
 //! opaque session cookies, origin/next validation and the login page.
 
 use axum::response::IntoResponse as _;
+use base64::Engine as _;
+use sha2::{Digest as _, Sha384};
 use std::time::Instant;
 
 use crate::login_limiter::{LoginLimiter, Throttle};
@@ -36,6 +38,136 @@ fn read_dist_version(dist: Option<&std::path::Path>) -> (Option<DistVersion>, Op
     }
 }
 
+/// `dist/asset-manifest.json` written by the UI build (design D5/G5): the
+/// sha384 digest of every bundle artefact, keyed by its service path.
+#[derive(serde::Deserialize)]
+struct AssetManifest {
+    algorithm: String,
+    assets: std::collections::HashMap<String, String>,
+}
+
+/// Read and validate the dist manifest. `(None, None)` means the file is absent
+/// (legacy build); unreadable or invalid content yields an error string.
+fn read_asset_manifest(dist: Option<&std::path::Path>) -> (Option<AssetManifest>, Option<String>) {
+    let Some(dir) = dist else { return (None, None) };
+    let path = dir.join("asset-manifest.json");
+    if !path.is_file() {
+        return (None, None);
+    }
+    let raw = match std::fs::read_to_string(&path) {
+        Ok(raw) => raw,
+        Err(e) => return (None, Some(e.to_string())),
+    };
+    match serde_json::from_str::<AssetManifest>(&raw) {
+        Ok(manifest) => match validate_manifest(&manifest) {
+            Ok(()) => (Some(manifest), None),
+            Err(reason) => (None, Some(reason)),
+        },
+        Err(e) => (None, Some(e.to_string())),
+    }
+}
+
+/// Every key must be a `/`-prefixed relative service path without a traversal
+/// component (design D5); any violation makes the whole manifest unusable.
+fn validate_manifest(manifest: &AssetManifest) -> Result<(), String> {
+    if manifest.algorithm != "sha384" {
+        return Err(format!("unsupported algorithm {:?}", manifest.algorithm));
+    }
+    for key in manifest.assets.keys() {
+        let Some(rel) = key.strip_prefix('/') else {
+            return Err(format!("asset key {key:?} must start with '/'"));
+        };
+        if rel.is_empty() || rel.contains('\\') || rel.split('/').any(|s| s == "..") {
+            return Err(format!(
+                "asset key {key:?} is not a canonical relative path"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Hash every manifest entry against the bytes on disk (design D6/D7):
+/// `checked` counts entries whose file exists, and offending keys are collected
+/// so the startup warning can name them.
+fn verify_assets(dist: &std::path::Path, manifest: &AssetManifest) -> IntegrityReport {
+    let mut report = IntegrityReport {
+        manifest_present: true,
+        ..Default::default()
+    };
+    for (key, expected) in &manifest.assets {
+        let rel = key.strip_prefix('/').unwrap_or(key);
+        match std::fs::read(dist.join(rel)) {
+            Ok(bytes) => {
+                report.checked += 1;
+                let encoded =
+                    base64::engine::general_purpose::STANDARD.encode(Sha384::digest(&bytes));
+                if expected.strip_prefix("sha384-") != Some(encoded.as_str()) {
+                    report.mismatched += 1;
+                    report.offenses.push(key.clone());
+                }
+            }
+            Err(_) => {
+                report.missing += 1;
+                report.offenses.push(key.clone());
+            }
+        }
+    }
+    report
+}
+
+/// Read + verify the manifest once at startup (design D7). A missing dist stays
+/// silent; every other failure yields a non-blocking warning (design D8).
+fn read_integrity(dist: Option<&std::path::Path>) -> (IntegrityReport, Option<String>) {
+    let Some(dir) = dist else {
+        return (IntegrityReport::default(), None);
+    };
+    match read_asset_manifest(Some(dir)) {
+        (Some(manifest), _) => (verify_assets(dir, &manifest), None),
+        (None, Some(err)) => (
+            IntegrityReport::default(),
+            Some(format!(
+                "warning: web dist asset manifest is unusable ({err}); skipping integrity verification"
+            )),
+        ),
+        (None, None) => (
+            IntegrityReport::default(),
+            Some(
+                "warning: web dist has no asset-manifest.json (stale build?); rebuild the UI"
+                    .to_string(),
+            ),
+        ),
+    }
+}
+
+/// Warning for a verified manifest with failed entries (design D8): at most
+/// three offending paths, sorted for deterministic output.
+fn integrity_warning(report: &IntegrityReport) -> Option<String> {
+    if !report.manifest_present || (report.mismatched == 0 && report.missing == 0) {
+        return None;
+    }
+    let mut names: Vec<&str> = report.offenses.iter().map(String::as_str).collect();
+    names.sort_unstable();
+    let listed = names.iter().take(3).copied().collect::<Vec<_>>().join(", ");
+    let suffix = if names.len() > 3 { ", …" } else { "" };
+    Some(format!(
+        "warning: web dist asset integrity check failed: {} mismatched, {} missing after {} \
+         checked ({listed}{suffix})",
+        report.mismatched, report.missing, report.checked
+    ))
+}
+
+/// Startup integrity summary for the mounted dist (design G6): counts only,
+/// exposed through `WebConfig::integrity()`.
+#[derive(Default, Clone)]
+pub(crate) struct IntegrityReport {
+    pub(crate) manifest_present: bool,
+    pub(crate) checked: u64,
+    pub(crate) mismatched: u64,
+    pub(crate) missing: u64,
+    /// Keys whose digest mismatched or whose file was missing.
+    offenses: Vec<String>,
+}
+
 /// Static-web-UI runtime config: resolved dist directory plus the optional
 /// access token and the in-memory set of issued sessions (D3, no persistence).
 pub struct WebConfig {
@@ -43,6 +175,8 @@ pub struct WebConfig {
     pub token: Option<String>,
     dist_version: Option<DistVersion>,
     dist_version_error: Option<String>,
+    integrity: IntegrityReport,
+    integrity_error: Option<String>,
     sessions: std::sync::RwLock<std::collections::HashSet<String>>,
     login_limiter: LoginLimiter,
 }
@@ -54,11 +188,14 @@ impl WebConfig {
     /// Empty-string tokens normalize to `None` (no auth configured).
     pub fn new(dist: Option<std::path::PathBuf>, token: Option<String>) -> Self {
         let (dist_version, dist_version_error) = read_dist_version(dist.as_deref());
+        let (integrity, integrity_error) = read_integrity(dist.as_deref());
         Self {
             dist,
             token: token.filter(|t| !t.is_empty()),
             dist_version,
             dist_version_error,
+            integrity,
+            integrity_error,
             sessions: std::sync::RwLock::new(std::collections::HashSet::new()),
             login_limiter: LoginLimiter::new(),
         }
@@ -75,11 +212,24 @@ impl WebConfig {
     pub fn dist_version(&self) -> Option<&DistVersion> {
         self.dist_version.as_ref()
     }
+    pub(crate) fn integrity(&self) -> &IntegrityReport {
+        &self.integrity
+    }
     /// Startup diagnostics: empty when aligned or no dist is configured.
+    /// Version mismatches and failed integrity checks warn without blocking.
     pub fn startup_warnings(&self) -> Vec<String> {
         if self.dist.is_none() {
             return Vec::new();
         }
+        let mut out = self.version_warnings();
+        if let Some(error) = &self.integrity_error {
+            out.push(error.clone());
+        } else if let Some(warning) = integrity_warning(self.integrity()) {
+            out.push(warning);
+        }
+        out
+    }
+    fn version_warnings(&self) -> Vec<String> {
         let mut out = Vec::new();
         match (&self.dist_version, &self.dist_version_error) {
             (Some(v), _) => {
@@ -475,6 +625,7 @@ pub fn build_router(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use std::time::Duration;
 
     #[test]
@@ -530,6 +681,30 @@ mod tests {
         .unwrap();
     }
 
+    /// `sha384-<base64>` digest in the SRI format the build manifest uses.
+    fn sha384_b64(bytes: &[u8]) -> String {
+        use base64::Engine as _;
+        use sha2::Digest as _;
+        format!(
+            "sha384-{}",
+            base64::engine::general_purpose::STANDARD.encode(sha2::Sha384::digest(bytes))
+        )
+    }
+
+    /// Write an `asset-manifest.json` with the given `/`-prefixed entries.
+    fn write_manifest(dir: &std::path::Path, entries: &[(&str, &str)]) {
+        let assets: std::collections::BTreeMap<&str, &str> = entries.iter().copied().collect();
+        let json = serde_json::json!({ "algorithm": "sha384", "assets": assets });
+        std::fs::write(dir.join("asset-manifest.json"), json.to_string()).unwrap();
+    }
+
+    /// A manifest matching the bytes `temp_dist` writes by default.
+    fn write_temp_dist_manifest(dir: &std::path::Path) {
+        let index = sha384_b64(b"<html>agentj-index</html>");
+        let app = sha384_b64(b"console.log(1)");
+        write_manifest(dir, &[("/index.html", &index), ("/assets/app.js", &app)]);
+    }
+
     #[test]
     fn startup_warnings_cover_aligned_missing_and_mismatched_dists() {
         let aligned = temp_dist("ver-aligned");
@@ -538,6 +713,7 @@ mod tests {
             env!("CARGO_PKG_VERSION"),
             agentj_protocol::PROTOCOL_VERSION,
         );
+        write_temp_dist_manifest(&aligned);
         let web = WebConfig::new(Some(aligned.clone()), None);
         assert!(web.dist_version().is_some());
         assert!(
@@ -548,6 +724,7 @@ mod tests {
 
         let mismatched = temp_dist("ver-mismatch");
         write_version_json(&mismatched, "0.0.1-test", "0.0.1");
+        write_temp_dist_manifest(&mismatched);
         let warnings = WebConfig::new(Some(mismatched.clone()), None).startup_warnings();
         assert_eq!(warnings.len(), 2);
         assert!(
@@ -558,6 +735,7 @@ mod tests {
         assert!(warnings.iter().any(|w| w.contains("protocol")));
 
         let legacy = temp_dist("ver-legacy"); // no version.json
+        write_temp_dist_manifest(&legacy);
         let warnings = WebConfig::new(Some(legacy.clone()), None).startup_warnings();
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].contains("version.json"));
@@ -571,6 +749,151 @@ mod tests {
         for d in [aligned, mismatched, legacy, broken] {
             std::fs::remove_dir_all(&d).ok();
         }
+    }
+
+    #[test]
+    fn integrity_report_counts_mismatches_and_missing() {
+        let dir = temp_dist("integrity");
+        fs::write(dir.join("index.html"), b"<html></html>").unwrap();
+        let good = sha384_b64(b"<html></html>");
+        write_manifest(
+            &dir,
+            &[
+                ("/index.html", &good),
+                ("/assets/missing.js", "sha384-AAAA"),
+            ],
+        );
+        let cfg = WebConfig::new(Some(dir), None);
+        let report = cfg.integrity();
+        assert_eq!(
+            (report.manifest_present, report.checked, report.missing),
+            (true, 1, 1)
+        );
+        assert!(
+            cfg.startup_warnings()
+                .iter()
+                .any(|w| w.contains("integrity"))
+        );
+    }
+
+    #[test]
+    fn manifest_with_parent_dir_key_is_unusable() {
+        let dir = temp_dist("integrity-bad");
+        write_manifest(&dir, &[("/../etc/passwd", "sha384-AAAA")]);
+        let cfg = WebConfig::new(Some(dir), None);
+        assert!(!cfg.integrity().manifest_present);
+        assert!(
+            cfg.startup_warnings()
+                .iter()
+                .any(|w| w.contains("asset manifest")),
+            "{:?}",
+            cfg.startup_warnings()
+        );
+    }
+
+    #[test]
+    fn missing_manifest_warns_but_keeps_serving() {
+        let dir = temp_dist("no-manifest");
+        fs::write(dir.join("index.html"), b"<html></html>").unwrap();
+        let cfg = WebConfig::new(Some(dir), None);
+        assert!(!cfg.integrity().manifest_present);
+        assert!(
+            cfg.startup_warnings()
+                .iter()
+                .any(|w| w.contains("asset-manifest"))
+        );
+    }
+
+    #[test]
+    fn non_slash_key_is_unusable() {
+        let dir = temp_dist("integrity-noslash");
+        write_manifest(&dir, &[("assets/a.js", "sha384-AAAA")]);
+        assert!(!WebConfig::new(Some(dir), None).integrity().manifest_present);
+    }
+
+    #[test]
+    fn tampered_asset_is_mismatched_and_named_in_the_warning() {
+        let dir = temp_dist("integrity-tampered");
+        fs::write(dir.join("index.html"), b"<html></html>").unwrap();
+        let stale = sha384_b64(b"<html>original</html>");
+        let app = sha384_b64(b"console.log(1)");
+        write_manifest(&dir, &[("/index.html", &stale), ("/assets/app.js", &app)]);
+        let cfg = WebConfig::new(Some(dir), None);
+        let report = cfg.integrity();
+        assert_eq!(
+            (report.manifest_present, report.checked, report.mismatched),
+            (true, 2, 1)
+        );
+        let warnings = cfg.startup_warnings();
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("integrity") && w.contains("/index.html")),
+            "{warnings:?}"
+        );
+    }
+
+    #[test]
+    fn unsupported_manifest_algorithm_is_unusable() {
+        let dir = temp_dist("integrity-algorithm");
+        fs::write(
+            dir.join("asset-manifest.json"),
+            "{\"algorithm\":\"sha256\",\"assets\":{\"/index.html\":\"sha256-AAAA\"}}",
+        )
+        .unwrap();
+        let cfg = WebConfig::new(Some(dir), None);
+        assert!(!cfg.integrity().manifest_present);
+        assert!(
+            cfg.startup_warnings()
+                .iter()
+                .any(|w| w.contains("asset manifest")),
+            "{:?}",
+            cfg.startup_warnings()
+        );
+    }
+
+    #[test]
+    fn integrity_warning_lists_at_most_three_offending_paths() {
+        let dir = temp_dist("integrity-many");
+        write_manifest(
+            &dir,
+            &[
+                ("/assets/a.js", "sha384-AAAA"),
+                ("/assets/b.js", "sha384-AAAA"),
+                ("/assets/c.js", "sha384-AAAA"),
+                ("/assets/d.js", "sha384-AAAA"),
+            ],
+        );
+        let cfg = WebConfig::new(Some(dir), None);
+        assert_eq!(cfg.integrity().missing, 4);
+        let warning = cfg
+            .startup_warnings()
+            .into_iter()
+            .find(|w| w.contains("integrity"))
+            .expect("integrity warning");
+        for listed in ["/assets/a.js", "/assets/b.js", "/assets/c.js"] {
+            assert!(warning.contains(listed), "{warning}");
+        }
+        assert!(
+            !warning.contains("/assets/d.js"),
+            "at most three names: {warning}"
+        );
+    }
+
+    #[test]
+    fn dist_absent_keeps_the_integrity_report_empty_and_silent() {
+        let cfg = WebConfig::disabled();
+        let report = cfg.integrity();
+        assert_eq!(
+            (
+                report.manifest_present,
+                report.checked,
+                report.mismatched,
+                report.missing
+            ),
+            (false, 0, 0, 0)
+        );
+        assert!(cfg.startup_warnings().is_empty());
     }
 
     #[tokio::test]
