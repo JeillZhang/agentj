@@ -265,8 +265,8 @@ v0.21.0 已落地：**限流可观测 + 资产完整性 + TUI 搜索 + Web 焦�
 失效路径静默跳过、陈旧键清理）；④ Web 焦点作用域——新 `useShortcutScope`（焦点在侧栏内、
 目标非可编辑、非 IME、无修饰键、无模态/菜单才生效）提供 `f`/`n`/`r`/`j`/`k`/`Esc`，文件树/
 会话列表 roving tabindex 键盘导航，`ModalDialog` 开关焦点恢复，**Tab 保持原生**且 composer
-输入零误触。门禁全绿：cargo fmt / 621 Rust tests / clippy 零警告 / drift 2 passed / sdk 47 /
-web 537 tests（50 files）/ tui 128 tests（19 files）/ web build / check-version 0.21.0 /
+输入零误触。门禁全绿：cargo fmt / 622 Rust tests / clippy 零警告 / drift 2 passed / sdk 47 /
+web 537 tests（50 files）/ tui 130 tests（19 files）/ web build / check-version 0.21.0 /
 desktop-ui；PROTOCOL_VERSION 保持 0.13.0；工作区 0.20.1 → 0.21.0）。
 v0.20.1 已落地：**验收修复（BUG-009/BUG-010，bugfix，无协议变更）**
 （实机/HTTP 验收 v0.20.0 四项全过：登录限流（第 5 次失败 429 + Retry-After 30s、锁定
@@ -455,7 +455,7 @@ Desktop：Tauri v2 壳套 `apps/web` 产物，四件套 deb/AppImage/dmg/msi，
 ## Commands
 
 - `cargo test --workspace` — 全量测试
-  （621 passed / 0 failed；含 bus 密封 + FileBackedStore/Config/CLI 单测
+  （622 passed / 0 failed；含 bus 密封 + FileBackedStore/Config/CLI 单测
   + e2e_cli/e2e_permission/e2e_serve/e2e_ws/e2e_http_static 密封测试）
 - `cargo clippy --workspace --all-targets -- -D warnings` — lint 门禁（零警告）
 - `cargo bench -p agentj-model` — 模型流式基准（criterion）
@@ -474,7 +474,7 @@ Desktop：Tauri v2 壳套 `apps/web` 产物，四件套 deb/AppImage/dmg/msi，
   > 改动 SDK 后须重启 dev server，否则运行陈旧的 `METHODS`（v0.16.3「加载中」根因）。
   > Web 新依赖 `rehype-highlight`（hljs common 语言集，随 `npm --prefix agentj-ui install`
   > + lockfile 落地，v0.17.0）。
-- `bun --cwd agentj-ui/apps/tui test` — TUI 单测（含 mock WS e2e，128 tests / 19 files）
+- `bun --cwd agentj-ui/apps/tui test` — TUI 单测（含 mock WS e2e，130 tests / 19 files）
 - `./agentj-ui/apps/desktop/check-artifacts.sh linux` — Desktop 产物校验
 - `node agentj-ui/apps/desktop/check-desktop-ui.mjs` — Desktop 前端产物/配置一致性校验
 - `./scripts/check-version.sh` — 版本一致性（Cargo + sdk VERSION + desktop 均为 0.21.0，

@@ -41,18 +41,22 @@
   **Tab 保持原生**、composer 输入零误触；模态/菜单打开时快捷键抑制（`0d46431`）。
 - ✅ **T29 全量门禁 + 文档同步**：10 项门禁全部通过（计数见下表）；本任务仅文档改动
   （`AGENTS.md` / `README.md` / 本文件 / 设计文档实施状态），无源码变更。
+- ✅ **Phase 5 全分支复核（Oracle）+ 修复波**：复核 PASS-WITH-MUST-FIX，3 项发现
+  （C1 TUI 搜索在途输入被索引回包覆盖 / C2 索引错误态被按键清除 / C3 空 `RUST_LOG`
+  回退 ERROR 默认）已修复（`5cdb534`、`22fcc7e`）并通过 scoped 复核；下表为修复波后
+  全量复跑结果（Rust 621 → 622、TUI 128 → 130，其余不变）。
 
 ## 验证结果（全量门禁，2026-09-23）
 
 | 门禁 | 结果 |
 |---|---|
 | `cargo fmt --check` | clean |
-| `cargo test --workspace` | **621 passed / 0 failed**（44 test binaries；604 → 621） |
+| `cargo test --workspace` | **622 passed / 0 failed**（44 test binaries；604 → 622） |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 零警告 |
 | `cargo test -p agentj-protocol -- drift` | 2 passed |
 | `npm --prefix agentj-ui test --workspace=@agentj/sdk` | 47 passed（6 files） |
 | `npm --prefix agentj-ui test --workspace=@agentj/web` | **537 passed（50 files）**（491 → 537） |
-| `bun --cwd agentj-ui/apps/tui test` | **128 passed（19 files）**（88 → 128） |
+| `bun --cwd agentj-ui/apps/tui test` | **130 passed（19 files）**（88 → 130） |
 | `npm --prefix agentj-ui run build --workspace=@agentj/web` | clean（`dist/version.json` + `asset-manifest.json` + sha384 integrity 已注入） |
 | `./scripts/check-version.sh` | version-ok（**0.21.0**） |
 | `node agentj-ui/apps/desktop/check-desktop-ui.mjs` | desktop-ui-ok |
