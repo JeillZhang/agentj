@@ -5,6 +5,28 @@ import UnifiedSidebar from "./UnifiedSidebar";
 import TopbarMenu from "./TopbarMenu";
 import { createProject, setCurrentProject, updateProject } from "../projectStore";
 
+// The sidebar scope drives FileTree through its imperative handle; mock it so the
+// `r` (refresh) and files-tab `j`/`k` (moveBy) wiring can be asserted directly.
+const fileTreeSpies = vi.hoisted(() => ({ refresh: vi.fn(), moveBy: vi.fn() }));
+
+vi.mock("./FileTree", async () => {
+  const React = await import("react");
+  const FileTreeMock = React.forwardRef<unknown, Record<string, unknown>>(function FileTreeMock(_props, ref) {
+    const treeRef = React.useRef<HTMLDivElement>(null);
+    React.useImperativeHandle(ref, () => ({
+      // Mirror the real FileTree: moveBy (j/k) moves focus onto the focused row,
+      // so the shortcut scope gate keeps following the real focus path in tests.
+      moveBy: (delta: number) => {
+        fileTreeSpies.moveBy(delta);
+        treeRef.current?.focus();
+      },
+      refresh: fileTreeSpies.refresh,
+    }));
+    return React.createElement("div", { "data-testid": "file-tree-mock", tabIndex: -1, ref: treeRef });
+  });
+  return { default: FileTreeMock };
+});
+
 const client = {
   request: async (m: string) =>
     m === "session/list"
@@ -312,4 +334,195 @@ test("surfaces session/new failures via the error banner", async () => {
   );
   fireEvent.click(screen.getByRole("button", { name: /新建会话/ }));
   expect(await screen.findByRole("alert")).toBeTruthy();
+});
+
+const rovingSessions = [
+  { session_id: "s1", state: "active", preview: "one", updated_at: "3" },
+  { session_id: "s2", state: "active", preview: "two", updated_at: "2" },
+  { session_id: "s3", state: "active", preview: "three", updated_at: "1" },
+];
+
+async function renderRovingSidebar() {
+  localStorage.clear();
+  const { client: c } = makeClient(rovingSessions);
+  const view = render(
+    <UnifiedSidebar wsUrl="ws://x" client={c as never} activeSessionId={null} onActiveChange={() => {}} />,
+  );
+  const flat = view.container.querySelector('[aria-label="最近会话"]') as HTMLElement;
+  await within(flat).findByText("one");
+  return { flat, rows: flat.querySelectorAll<HTMLElement>(".aj-sess") };
+}
+
+it("uses a roving tabindex so only the selected session row is tabbable", async () => {
+  const { rows } = await renderRovingSidebar();
+  expect(rows.length).toBe(3);
+  await waitFor(() => expect(rows[0]).toHaveAttribute("tabindex", "0"));
+  expect(rows[1]).toHaveAttribute("tabindex", "-1");
+  expect(rows[2]).toHaveAttribute("tabindex", "-1");
+  localStorage.clear();
+});
+
+it("moves focus with arrow keys across session rows", async () => {
+  const { rows } = await renderRovingSidebar();
+  rows[0].focus();
+  fireEvent.keyDown(rows[0], { key: "ArrowDown" });
+  expect(document.activeElement).toBe(rows[1]);
+  await waitFor(() => expect(rows[1]).toHaveAttribute("tabindex", "0"));
+  expect(rows[0]).toHaveAttribute("tabindex", "-1");
+  fireEvent.keyDown(rows[1], { key: "ArrowUp" });
+  expect(document.activeElement).toBe(rows[0]);
+  localStorage.clear();
+});
+
+it("continues the focused session on Enter", async () => {
+  localStorage.clear();
+  const onActive = vi.fn();
+  const { calls, client: c } = makeClient(rovingSessions);
+  const { container } = render(
+    <UnifiedSidebar wsUrl="ws://x" client={c as never} activeSessionId={null} onActiveChange={onActive} />,
+  );
+  const flat = container.querySelector('[aria-label="最近会话"]') as HTMLElement;
+  const title = await within(flat).findByText("two");
+  const row = title.closest(".aj-sess") as HTMLElement;
+  row.focus();
+  fireEvent.keyDown(row, { key: "Enter" });
+  await waitFor(() => expect(onActive).toHaveBeenCalledWith("s2"));
+  const statusCalls = calls.filter((call) => call.method === "session/status");
+  expect(statusCalls.some((call) => call.params.session_id === "s2")).toBe(true);
+  localStorage.clear();
+});
+
+async function renderShortcutSidebar() {
+  localStorage.clear();
+  fileTreeSpies.refresh.mockClear();
+  fileTreeSpies.moveBy.mockClear();
+  const { calls, client: c } = makeClient(rovingSessions, "s-new");
+  const view = render(
+    <>
+      <UnifiedSidebar wsUrl="ws://x" client={c as never} activeSessionId={null} onActiveChange={() => {}} />
+      <input id="aj-prompt" />
+    </>,
+  );
+  const flat = view.container.querySelector('[aria-label="最近会话"]') as HTMLElement;
+  await within(flat).findByText("one");
+  return { calls, flat };
+}
+
+it("toggles the sidebar tab with f and persists it", async () => {
+  const { flat } = await renderShortcutSidebar();
+  (flat.querySelector(".aj-sess") as HTMLElement).focus();
+  fireEvent.keyDown(document, { key: "f" });
+  expect(screen.getByRole("tab", { name: "文件" })).toHaveAttribute("aria-selected", "true");
+  expect(localStorage.getItem("agentj.layout.leftTab")).toBe("files");
+});
+
+it("keeps focus inside the sidebar after f switches to the files tab (BUG-011)", async () => {
+  const { flat } = await renderShortcutSidebar();
+  const sidebar = document.getElementById("aj-sidebar") as HTMLElement;
+  (flat.querySelector(".aj-sess") as HTMLElement).focus();
+  fireEvent.keyDown(document, { key: "f" });
+  expect(screen.getByRole("tab", { name: "文件" })).toHaveAttribute("aria-selected", "true");
+  // The view swap must not drop focus out of the sidebar: the previously focused
+  // session row unmounts, so the scope gate (focus inside `#aj-sidebar`) would
+  // otherwise kill every following single-letter shortcut.
+  expect(sidebar.contains(document.activeElement)).toBe(true);
+  // Subsequent j/k must keep working from the real focus path (no manual focus).
+  fireEvent.keyDown(document, { key: "j" });
+  expect(fileTreeSpies.moveBy).toHaveBeenCalledWith(1);
+  fireEvent.keyDown(document, { key: "k" });
+  expect(fileTreeSpies.moveBy).toHaveBeenCalledWith(-1);
+});
+
+it("keeps focus inside the sidebar after r refreshes the tree from a row (BUG-012)", async () => {
+  const { flat } = await renderShortcutSidebar();
+  const sidebar = document.getElementById("aj-sidebar") as HTMLElement;
+  (flat.querySelector(".aj-sess") as HTMLElement).focus();
+  fireEvent.keyDown(document, { key: "f" });
+  const filesTab = screen.getByRole("tab", { name: "文件" });
+  // j/k move focus onto a tree row (the mock mirrors moveBy focusing the row).
+  fireEvent.keyDown(document, { key: "j" });
+  expect(sidebar.contains(document.activeElement)).toBe(true);
+  // r reloads the tree; a real FileTree unmounts its rows into a loading state,
+  // so the sidebar must park focus on the always-mounted files tab button or the
+  // scope gate (focus inside the sidebar) would kill every following shortcut.
+  fireEvent.keyDown(document, { key: "r" });
+  expect(fileTreeSpies.refresh).toHaveBeenCalledTimes(1);
+  expect(document.activeElement).toBe(filesTab);
+  // j/k/Esc keep firing from the parked focus.
+  fireEvent.keyDown(document, { key: "j" });
+  expect(fileTreeSpies.moveBy).toHaveBeenLastCalledWith(1);
+  fireEvent.keyDown(document, { key: "k" });
+  expect(fileTreeSpies.moveBy).toHaveBeenLastCalledWith(-1);
+  fireEvent.keyDown(document, { key: "Escape" });
+  expect(document.activeElement?.id).toBe("aj-prompt");
+});
+
+it("returns focus to the composer with Escape", async () => {
+  const { flat } = await renderShortcutSidebar();
+  (flat.querySelector(".aj-sess") as HTMLElement).focus();
+  fireEvent.keyDown(document, { key: "Escape" });
+  expect(document.activeElement?.id).toBe("aj-prompt");
+});
+
+it("refreshes the file tree with r on the files tab", async () => {
+  const { flat } = await renderShortcutSidebar();
+  (flat.querySelector(".aj-sess") as HTMLElement).focus();
+  fireEvent.keyDown(document, { key: "f" });
+  fireEvent.keyDown(document, { key: "r" });
+  expect(fileTreeSpies.refresh).toHaveBeenCalledTimes(1);
+});
+
+it("creates a new session with n from the sidebar scope", async () => {
+  const { calls, flat } = await renderShortcutSidebar();
+  (flat.querySelector(".aj-sess") as HTMLElement).focus();
+  fireEvent.keyDown(document, { key: "n" });
+  await waitFor(() => expect(calls.some((call) => call.method === "session/new")).toBe(true));
+});
+
+it("moves the session selection with j and k", async () => {
+  const { flat } = await renderShortcutSidebar();
+  const rows = flat.querySelectorAll<HTMLElement>(".aj-sess");
+  rows[0].focus();
+  fireEvent.keyDown(document, { key: "j" });
+  expect(document.activeElement).toBe(rows[1]);
+  fireEvent.keyDown(document, { key: "k" });
+  expect(document.activeElement).toBe(rows[0]);
+});
+
+it("moves the file tree selection with j and k on the files tab", async () => {
+  const { flat } = await renderShortcutSidebar();
+  (flat.querySelector(".aj-sess") as HTMLElement).focus();
+  fireEvent.keyDown(document, { key: "f" });
+  fireEvent.keyDown(document, { key: "j" });
+  expect(fileTreeSpies.moveBy).toHaveBeenCalledWith(1);
+  fireEvent.keyDown(document, { key: "k" });
+  expect(fileTreeSpies.moveBy).toHaveBeenCalledWith(-1);
+});
+
+it("fires no sidebar shortcut while typing in the composer", async () => {
+  const { calls, flat } = await renderShortcutSidebar();
+  const prompt = document.getElementById("aj-prompt") as HTMLInputElement;
+  prompt.focus();
+  for (const key of ["f", "n", "r", "j", "k"]) {
+    fireEvent.keyDown(prompt, { key });
+  }
+  expect(screen.getByRole("tab", { name: "会话" })).toHaveAttribute("aria-selected", "true");
+  expect(calls.some((call) => call.method === "session/new")).toBe(false);
+  expect(fileTreeSpies.refresh).not.toHaveBeenCalled();
+  expect(fileTreeSpies.moveBy).not.toHaveBeenCalled();
+  expect(flat.querySelectorAll(".aj-sess").length).toBe(3);
+});
+
+it("ignores sidebar shortcuts when focus is outside the sidebar", async () => {
+  localStorage.clear();
+  const { client: c } = makeClient(rovingSessions);
+  render(
+    <>
+      <UnifiedSidebar wsUrl="ws://x" client={c as never} activeSessionId={null} onActiveChange={() => {}} />
+      <input id="aj-prompt" />
+    </>,
+  );
+  document.getElementById("aj-prompt")!.focus();
+  fireEvent.keyDown(document, { key: "f" });
+  expect(screen.getByRole("tab", { name: "会话" })).toHaveAttribute("aria-selected", "true");
 });

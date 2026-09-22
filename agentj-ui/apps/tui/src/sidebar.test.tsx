@@ -153,6 +153,66 @@ describe("Sidebar", () => {
     act(() => setup.renderer.destroy());
   });
 
+  test("advertises search hint in sidebar focus and in search mode", async () => {
+    const { default: Sidebar } = await import("./sidebar.tsx");
+    const baseProps = { projects: [], sessions: [] };
+    const filesProps = { nodes: [], selected: 0, error: null, truncated: false, noSession: false, width: 28 };
+    const focused = await testRender(
+      <ThemeProvider>
+        <Sidebar {...baseProps} view="files" focusMode="sidebar" searchMode={null} filesProps={filesProps} />
+      </ThemeProvider>,
+      { width: 80, height: 24 },
+    );
+    await act(async () => {
+      await focused.flush();
+    });
+    const frame = focused.captureCharFrame();
+    expect(frame).toContain("s search");
+    expect(frame).toContain("r refresh");
+    expect(frame).toContain("f threads");
+    expect(frame).toContain("tab: compose");
+    act(() => focused.renderer.destroy());
+
+    const searching = await testRender(
+      <ThemeProvider>
+        <Sidebar {...baseProps} view="files" focusMode="sidebar" searchMode={{ query: "ma" }} filesProps={filesProps} />
+      </ThemeProvider>,
+      { width: 80, height: 24 },
+    );
+    await act(async () => {
+      await searching.flush();
+    });
+    const searchFrame = searching.captureCharFrame();
+    expect(searchFrame).toContain("esc back");
+    expect(searchFrame).not.toContain("s search");
+    act(() => searching.renderer.destroy());
+  });
+
+  test("search mode in composer focus does not advertise dead search keys", async () => {
+    const { default: Sidebar } = await import("./sidebar.tsx");
+    const setup = await testRender(
+      <ThemeProvider>
+        <Sidebar
+          projects={[]}
+          sessions={[]}
+          view="files"
+          focusMode="composer"
+          searchMode={{ query: "ma" }}
+          filesProps={{ nodes: [], selected: 0, error: null, truncated: false, noSession: false, width: 28 }}
+        />
+      </ThemeProvider>,
+      { width: 80, height: 24 },
+    );
+    await act(async () => {
+      await setup.flush();
+    });
+    const frame = setup.captureCharFrame();
+    expect(frame).not.toContain("esc back");
+    expect(frame).not.toContain("s search");
+    expect(frame).toContain("tab: sidebar");
+    act(() => setup.renderer.destroy());
+  });
+
   test("files view in composer focus does not advertise dead sidebar keys", async () => {
     const { default: Sidebar } = await import("./sidebar.tsx");
     const nodes = [
@@ -191,5 +251,70 @@ describe("Sidebar", () => {
     expect(frame).not.toMatch(/f threads/);
     expect(frame).toMatch(/tab: sidebar/);
     act(() => setup.renderer.destroy());
+  });
+
+  test("persists collapsed state under the shared config dir", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "aj-sidebar-"));
+    const prevXdg = process.env.XDG_CONFIG_HOME;
+    process.env.XDG_CONFIG_HOME = tmp;
+    try {
+      const mod = await import("./sidebar.tsx");
+      const cfg = await import("./config.ts");
+      // migration: the store resolves the config dir through the shared helper
+      expect(mod.getConfigDir).toBe(cfg.getConfigDir);
+      mod.saveCollapsed({ p1: true });
+      const file = path.join(tmp, "agentj", "projects.json");
+      expect(fs.existsSync(file)).toBe(true);
+      expect(cfg.readJsonFile<unknown>("projects.json")).toEqual({ collapsed: { p1: true } });
+    } finally {
+      if (prevXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+      else process.env.XDG_CONFIG_HOME = prevXdg;
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test("parses a pre-refactor projects.json without migration", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "aj-sidebar-legacy-"));
+    const prevXdg = process.env.XDG_CONFIG_HOME;
+    process.env.XDG_CONFIG_HOME = tmp;
+    try {
+      const mod = await import("./sidebar.tsx");
+      const dir = path.join(tmp, "agentj");
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, "projects.json"),
+        JSON.stringify({ collapsed: { foo: true }, projects: [{ id: "p1", name: "P1" }] }),
+        "utf8",
+      );
+      expect(mod.loadCollapsed()).toEqual({ foo: true });
+      expect(mod.loadProjects()).toEqual([{ id: "p1", name: "P1" }]);
+    } finally {
+      if (prevXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+      else process.env.XDG_CONFIG_HOME = prevXdg;
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test("saveCollapsed prunes unknown top-level boolean keys", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "aj-sidebar-prune-"));
+    const prevXdg = process.env.XDG_CONFIG_HOME;
+    process.env.XDG_CONFIG_HOME = tmp;
+    try {
+      const mod = await import("./sidebar.tsx");
+      const dir = path.join(tmp, "agentj");
+      fs.mkdirSync(dir, { recursive: true });
+      const file = path.join(dir, "projects.json");
+      fs.writeFileSync(file, JSON.stringify({ collapsed: { old: true }, zombie: true, keep: "x" }), "utf8");
+      mod.saveCollapsed({ p1: true });
+      const raw = JSON.parse(fs.readFileSync(file, "utf8")) as Record<string, unknown>;
+      expect(raw.collapsed).toEqual({ p1: true });
+      expect("zombie" in raw).toBe(false);
+      expect(raw.keep).toBe("x");
+      expect(mod.loadCollapsed()).toEqual({ p1: true });
+    } finally {
+      if (prevXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+      else process.env.XDG_CONFIG_HOME = prevXdg;
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });

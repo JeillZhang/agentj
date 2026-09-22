@@ -48,6 +48,7 @@ export default function ModalDialog({
   const idRef = useRef<number | null>(null);
   if (idRef.current === null) idRef.current = nextModalId++;
 
+  const openerRef = useRef<Element | null>(null);
   const frameRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<DragState | null>(null);
   const [rect, setRect] = useState<DialogRect | null>(null);
@@ -58,10 +59,13 @@ export default function ModalDialog({
   useEffect(() => {
     const id = idRef.current;
     if (id === null) return;
+    openerRef.current = document.activeElement;
     modalStack.push(id);
     return () => {
       const index = modalStack.indexOf(id);
       if (index !== -1) modalStack.splice(index, 1);
+      const opener = openerRef.current;
+      if (opener instanceof HTMLElement && opener.isConnected) opener.focus();
     };
   }, []);
 

@@ -1,10 +1,22 @@
 import { createServer } from "node:http";
 import { WebSocketServer, WebSocket } from "ws";
 
+export type MockCall = { method: string; [key: string]: unknown };
+
 export type MockKernel = {
   url: string;
   close: () => Promise<void>;
+  calls: MockCall[];
 };
+
+// Flat depth=8 index served for search mode: nested paths as plain entries.
+const SEARCH_FIXTURE = [
+  { name: "src", path: "src", kind: "dir", git_status: "M" },
+  { name: "main.rs", path: "src/main.rs", kind: "file", git_status: "M" },
+  { name: "README.md", path: "README.md", kind: "file", git_status: null },
+  { name: "docs", path: "docs", kind: "dir", git_status: null },
+  { name: "readme.md", path: "docs/readme.md", kind: "file", git_status: "A" },
+];
 
 type Pending = {
   id: number;
@@ -14,6 +26,7 @@ type Pending = {
 export async function startMockKernel(): Promise<MockKernel> {
   const server = createServer();
   const wss = new WebSocketServer({ noServer: true });
+  const calls: MockCall[] = [];
 
   server.on("upgrade", (req, socket, head) => {
     const url = req.url ?? "";
@@ -32,6 +45,7 @@ export async function startMockKernel(): Promise<MockKernel> {
       } catch {
         return;
       }
+      calls.push({ method: msg.method ?? "", ...(msg.params ?? {}) });
       handleMessage(ws, msg);
     });
   });
@@ -45,7 +59,7 @@ export async function startMockKernel(): Promise<MockKernel> {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   };
 
-  return { url, close };
+  return { url, close, calls };
 }
 
 function reply(ws: WebSocket, id: number | undefined, result: unknown): void {
@@ -82,13 +96,23 @@ function handlePermissionRespond(ws: WebSocket, id: number | undefined): void {
       JSON.stringify({
         jsonrpc: "2.0",
         method: "$/progress",
-        params: { session_id: "sess-1", token: 3, value: { kind: "usage", usage: { prompt_tokens: 10, completion_tokens: 5 } } },
+        params: {
+          session_id: "sess-1",
+          token: 3,
+          value: { kind: "usage", usage: { prompt_tokens: 10, completion_tokens: 5 } },
+        },
       }),
     );
   }, 20);
 }
 
 function handleFileList(ws: WebSocket, msg: { id?: number; params?: Record<string, unknown> }): void {
+  const depthRaw = msg.params?.["depth"];
+  const depth = typeof depthRaw === "number" ? depthRaw : 1;
+  if (depth === 8) {
+    reply(ws, msg.id, { entries: SEARCH_FIXTURE, truncated: false });
+    return;
+  }
   const path = (msg.params?.["path"] as string | null | undefined) ?? null;
   const entries = path
     ? [{ name: "main.rs", path: "src/main.rs", kind: "file", git_status: "M" }]

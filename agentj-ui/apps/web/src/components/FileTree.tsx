@@ -1,17 +1,27 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import type { CSSProperties, ReactNode } from "react";
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
+import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, ReactNode } from "react";
 import { ChevronRight, Folder, FolderOpen } from "lucide-react";
 import { METHODS } from "@agentj/sdk";
 import type { RpcClient } from "@agentj/sdk";
 import { DEMO_FILE_TREE } from "../demoData";
 import type { FileNode } from "../demoData";
 import { fileIconFor } from "../fileIcons";
+import { moveSelection, tabIndexFor } from "../hooks/useRovingFocus";
+import { parentDir, visiblePaths } from "./fileTreeNav";
 import "./filetree.css";
 
 export type FileTreeProps = {
   client: RpcClient | null;
   sessionId: string | null;
   demo: boolean;
+};
+
+/** Imperative surface consumed by the sidebar shortcut scope (`r` refresh, `j/k` move). */
+export type FileTreeHandle = {
+  /** Move the selection by `delta` visible rows (clamped) and move focus along. */
+  moveBy: (delta: number) => void;
+  /** Reload the root directory and every currently expanded directory. */
+  refresh: () => void;
 };
 
 const ROOT = "";
@@ -105,8 +115,13 @@ type NodeListProps = {
   expanded: Set<string>;
   loading: Set<string>;
   errors: Map<string, string>;
+  selectedPath: string | null;
+  tabbableIndex: number;
+  indexByPath: Map<string, number>;
   onToggle: (path: string) => void;
   onRetry: (path: string) => void;
+  onSelect: (path: string) => void;
+  registerRow: (path: string, el: HTMLElement | null) => void;
 };
 
 function StatusCell({ git }: { git: GitLetter }) {
@@ -121,13 +136,21 @@ function NodeList({
   expanded,
   loading,
   errors,
+  selectedPath,
+  tabbableIndex,
+  indexByPath,
   onToggle,
   onRetry,
+  onSelect,
+  registerRow,
 }: NodeListProps) {
   return (
     <>
       {(entries.get(parent) ?? []).map((node) => {
+        const isSelected = node.path === selectedPath;
         const rowStyle: CSSProperties = { paddingLeft: rowIndent(depth) };
+        if (isSelected) rowStyle.background = "var(--aj-raised)";
+        const tabIndex = tabIndexFor(indexByPath.get(node.path) ?? -1, tabbableIndex);
         if (node.kind === "dir") {
           const open = expanded.has(node.path);
           const groupId = childGroupId(node.path);
@@ -154,21 +177,34 @@ function NodeList({
                   expanded={expanded}
                   loading={loading}
                   errors={errors}
+                  selectedPath={selectedPath}
+                  tabbableIndex={tabbableIndex}
+                  indexByPath={indexByPath}
                   onToggle={onToggle}
                   onRetry={onRetry}
+                  onSelect={onSelect}
+                  registerRow={registerRow}
                 />
               );
             }
           }
           return (
-            <div className="trow-group" key={node.path}>
+            <div className="trow-group" role="none" key={node.path}>
               <button
                 type="button"
+                role="treeitem"
                 className="trow trow-dir"
                 style={rowStyle}
                 aria-expanded={open}
+                aria-selected={isSelected}
                 aria-controls={groupId}
+                tabIndex={tabIndex}
+                data-selected={isSelected ? "true" : undefined}
+                ref={(el) => {
+                  registerRow(node.path, el);
+                }}
                 onClick={() => onToggle(node.path)}
+                onFocus={() => onSelect(node.path)}
               >
                 <ChevronRight className="chev" size={12} aria-hidden="true" />
                 {open ? (
@@ -179,13 +215,27 @@ function NodeList({
                 <span className="name">{node.name}</span>
                 {node.git ? <StatusCell git={node.git} /> : null}
               </button>
-              <div id={groupId}>{body}</div>
+              <div id={groupId} role="group">
+                {body}
+              </div>
             </div>
           );
         }
         const { Icon, category } = fileIconFor(node.name);
         return (
-          <div className="trow" key={node.path} style={rowStyle}>
+          <div
+            className="trow"
+            role="treeitem"
+            key={node.path}
+            style={rowStyle}
+            aria-selected={isSelected}
+            tabIndex={tabIndex}
+            data-selected={isSelected ? "true" : undefined}
+            ref={(el) => {
+              registerRow(node.path, el);
+            }}
+            onFocus={() => onSelect(node.path)}
+          >
             <span className="chev" aria-hidden="true" />
             <Icon className={`file-icon file-icon--${category}`} size={13} aria-hidden="true" />
             <span className="name">{node.name}</span>
@@ -199,13 +249,20 @@ function NodeList({
 
 /**
  * Left-panel 文件 tab body: lazily loads directories via `file/list`, caches children,
- * renders git markers and footer stats. Demo mode uses fixtures with zero requests.
+ * renders git markers and footer stats. Rows form a roving-tabindex tree: arrows move
+ * the selection with focus, Home/End jump, Enter/Space toggle dirs and ← jumps to the
+ * parent dir. Demo mode uses fixtures with zero requests.
  */
-export default function FileTree({ client, sessionId, demo }: FileTreeProps) {
+const FileTree = forwardRef<FileTreeHandle, FileTreeProps>(function FileTree(
+  { client, sessionId, demo }: FileTreeProps,
+  ref,
+) {
   const [fetched, setFetched] = useState<Map<string, ViewEntry[]>>(new Map());
   const [loading, setLoading] = useState<Set<string>>(new Set());
   const [errors, setErrors] = useState<Map<string, string>>(new Map());
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [selectedPath, setSelectedPath] = useState<string | null>(null);
+  const rowRefs = useRef(new Map<string, HTMLElement>());
 
   const demoEntries = useMemo(() => flattenDemo(DEMO_FILE_TREE), []);
   const entries = demo ? demoEntries : fetched;
@@ -247,42 +304,140 @@ export default function FileTree({ client, sessionId, demo }: FileTreeProps) {
     setLoading(new Set());
     setErrors(new Map());
     setExpanded(new Set());
+    setSelectedPath(null);
     if (demo || !client || !sessionId) return;
     void loadDir(ROOT);
   }, [demo, client, sessionId, loadDir]);
 
-  const toggle = (path: string): void => {
-    setExpanded((prev) => {
-      const next = new Set(prev);
-      if (next.has(path)) next.delete(path);
-      else next.add(path);
-      return next;
-    });
-    if (!demo && !fetched.has(path) && !loading.has(path)) void loadDir(path);
-  };
+  const toggle = useCallback(
+    (path: string): void => {
+      setExpanded((prev) => {
+        const next = new Set(prev);
+        if (next.has(path)) next.delete(path);
+        else next.add(path);
+        return next;
+      });
+      if (!demo && !fetched.has(path) && !loading.has(path)) void loadDir(path);
+    },
+    [demo, fetched, loading, loadDir],
+  );
+
+  const paths = useMemo(() => visiblePaths(entries, expanded), [entries, expanded]);
+  const indexByPath = useMemo(() => new Map(paths.map((path, index) => [path, index])), [paths]);
+  const entryByPath = useMemo(() => {
+    const map = new Map<string, ViewEntry>();
+    for (const list of entries.values()) for (const entry of list) map.set(entry.path, entry);
+    return map;
+  }, [entries]);
+
+  // Drop a selection whose row disappeared (e.g. a refreshed tree no longer lists it).
+  useEffect(() => {
+    if (selectedPath && !indexByPath.has(selectedPath)) setSelectedPath(null);
+  }, [selectedPath, indexByPath]);
+
+  const registerRow = useCallback((path: string, el: HTMLElement | null): void => {
+    if (el) rowRefs.current.set(path, el);
+    else rowRefs.current.delete(path);
+  }, []);
+
+  const selectPath = useCallback((path: string): void => {
+    setSelectedPath(path);
+    rowRefs.current.get(path)?.focus();
+  }, []);
+
+  const moveBy = useCallback(
+    (delta: number): void => {
+      if (paths.length === 0) return;
+      const current = selectedPath ? (indexByPath.get(selectedPath) ?? -1) : -1;
+      selectPath(paths[moveSelection(current, delta, paths.length)]);
+    },
+    [paths, indexByPath, selectedPath, selectPath],
+  );
+
+  const refresh = useCallback((): void => {
+    if (demo || !client || !sessionId) return;
+    void loadDir(ROOT);
+    for (const path of expanded) void loadDir(path);
+  }, [demo, client, sessionId, expanded, loadDir]);
+
+  useImperativeHandle(ref, () => ({ moveBy, refresh }), [moveBy, refresh]);
+
+  const handleTreeKey = useCallback(
+    (event: ReactKeyboardEvent<HTMLDivElement>): void => {
+      if (paths.length === 0) return;
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        moveBy(event.key === "ArrowDown" ? 1 : -1);
+        return;
+      }
+      if (event.key === "Home") {
+        event.preventDefault();
+        selectPath(paths[0]);
+        return;
+      }
+      if (event.key === "End") {
+        event.preventDefault();
+        selectPath(paths[paths.length - 1]);
+        return;
+      }
+      if (!selectedPath) return;
+      const entry = entryByPath.get(selectedPath);
+      if (event.key === "Enter" || event.key === " ") {
+        if (entry?.kind === "dir") {
+          event.preventDefault();
+          toggle(selectedPath);
+        }
+        return;
+      }
+      if (event.key === "ArrowRight") {
+        if (entry?.kind === "dir" && !expanded.has(selectedPath)) {
+          event.preventDefault();
+          toggle(selectedPath);
+        }
+        return;
+      }
+      if (event.key === "ArrowLeft") {
+        event.preventDefault();
+        if (entry?.kind === "dir" && expanded.has(selectedPath)) {
+          toggle(selectedPath);
+          return;
+        }
+        const parent = parentDir(selectedPath);
+        if (parent !== null && indexByPath.has(parent)) selectPath(parent);
+      }
+    },
+    [paths, selectedPath, entryByPath, expanded, moveBy, selectPath, toggle, indexByPath],
+  );
 
   const stats = collectStats(entries);
   const rootEntries = entries.get(ROOT);
+  const selectedIndex = selectedPath ? (indexByPath.get(selectedPath) ?? -1) : -1;
+  const tabbableIndex = selectedIndex >= 0 ? selectedIndex : 0;
+
+  const renderTree = (): ReactNode => (
+    <div className="tree" role="tree" aria-label="文件树" tabIndex={-1} onKeyDown={handleTreeKey}>
+      <NodeList
+        entries={entries}
+        parent={ROOT}
+        depth={0}
+        expanded={expanded}
+        loading={loading}
+        errors={errors}
+        selectedPath={selectedPath}
+        tabbableIndex={tabbableIndex}
+        indexByPath={indexByPath}
+        onToggle={toggle}
+        onRetry={(p) => void loadDir(p)}
+        onSelect={setSelectedPath}
+        registerRow={registerRow}
+      />
+    </div>
+  );
 
   let body: ReactNode;
   if (demo) {
     body =
-      rootEntries && rootEntries.length > 0 ? (
-        <div className="tree">
-          <NodeList
-            entries={entries}
-            parent={ROOT}
-            depth={0}
-            expanded={expanded}
-            loading={loading}
-            errors={errors}
-            onToggle={toggle}
-            onRetry={(p) => void loadDir(p)}
-          />
-        </div>
-      ) : (
-        <p className="aj-empty">空目录</p>
-      );
+      rootEntries && rootEntries.length > 0 ? renderTree() : <p className="aj-empty">空目录</p>;
   } else if (!sessionId) {
     body = <p className="aj-empty">未选择会话</p>;
   } else if (loading.has(ROOT)) {
@@ -297,20 +452,7 @@ export default function FileTree({ client, sessionId, demo }: FileTreeProps) {
       </div>
     );
   } else if (rootEntries && rootEntries.length > 0) {
-    body = (
-      <div className="tree">
-        <NodeList
-          entries={entries}
-          parent={ROOT}
-          depth={0}
-          expanded={expanded}
-          loading={loading}
-          errors={errors}
-          onToggle={toggle}
-          onRetry={(p) => void loadDir(p)}
-        />
-      </div>
-    );
+    body = renderTree();
   } else if (rootEntries) {
     body = <p className="aj-empty">空目录</p>;
   } else {
@@ -326,4 +468,6 @@ export default function FileTree({ client, sessionId, demo }: FileTreeProps) {
       </div>
     </div>
   );
-}
+});
+
+export default FileTree;

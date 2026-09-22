@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import { Search, Star, Trash2 } from "lucide-react";
 import {
   METHODS,
@@ -17,8 +18,11 @@ import { loadFavorites, loadLayout, saveLayout, toggleFavorite } from "../layout
 import { loadSidebarPrefs, subscribeSidebarPrefs } from "../sidebarPrefsStore";
 import type { SidebarPrefs } from "../sidebarPrefsStore";
 import { isDemoEnabled, subscribeDemo } from "../demoData";
+import { moveSelection, tabIndexFor } from "../hooks/useRovingFocus";
+import { useShortcutScope } from "../hooks/useShortcutScope";
 import SidebarTabs from "./SidebarTabs";
 import FileTree from "./FileTree";
+import type { FileTreeHandle } from "./FileTree";
 import ModalDialog from "./ModalDialog";
 import SessionListMenu from "./SessionListMenu";
 import "./sidebar.css";
@@ -119,6 +123,17 @@ async function deleteSession(client: unknown, wsUrl: string, id: string): Promis
   }
 }
 
+/** Focus the session row matching `id` inside the list (roving navigation). */
+function focusSessionRow(list: HTMLUListElement | null, id: string): void {
+  if (!list) return;
+  for (const row of list.querySelectorAll<HTMLElement>(".aj-sess")) {
+    if (row.dataset.sessionId === id) {
+      row.focus();
+      return;
+    }
+  }
+}
+
 type Props = {
   wsUrl: string;
   client: unknown;
@@ -148,6 +163,10 @@ export default function UnifiedSidebar({
   const [prefs, setPrefs] = useState<SidebarPrefs>(loadSidebarPrefs);
   const [flatVisible, setFlatVisible] = useState(VIRTUAL_PAGE);
   const [deleteTarget, setDeleteTarget] = useState<{ ids: string[]; mode: "one" | "all" } | null>(null);
+  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
+  const listRef = useRef<HTMLUListElement>(null);
+  const rootRef = useRef<HTMLElement>(null);
+  const fileTreeRef = useRef<FileTreeHandle>(null);
 
   useEffect(() => subscribeDemo(setDemo), []);
 
@@ -358,9 +377,75 @@ export default function UnifiedSidebar({
 
   const visibleFlat = flatRows.slice(0, flatVisible);
   const hasMoreFlat = flatRows.length > visibleFlat.length;
+  const selectedIndex = visibleFlat.findIndex((r) => r.id === selectedSessionId);
+  const rovingIndex = visibleFlat.length > 0 && selectedIndex === -1 ? 0 : selectedIndex;
+
+  const handleSessionListKeyDown = useCallback(
+    (e: ReactKeyboardEvent<HTMLUListElement>) => {
+      if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+      const ids = visibleFlat.map((r) => r.id);
+      if (ids.length === 0) return;
+      e.preventDefault();
+      const next = moveSelection(rovingIndex, e.key === "ArrowDown" ? 1 : -1, ids.length);
+      if (next < 0 || next >= ids.length) return;
+      setSelectedSessionId(ids[next]);
+      focusSessionRow(listRef.current, ids[next]);
+    },
+    [visibleFlat, rovingIndex],
+  );
+
+  const moveActiveSelection = useCallback(
+    (delta: number) => {
+      if (tab === "files") {
+        fileTreeRef.current?.moveBy(delta);
+        return;
+      }
+      const ids = visibleFlat.map((r) => r.id);
+      if (ids.length === 0) return;
+      const next = moveSelection(rovingIndex, delta, ids.length);
+      if (next < 0 || next >= ids.length) return;
+      setSelectedSessionId(ids[next]);
+      focusSessionRow(listRef.current, ids[next]);
+    },
+    [tab, visibleFlat, rovingIndex],
+  );
+
+  const toggleTab = useCallback(() => {
+    const next = tab === "sessions" ? "files" : "sessions";
+    saveLayout({ leftTab: next });
+    setTab(next);
+    // The previously focused session row unmounts on the view swap, which would
+    // drop focus to <body> and exit the shortcut scope. Park focus on the active
+    // tab button (always mounted) so j/k/r/Esc keep firing.
+    rootRef.current?.querySelector<HTMLButtonElement>(`[data-tab="${next}"]`)?.focus();
+  }, [tab]);
+
+  const shortcutHandlers = useMemo(
+    () => ({
+      f: toggleTab,
+      n: () => void handleNewSession(currentProjectId),
+      r: () => {
+        if (tab === "files") {
+          // refresh reloads every expanded directory; the real FileTree swaps
+          // the tree into a loading state and remounts its rows, which would
+          // drop focus from the focused row to <body> and out of the shortcut
+          // scope. Park focus on the always-mounted files tab button (BUG-012).
+          rootRef.current?.querySelector<HTMLButtonElement>('[data-tab="files"]')?.focus();
+          fileTreeRef.current?.refresh();
+        }
+      },
+      j: () => moveActiveSelection(1),
+      k: () => moveActiveSelection(-1),
+      Escape: () => document.getElementById("aj-prompt")?.focus(),
+    }),
+    [toggleTab, handleNewSession, currentProjectId, tab, moveActiveSelection],
+  );
+
+  useShortcutScope(rootRef, shortcutHandlers);
 
   return (
     <section
+      ref={rootRef}
       aria-label="sidebar"
       className={`aj-sidebar${unreachable ? " aj-sidebar--unreachable" : ""}`}
       id="aj-sidebar"
@@ -411,14 +496,21 @@ export default function UnifiedSidebar({
               </button>
             </div>
           )}
-          <ul className="aj-session-list" aria-label="最近会话">
-            {visibleFlat.map((r) => (
+          <ul
+            ref={listRef}
+            className="aj-session-list"
+            aria-label="最近会话"
+            onKeyDown={handleSessionListKeyDown}
+          >
+            {visibleFlat.map((r, index) => (
               <li key={r.id}>
                 <div
                   role="button"
-                  tabIndex={0}
-                  aria-selected={r.id === activeSessionId}
+                  tabIndex={tabIndexFor(index, rovingIndex)}
+                  data-session-id={r.id}
+                  aria-selected={index === rovingIndex ? true : undefined}
                   className={`aj-sess${r.id === activeSessionId ? " aj-sess--active" : ""}`}
+                  onFocus={() => setSelectedSessionId(r.id)}
                   onClick={() => void handleContinue(r.id)}
                   onKeyDown={(e) => {
                     if (e.key === "Enter" || e.key === " ") {
@@ -470,7 +562,12 @@ export default function UnifiedSidebar({
         </div>
       ) : (
         <div className="aj-sidebar__body" aria-label="文件">
-          <FileTree client={client as RpcClient | null} sessionId={activeSessionId} demo={demo} />
+          <FileTree
+            ref={fileTreeRef}
+            client={client as RpcClient | null}
+            sessionId={activeSessionId}
+            demo={demo}
+          />
         </div>
       )}
       {deleteTarget && (
