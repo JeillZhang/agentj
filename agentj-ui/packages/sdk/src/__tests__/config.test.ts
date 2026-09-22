@@ -3,8 +3,8 @@ import { PROTOCOL_VERSION, VERSION, resolveWsUrl } from "../config.js";
 import { METHODS } from "../methods.js";
 
 describe("config", () => {
-  it("version bumped to 0.19.0", () => {
-    expect(VERSION).toBe("0.19.0");
+  it("version bumped to 0.20.1", () => {
+    expect(VERSION).toBe("0.20.1");
     expect(PROTOCOL_VERSION).toBe("0.13.0");
   });
 
@@ -64,5 +64,10 @@ describe("config", () => {
     expect(resolveWsUrl({ location: { hostname: "tauri.localhost", protocol: "https:" } })).toBe(
       "ws://127.0.0.1:4096/ws",
     );
+  });
+
+  it("re-exports VERSION through the package barrel", async () => {
+    const barrel = (await import("../index.js")) as { VERSION?: string };
+    expect(barrel.VERSION).toBe(VERSION);
   });
 });

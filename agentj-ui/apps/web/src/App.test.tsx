@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 const shared = vi.hoisted(() => ({
   lastWsUrl: { value: "" },
   initVersion: { value: "0.12.1" },
+  serverInfoVersion: { value: "0.0.1-test" },
   shouldFail: { value: false },
   newSessionId: { value: "s9" },
   statusShouldFail: { value: false },
@@ -86,13 +87,19 @@ vi.mock("@agentj/sdk", () => {
         return { modules: [{ id: "test-mod", state: "running" }], default_model: "deepseek-chat" };
       }
       if (method === "initialize") {
-        return { protocol_version: shared.initVersion.value };
+        return {
+          protocol_version: shared.initVersion.value,
+          server_info: { name: "agentj", version: shared.serverInfoVersion.value },
+        };
       }
       return null;
     }
     async initialize(_v?: string) {
       if (shared.shouldFail.value) throw new Error("unreachable");
-      return { protocol_version: shared.initVersion.value };
+      return {
+        protocol_version: shared.initVersion.value,
+        server_info: { name: "agentj", version: shared.serverInfoVersion.value },
+      };
     }
   }
   return {
@@ -182,6 +189,7 @@ vi.mock("@agentj/sdk", () => {
       permissionRespond: "permission/respond",
     },
     PROTOCOL_VERSION: "0.12.1",
+    VERSION: "0.20.0",
   };
 });
 
@@ -236,6 +244,7 @@ describe("App with mocked SDK transport", () => {
   beforeEach(() => {
     shared.lastWsUrl.value = "";
     shared.initVersion.value = "0.12.1";
+    shared.serverInfoVersion.value = "0.0.1-test";
     shared.shouldFail.value = false;
     shared.newSessionId.value = "s9";
     shared.statusShouldFail.value = false;
@@ -551,6 +560,18 @@ describe("App with mocked SDK transport", () => {
     expect(screen.getByLabelText(/progress feed/i)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /close/i }));
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  });
+
+  it("status panel shows the kernel version from initialize", async () => {
+    render(<App />);
+    await waitFor(() => expect(screen.getByTestId("connection-status")).toBeInTheDocument());
+    fireEvent.mouseEnter(screen.getByTestId("connection-status"));
+    await waitFor(() => {
+      const row = screen.getByTestId("status-versions");
+      expect(row).toHaveTextContent("内核 0.0.1-test");
+      expect(row).toHaveTextContent("UI 0.20.0");
+      expect(row).toHaveAttribute("data-state", "warn");
+    });
   });
 });
 

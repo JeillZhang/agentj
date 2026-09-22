@@ -20,6 +20,19 @@ fn temp_dist(tag: &str) -> std::path::PathBuf {
     dir
 }
 
+/// Write the dist version facts the kernel reads at startup and republishes
+/// via `/version` (mirrors the real UI build output).
+fn write_version_json(dir: &std::path::Path, product: &str, protocol: &str) {
+    std::fs::write(
+        dir.join("version.json"),
+        format!(
+            "{{\"product_version\":\"{product}\",\"protocol_version\":\"{protocol}\",\
+             \"build_time\":\"t\"}}"
+        ),
+    )
+    .unwrap();
+}
+
 /// Issue a raw HTTP/1.1 GET and return the raw response text. The 5s read
 /// timeout bounds a stalled or closed server instead of hanging the test.
 fn http_get(addr: &str, path: &str) -> String {
@@ -79,6 +92,11 @@ fn serve_config() -> &'static str {
 #[test]
 fn serve_serves_web_dist_with_spa_fallback_and_cache_headers() {
     let dist = temp_dist("e2e");
+    write_version_json(
+        &dist,
+        env!("CARGO_PKG_VERSION"),
+        agentj_protocol::PROTOCOL_VERSION,
+    );
     let mut child = AutoReap(
         Command::new(env!("CARGO_BIN_EXE_agentj"))
             .args([
@@ -92,10 +110,11 @@ fn serve_serves_web_dist_with_spa_fallback_and_cache_headers() {
             ])
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .spawn()
             .unwrap(),
     );
+    let mut stderr = child.0.stderr.take().unwrap();
     // Hold the reader for the whole test: dropping it would close the stdout
     // pipe while the server may still print its remaining startup banner.
     let mut reader = BufReader::new(child.0.stdout.take().unwrap());
@@ -127,6 +146,28 @@ fn serve_serves_web_dist_with_spa_fallback_and_cache_headers() {
     assert!(
         ws.starts_with("HTTP/1.1 4"),
         "/ws without upgrade headers expects a 4xx: {ws}"
+    );
+
+    let ver = http_get(&addr, "/version");
+    assert!(ver.starts_with("HTTP/1.1 200"), "/version: {ver}");
+    assert!(
+        ver.contains(env!("CARGO_PKG_VERSION")),
+        "/version body: {ver}"
+    );
+
+    // The warning is written before the accept loop; kill the child to close
+    // stderr and read the already-emitted output without blocking.
+    let _ = child.0.kill();
+    let _ = child.0.wait();
+    let mut err = String::new();
+    let _ = stderr.read_to_string(&mut err);
+    assert!(
+        !err.contains("no version.json"),
+        "aligned dist must not warn: {err}"
+    );
+    assert!(
+        !err.contains("was built for"),
+        "aligned dist must not warn: {err}"
     );
 
     std::fs::remove_dir_all(&dist).ok();
@@ -167,4 +208,50 @@ fn serve_without_dist_returns_404_and_warns() {
         err.contains("web dist not found"),
         "stderr must warn about the missing dist: {err}"
     );
+}
+
+#[test]
+fn serve_warns_when_dist_version_mismatches() {
+    let dist = temp_dist("e2e-mismatch");
+    write_version_json(&dist, "0.0.0-test", agentj_protocol::PROTOCOL_VERSION);
+    let mut child = AutoReap(
+        Command::new(env!("CARGO_BIN_EXE_agentj"))
+            .args([
+                "--config",
+                serve_config(),
+                "serve",
+                "--port",
+                "0",
+                "--web-dist",
+                dist.to_str().unwrap(),
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let mut stderr = child.0.stderr.take().unwrap();
+    // Hold the reader until the child is reaped (see the first test).
+    let mut reader = BufReader::new(child.0.stdout.take().unwrap());
+    let addr = read_listening_addr(&mut reader);
+
+    let ver = http_get(&addr, "/version");
+    assert!(
+        ver.starts_with("HTTP/1.1 200"),
+        "server keeps serving: {ver}"
+    );
+
+    // The warning is written before the accept loop; kill the child to close
+    // stderr and read the already-emitted line without blocking.
+    let _ = child.0.kill();
+    let _ = child.0.wait();
+    let mut err = String::new();
+    let _ = stderr.read_to_string(&mut err);
+    assert!(
+        err.contains("0.0.0-test"),
+        "mismatch warning must name the dist version: {err}"
+    );
+
+    std::fs::remove_dir_all(&dist).ok();
 }

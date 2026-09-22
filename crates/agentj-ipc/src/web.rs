@@ -2,16 +2,49 @@
 //! opaque session cookies, origin/next validation and the login page.
 
 use axum::response::IntoResponse as _;
+use std::time::Instant;
+
+use crate::login_limiter::{LoginLimiter, Throttle};
 
 /// Cookie carrying the opaque session id issued after a successful login.
 pub const SESSION_COOKIE: &str = "agentj_session";
+
+/// Version facts written by the UI build into `dist/version.json`, so the
+/// kernel can flag a dist that predates (or postdates) this server.
+#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
+pub struct DistVersion {
+    pub product_version: String,
+    pub protocol_version: String,
+    #[serde(default)]
+    pub build_time: Option<String>,
+}
+
+/// Read `version.json` from the resolved dist. A missing dist or a missing file
+/// is normal (legacy build) and yields no error; only a read/parse failure does.
+fn read_dist_version(dist: Option<&std::path::Path>) -> (Option<DistVersion>, Option<String>) {
+    let Some(dir) = dist else { return (None, None) };
+    let path = dir.join("version.json");
+    if !path.is_file() {
+        return (None, None);
+    }
+    match std::fs::read_to_string(&path) {
+        Ok(raw) => match serde_json::from_str::<DistVersion>(&raw) {
+            Ok(version) => (Some(version), None),
+            Err(e) => (None, Some(e.to_string())),
+        },
+        Err(e) => (None, Some(e.to_string())),
+    }
+}
 
 /// Static-web-UI runtime config: resolved dist directory plus the optional
 /// access token and the in-memory set of issued sessions (D3, no persistence).
 pub struct WebConfig {
     pub dist: Option<std::path::PathBuf>,
     pub token: Option<String>,
+    dist_version: Option<DistVersion>,
+    dist_version_error: Option<String>,
     sessions: std::sync::RwLock<std::collections::HashSet<String>>,
+    login_limiter: LoginLimiter,
 }
 
 impl WebConfig {
@@ -20,15 +53,59 @@ impl WebConfig {
     }
     /// Empty-string tokens normalize to `None` (no auth configured).
     pub fn new(dist: Option<std::path::PathBuf>, token: Option<String>) -> Self {
+        let (dist_version, dist_version_error) = read_dist_version(dist.as_deref());
         Self {
             dist,
             token: token.filter(|t| !t.is_empty()),
+            dist_version,
+            dist_version_error,
             sessions: std::sync::RwLock::new(std::collections::HashSet::new()),
+            login_limiter: LoginLimiter::new(),
         }
+    }
+    #[cfg(test)]
+    pub(crate) fn with_login_limiter(mut self, limiter: LoginLimiter) -> Self {
+        self.login_limiter = limiter;
+        self
     }
     /// The static web UI is served only when a dist directory was resolved.
     pub fn enabled(&self) -> bool {
         self.dist.is_some()
+    }
+    pub fn dist_version(&self) -> Option<&DistVersion> {
+        self.dist_version.as_ref()
+    }
+    /// Startup diagnostics: empty when aligned or no dist is configured.
+    pub fn startup_warnings(&self) -> Vec<String> {
+        if self.dist.is_none() {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        match (&self.dist_version, &self.dist_version_error) {
+            (Some(v), _) => {
+                let product = env!("CARGO_PKG_VERSION");
+                if v.product_version != product {
+                    out.push(format!(
+                        "warning: web dist was built for agentj {} but this server is {}; rebuild the UI",
+                        v.product_version, product
+                    ));
+                }
+                let protocol = agentj_protocol::PROTOCOL_VERSION;
+                if v.protocol_version != protocol {
+                    out.push(format!(
+                        "warning: web dist targets protocol {} but this server speaks {}; rebuild the UI",
+                        v.protocol_version, protocol
+                    ));
+                }
+            }
+            (None, Some(err)) => out.push(format!(
+                "warning: web dist version.json is unreadable ({err}); rebuild the UI"
+            )),
+            (None, None) => out.push(
+                "warning: web dist has no version.json (stale build?); rebuild the UI".to_string(),
+            ),
+        }
+        out
     }
     pub fn issue_session(&self) -> String {
         let id = uuid::Uuid::new_v4().to_string();
@@ -152,10 +229,22 @@ fn redirect_found(location: &str) -> axum::response::Response {
 
 /// Validate the submitted token (only when one is configured) and, on success,
 /// issue an opaque session id in a session cookie (no Max-Age) before
-/// redirecting to the whitelisted `next` path.
-async fn submit_login(web: &WebConfig, form: LoginForm) -> axum::response::Response {
+/// redirecting to the whitelisted `next` path. A locked-out peer is answered
+/// from the limiter before the token is even read (the failure escalates).
+async fn submit_login(
+    web: &WebConfig,
+    peer: std::net::SocketAddr,
+    form: LoginForm,
+) -> axum::response::Response {
+    let now = Instant::now();
+    let ip = peer.ip();
+    if matches!(web.login_limiter.check(ip, now), Throttle::Locked { .. }) {
+        let throttle = web.login_limiter.record_failure(ip, now);
+        return throttle_response(throttle, form.next.as_deref());
+    }
     let expected = web.token.as_deref().unwrap_or_default();
     if !expected.is_empty() && form.token == expected {
+        web.login_limiter.record_success(ip);
         let sid = web.issue_session();
         let mut res = redirect_found(&safe_next(form.next.as_deref()));
         res.headers_mut().insert(
@@ -166,15 +255,37 @@ async fn submit_login(web: &WebConfig, form: LoginForm) -> axum::response::Respo
         );
         res
     } else {
-        (
-            axum::http::StatusCode::UNAUTHORIZED,
-            axum::response::Html(login_page_html(
-                Some("访问令牌无效"),
-                &safe_next(form.next.as_deref()),
-            )),
-        )
-            .into_response()
+        let throttle = web.login_limiter.record_failure(ip, now);
+        throttle_response(throttle, form.next.as_deref())
     }
+}
+
+fn unauthorized_response(next: Option<&str>) -> axum::response::Response {
+    (
+        axum::http::StatusCode::UNAUTHORIZED,
+        axum::response::Html(login_page_html(Some("访问令牌无效"), &safe_next(next))),
+    )
+        .into_response()
+}
+
+/// `Locked` answers 429 with the remaining wait (whole seconds, min 1, ceil)
+/// and no cookie; an `Allow` throttle is just the plain 401 page.
+fn throttle_response(throttle: Throttle, next: Option<&str>) -> axum::response::Response {
+    let Throttle::Locked { retry_after } = throttle else {
+        return unauthorized_response(next);
+    };
+    let secs = retry_after.as_millis().div_ceil(1000).max(1) as u64;
+    let message = format!("尝试次数过多，请在 {secs} 秒后重试");
+    let mut res = (
+        axum::http::StatusCode::TOO_MANY_REQUESTS,
+        axum::response::Html(login_page_html(Some(&message), &safe_next(next))),
+    )
+        .into_response();
+    res.headers_mut().insert(
+        axum::http::header::RETRY_AFTER,
+        axum::http::HeaderValue::from_str(&secs.to_string()).expect("retry-after"),
+    );
+    res
 }
 
 /// Revoke the caller's session if present and clear the cookie (`Max-Age=0`).
@@ -194,7 +305,11 @@ async fn logout(web: &WebConfig, headers: axum::http::HeaderMap) -> axum::respon
 
 /// Register the credential endpoints. They are deliberately **not** gated (T5
 /// wraps only the static surface), so a signed-out browser cannot loop.
-fn auth_routes(router: axum::Router, web: std::sync::Arc<WebConfig>) -> axum::Router {
+fn auth_routes(
+    router: axum::Router,
+    web: std::sync::Arc<WebConfig>,
+    peer: std::net::SocketAddr,
+) -> axum::Router {
     let login_get = |axum::extract::Query(q): axum::extract::Query<LoginQuery>| async move {
         axum::response::Html(login_page_html(None, &safe_next(q.next.as_deref())))
     };
@@ -202,7 +317,7 @@ fn auth_routes(router: axum::Router, web: std::sync::Arc<WebConfig>) -> axum::Ro
         let web = web.clone();
         move |form: axum::extract::Form<LoginForm>| {
             let web = web.clone();
-            async move { submit_login(&web, form.0).await }
+            async move { submit_login(&web, peer, form.0).await }
         }
     };
     let logout_post = move |headers: axum::http::HeaderMap| {
@@ -288,9 +403,35 @@ fn static_surface(
         .fallback_service(gate_spa.layer(spa))
 }
 
+/// Unauthenticated version probe: reports this server's product/protocol
+/// versions plus the optional facts read from the mounted dist, so a remote
+/// client can detect a stale UI without holding a session cookie. Registered as
+/// an explicit route (like `/login`), so the login gate and the SPA fallback
+/// never answer it.
+async fn version_handler(web: std::sync::Arc<WebConfig>) -> axum::response::Response {
+    let dist = web.dist_version();
+    let body = serde_json::json!({
+        "product_version": env!("CARGO_PKG_VERSION"),
+        "protocol_version": agentj_protocol::PROTOCOL_VERSION,
+        "dist_present": web.dist.is_some(),
+        "dist": dist.map(|v| serde_json::json!({
+            "product_version": v.product_version,
+            "protocol_version": v.protocol_version,
+            "build_time": v.build_time,
+        })),
+    });
+    let mut res = axum::Json(body).into_response();
+    res.headers_mut().insert(
+        axum::http::header::CACHE_CONTROL,
+        axum::http::HeaderValue::from_static("no-store"),
+    );
+    res
+}
+
 /// Build the HTTP router for one accepted connection: the `/ws` upgrade route
 /// plus — when a dist was resolved — the statically gated SPA surface. `/ws`,
-/// `/login` and `/logout` are never behind the gate (no redirect loop).
+/// `/login`, `/logout` and `/version` are never behind the gate (no redirect
+/// loop; the version probe stays readable for remote peers).
 pub fn build_router(
     state: std::sync::Arc<crate::ws::WsServerState>,
     peer: std::net::SocketAddr,
@@ -304,8 +445,17 @@ pub fn build_router(
             async move { crate::ws::ws_upgrade(state, q, peer, ws, headers).await }
         }
     });
-    let mut router = axum::Router::new().route("/ws", ws_route);
-    router = auth_routes(router, state.web.clone());
+    let version_route = {
+        let web = state.web.clone();
+        move || {
+            let web = web.clone();
+            async move { version_handler(web).await }
+        }
+    };
+    let mut router = axum::Router::new()
+        .route("/ws", ws_route)
+        .route("/version", axum::routing::get(version_route));
+    router = auth_routes(router, state.web.clone(), peer);
     if let Some(dist) = state.web.dist.clone() {
         router = static_surface(router, state.web.clone(), peer, &dist);
     }
@@ -315,6 +465,7 @@ pub fn build_router(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     #[test]
     fn safe_next_whitelists_same_site_paths_only() {
@@ -356,6 +507,109 @@ mod tests {
         std::fs::write(dir.join("index.html"), "<html>agentj-index</html>").unwrap();
         std::fs::write(dir.join("assets/app.js"), "console.log(1)").unwrap();
         dir
+    }
+
+    fn write_version_json(dir: &std::path::Path, product: &str, protocol: &str) {
+        std::fs::write(
+            dir.join("version.json"),
+            format!(
+                "{{\"product_version\":\"{product}\",\"protocol_version\":\"{protocol}\",\
+                 \"build_time\":\"t\"}}"
+            ),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn startup_warnings_cover_aligned_missing_and_mismatched_dists() {
+        let aligned = temp_dist("ver-aligned");
+        write_version_json(
+            &aligned,
+            env!("CARGO_PKG_VERSION"),
+            agentj_protocol::PROTOCOL_VERSION,
+        );
+        let web = WebConfig::new(Some(aligned.clone()), None);
+        assert!(web.dist_version().is_some());
+        assert!(
+            web.startup_warnings().is_empty(),
+            "{:?}",
+            web.startup_warnings()
+        );
+
+        let mismatched = temp_dist("ver-mismatch");
+        write_version_json(&mismatched, "0.0.1-test", "0.0.1");
+        let warnings = WebConfig::new(Some(mismatched.clone()), None).startup_warnings();
+        assert_eq!(warnings.len(), 2);
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("0.0.1-test") && w.contains(env!("CARGO_PKG_VERSION")))
+        );
+        assert!(warnings.iter().any(|w| w.contains("protocol")));
+
+        let legacy = temp_dist("ver-legacy"); // no version.json
+        let warnings = WebConfig::new(Some(legacy.clone()), None).startup_warnings();
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("version.json"));
+
+        let broken = temp_dist("ver-broken");
+        std::fs::write(broken.join("version.json"), "{not json").unwrap();
+        let warnings = WebConfig::new(Some(broken.clone()), None).startup_warnings();
+        assert!(warnings[0].contains("unreadable"), "{warnings:?}");
+
+        assert!(WebConfig::disabled().startup_warnings().is_empty());
+        for d in [aligned, mismatched, legacy, broken] {
+            std::fs::remove_dir_all(&d).ok();
+        }
+    }
+
+    #[tokio::test]
+    async fn version_endpoint_reports_server_and_dist_versions() {
+        let dist = temp_dist("version-route");
+        std::fs::write(
+            dist.join("version.json"),
+            "{\"product_version\":\"0.0.1-test\",\"protocol_version\":\"0.0.1\",\"build_time\":\"2026-09-20T00:00:00Z\"}",
+        ).unwrap();
+        let state = test_state(crate::web::WebConfig::new(
+            Some(dist.clone()),
+            Some("secret".into()),
+        ));
+        let remote: std::net::SocketAddr = "203.0.113.7:41000".parse().unwrap();
+        let (s, h, b) = get(crate::web::build_router(state, remote), "/version").await;
+        assert_eq!(s, axum::http::StatusCode::OK);
+        assert_eq!(
+            h.get(axum::http::header::CACHE_CONTROL).unwrap(),
+            "no-store"
+        );
+        assert!(
+            h.get(axum::http::header::CONTENT_TYPE)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with("application/json")
+        );
+        assert!(
+            !b.contains("agentj-index"),
+            "/version must not fall back to the SPA: {b}"
+        );
+        let v: serde_json::Value = serde_json::from_str(&b).unwrap();
+        assert_eq!(v["product_version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(v["protocol_version"], agentj_protocol::PROTOCOL_VERSION);
+        assert_eq!(v["dist_present"], true);
+        assert_eq!(v["dist"]["product_version"], "0.0.1-test");
+        assert_eq!(v["dist"]["build_time"], "2026-09-20T00:00:00Z");
+        std::fs::remove_dir_all(&dist).ok();
+    }
+
+    #[tokio::test]
+    async fn version_endpoint_without_dist_reports_null_dist() {
+        let state = test_state(crate::web::WebConfig::disabled());
+        let peer: std::net::SocketAddr = "203.0.113.7:41000".parse().unwrap();
+        let (s, _, b) = get(crate::web::build_router(state, peer), "/version").await;
+        assert_eq!(s, axum::http::StatusCode::OK);
+        let v: serde_json::Value = serde_json::from_str(&b).unwrap();
+        assert_eq!(v["dist_present"], false);
+        assert!(v["dist"].is_null());
     }
 
     fn test_state(web: crate::web::WebConfig) -> std::sync::Arc<crate::ws::WsServerState> {
@@ -604,5 +858,170 @@ mod tests {
         let (s, _, _) = get(crate::web::build_router(state, remote), "/").await;
         assert_eq!(s, axum::http::StatusCode::OK);
         std::fs::remove_dir_all(&dist).ok();
+    }
+
+    /// Two failed attempts stay 401, the third locks (50ms base for fast tests).
+    fn small_policy() -> crate::login_limiter::Policy {
+        crate::login_limiter::Policy {
+            free_attempts: 3,
+            base_lockout: Duration::from_millis(50),
+            max_lockout: Duration::from_millis(400),
+            idle_ttl: Duration::from_secs(60),
+            max_tracked: 16,
+        }
+    }
+
+    #[tokio::test]
+    async fn fifth_failure_is_429_and_locked_requests_skip_token_check() {
+        let state = test_state(crate::web::WebConfig::new(None, Some("secret".into())));
+        let remote: std::net::SocketAddr = "203.0.113.7:41000".parse().unwrap();
+        for _ in 0..4 {
+            let (s, h, _) = form_post(
+                crate::web::build_router(state.clone(), remote),
+                "/login",
+                "token=nope",
+            )
+            .await;
+            assert_eq!(s, axum::http::StatusCode::UNAUTHORIZED);
+            assert!(h.get(axum::http::header::SET_COOKIE).is_none());
+        }
+        let (s, h, body) = form_post(
+            crate::web::build_router(state.clone(), remote),
+            "/login",
+            "token=nope",
+        )
+        .await;
+        assert_eq!(s, axum::http::StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(h.get(axum::http::header::RETRY_AFTER).unwrap(), "30");
+        assert!(h.get(axum::http::header::SET_COOKIE).is_none());
+        assert!(body.contains("尝试次数过多"), "throttle page: {body}");
+        let (s, _, _) = form_post(
+            crate::web::build_router(state, remote),
+            "/login",
+            "token=secret",
+        )
+        .await;
+        assert_eq!(
+            s,
+            axum::http::StatusCode::TOO_MANY_REQUESTS,
+            "lockout must skip token check"
+        );
+    }
+
+    #[tokio::test]
+    async fn lockout_expires_and_success_resets_the_counter() {
+        let web = crate::web::WebConfig::new(None, Some("secret".into())).with_login_limiter(
+            crate::login_limiter::LoginLimiter::with_policy(small_policy()),
+        );
+        let state = test_state(web);
+        let remote: std::net::SocketAddr = "203.0.113.7:41000".parse().unwrap();
+        let _ = form_post(
+            crate::web::build_router(state.clone(), remote),
+            "/login",
+            "token=nope",
+        )
+        .await;
+        let _ = form_post(
+            crate::web::build_router(state.clone(), remote),
+            "/login",
+            "token=nope",
+        )
+        .await;
+        let (s, _, _) = form_post(
+            crate::web::build_router(state.clone(), remote),
+            "/login",
+            "token=nope",
+        )
+        .await;
+        assert_eq!(s, axum::http::StatusCode::TOO_MANY_REQUESTS);
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        let (s, h, _) = form_post(
+            crate::web::build_router(state.clone(), remote),
+            "/login",
+            "token=secret",
+        )
+        .await;
+        assert_eq!(s, axum::http::StatusCode::FOUND, "lockout must expire");
+        assert!(h.get(axum::http::header::SET_COOKIE).is_some());
+        for _ in 0..2 {
+            let (s, _, _) = form_post(
+                crate::web::build_router(state.clone(), remote),
+                "/login",
+                "token=nope",
+            )
+            .await;
+            assert_eq!(
+                s,
+                axum::http::StatusCode::UNAUTHORIZED,
+                "success cleared the counter"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn loopback_failures_are_counted_too() {
+        let state = test_state(crate::web::WebConfig::new(None, Some("secret".into())));
+        let local: std::net::SocketAddr = "127.0.0.1:5555".parse().unwrap();
+        for _ in 0..6 {
+            let _ = form_post(
+                crate::web::build_router(state.clone(), local),
+                "/login",
+                "token=nope",
+            )
+            .await;
+        }
+        let (s, _, _) = form_post(
+            crate::web::build_router(state, local),
+            "/login",
+            "token=nope",
+        )
+        .await;
+        assert_eq!(s, axum::http::StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    #[tokio::test]
+    async fn retry_after_rounds_up_and_never_drops_below_one() {
+        let policy = crate::login_limiter::Policy {
+            free_attempts: 1,
+            base_lockout: Duration::from_millis(1500),
+            ..Default::default()
+        };
+        let web = crate::web::WebConfig::new(None, Some("secret".into()))
+            .with_login_limiter(crate::login_limiter::LoginLimiter::with_policy(policy));
+        let state = test_state(web);
+        let remote: std::net::SocketAddr = "203.0.113.7:41000".parse().unwrap();
+        let (s, h, _) = form_post(
+            crate::web::build_router(state, remote),
+            "/login",
+            "token=nope",
+        )
+        .await;
+        assert_eq!(s, axum::http::StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            h.get(axum::http::header::RETRY_AFTER).unwrap(),
+            "2",
+            "1500ms must ceil to 2s"
+        );
+
+        let policy = crate::login_limiter::Policy {
+            free_attempts: 1,
+            base_lockout: Duration::from_millis(50),
+            ..Default::default()
+        };
+        let web = crate::web::WebConfig::new(None, Some("secret".into()))
+            .with_login_limiter(crate::login_limiter::LoginLimiter::with_policy(policy));
+        let state = test_state(web);
+        let remote: std::net::SocketAddr = "203.0.113.8:41000".parse().unwrap();
+        let (_, h, _) = form_post(
+            crate::web::build_router(state, remote),
+            "/login",
+            "token=nope",
+        )
+        .await;
+        assert_eq!(
+            h.get(axum::http::header::RETRY_AFTER).unwrap(),
+            "1",
+            "sub-second locks floor to 1s"
+        );
     }
 }

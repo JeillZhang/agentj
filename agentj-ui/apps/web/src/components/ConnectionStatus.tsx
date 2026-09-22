@@ -9,11 +9,21 @@ type Props = {
   label: string;
   model?: string | null;
   modules?: string[];
+  uiVersion?: string | null;
+  serverVersion?: string | null;
 };
 
-export default function ConnectionStatus({ state, label, model, modules }: Props) {
+export default function ConnectionStatus({
+  state,
+  label,
+  model,
+  modules,
+  uiVersion,
+  serverVersion,
+}: Props) {
   const [open, setOpen] = useState(false);
   const connected = state === "connected";
+  const mismatch = Boolean(uiVersion && serverVersion && uiVersion !== serverVersion);
 
   return (
     <div
@@ -45,6 +55,17 @@ export default function ConnectionStatus({ state, label, model, modules }: Props
               {m}
             </span>
           ))}
+          {(uiVersion || serverVersion) && (
+            <span
+              className="aj-status-row"
+              data-testid="status-versions"
+              data-state={mismatch ? "warn" : "ok"}
+            >
+              {`版本 UI ${uiVersion ?? "未知"} · 内核 ${serverVersion ?? "未知"}${
+                mismatch ? " ⚠" : ""
+              }`}
+            </span>
+          )}
         </div>
       )}
     </div>
