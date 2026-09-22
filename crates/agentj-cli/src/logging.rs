@@ -6,8 +6,8 @@ use tracing_subscriber::EnvFilter;
 /// Build the process-wide log filter from a `RUST_LOG` spec.
 pub fn filter_from(spec: Option<&str>) -> EnvFilter {
     match spec {
-        Some(s) => EnvFilter::new(s),
-        None => EnvFilter::new("info"),
+        Some(s) if !s.trim().is_empty() => EnvFilter::new(s),
+        _ => EnvFilter::new("info"),
     }
 }
 
@@ -30,6 +30,18 @@ mod tests {
         assert_eq!(
             super::filter_from(Some("debug")).max_level_hint(),
             Some(tracing::level_filters::LevelFilter::DEBUG)
+        );
+    }
+
+    #[test]
+    fn filter_treats_blank_spec_as_info_default() {
+        assert_eq!(
+            super::filter_from(Some("")).max_level_hint(),
+            Some(tracing::level_filters::LevelFilter::INFO)
+        );
+        assert_eq!(
+            super::filter_from(Some("   ")).max_level_hint(),
+            Some(tracing::level_filters::LevelFilter::INFO)
         );
     }
 }
