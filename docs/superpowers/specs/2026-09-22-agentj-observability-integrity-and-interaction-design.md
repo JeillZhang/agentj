@@ -432,4 +432,5 @@ Web 的 Tab 是原生导航键；照搬 TUI 的「Tab 切换焦点」会阻断 t
   回退 ERROR 默认；`5cdb534`、`22fcc7e`）并通过 scoped 复核；上表为修复波后全量
   复跑结果（Rust 621 → 622、TUI 128 → 130，其余不变）。
 - **文档同步**：`AGENTS.md` / `README.md` / `.agents/summary/summary_and_next.md` /
-  `docs/specs/ipc-protocol.md`（HTTP 面 / 清单契约 / 限流摘要）已同步 v0.21.0 事实。
+  `docs/specs/ipc-protocol.md`（HTTP 面 / 清单契约 / 限流摘要）已同步 v0.21.0 事实
+  （v0.21.1 验收修复后再次同步）。

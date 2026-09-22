@@ -147,7 +147,7 @@ agentj-ui/                 # 前端 monorepo（npm workspaces，frontend stays i
       src/
         client.ts          # RpcClient
         router.ts          # ResponseRouter + RpcTransport
-        config.ts          # VERSION="0.21.0" + PROTOCOL_VERSION="0.13.0" + resolveWsUrl（index barrel 导出 VERSION）
+        config.ts          # VERSION="0.21.1" + PROTOCOL_VERSION="0.13.0" + resolveWsUrl（index barrel 导出 VERSION）
         methods.ts         # METHODS 常量（由 methods.json 生成）
         transports/
           websocket.ts     # WebSocketTransport（浏览器）
@@ -164,7 +164,7 @@ docs/superpowers/          # 设计文档 + 实现计划（中文）
 ```
 
 > 前端不拆独立仓：`agentj-ui` 保留在 `crates/` 同级 monorepo 内，
-> 与 Rust workspace 共享版本 `0.21.0`（`VERSION` + 单一 `PROTOCOL_VERSION 0.13.0` 来源 `sdk/config.ts`）。
+> 与 Rust workspace 共享版本 `0.21.1`（`VERSION` + 单一 `PROTOCOL_VERSION 0.13.0` 来源 `sdk/config.ts`）。
 
 ## Usage
 
