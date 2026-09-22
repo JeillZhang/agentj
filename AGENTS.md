@@ -455,7 +455,7 @@ Desktop：Tauri v2 壳套 `apps/web` 产物，四件套 deb/AppImage/dmg/msi，
 ## Commands
 
 - `cargo test --workspace` — 全量测试
-  （604 passed / 0 failed；含 bus 密封 + FileBackedStore/Config/CLI 单测
+  （621 passed / 0 failed；含 bus 密封 + FileBackedStore/Config/CLI 单测
   + e2e_cli/e2e_permission/e2e_serve/e2e_ws/e2e_http_static 密封测试）
 - `cargo clippy --workspace --all-targets -- -D warnings` — lint 门禁（零警告）
 - `cargo bench -p agentj-model` — 模型流式基准（criterion）
@@ -468,16 +468,16 @@ Desktop：Tauri v2 壳套 `apps/web` 产物，四件套 deb/AppImage/dmg/msi，
   47 tests）
 - `npm --prefix agentj-ui run generate --workspace=@agentj/sdk` — 生成 `METHODS` 常量
   （`protocol/methods.json` → `agentj-ui/packages/sdk/src/methods.ts`）
-- `npm --prefix agentj-ui test --workspace=@agentj/web` — Web 单测（vitest，491 tests / 47 files）
+- `npm --prefix agentj-ui test --workspace=@agentj/web` — Web 单测（vitest，537 tests / 50 files）
 - `npm --prefix agentj-ui run build --workspace=@agentj/web` — Web 构建（`tsc -b && vite build`）
   > 注意：Vite dev server 不监听 root 之外的 `packages/sdk` 源（alias 直连源码）；
   > 改动 SDK 后须重启 dev server，否则运行陈旧的 `METHODS`（v0.16.3「加载中」根因）。
   > Web 新依赖 `rehype-highlight`（hljs common 语言集，随 `npm --prefix agentj-ui install`
   > + lockfile 落地，v0.17.0）。
-- `bun --cwd agentj-ui/apps/tui test` — TUI 单测（含 mock WS e2e，88 tests / 17 files）
+- `bun --cwd agentj-ui/apps/tui test` — TUI 单测（含 mock WS e2e，128 tests / 19 files）
 - `./agentj-ui/apps/desktop/check-artifacts.sh linux` — Desktop 产物校验
 - `node agentj-ui/apps/desktop/check-desktop-ui.mjs` — Desktop 前端产物/配置一致性校验
-- `./scripts/check-version.sh` — 版本一致性（Cargo + sdk VERSION + desktop 均为 0.20.1，
+- `./scripts/check-version.sh` — 版本一致性（Cargo + sdk VERSION + desktop 均为 0.21.0，
   PROTOCOL_VERSION 0.13.0 + `protocol/methods.json` 版本 0.13.0）
 
 ### CI Pipelines (GitHub Actions)
@@ -554,7 +554,7 @@ Desktop：Tauri v2 壳套 `apps/web` 产物，四件套 deb/AppImage/dmg/msi，
   为 drift 门禁后第一门）。
 - `agentj-ui/packages/sdk`：共享 SDK（`src/client.ts` RpcClient +
   `src/router.ts` ResponseRouter/RpcTransport + `src/config.ts`
-   `VERSION="0.20.1"` + `PROTOCOL_VERSION="0.13.0"` + `resolveWsUrl` + `src/methods.ts` METHODS
+   `VERSION="0.21.0"` + `PROTOCOL_VERSION="0.13.0"` + `resolveWsUrl` + `src/methods.ts` METHODS
   + `transports/websocket.ts` WebSocketTransport
   + `transports/tcp.ts` TcpTransport；`RpcClient.request` 拦截空/未定义 method（v0.16.3）；
   v0.20.0 `index.ts` barrel 导出 `VERSION`（Web `ConnectionStatus` 消费），
@@ -607,9 +607,9 @@ Desktop：Tauri v2 壳套 `apps/web` 产物，四件套 deb/AppImage/dmg/msi，
   stale-reply 代际守卫、collapse 保留子树、refresh 根+已展开、会话切换清空重取、
   不持久化）+ Threads/Files 切换（`f`）+ 键位 `j,k,↑,↓`/`Enter,l,→`/`h,←`/`r`）。
 - `agentj-ui/apps/desktop`：Desktop 壳（Tauri v2，`frontendDist` →
-    `../../web/dist`，与 workspace 版本同源 `0.20.1`，四件套打包）。
+    `../../web/dist`，与 workspace 版本同源 `0.21.0`，四件套打包）。
 - `agentj-ui/` 根：`package.json` workspaces `["apps/*","packages/*"]`
-  （frontend stays in-repo，前端不拆独立仓，与 Rust 共享 0.20.1）。
+  （frontend stays in-repo，前端不拆独立仓，与 Rust 共享 0.21.0）。
 - **守护内核（v0.4 已实现）**：统一 Connection 抽象 + `serve --port`
   常驻多客户端 + `run --attach` + `dashboard`（见 daemon-kernel 设计文档）。
 

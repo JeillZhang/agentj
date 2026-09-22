@@ -147,7 +147,7 @@ agentj-ui/                 # 前端 monorepo（npm workspaces，frontend stays i
       src/
         client.ts          # RpcClient
         router.ts          # ResponseRouter + RpcTransport
-        config.ts          # VERSION="0.20.1" + PROTOCOL_VERSION="0.13.0" + resolveWsUrl（index barrel 导出 VERSION）
+        config.ts          # VERSION="0.21.0" + PROTOCOL_VERSION="0.13.0" + resolveWsUrl（index barrel 导出 VERSION）
         methods.ts         # METHODS 常量（由 methods.json 生成）
         transports/
           websocket.ts     # WebSocketTransport（浏览器）
@@ -164,7 +164,7 @@ docs/superpowers/          # 设计文档 + 实现计划（中文）
 ```
 
 > 前端不拆独立仓：`agentj-ui` 保留在 `crates/` 同级 monorepo 内，
-> 与 Rust workspace 共享版本 `0.20.1`（`VERSION` + 单一 `PROTOCOL_VERSION 0.13.0` 来源 `sdk/config.ts`）。
+> 与 Rust workspace 共享版本 `0.21.0`（`VERSION` + 单一 `PROTOCOL_VERSION 0.13.0` 来源 `sdk/config.ts`）。
 
 ## Usage
 
@@ -276,7 +276,7 @@ env = { FOO = "bar" }
 ## Development
 
 ```bash
-cargo test --workspace            # 全量 Rust 测试（604 passed；含 e2e_cli/e2e_permission/e2e_serve/e2e_ws/e2e_http_static）
+cargo test --workspace            # 全量 Rust 测试（621 passed；含 e2e_cli/e2e_permission/e2e_serve/e2e_ws/e2e_http_static）
 cargo clippy --workspace --all-targets -- -D warnings
 cargo bench -p agentj-model       # 模型流式基准
 cargo run -p agentj-protocol --bin gen_schemas   # 重新生成 schemas/*.json
@@ -289,9 +289,9 @@ cargo test -p agentj-protocol -- drift          # 漂移门禁（51 schemas 无�
 npm --prefix agentj-ui install                           # 安装（agentj-ui workspaces）
 npm --prefix agentj-ui run generate --workspace=@agentj/protocol   # 生成 protocol types
 npm --prefix agentj-ui test --workspace=@agentj/sdk                # SDK 单测（47 tests）
-npm --prefix agentj-ui test --workspace=@agentj/web                # Web 单测（491 tests / 47 files）
+npm --prefix agentj-ui test --workspace=@agentj/web                # Web 单测（537 tests / 50 files）
 npm --prefix agentj-ui run build --workspace=@agentj/web
-bun --cwd agentj-ui/apps/tui test           # TUI 单测（88 tests / 17 files，含 mock WS e2e）
+bun --cwd agentj-ui/apps/tui test           # TUI 单测（128 tests / 19 files，含 mock WS e2e）
 ./agentj-ui/apps/desktop/check-artifacts.sh linux  # Desktop 产物校验
 node agentj-ui/apps/desktop/check-desktop-ui.mjs    # Desktop 前端产物/配置一致性校验
 ```
