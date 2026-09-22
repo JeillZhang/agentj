@@ -1,10 +1,11 @@
 // agentj-ui/apps/tui/src/files.test.ts
 import { describe, expect, test } from "bun:test";
 import {
-  buildFileNode, clampSelection, flattenVisible, formatFileRowParts, isEmptyExpandedDir,
-  moveSelection, parentPath, statusLetterColor, toGitLetter, updateNode,
+  buildFileNode, buildSearchIndex, clampSelection, filterEntries, flattenVisible,
+  formatFileRowParts, formatSearchRowParts, isEmptyExpandedDir, moveSelection, parentPath,
+  statusLetterColor, toGitLetter, updateNode,
 } from "./files.ts";
-import type { FileNode } from "./files.ts";
+import type { FileNode, RawFileEntry } from "./files.ts";
 
 function node(
   partial: Partial<FileNode> & { name: string; path: string; kind: "file" | "dir" },
@@ -109,5 +110,96 @@ describe("files helpers", () => {
       isEmptyExpandedDir(node({ name: "loading", path: "loading", kind: "dir", expanded: true, children: null })),
     ).toBe(false);
     expect(isEmptyExpandedDir(node({ name: "collapsed", path: "collapsed", kind: "dir", children: [] }))).toBe(false);
+  });
+});
+
+describe("file search helpers", () => {
+  const raw = (name: string, path: string, gitStatus?: string | null): RawFileEntry =>
+    ({ name, path, kind: "file", git_status: gitStatus });
+
+  test("buildSearchIndex keeps wire order and normalizes git status", () => {
+    const index = buildSearchIndex([
+      { name: "src", path: "src", kind: "dir", git_status: "M" },
+      raw("main.rs", "src/main.rs"),
+      raw("lib.rs", "src/lib.rs", "X"),
+      raw("gone.rs", "src/gone.rs", "D"),
+    ]);
+    expect(index.map((e) => e.path)).toEqual(["src", "src/main.rs", "src/lib.rs", "src/gone.rs"]);
+    expect(index[0]).toEqual({ name: "src", path: "src", kind: "dir", gitStatus: "M" });
+    expect(index[1].gitStatus).toBeNull();
+    expect(index[2].gitStatus).toBeNull();
+    expect(index[3].gitStatus).toBe("D");
+  });
+
+  test("filters case-insensitively with name matches ranked first", () => {
+    const index = buildSearchIndex([
+      raw("main.md", "docs/main.md"),
+      raw("main.rs", "src/main.rs"),
+      raw("lib.rs", "src/lib.rs"),
+    ]);
+    const out = filterEntries(index, "MAIN", 10);
+    expect(out.rows.map((r) => r.path)).toEqual(["docs/main.md", "src/main.rs"]);
+    expect(out.total).toBe(2);
+    expect(filterEntries(index, "", 10)).toEqual({ rows: [], total: 0 });
+  });
+
+  test("ranks name prefix > name substring > path substring, ties broken by path asc", () => {
+    const index = buildSearchIndex([
+      raw("index.ts", "src/auth/index.ts"),
+      raw("my-auth-helper.ts", "src/helpers/my-auth-helper.ts"),
+      raw("auth.ts", "src/auth.ts"),
+      raw("auth.test.ts", "tests/auth.test.ts"),
+      raw("other.ts", "src/other.ts"),
+    ]);
+    const out = filterEntries(index, "AUTH", 10);
+    expect(out.rows.map((r) => r.path)).toEqual([
+      "src/auth.ts",
+      "tests/auth.test.ts",
+      "src/helpers/my-auth-helper.ts",
+      "src/auth/index.ts",
+    ]);
+    expect(out.total).toBe(4);
+  });
+
+  test("caps rows at the limit while total keeps the full match count", () => {
+    const index = buildSearchIndex([
+      raw("file-1.ts", "src/file-1.ts"),
+      raw("file-2.ts", "src/file-2.ts"),
+      raw("file-3.ts", "src/file-3.ts"),
+      raw("file-4.ts", "src/file-4.ts"),
+      raw("file-5.ts", "src/file-5.ts"),
+    ]);
+    const out = filterEntries(index, "file", 2);
+    expect(out.rows.map((r) => r.path)).toEqual(["src/file-1.ts", "src/file-2.ts"]);
+    expect(out.total).toBe(5);
+    expect(filterEntries(index, "file", 0).rows).toEqual([]);
+    expect(filterEntries(index, "file", 0).total).toBe(5);
+  });
+
+  test("formatSearchRowParts fits the budget, truncates the name and keeps the letter", () => {
+    const [long] = buildSearchIndex([
+      { name: "averyveryverylongfilename.ts", path: "src/deep/averyveryverylongfilename.ts",
+        kind: "file", git_status: "M" },
+    ]);
+    const parts = formatSearchRowParts(long, 28, true);
+    const budget = parts.letter ? 26 : 28; // 2 columns reserved for the " M" letter slot
+    expect(parts.letter).toBe("M");
+    expect(parts.body.length).toBeLessThanOrEqual(budget);
+    expect(parts.body.startsWith("● ")).toBe(true);
+    expect(parts.body).toContain("…");
+    expect(parts.body).not.toContain("longfilename");
+    expect(parts.body).toContain("src/deep/");
+
+    const narrow = formatSearchRowParts(long, 12, false);
+    expect(narrow.letter).toBe("M");
+    expect(narrow.body.length).toBeLessThanOrEqual(10);
+    expect(narrow.body.startsWith("  ")).toBe(true);
+    expect(narrow.body).toContain("…");
+
+    const [short] = buildSearchIndex([raw("main.md", "docs/main.md")]);
+    const plain = formatSearchRowParts(short, 28, true);
+    expect(plain.letter).toBeNull();
+    expect(plain.body).toBe("● main.md docs/".padEnd(28));
+    expect(plain.body.length).toBeLessThanOrEqual(28);
   });
 });
