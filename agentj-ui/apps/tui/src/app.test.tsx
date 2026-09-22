@@ -1,4 +1,7 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { testRender } from "@opentui/react/test-utils";
 import type { TestRendererSetup } from "@opentui/core/testing";
 import { act } from "react";
@@ -7,6 +10,26 @@ import type { TransportHandle } from "./app.tsx";
 import { METHODS, ResponseRouter } from "@agentj/sdk";
 import type { TransportStatus } from "@agentj/sdk";
 import { MODEL_CONFIG, providersFromStatus, renderModelList } from "./models.tsx";
+import { loadFileTreePrefs } from "./filetreePrefs.ts";
+import { saveProjects } from "./sidebar.tsx";
+import type { RawFileEntry } from "./files.ts";
+
+// Every app render restores/persists TUI state under XDG_CONFIG_HOME; isolate
+// each test so consecutive runs stay idempotent (see filesView.test.tsx).
+let configDir: string;
+let prevXdg: string | undefined;
+
+beforeEach(() => {
+  prevXdg = process.env.XDG_CONFIG_HOME;
+  configDir = mkdtempSync(join(tmpdir(), "aj-app-"));
+  process.env.XDG_CONFIG_HOME = configDir;
+});
+
+afterEach(() => {
+  if (prevXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+  else process.env.XDG_CONFIG_HOME = prevXdg;
+  rmSync(configDir, { recursive: true, force: true });
+});
 
 function getInput(setup: TestRendererSetup) {
   const input = setup.mockInput as unknown as {
@@ -51,6 +74,113 @@ function createStayConnecting(): TransportHandle {
     close() {},
   };
 }
+
+type KernelCall = { method: string } & Record<string, unknown>;
+
+const KERNEL_TREE: Record<string, RawFileEntry[]> = {
+  "": [
+    { name: "src", path: "src", kind: "dir", git_status: "M" },
+    { name: "README.md", path: "README.md", kind: "file", git_status: null },
+  ],
+  src: [
+    { name: "components", path: "src/components", kind: "dir", git_status: null },
+    { name: "main.rs", path: "src/main.rs", kind: "file", git_status: "D" },
+  ],
+  "src/components": [
+    { name: "Button.tsx", path: "src/components/Button.tsx", kind: "file", git_status: "A" },
+  ],
+};
+
+type FakeKernel = {
+  calls: KernelCall[];
+  drop: (path: string) => void;
+  failDepthEight: (times: number) => void;
+  handle: TransportHandle & { send: (line: string) => Promise<string> };
+};
+
+function fakeKernel(): FakeKernel {
+  const calls: KernelCall[] = [];
+  const dropped = new Set<string>();
+  let depthEightFailures = 0;
+  const live = (path: string): RawFileEntry[] =>
+    (KERNEL_TREE[path] ?? []).filter((e) => !dropped.has(e.path));
+  const flat = (): RawFileEntry[] => ["", "src", "src/components"].flatMap((p) => live(p));
+  const handle = {
+    close() {},
+    async send(line: string): Promise<string> {
+      const req = JSON.parse(line) as { id: number; method: string; params?: Record<string, unknown> };
+      const params = req.params ?? {};
+      calls.push({ method: req.method, ...params });
+      let result: unknown = {};
+      if (req.method === METHODS.sessionNew) result = { session_id: "s1" };
+      if (req.method === METHODS.fileList) {
+        const depth = typeof params.depth === "number" ? params.depth : 1;
+        if (depth >= 8) {
+          if (depthEightFailures > 0) {
+            depthEightFailures -= 1;
+            throw new Error("index unavailable");
+          }
+          result = { entries: flat(), truncated: false };
+        } else {
+          result = { entries: live(params.path === null ? "" : String(params.path)), truncated: false };
+        }
+      }
+      return JSON.stringify({ jsonrpc: "2.0", id: req.id, result });
+    },
+  };
+  return {
+    calls,
+    drop: (path) => dropped.add(path),
+    failDepthEight: (times) => { depthEightFailures = times; },
+    handle,
+  };
+}
+
+async function renderApp(
+  kernel: FakeKernel,
+  options: { width?: number; height?: number } = {},
+) {
+  const createTransport = (_url: string, _router: ResponseRouter): TransportHandle => {
+    queueMicrotask(() => act(() => kernel.handle.onStatusChange?.("open")));
+    return kernel.handle;
+  };
+  const setup = await testRender(
+    <App createTransport={createTransport} backoffBaseMs={60000} />,
+    options,
+  );
+  const input = getInput(setup);
+  await act(async () => {
+    await setup.waitFor(() => setup.captureCharFrame().toLowerCase().includes("connected"));
+  });
+  return { setup, input };
+}
+
+type AppInput = ReturnType<typeof getInput>;
+
+// The terminal parser defers a lone ESC byte until the next input arrives, so
+// pressing Esc and typing immediately would deliver Alt+<char> instead; give
+// the parser a real tick (same pattern as tui-flow.test.tsx).
+async function pressEscape(setup: TestRendererSetup, input: AppInput): Promise<void> {
+  await act(async () => {
+    input.press("esc");
+    await setup.flush();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    await setup.flush();
+  });
+}
+
+async function openFilesSidebar(setup: TestRendererSetup, input: AppInput): Promise<void> {
+  await act(async () => { input.press("down"); await setup.flush(); });
+  await act(async () => { input.press("enter"); await setup.flush(); });
+  await act(async () => { await setup.waitFor(() => setup.captureCharFrame().includes("s1")); });
+  await act(async () => { input.press("tab"); await setup.flush(); });
+  await act(async () => { input.press("f"); await setup.flush(); });
+  await act(async () => { await setup.waitFor(() => setup.captureCharFrame().includes("README.md")); });
+}
+
+const depthEightCalls = (kernel: FakeKernel): KernelCall[] =>
+  kernel.calls.filter((c) => c.method === METHODS.fileList && c.depth === 8);
+
 describe("App connection screen", () => {
   test("unreachable shows kernel unreachable", async () => {
     const setup = await testRender(<App createTransport={createUnreachable} backoffBaseMs={10} />, {});
@@ -357,4 +487,176 @@ test("BUG-009: typing in the composer never triggers sidebar/file shortcuts", as
   });
   act(() => setup.renderer.destroy());
   void router;
+});
+
+describe("files search mode", () => {
+  test("s enters search, printables filter, r rebuilds, enter jumps", async () => {
+    const kernel = fakeKernel();
+    const { setup, input } = await renderApp(kernel);
+    await openFilesSidebar(setup, input);
+    await act(async () => { input.press("s"); await setup.flush(); });
+    expect(depthEightCalls(kernel)).toHaveLength(1);
+    expect(depthEightCalls(kernel)[0]).toMatchObject({ path: null, depth: 8 });
+    await act(async () => {
+      await setup.waitFor(() => setup.captureCharFrame().includes("type filter"));
+    });
+    await act(async () => { await input.type("fnc"); await setup.flush(); });
+    expect(depthEightCalls(kernel)).toHaveLength(1); // f/n/c stay query text
+    expect(kernel.calls.filter((c) => c.method === METHODS.sessionNew)).toHaveLength(1);
+    await act(async () => {
+      await setup.waitFor(() => setup.captureCharFrame().includes("type filter"));
+    });
+    expect(setup.captureCharFrame()).toContain("Files");
+    expect(setup.captureCharFrame()).not.toContain("Threads");
+    await pressEscape(setup, input); // clears the query
+    await act(async () => { await input.type("main"); await setup.flush(); });
+    await act(async () => { input.press("r"); await setup.flush(); }); // rebuilds the index
+    expect(depthEightCalls(kernel)).toHaveLength(2);
+    const callsBeforeJump = kernel.calls.filter((c) => c.method === METHODS.fileList).length;
+    await act(async () => { input.press("enter"); await setup.flush(); }); // jump
+    await act(async () => {
+      await setup.waitFor(() => !setup.captureCharFrame().includes("type filter"));
+    });
+    await act(async () => { await setup.waitFor(() => /●\s+main\.rs/.test(setup.captureCharFrame())); });
+    expect(kernel.calls).toContainEqual(
+      expect.objectContaining({ method: METHODS.fileList, path: "src", depth: 1 }),
+    );
+    expect(kernel.calls.filter((c) => c.method === METHODS.fileList).length).toBeGreaterThan(callsBeforeJump);
+    expect(setup.captureCharFrame()).not.toContain("type filter");
+    act(() => setup.renderer.destroy());
+  });
+
+  test("enter on a directory result expands and selects it", async () => {
+    const kernel = fakeKernel();
+    const { setup, input } = await renderApp(kernel);
+    await openFilesSidebar(setup, input);
+    await act(async () => { input.press("s"); await setup.flush(); });
+    await act(async () => { await input.type("components"); await setup.flush(); });
+    await act(async () => { input.press("enter"); await setup.flush(); });
+    await act(async () => {
+      await setup.waitFor(() => !setup.captureCharFrame().includes("type filter"));
+    });
+    await act(async () => { await setup.waitFor(() => /●\s*▼\s*components/.test(setup.captureCharFrame())); });
+    await act(async () => { await setup.waitFor(() => setup.captureCharFrame().includes("Button.tsx")); });
+    expect(kernel.calls).toContainEqual(
+      expect.objectContaining({ method: METHODS.fileList, path: "src/components", depth: 1 }),
+    );
+    act(() => setup.renderer.destroy());
+  });
+
+  test("esc clears a non-empty query before it exits search", async () => {
+    const kernel = fakeKernel();
+    const { setup, input } = await renderApp(kernel);
+    await openFilesSidebar(setup, input);
+    await act(async () => { input.press("s"); await setup.flush(); });
+    await act(async () => { await input.type("ab"); await setup.flush(); });
+    const before = depthEightCalls(kernel).length;
+    await pressEscape(setup, input);
+    // f and r would toggle the view / refresh the tree unless search stayed active
+    await act(async () => { input.press("f"); await setup.flush(); });
+    await act(async () => { input.press("r"); await setup.flush(); });
+    await act(async () => {
+      await setup.waitFor(() => depthEightCalls(kernel).length > before);
+    });
+    expect(setup.captureCharFrame()).not.toContain("Threads");
+    await pressEscape(setup, input); // clears "f"
+    await pressEscape(setup, input); // now exits
+    await act(async () => {
+      await setup.waitFor(() => !setup.captureCharFrame().includes("type filter"));
+    });
+    await act(async () => { input.press("f"); await setup.flush(); });
+    await act(async () => {
+      await setup.waitFor(() => setup.captureCharFrame().includes("Threads"));
+    });
+    act(() => setup.renderer.destroy());
+  });
+
+  test("r retries the index after a failed search request", async () => {
+    const kernel = fakeKernel();
+    const { setup, input } = await renderApp(kernel);
+    await openFilesSidebar(setup, input);
+    kernel.failDepthEight(1);
+    await act(async () => { input.press("s"); await setup.flush(); });
+    await act(async () => {
+      await setup.waitFor(() => setup.captureCharFrame().includes("index unavailable"));
+    });
+    expect(depthEightCalls(kernel)).toHaveLength(1);
+    await act(async () => { await input.type("main"); await setup.flush(); });
+    await act(async () => { input.press("r"); await setup.flush(); });
+    await act(async () => {
+      await setup.waitFor(() => !setup.captureCharFrame().includes("index unavailable"));
+    });
+    expect(depthEightCalls(kernel)).toHaveLength(2);
+    await act(async () => {
+      await setup.waitFor(() => setup.captureCharFrame().includes("main.rs"));
+    });
+    act(() => setup.renderer.destroy());
+  });
+
+  test("jump loads ancestors depth-first and selects the nested target", async () => {
+    const kernel = fakeKernel();
+    const { setup, input } = await renderApp(kernel);
+    await openFilesSidebar(setup, input);
+    await act(async () => { input.press("s"); await setup.flush(); });
+    await act(async () => { await input.type("Button"); await setup.flush(); });
+    await act(async () => { input.press("enter"); await setup.flush(); });
+    await act(async () => {
+      await setup.waitFor(() => /●\s+Button\.tsx/.test(setup.captureCharFrame()));
+    });
+    const treeCalls = kernel.calls
+      .filter((c) => c.method === METHODS.fileList && c.depth === 1)
+      .map((c) => c.path);
+    expect(treeCalls).toEqual([null, "src", "src/components"]);
+    expect(setup.captureCharFrame()).not.toContain("type filter");
+    act(() => setup.renderer.destroy());
+  });
+
+  test("a stale search target exits, refreshes the root and reports once", async () => {
+    const kernel = fakeKernel();
+    const { setup, input } = await renderApp(kernel);
+    await openFilesSidebar(setup, input);
+    await act(async () => { input.press("s"); await setup.flush(); }); // index snapshot has main.rs
+    await act(async () => { await input.type("main"); await setup.flush(); });
+    kernel.drop("src/main.rs"); // deleted after indexing: reveal must notice
+    const rootCalls = () =>
+      kernel.calls.filter((c) => c.method === METHODS.fileList && c.depth === 1 && c.path === null).length;
+    const before = rootCalls();
+    await act(async () => { input.press("enter"); await setup.flush(); });
+    await act(async () => { await setup.waitFor(() => rootCalls() > before); });
+    await act(async () => {
+      await setup.waitFor(() => !setup.captureCharFrame().includes("type filter"));
+    });
+    await act(async () => {
+      await setup.waitFor(() => setup.captureCharFrame().includes("path no longer exists"));
+    });
+    expect(setup.captureCharFrame()).toContain("path no longer exists");
+    act(() => setup.renderer.destroy());
+  });
+
+  test("enter on an empty result set keeps search mode open", async () => {
+    const kernel = fakeKernel();
+    const { setup, input } = await renderApp(kernel);
+    await openFilesSidebar(setup, input);
+    await act(async () => { input.press("s"); await setup.flush(); });
+    await act(async () => { await input.type("zzz"); await setup.flush(); });
+    await act(async () => { input.press("enter"); await setup.flush(); });
+    expect(setup.captureCharFrame()).toContain("type filter");
+    act(() => setup.renderer.destroy());
+  });
+
+  test("persists expansion under the active session's project group", async () => {
+    saveProjects([{ id: "p1", name: "Foo" }]);
+    const kernel = fakeKernel();
+    const { setup, input } = await renderApp(kernel);
+    await act(async () => { input.press("down"); await setup.flush(); });
+    await act(async () => { input.press("enter"); await setup.flush(); });
+    await act(async () => { await setup.waitFor(() => setup.captureCharFrame().includes("s1")); });
+    await act(async () => { input.press("tab"); await setup.flush(); });
+    await act(async () => { input.press("f"); await setup.flush(); });
+    await act(async () => { await setup.waitFor(() => setup.captureCharFrame().includes("README.md")); });
+    await act(async () => { input.press("enter"); await setup.flush(); });
+    await act(async () => { await setup.waitFor(() => setup.captureCharFrame().includes("main.rs")); });
+    expect(loadFileTreePrefs().expanded.p1).toEqual(["src"]);
+    act(() => setup.renderer.destroy());
+  });
 });

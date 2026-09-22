@@ -21,9 +21,11 @@ import { Palette } from "./palette.tsx";
 import { ModelSelector, useModelConfig } from "./models.tsx";
 import { ThemeProvider, useTheme } from "./theme.tsx";
 import Sidebar, { SIDEBAR_WIDTH, loadCollapsed, loadProjects, saveCollapsed } from "./sidebar.tsx";
-import type { Project, SidebarView } from "./sidebar.tsx";
+import type { Project, SidebarSession, SidebarView } from "./sidebar.tsx";
 import { useFileTree } from "./files.tsx";
-import { clampSelection, flattenVisible, moveSelection, parentPath } from "./files.ts";
+import { DEFAULT_PROJECT_KEY } from "./filetreePrefs.ts";
+import { buildSearchIndex, clampSelection, filterEntries, flattenVisible, moveSelection, parentPath } from "./files.ts";
+import type { RawFileEntry, SearchEntry } from "./files.ts";
 export interface TransportHandle {
   onStatusChange?: (s: TransportStatus) => void;
   close(): void;
@@ -38,6 +40,60 @@ export type AppProps = {
 
 export function getBackoffDelay(attempt: number, baseMs = 1000): number {
   return Math.min(baseMs * Math.pow(2, attempt), 30000);
+}
+
+export type SearchState = {
+  query: string;
+  index: SearchEntry[];
+  rows: SearchEntry[];
+  total: number;
+  truncated: boolean;
+  error: string | null;
+  idx: number;
+};
+
+const SEARCH_INDEX_DEPTH = 8;
+const MAX_SEARCH_INDEX = 2000;
+const SEARCH_RESULT_LIMIT = 100;
+
+function withSearchQuery(state: SearchState, query: string): SearchState {
+  const { rows, total } = filterEntries(state.index, query, SEARCH_RESULT_LIMIT);
+  return { ...state, query, rows, total, error: null, idx: 0 };
+}
+
+type SearchKey =
+  | { kind: "clear" }
+  | { kind: "exit" }
+  | { kind: "backspace" }
+  | { kind: "move"; delta: number }
+  | { kind: "jump"; path: string }
+  | { kind: "rebuild" }
+  | { kind: "append"; ch: string }
+  | { kind: "swallow" };
+
+// Search mode swallows every printable (D10), so mapped keys are matched first
+// and everything else becomes query text. null = Tab keeps its focus switching.
+function searchKey(
+  key: { name?: string; sequence?: string; ctrl?: boolean; meta?: boolean },
+  search: Pick<SearchState, "query" | "rows" | "idx">,
+): SearchKey | null {
+  const name = (key.name ?? "").toLowerCase();
+  const seq = key.sequence ?? "";
+  if (name === "tab" || seq === "\t" || seq === "\x09") return null;
+  if (name === "escape" || seq === "\u001B" || seq === "\x1b") {
+    return search.query.length > 0 ? { kind: "clear" } : { kind: "exit" };
+  }
+  if (key.ctrl || key.meta) return { kind: "swallow" };
+  if (name === "backspace") return { kind: "backspace" };
+  if (name === "j" || name === "down" || seq === "\u001B[B") return { kind: "move", delta: 1 };
+  if (name === "k" || name === "up" || seq === "\u001B[A") return { kind: "move", delta: -1 };
+  if (name === "return" || name === "enter" || seq === "\r" || seq === "\n") {
+    const row = search.rows[search.idx];
+    return row ? { kind: "jump", path: row.path } : { kind: "swallow" };
+  }
+  if (name === "r") return { kind: "rebuild" };
+  if (seq.length === 1) return { kind: "append", ch: seq };
+  return { kind: "swallow" };
 }
 
 function isAuthError(msg: string): boolean {
@@ -292,7 +348,7 @@ function getStatusLine(authError: string | null, status: TransportStatus): strin
   if (status === "closed") return "kernel unreachable";
   return "connecting...";
 }
-function usePaletteControl(onThemeToggle?: () => void) {
+function usePaletteControl(onThemeToggle?: () => void, disabled = false) {
   const [paletteQuery, setPaletteQuery] = useState<string | null>(null);
   const [modelOpen, setModelOpen] = useState(false);
   const handleSelect = useCallback(
@@ -306,6 +362,7 @@ function usePaletteControl(onThemeToggle?: () => void) {
   const handleClose = useCallback(() => setPaletteQuery(null), []);
   const handleModelClose = useCallback(() => setModelOpen(false), []);
   useKeyboard((key) => {
+    if (disabled) return;
     if (modelOpen) {
       const name = (key.name ?? "").toLowerCase();
       if (name === "escape") setModelOpen(false);
@@ -345,7 +402,6 @@ function AppInner({ url, createTransport, backoffBaseMs = 1000 }: AppProps) {
   const { handleSelect, handleNew } = useAppHandlers(client, st);
   const { pending: permReq, respond: handlePermRespond, clear: clearPerm } = usePermissionState(client);
   const { toggle: toggleTheme, palette } = useTheme();
-  const paletteCtrl = usePaletteControl(toggleTheme);
   const statusLine = getStatusLine(authError, status);
   const modelConfig = useModelConfig(client);
   const [transcriptRows, setTranscriptRows] = useState<TranscriptRow[]>([]);
@@ -353,14 +409,90 @@ function AppInner({ url, createTransport, backoffBaseMs = 1000 }: AppProps) {
   const [sidebarView, setSidebarView] = useState<SidebarView>("threads");
   const [filesIdx, setFilesIdx] = useState(0);
   const [focus, setFocus] = useState<"composer" | "sidebar">("composer");
-  const fileTree = useFileTree(client, sidebarView === "files" ? st.activeId : null);
+  const [projects] = useState<Project[]>(() => loadProjects());
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>(() => loadCollapsed());
+  const sidebarSessions = useMemo<SidebarSession[]>(
+    () => st.history.map((id) => ({ id, preview: id })),
+    [st.history],
+  );
+  // D11: browse state keys off the session's local project group; sessions
+  // without one are grouped under the first project, as the sidebar does.
+  const activeSession = sidebarSessions.find((s) => s.id === st.activeId);
+  const activeProjectKey = activeSession?.projectId ?? projects[0]?.id ?? DEFAULT_PROJECT_KEY;
+  const fileTree = useFileTree(client, sidebarView === "files" ? st.activeId : null, activeProjectKey);
   const filesRows = useMemo(() => flattenVisible(fileTree.nodes ?? []), [fileTree.nodes]);
+  const [search, setSearch] = useState<SearchState | null>(null);
+  const revealRef = useRef<string | null>(null);
+  const paletteCtrl = usePaletteControl(toggleTheme, search !== null);
   useEffect(() => {
     setFilesIdx((v) => clampSelection(v, filesRows.length));
   }, [filesRows.length]);
   useEffect(() => {
     setFilesIdx(0);
   }, [st.activeId]);
+  const failReveal = useCallback((): void => {
+    revealRef.current = null;
+    st.setErr("path no longer exists");
+    void fileTree.loadRoot();
+  }, [fileTree, st.setErr]);
+  const advanceReveal = useCallback((): void => {
+    const target = revealRef.current;
+    if (!target || fileTree.nodes === null) return;
+    const idx = filesRows.findIndex((row) => row.node.path === target);
+    if (idx >= 0) {
+      setFilesIdx(idx);
+      revealRef.current = null;
+      const node = filesRows[idx].node;
+      if (node.kind === "dir" && !node.expanded) fileTree.toggle(node);
+      return;
+    }
+    const parts = target.split("/");
+    for (let i = 1; i < parts.length; i += 1) {
+      const prefix = parts.slice(0, i).join("/");
+      const row = filesRows.find((r) => r.node.path === prefix);
+      if (!row || row.node.kind !== "dir" || row.node.error) {
+        failReveal();
+        return;
+      }
+      if (row.node.loading) return;
+      if (!row.node.expanded) {
+        fileTree.toggle(row.node);
+        return;
+      }
+      if (row.node.children === null) return;
+    }
+    failReveal();
+  }, [failReveal, fileTree, filesRows]);
+  useEffect(() => {
+    advanceReveal();
+  }, [advanceReveal]);
+  const loadSearchIndex = useCallback(async (query: string): Promise<void> => {
+    const sid = st.activeId;
+    if (!client || !sid) return;
+    try {
+      const reply = (await client.request(METHODS.fileList, {
+        session_id: sid, path: null, depth: SEARCH_INDEX_DEPTH,
+      })) as { entries?: RawFileEntry[]; truncated?: boolean };
+      const entries = reply.entries ?? [];
+      const index = buildSearchIndex(entries.slice(0, MAX_SEARCH_INDEX));
+      const truncated = Boolean(reply.truncated) || entries.length > MAX_SEARCH_INDEX;
+      setSearch((prev) => (prev ? withSearchQuery({ ...prev, index, truncated, error: null }, query) : prev));
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setSearch((prev) => (prev ? { ...prev, index: [], rows: [], total: 0, idx: 0, error: msg } : prev));
+    }
+  }, [client, st.activeId]);
+  const startSearch = useCallback((): void => {
+    if (st.activeId === null) return;
+    st.setErr(null);
+    setSearch({ query: "", index: [], rows: [], total: 0, truncated: false, error: null, idx: 0 });
+    void loadSearchIndex("");
+  }, [st.activeId, st.setErr, loadSearchIndex]);
+  const beginReveal = useCallback((path: string): void => {
+    setSearch(null);
+    revealRef.current = path;
+    advanceReveal();
+  }, [advanceReveal]);
   useEffect(() => {
     setTranscriptRows([]);
     setTodos(EMPTY_TODOS);
@@ -394,9 +526,6 @@ function AppInner({ url, createTransport, backoffBaseMs = 1000 }: AppProps) {
   );
   const statusColor =
     authError !== null ? palette.error : status === "open" ? palette.success : palette.warning;
-  const [projects] = useState<Project[]>(() => loadProjects());
-  const [collapsed, setCollapsed] = useState<Record<string, boolean>>(() => loadCollapsed());
-  const sidebarSessions = useMemo(() => st.history.map((id) => ({ id, preview: id })), [st.history]);
   const sidebarEntries = useMemo(() => {
     const entries: Array<{ kind: "project"; id: string } | { kind: "session"; id: string; projectId: string }> = [];
     if (projects.length === 0) {
@@ -449,6 +578,40 @@ function AppInner({ url, createTransport, backoffBaseMs = 1000 }: AppProps) {
       if (isTab && !composerVisible) setFocus("sidebar");
       return;
     }
+    if (search && sidebarView === "files") {
+      const decision = searchKey(key, search);
+      if (decision === null) {
+        setFocus("composer");
+        return;
+      }
+      switch (decision.kind) {
+        case "clear":
+          setSearch((prev) => (prev ? withSearchQuery(prev, "") : prev));
+          return;
+        case "exit":
+          setSearch(null);
+          return;
+        case "backspace":
+          setSearch((prev) =>
+            prev && prev.query.length > 0 ? withSearchQuery(prev, prev.query.slice(0, -1)) : prev);
+          return;
+        case "move":
+          setSearch((prev) =>
+            prev ? { ...prev, idx: moveSelection(prev.idx, decision.delta, prev.rows.length) } : prev);
+          return;
+        case "jump":
+          beginReveal(decision.path);
+          return;
+        case "rebuild":
+          void loadSearchIndex(search.query);
+          return;
+        case "append":
+          setSearch((prev) => (prev ? withSearchQuery(prev, prev.query + decision.ch) : prev));
+          return;
+        default:
+          return;
+      }
+    }
     if (isTab || isEsc) {
       setFocus("composer");
       return;
@@ -465,6 +628,10 @@ function AppInner({ url, createTransport, backoffBaseMs = 1000 }: AppProps) {
         if (dirRow.node.expanded) fileTree.collapse(dirRow.node.path);
         else fileTree.toggle(dirRow.node);
       };
+      if (name === "s") {
+        startSearch();
+        return;
+      }
       if (name === "j" || name === "down" || seq === "\u001B[B") {
         setFilesIdx((v) => moveSelection(v, 1, rows.length));
         return;
@@ -560,11 +727,21 @@ function AppInner({ url, createTransport, backoffBaseMs = 1000 }: AppProps) {
           view={sidebarView}
           filesProps={{
             nodes: fileTree.nodes,
-            selected: filesIdx,
+            selected: search ? search.idx : filesIdx,
             error: fileTree.error,
             truncated: fileTree.truncated,
             noSession: st.activeId === null,
             width: 0,
+            search: search
+              ? {
+                  active: true,
+                  query: search.query,
+                  rows: search.rows,
+                  total: search.total,
+                  truncated: search.truncated,
+                  error: search.error,
+                }
+              : undefined,
           }}
           focusMode={focus}
         />
