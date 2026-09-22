@@ -404,12 +404,14 @@ fn static_surface(
 }
 
 /// Unauthenticated version probe: reports this server's product/protocol
-/// versions plus the optional facts read from the mounted dist, so a remote
-/// client can detect a stale UI without holding a session cookie. Registered as
+/// versions, the optional facts read from the mounted dist and the aggregate
+/// login-limiter counters, so a remote client or operator can detect a stale UI
+/// and observe throttling without holding a session cookie. Registered as
 /// an explicit route (like `/login`), so the login gate and the SPA fallback
 /// never answer it.
 async fn version_handler(web: std::sync::Arc<WebConfig>) -> axum::response::Response {
     let dist = web.dist_version();
+    let counters = web.login_limiter.counters(Instant::now());
     let body = serde_json::json!({
         "product_version": env!("CARGO_PKG_VERSION"),
         "protocol_version": agentj_protocol::PROTOCOL_VERSION,
@@ -419,6 +421,14 @@ async fn version_handler(web: std::sync::Arc<WebConfig>) -> axum::response::Resp
             "protocol_version": v.protocol_version,
             "build_time": v.build_time,
         })),
+        "login_limiter": {
+            "attempts": counters.attempts,
+            "failures": counters.failures,
+            "lockouts": counters.lockouts,
+            "blocked": counters.blocked,
+            "locked_now": counters.locked_now,
+            "tracked_ips": counters.tracked_ips,
+        },
     });
     let mut res = axum::Json(body).into_response();
     res.headers_mut().insert(
@@ -610,6 +620,67 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&b).unwrap();
         assert_eq!(v["dist_present"], false);
         assert!(v["dist"].is_null());
+    }
+
+    #[tokio::test]
+    async fn version_reports_login_limiter_counters() {
+        let web = crate::web::WebConfig::new(None, Some("secret".into())).with_login_limiter(
+            crate::login_limiter::LoginLimiter::with_policy(small_policy()),
+        );
+        let state = test_state(web);
+        let remote: std::net::SocketAddr = "203.0.113.7:41000".parse().unwrap();
+        for _ in 0..3 {
+            let _ = form_post(
+                crate::web::build_router(state.clone(), remote),
+                "/login",
+                "token=wrong&next=%2F",
+            )
+            .await;
+        }
+        let (s, _, b) = get(crate::web::build_router(state, remote), "/version").await;
+        assert_eq!(s, axum::http::StatusCode::OK);
+        let v: serde_json::Value = serde_json::from_str(&b).unwrap();
+        assert_eq!(v["login_limiter"]["attempts"], 3);
+        assert_eq!(v["login_limiter"]["failures"], 3);
+        assert_eq!(
+            v["login_limiter"]["lockouts"], 1,
+            "the third failure starts the lockout"
+        );
+        assert_eq!(v["login_limiter"]["blocked"], 0);
+    }
+
+    #[tokio::test]
+    async fn version_reports_blocked_attempts_while_locked() {
+        // A long lockout makes the blocked snapshot deterministic: the second
+        // request is answered from the limiter and counted as blocked.
+        let policy = crate::login_limiter::Policy {
+            free_attempts: 1,
+            base_lockout: Duration::from_secs(600),
+            max_lockout: Duration::from_secs(900),
+            ..small_policy()
+        };
+        let web = crate::web::WebConfig::new(None, Some("secret".into()))
+            .with_login_limiter(crate::login_limiter::LoginLimiter::with_policy(policy));
+        let state = test_state(web);
+        let remote: std::net::SocketAddr = "203.0.113.8:41000".parse().unwrap();
+        for _ in 0..2 {
+            let (s, _, _) = form_post(
+                crate::web::build_router(state.clone(), remote),
+                "/login",
+                "token=wrong",
+            )
+            .await;
+            assert_eq!(s, axum::http::StatusCode::TOO_MANY_REQUESTS);
+        }
+        let (s, _, b) = get(crate::web::build_router(state, remote), "/version").await;
+        assert_eq!(s, axum::http::StatusCode::OK);
+        let v: serde_json::Value = serde_json::from_str(&b).unwrap();
+        assert_eq!(v["login_limiter"]["attempts"], 2);
+        assert_eq!(v["login_limiter"]["failures"], 1);
+        assert_eq!(v["login_limiter"]["lockouts"], 1);
+        assert_eq!(v["login_limiter"]["blocked"], 1);
+        assert_eq!(v["login_limiter"]["locked_now"], 1);
+        assert_eq!(v["login_limiter"]["tracked_ips"], 1);
     }
 
     fn test_state(web: crate::web::WebConfig) -> std::sync::Arc<crate::ws::WsServerState> {

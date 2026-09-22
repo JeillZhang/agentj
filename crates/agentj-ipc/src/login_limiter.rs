@@ -43,7 +43,6 @@ struct Entry {
     last: Instant,
 }
 
-#[allow(dead_code)] // consumed by T2 (/version login_limiter block); remove there
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) struct Counters {
     pub(crate) attempts: u64,
@@ -152,7 +151,6 @@ impl LoginLimiter {
         info!(ip = %ip, prior_failures, "login ok");
     }
 
-    #[allow(dead_code)] // consumed by T2 (/version login_limiter block); remove there
     pub(crate) fn counters(&self, now: Instant) -> Counters {
         let entries = self.entries.lock().expect("login limiter");
         let locked_now = entries
