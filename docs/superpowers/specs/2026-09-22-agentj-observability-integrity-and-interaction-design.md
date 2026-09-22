@@ -400,4 +400,25 @@ Web 的 Tab 是原生导航键；照搬 TUI 的「Tab 切换焦点」会阻断 t
 
 ## 实施状态
 
-- **待实施**：本设计经用户评审通过后，进入 `/jskill-feature-plan` 阶段生成任务级 TDD 计划；实施完成后回填本节的落地版本、门禁结果与验收记录。
+- **已实施（v0.21.0，2026-09-23）**：计划 `docs/superpowers/plans/2026-09-22-agentj-observability-integrity-and-interaction-plan.md`
+  T0–T29 全部落地；工作区 0.20.1 → **0.21.0**（feature minor）；`PROTOCOL_VERSION` 保持
+  `0.13.0`（无 JSON-RPC wire 变更；①② 均为 HTTP 面加性字段）。
+- **自动化门禁（T29 全量复核，10 项全绿）**：
+  | 门禁 | 结果 |
+  |---|---|
+  | `cargo fmt --check` | clean |
+  | `cargo test --workspace` | **621 passed / 0 failed** |
+  | `cargo clippy --workspace --all-targets -- -D warnings` | 零警告 |
+  | `cargo test -p agentj-protocol -- drift` | 2 passed |
+  | `npm --prefix agentj-ui test --workspace=@agentj/sdk` | 47 passed（6 files） |
+  | `npm --prefix agentj-ui test --workspace=@agentj/web` | **537 passed（50 files）** |
+  | `bun --cwd agentj-ui/apps/tui test` | **128 passed（19 files）** |
+  | `npm --prefix agentj-ui run build --workspace=@agentj/web` | clean（`dist/version.json` + `asset-manifest.json` + sha384 integrity 已注入） |
+  | `./scripts/check-version.sh` | version-ok（**0.21.0**） |
+  | `node agentj-ui/apps/desktop/check-desktop-ui.mjs` | desktop-ui-ok |
+- **验收（live acceptance）**：**未执行 —— 显式延后至 `jskill-test-acceptance` 阶段**
+  （实机 Playwright / TUI / curl 验收：Web 焦点作用域与 roving 键盘导航、TUI 搜索/跳转/
+  展开持久化、`GET /version` 的 `login_limiter`/`integrity` 加性块、`RUST_LOG` 日志下探）。
+  本阶段以自动化门禁为退出标准（计划 Global Constraints）。
+- **文档同步**：`AGENTS.md` / `README.md` / `.agents/summary/summary_and_next.md` /
+  `docs/specs/ipc-protocol.md`（HTTP 面 / 清单契约 / 限流摘要）已同步 v0.21.0 事实。

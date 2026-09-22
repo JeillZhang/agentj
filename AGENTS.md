@@ -265,9 +265,9 @@ v0.21.0 已落地：**限流可观测 + 资产完整性 + TUI 搜索 + Web 焦�
 失效路径静默跳过、陈旧键清理）；④ Web 焦点作用域——新 `useShortcutScope`（焦点在侧栏内、
 目标非可编辑、非 IME、无修饰键、无模态/菜单才生效）提供 `f`/`n`/`r`/`j`/`k`/`Esc`，文件树/
 会话列表 roving tabindex 键盘导航，`ModalDialog` 开关焦点恢复，**Tab 保持原生**且 composer
-输入零误触。门禁全绿：cargo fmt / cargo test --workspace / clippy 零警告 / drift 2 passed /
-sdk 47 / web / tui / web build / check-version 0.21.0 / desktop-ui；PROTOCOL_VERSION 保持
-0.13.0；工作区 0.20.1 → 0.21.0）。
+输入零误触。门禁全绿：cargo fmt / 621 Rust tests / clippy 零警告 / drift 2 passed / sdk 47 /
+web 537 tests（50 files）/ tui 128 tests（19 files）/ web build / check-version 0.21.0 /
+desktop-ui；PROTOCOL_VERSION 保持 0.13.0；工作区 0.20.1 → 0.21.0）。
 v0.20.1 已落地：**验收修复（BUG-009/BUG-010，bugfix，无协议变更）**
 （实机/HTTP 验收 v0.20.0 四项全过：登录限流（第 5 次失败 429 + Retry-After 30s、锁定
 升级、到期 302 + cookie、成功清零、开放重定向守卫）/ 版本探测与 SRI（sha384 复算匹配、
