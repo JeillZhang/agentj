@@ -1130,7 +1130,16 @@ impl IpcServer {
             Some(root) => root,
             None => std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
         };
-        match file_list::list(&root, params.path.as_deref(), params.depth) {
+        let query = params
+            .query
+            .as_deref()
+            .map(str::trim)
+            .filter(|q| !q.is_empty());
+        let result = match query {
+            Some(q) => file_list::search(&root, params.path.as_deref(), q),
+            None => file_list::list(&root, params.path.as_deref(), params.depth),
+        };
+        match result {
             Ok(result) => {
                 let result = attach_git_statuses(result, &root).await;
                 Ok(serde_json::to_value(result).expect("serializable"))
@@ -5256,6 +5265,40 @@ mod tests {
         .to_string();
         let resp = server.handle_request(&raw).await.unwrap();
         serde_json::from_str(&resp).unwrap()
+    }
+
+    /// Query variant of `file_list_call` (the shared helper has no query param).
+    async fn file_list_search_call(
+        server: &IpcServer,
+        sid: &str,
+        path: Option<&str>,
+        query: &str,
+    ) -> serde_json::Value {
+        let raw = serde_json::json!({
+            "jsonrpc": "2.0", "id": 22, "method": "file/list",
+            "params": { "session_id": sid, "path": path, "query": query },
+        })
+        .to_string();
+        serde_json::from_str(&server.handle_request(&raw).await.unwrap()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn dispatch_file_list_query_returns_ranked_matches_with_total() {
+        let root = temp_dir_filelist("query");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/main.rs"), "x").unwrap();
+        std::fs::write(root.join("README.md"), "x").unwrap();
+        let (server, sid) = file_list_server(&root);
+        let v = file_list_search_call(&server, &sid, None, "main").await;
+        assert!(v["error"].is_null(), "query call must succeed: {v}");
+        assert_eq!(v["result"]["total"], 1);
+        assert_eq!(v["result"]["entries"][0]["path"], "src/main.rs");
+        let blank = file_list_search_call(&server, &sid, None, "   ").await;
+        assert!(
+            blank["result"].get("total").is_none(),
+            "blank query = legacy listing"
+        );
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[tokio::test]
