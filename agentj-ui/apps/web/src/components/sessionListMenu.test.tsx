@@ -89,6 +89,18 @@ describe("SessionListMenu", () => {
     expect(document.activeElement?.textContent).toMatch(/全部/);
   });
 
+  it("roves the flyout with wrap and Home/End", () => {
+    render(<SessionListMenu deletableCount={1} onCleanup={() => {}} />);
+    open();
+    fireEvent.mouseEnter(screen.getByRole("menuitem", { name: /排序/ }));
+    const radios = screen.getAllByRole("menuitemradio");
+    const flyout = screen.getByRole("menu", { name: "排序" });
+    fireEvent.keyDown(flyout, { key: "End" });
+    expect(document.activeElement).toBe(radios[radios.length - 1]);
+    fireEvent.keyDown(flyout, { key: "ArrowDown" }); // wraps
+    expect(document.activeElement).toBe(radios[0]);
+  });
+
   it("closes the flyout after the 120ms leave delay", () => {
     vi.useFakeTimers();
     render(<SessionListMenu deletableCount={1} onCleanup={() => {}} />);
