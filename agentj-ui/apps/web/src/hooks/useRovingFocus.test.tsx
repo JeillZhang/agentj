@@ -1,6 +1,12 @@
 import { act, renderHook } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import { moveSelection, tabIndexFor, useRovingFocus } from "./useRovingFocus";
+import {
+  firstIndex,
+  lastIndex,
+  moveSelection,
+  tabIndexFor,
+  useRovingFocus,
+} from "./useRovingFocus";
 
 it("moves and clamps a selection index", () => {
   expect(moveSelection(1, 1, 3)).toBe(2);
@@ -20,6 +26,25 @@ describe("moveSelection", () => {
   it("stays unselected for an empty list", () => {
     expect(moveSelection(0, 1, 0)).toBe(-1);
     expect(moveSelection(2, -1, 0)).toBe(-1);
+  });
+
+  it("wraps when asked and clamps by default", () => {
+    expect(moveSelection(2, 1, 3, { wrap: true })).toBe(0);
+    expect(moveSelection(2, 1, 3)).toBe(2);
+    expect(moveSelection(-1, -1, 3, { wrap: true })).toBe(2);
+  });
+});
+
+describe("firstIndex / lastIndex", () => {
+  it("returns -1 for empty lists", () => {
+    expect(firstIndex(0)).toBe(-1);
+    expect(lastIndex(0)).toBe(-1);
+    expect(lastIndex(3)).toBe(2);
+  });
+
+  it("returns the first and last valid indices for a populated list", () => {
+    expect(firstIndex(3)).toBe(0);
+    expect(firstIndex(-1)).toBe(-1);
   });
 });
 
@@ -60,5 +85,14 @@ describe("useRovingFocus", () => {
     expect(result.current.selected).toBe(2);
     act(() => result.current.setSelected(-4));
     expect(result.current.selected).toBe(0);
+  });
+
+  it("wraps moveBy around the ends when wrap is enabled", () => {
+    const { result } = renderHook(() => useRovingFocus({ count: 3, wrap: true }));
+    act(() => result.current.setSelected(2));
+    act(() => result.current.moveBy(1));
+    expect(result.current.selected).toBe(0);
+    act(() => result.current.moveBy(-1));
+    expect(result.current.selected).toBe(2);
   });
 });
