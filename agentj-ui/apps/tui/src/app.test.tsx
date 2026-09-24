@@ -10,7 +10,8 @@ import type { TransportHandle } from "./app.tsx";
 import { METHODS, ResponseRouter } from "@agentj/sdk";
 import type { TransportStatus } from "@agentj/sdk";
 import { MODEL_CONFIG, providersFromStatus, renderModelList } from "./models.tsx";
-import { loadFileTreePrefs } from "./filetreePrefs.ts";
+import { loadFileTreePrefs, saveFileTreePrefs } from "./filetreePrefs.ts";
+import { saveSessionHistory } from "./session.tsx";
 import { saveProjects } from "./sidebar.tsx";
 import type { RawFileEntry } from "./files.ts";
 
@@ -109,7 +110,7 @@ function rankEntry(entry: RawFileEntry, query: string): number {
   return 2;
 }
 
-function fakeKernel(options: { search?: "server" | "legacy" } = {}): FakeKernel {
+function fakeKernel(options: { search?: "server" | "legacy"; sessionRoot?: string } = {}): FakeKernel {
   const calls: KernelCall[] = [];
   const dropped = new Set<string>();
   let depthEightFailures = 0;
@@ -124,7 +125,14 @@ function fakeKernel(options: { search?: "server" | "legacy" } = {}): FakeKernel 
       const params = req.params ?? {};
       calls.push({ method: req.method, ...params });
       let result: unknown = {};
-      if (req.method === METHODS.sessionNew) result = { session_id: "s1" };
+      if (req.method === METHODS.sessionNew) {
+        result = options.sessionRoot
+          ? { session_id: "s1", project_root: options.sessionRoot }
+          : { session_id: "s1" };
+      }
+      if (req.method === METHODS.sessionStatus && options.sessionRoot) {
+        result = { status: "active", project_root: options.sessionRoot };
+      }
       if (req.method === METHODS.fileList) {
         const depth = typeof params.depth === "number" ? params.depth : 1;
         if (depth >= 8) {
@@ -784,7 +792,7 @@ describe("files search mode", () => {
     act(() => setup.renderer.destroy());
   });
 
-  test("persists expansion under the active session's project group", async () => {
+  test("persists expansion under the __default__ fallback, not the local project id", async () => {
     saveProjects([{ id: "p1", name: "Foo" }]);
     const kernel = fakeKernel();
     const { setup, input } = await renderApp(kernel);
@@ -796,7 +804,58 @@ describe("files search mode", () => {
     await act(async () => { await setup.waitFor(() => setup.captureCharFrame().includes("README.md")); });
     await act(async () => { input.press("enter"); await setup.flush(); });
     await act(async () => { await setup.waitFor(() => setup.captureCharFrame().includes("main.rs")); });
-    expect(loadFileTreePrefs().expanded.p1).toEqual(["src"]);
+    expect(loadFileTreePrefs().expanded.__default__).toEqual(["src"]);
+    expect(loadFileTreePrefs().expanded.p1).toBeUndefined();
+    act(() => setup.renderer.destroy());
+  });
+
+  test("keys filetree prefs by the session project_root", async () => {
+    const kernel = fakeKernel({ sessionRoot: "/tmp/proj" });
+    const { setup, input } = await renderApp(kernel);
+    await openFilesSidebar(setup, input);                                  // creates the session
+    await act(async () => { input.press("enter"); await setup.flush(); }); // expand src
+    expect(loadFileTreePrefs().expanded["/tmp/proj"]).toEqual(["src"]);
+    act(() => setup.renderer.destroy());
+  });
+
+  test("falls back to __default__ when the kernel omits project_root", async () => {
+    const kernel = fakeKernel(); // no project_root in session/new
+    const { setup, input } = await renderApp(kernel);
+    await openFilesSidebar(setup, input);
+    await act(async () => { input.press("enter"); await setup.flush(); });
+    expect(loadFileTreePrefs().expanded.__default__).toEqual(["src"]);
+    act(() => setup.renderer.destroy());
+  });
+
+  test("prunes stale project-id keys on save while keeping root keys", async () => {
+    saveFileTreePrefs({ expanded: { p1: ["src"], "/old/root": ["x"] } }, ["p1", "/old/root"]);
+    const kernel = fakeKernel({ sessionRoot: "/tmp/proj" });
+    const { setup, input } = await renderApp(kernel);
+    await openFilesSidebar(setup, input);
+    await act(async () => { input.press("enter"); await setup.flush(); });
+    const expanded = loadFileTreePrefs().expanded;
+    expect(expanded.p1).toBeUndefined();
+    expect(expanded["/old/root"]).toEqual(["x"]);
+    expect(expanded["/tmp/proj"]).toEqual(["src"]);
+    act(() => setup.renderer.destroy());
+  });
+
+  test("continue captures project_root from session/status for the prefs key", async () => {
+    saveSessionHistory(["s9"]);
+    const kernel = fakeKernel({ sessionRoot: "/tmp/proj2" });
+    const { setup, input } = await renderApp(kernel);
+    await act(async () => { input.press("enter"); await setup.flush(); }); // select s9
+    await act(async () => { input.press("tab"); await setup.flush(); });
+    await act(async () => { input.press("f"); await setup.flush(); });
+    await act(async () => { await setup.waitFor(() => setup.captureCharFrame().includes("README.md")); });
+    await act(async () => { input.press("enter"); await setup.flush(); });
+    const expanded = loadFileTreePrefs().expanded;
+    expect(kernel.calls).toContainEqual(
+      expect.objectContaining({ method: METHODS.sessionStatus, session_id: "s9" }),
+    );
+    expect(kernel.calls.some((c) => c.method === METHODS.sessionNew)).toBe(false);
+    expect(expanded["/tmp/proj2"]).toEqual(["src"]);
+    expect(expanded.__default__).toBeUndefined();
     act(() => setup.renderer.destroy());
   });
 

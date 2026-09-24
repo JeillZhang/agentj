@@ -208,8 +208,8 @@ export function useFileTree(
     }
   }, [request, setTree]);
 
-  // Saves the live expanded set for this project; the other projects' entries
-  // stay in place because this hook has no project registry to prune against.
+  // Saves the live expanded set for this root. Old project-id keys are stale
+  // (non-path) and dropped on save; root keys persist for per-root isolation.
   const persist = useCallback((tree: FileNode[] | null): void => {
     const paths: string[] = [];
     const walk = (list: FileNode[] | null): void => {
@@ -222,7 +222,9 @@ export function useFileTree(
     walk(tree);
     paths.sort((a, b) => pathDepth(a) - pathDepth(b)); // depth order: the 100-path cap drops the deepest
     const stored = loadFileTreePrefs().expanded;
-    const liveIds = Object.keys(stored);
+    const liveIds = Object.keys(stored).filter(
+      (key) => key === DEFAULT_PROJECT_KEY || key.startsWith("/"),
+    );
     if (!liveIds.includes(projectKey)) liveIds.push(projectKey);
     saveFileTreePrefs({ expanded: { ...stored, [projectKey]: paths } }, liveIds);
   }, [projectKey]);

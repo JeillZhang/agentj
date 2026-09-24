@@ -1,10 +1,11 @@
 import { readJsonFile, writeJsonFile } from "./config.ts";
 
-// Per-project file tree expansion state, persisted as <configDir>/filetree.json.
-// Contract (design G8): expanded = Record<projectKey, string[]> where projectKey
-// is the local project id or "__default__" when the session has none. Paths are
-// stored depth-first; save caps each key at 100 (deepest entries dropped) and
-// prunes keys whose project no longer exists. Corrupt files are ignored.
+// Per-root file tree expansion state, persisted as <configDir>/filetree.json.
+// Contract (design G12/D11): expanded = Record<projectKey, string[]> where
+// projectKey is the session's effective project_root (filesystem path) or
+// "__default__" when the kernel omits it. Paths are stored depth-first; save caps
+// each key at 100 (deepest entries dropped) and prunes keys that are neither
+// "__default__" nor path-like (legacy local project ids). Corrupt files are ignored.
 export type FileTreePrefs = { expanded: Record<string, string[]> };
 
 const FILE = "filetree.json";

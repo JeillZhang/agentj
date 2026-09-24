@@ -91,10 +91,22 @@ export function SessionList(props: SessionListProps) {
   );
 }
 
+// v0.22.0 additive project_root; a legacy kernel reply omits it → null (caller falls back).
+function projectRootOf(res: unknown): string | null {
+  if (res !== null && typeof res === "object" && "project_root" in res) {
+    const root = (res as { project_root?: unknown }).project_root;
+    if (typeof root === "string" && root.length > 0) return root;
+  }
+  return null;
+}
+
 export function useSession(client: RpcClient | null) {
+  const [projectRoot, setProjectRoot] = useState<string | null>(null);
+
   const createNew = useCallback(async (): Promise<string> => {
     if (!client) throw new Error("not connected");
     const res: unknown = await client.request(METHODS.sessionNew, {});
+    setProjectRoot(projectRootOf(res));
     if (typeof res === "string") return res;
     if (res !== null && typeof res === "object" && "session_id" in res) {
       const cand = res.session_id;
@@ -110,7 +122,8 @@ export function useSession(client: RpcClient | null) {
   const continueSession = useCallback(
     async (sessionId: string): Promise<string> => {
       if (!client) throw new Error("not connected");
-      await client.request(METHODS.sessionStatus, { session_id: sessionId });
+      const status: unknown = await client.request(METHODS.sessionStatus, { session_id: sessionId });
+      setProjectRoot(projectRootOf(status));
       await client.request(METHODS.sessionSubscribe, { session_id: sessionId });
       return sessionId;
     },
@@ -125,5 +138,5 @@ export function useSession(client: RpcClient | null) {
     [client],
   );
 
-  return { createNew, continueSession, archiveSession };
+  return { createNew, continueSession, archiveSession, projectRoot };
 }

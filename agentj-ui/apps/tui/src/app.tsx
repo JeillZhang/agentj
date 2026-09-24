@@ -330,7 +330,8 @@ function useSessionState(): SessionState {
 }
 
 function useAppHandlers(client: RpcClient | null, st: SessionState) {
-  const { createNew, continueSession } = useSession(client);
+  const session = useSession(client);
+  const { createNew, continueSession } = session;
   const handleSelect = useCallback(
     async (id: string) => {
       st.setErr(null);
@@ -366,7 +367,7 @@ function useAppHandlers(client: RpcClient | null, st: SessionState) {
       st.setErr(msg);
     }
   }, [createNew, st]);
-  return { handleSelect, handleNew };
+  return { handleSelect, handleNew, projectRoot: session.projectRoot };
 }
 
 function getStatusLine(authError: string | null, status: TransportStatus): string {
@@ -426,7 +427,8 @@ function AppInner({ url, createTransport, backoffBaseMs = 1000 }: AppProps) {
   useCtrlCExit();
   const { status, authError, client } = useConnection(url, createTransport, backoffBaseMs);
   const st = useSessionState();
-  const { handleSelect, handleNew } = useAppHandlers(client, st);
+  const session = useAppHandlers(client, st);
+  const { handleSelect, handleNew } = session;
   const { pending: permReq, respond: handlePermRespond, clear: clearPerm } = usePermissionState(client);
   const { toggle: toggleTheme, palette } = useTheme();
   const statusLine = getStatusLine(authError, status);
@@ -442,10 +444,9 @@ function AppInner({ url, createTransport, backoffBaseMs = 1000 }: AppProps) {
     () => st.history.map((id) => ({ id, preview: id })),
     [st.history],
   );
-  // D11: browse state keys off the session's local project group; sessions
-  // without one are grouped under the first project, as the sidebar does.
-  const activeSession = sidebarSessions.find((s) => s.id === st.activeId);
-  const activeProjectKey = activeSession?.projectId ?? projects[0]?.id ?? DEFAULT_PROJECT_KEY;
+  // G12/D11: browse state keys off the session's effective filesystem root
+  // (the file/list sandbox), shared by same-root sessions; unknown → __default__.
+  const activeProjectKey = session.projectRoot ?? DEFAULT_PROJECT_KEY;
   const fileTree = useFileTree(client, sidebarView === "files" ? st.activeId : null, activeProjectKey);
   const filesRows = useMemo(() => flattenVisible(fileTree.nodes ?? []), [fileTree.nodes]);
   const [search, setSearch] = useState<SearchState | null>(null);
