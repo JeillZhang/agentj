@@ -14,7 +14,7 @@
 1. **限流可观测扩展（per-IP 明细 / 指标导出）**：v0.21.0 的 `login_limiter` 只有聚合计数（经未鉴权 `/version`），排查具体 IP 需翻日志、监控无法 scrape。本项为 limiter 增加只读快照 API，并新增**鉴权门控的 `GET /metrics`（Prometheus 文本）**：聚合 counters + per-IP series（Top-50 截断）+ 资产完整性摘要；`/version` 既有「未鉴权、仅聚合」契约零变化。
 2. **资产清单扩展（`public/` 透传 + 运行期抽检）**：v0.21.0 清单显式排除 `public/` 透传文件（如 `favicon.svg`），且完整性只在启动校验一次（冻结快照）。本项让构建清单覆盖 dist 全部部署文件，并新增**周期后台抽检**（60s / 每轮 8 文件 / 游标轮转），结果经 `/version` 加性 `integrity.runtime` 与 `/metrics` 暴露。
 3. **TUI 搜索增强（服务端搜索 + 展开态跨会话共享）**：v0.21.0 搜索为「depth=8 单请求索引 ≤2000 + 客户端过滤」，深仓库（>8 层或 >2000 条）搜索不完整；展开态键因无会话 `projectId` 实际恒为 `projects[0].id`（多项目串台）。本项新增 `file/list` 加性 `query` 参数（query-aware 遍历预算 + 服务端 rank），TUI 搜索改防抖服务端查询（旧内核自动降级）；展开态键改为**会话有效 `project_root`**（内核真值，与 `file/list` 沙箱根同源）。
-4. **Web 键位模型收口（D17 + 侧栏快捷键提示）**：v0.21.0 显式推迟 D17（菜单 roving 未统一重构），Web 全站无快捷键提示。本项扩展共享 `useRovingFocus`（`wrap` / Home-End），把 **TopbarMenu / SessionListMenu / SidebarTabs / SettingsDialog** 四处手写 roving 迁移到共享实现（ComposerOptions listbox 保留独立 ARIA 模式），并在侧栏底部新增上下文快捷键提示行。
+4. **Web 键位模型收口（D17 + 侧栏快捷键提示）**：v0.21.0 设计文档显式推迟 D17（菜单 roving 未统一重构），Web 全站无快捷键提示。本项扩展共享 `useRovingFocus`（`wrap` / Home-End），把 **TopbarMenu / SessionListMenu / SidebarTabs / SettingsDialog** 四处手写 roving 迁移到共享实现（ComposerOptions listbox 保留独立 ARIA 模式），并在侧栏底部新增上下文快捷键提示行。
 
 ## 目标与非目标
 
@@ -93,7 +93,7 @@
 | 方案 | 优点 | 缺点 | 为何未选用 |
 |---|---|---|---|
 | **A 菜单 + 两 tablist 收口（选定）** | 全部 roving-tabindex 类实现统一；四组件均有键盘测试底子；listbox 语义风险规避 | 菜单 Tab 行为变更（见 D13） | — |
-| B 仅两菜单（严格 D17 原文） | 回归面最小 | tablist 仍留第三套模型 | 收口不彻底 |
+| B 仅两菜单（严格 v0.21 设计 D17 原文） | 回归面最小 | tablist 仍留第三套模型 | 收口不彻底 |
 | C 五处全收（含 listbox） | 最彻底 | 改变 listbox 焦点/输入语义，a11y 回归风险最高 | 模式不同，不应强并 |
 | D 仅抽公共工具函数 | 形式化最弱 | 不解决「多套模型」 | 收益不足 |
 
