@@ -1,6 +1,6 @@
 # AGENTS.md
 
-> Updated 2026-09-20 — v0.15.1 协议扩展（三栏工作台真实数据源）+ v0.15.2 session/status dispatch 修复 + v0.16.0 Web 工作台体验修复 + v0.16.1 跟随修复 + v0.16.2 远程访问修复 + v0.16.3 Web 工作台修复（项目菜单 + 文件树）+ v0.16.4 Web 工作台体验修复（状态灯 hover 面板 + 右栏手风琴 + 滚动条）+ v0.16.5 Web 工作台四项修复（右栏右→左展开动画 + 任务/文件变更高度可调 + 顶栏菜单重构/设置弹窗 + 文件树图标）+ v0.17.0 Web 工作台六项增强（代码卡片 + 显示设置 + 文件树图标 + 会话列表菜单 + 项目编辑 + 设置项目面板）+ v0.17.1 验收修复（BUG-008 窄视口菜单/飞出层夹取）+ v0.17.2 界面修复（显示设置字号 px 滑杆/数字输入 + 弹窗边框/四角缩放）+ v0.18.0 Web 三项增强（composer 75% 居中浮动 + 权限选择自动允许 + 会话 token 总量）+ v0.18.1 token 统计修复（读出移至 header 模型 chip 右侧 + 输入/输出 拆分）+ v0.19.0 内核托管 Web UI + 文件树状态补强（同端口静态托管 + 混合鉴权登录门 + WS cookie 通道 + 文件树目录聚合状态）+ v0.20.0 Web 加固 + TUI Files 视图（四项，无 wire 变更）+ v0.20.1 验收修复（BUG-009 焦点模型 + BUG-010 提示词）+ v0.21.0 限流可观测 + 资产完整性 + TUI 搜索 + Web 焦点作用域（四项，无 wire 变更）+ v0.21.1 验收修复（BUG-011 视图切换焦点 + BUG-012 树刷新焦点）
+> Updated 2026-09-20 — v0.15.1 协议扩展（三栏工作台真实数据源）+ v0.15.2 session/status dispatch 修复 + v0.16.0 Web 工作台体验修复 + v0.16.1 跟随修复 + v0.16.2 远程访问修复 + v0.16.3 Web 工作台修复（项目菜单 + 文件树）+ v0.16.4 Web 工作台体验修复（状态灯 hover 面板 + 右栏手风琴 + 滚动条）+ v0.16.5 Web 工作台四项修复（右栏右→左展开动画 + 任务/文件变更高度可调 + 顶栏菜单重构/设置弹窗 + 文件树图标）+ v0.17.0 Web 工作台六项增强（代码卡片 + 显示设置 + 文件树图标 + 会话列表菜单 + 项目编辑 + 设置项目面板）+ v0.17.1 验收修复（BUG-008 窄视口菜单/飞出层夹取）+ v0.17.2 界面修复（显示设置字号 px 滑杆/数字输入 + 弹窗边框/四角缩放）+ v0.18.0 Web 三项增强（composer 75% 居中浮动 + 权限选择自动允许 + 会话 token 总量）+ v0.18.1 token 统计修复（读出移至 header 模型 chip 右侧 + 输入/输出 拆分）+ v0.19.0 内核托管 Web UI + 文件树状态补强（同端口静态托管 + 混合鉴权登录门 + WS cookie 通道 + 文件树目录聚合状态）+ v0.20.0 Web 加固 + TUI Files 视图（四项，无 wire 变更）+ v0.20.1 验收修复（BUG-009 焦点模型 + BUG-010 提示词）+ v0.21.0 限流可观测 + 资产完整性 + TUI 搜索 + Web 焦点作用域（四项，无 wire 变更）+ v0.21.1 验收修复（BUG-011 视图切换焦点 + BUG-012 树刷新焦点）+ v0.22.0 限流指标导出 + 资产清单扩展/抽检 + TUI 服务端搜索 + Web 键位收口（四项，三处加性 wire，PROTOCOL_VERSION 0.13.0 → 0.14.0）
 > `file/list` 沙箱化目录懒加载 + git 状态点；`$/progress` 新增 `kind:"todo"`
 > （全量快照 + 会话内单调 `revision`）与 `kind:"file_change"`（write 自研行级
 > diff / bash git 前后采样，unified diff ≤64 KiB）；`$/askQuestion` +
@@ -270,6 +270,25 @@
 > （BUG-011 同类、`r` 路径未覆盖）→ `r` handler 在 `refresh()` 前把焦点 park 到 files tab 按钮
 > （`71245d5`）；均回归 verified、零新增 Bug；web 537 → **539 tests（50 files）**；
 > PROTOCOL_VERSION 保持 0.13.0；工作区 0.21.0 → 0.21.1。
+> v0.22.0 限流指标导出 + 资产清单扩展/抽检 + TUI 服务端搜索 + Web 键位收口（四项，三处
+> 加性 wire，PROTOCOL_VERSION 0.13.0 → 0.14.0）：① `agentj-ipc` `login_limiter` 新增只读
+> `snapshot()` 投影（`ip`/`failures`/`locked`/`retry_after`/`last_seen`，排序 `locked desc →
+> failures desc → ip asc`）；`web` 新增 `auth_required()` + 显式路由 `GET /metrics`
+> （Prometheus 文本 `text/plain; version=0.0.4` + `Cache-Control: no-store`：聚合 counters/gauges
+> + per-IP series Top-50 截断 + `agentj_login_ip_series_truncated` 指示 + `integrity` 摘要；
+> 回环/未配 token/有效 cookie 直出，非回环 + token 无 cookie → `401` 不重定向）；`/version`
+> 既有契约零变化。② 构建清单覆盖 dist 实目录全部部署文件（含 `public/` 透传，bundle 键优先，
+> 排除 `version.json`/自身/隐藏文件）；`TcpIpcServer` 启动后 60s / 8 文件游标轮转后台抽检
+> （`SpotCheckConfig` 可注入），不符/缺失 `warn!` 按路径去重；`/version` `integrity` 加性嵌套
+> `runtime{rounds,checked,mismatched,missing,last_run_age_secs?}`。③ `file/list` 加性参数
+> `query`（`path` 子树、忽略 `depth`、大小写不敏感子串、访问预算 `SEARCH_VISIT_LIMIT=20000`）
+> 与结果 `total`（预算受限为下界；rank 名称前缀 > 名称子串 > 路径子串、Top-100）；TUI 搜索改
+> 防抖 150ms 服务端查询（旧内核无 `total` → 自动降级 depth-8 本地过滤）；展开态键改为会话
+> 有效 `project_root`（`session/new`/`session/status` 加性 `project_root` 捕获，未知回退
+> `__default__`）。④ Web 共享 `useRovingFocus`（`wrap`/Home-End）收口 TopbarMenu/
+> SessionListMenu/SidebarTabs/SettingsDialog（ComposerOptions listbox 保留独立模式）+
+> 侧栏底部三态快捷键提示行（单一常量源、`aria-hidden`）。门禁计数待 T31 填充；
+> PROTOCOL_VERSION 0.14.0；工作区 0.21.1 → 0.22.0。
 > (17 crates + agentj-ui monorepo：Web / TUI / Desktop + SDK + tokens，
 > npm workspaces `apps/*`+`packages/*`，共享 SDK + protocol + tokens，
 > WebSocket 网关同端口复用，后端零改造，frontend stays in-repo)
@@ -277,6 +296,17 @@
 ## Project Status
 
 AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + 可插拔模块」架构。
+v0.22.0 已落地：**限流指标导出 + 资产清单扩展/抽检 + TUI 服务端搜索 + Web 键位收口（四项，三处加性 wire）**
+（① `agentj-ipc` `login_limiter` 只读 `snapshot()` + 鉴权门控 `GET /metrics`（Prometheus 文本：聚合计数 +
+per-IP 序列 Top-50 截断 + `agentj_login_ip_series_truncated` + integrity 摘要；回环/未配 token/有效 cookie
+直出，远程无 cookie → `401` 不重定向），`/version` 既有契约零变化；② `asset-manifest.json` 覆盖 dist 实目录
+全部部署文件（含 `public/` 透传，bundle 键优先）+ `TcpIpcServer` 60s / 8 文件游标轮转抽检（不符 `warn!` 按路径
+去重）+ `/version` `integrity.runtime{rounds,checked,mismatched,missing,last_run_age_secs?}`；③ `file/list` 加性
+`query`（`path` 子树、忽略 `depth`、访问预算 20000、rank 前缀 > 子串 > 路径、Top-100）与 `total` + TUI 防抖 150ms
+服务端搜索（旧内核无 `total` 自动降级）+ 展开态键 = 会话有效 `project_root`（`session/new`/`session/status` 加性
+`project_root` 捕获）；④ Web 共享 `useRovingFocus`（wrap/Home-End）收口 TopbarMenu/SessionListMenu/SidebarTabs/
+SettingsDialog + 侧栏底部三态快捷键提示行。**门禁计数待 T31 填充**；PROTOCOL_VERSION 0.14.0；工作区 0.21.1 →
+0.22.0）。
 v0.21.1 已落地：**验收修复（BUG-011/BUG-012，bugfix，无协议变更）**
 （实机验收（Playwright chromium headless / HTTP / TUI）PASS；BUG-011（low）：`f` 切换侧栏视图
 后焦点掉出侧栏（`<body>`，后续 `j`/`k`/`r`/`Esc` 失效直至重新点击/Tab）→ `SidebarTabs` 活动
@@ -516,8 +546,8 @@ Desktop：Tauri v2 壳套 `apps/web` 产物，四件套 deb/AppImage/dmg/msi，
 - `bun --cwd agentj-ui/apps/tui test` — TUI 单测（含 mock WS e2e，130 tests / 19 files）
 - `./agentj-ui/apps/desktop/check-artifacts.sh linux` — Desktop 产物校验
 - `node agentj-ui/apps/desktop/check-desktop-ui.mjs` — Desktop 前端产物/配置一致性校验
-- `./scripts/check-version.sh` — 版本一致性（Cargo + sdk VERSION + desktop 均为 0.21.1，
-  PROTOCOL_VERSION 0.13.0 + `protocol/methods.json` 版本 0.13.0）
+- `./scripts/check-version.sh` — 版本一致性（Cargo + sdk VERSION + desktop 均为 0.22.0，
+  PROTOCOL_VERSION 0.14.0 + `protocol/methods.json` 版本 0.14.0）
 
 ### CI Pipelines (GitHub Actions)
 
@@ -541,7 +571,9 @@ Desktop：Tauri v2 壳套 `apps/web` 产物，四件套 deb/AppImage/dmg/msi，
   serde + schemars，零内核耦合。v0.6 加性 CancelParams/PermissionRequestParams
   session_id；v0.8 加性 UsageInfo/SessionRunResult.usage；v0.13 加性
   `file/list`、`$/progress` todo/file_change、`$/askQuestion` + `question/respond`、
-  `SessionNewParams.project_root`、`-32807`（21 方法 / 51 schemas）。
+  `SessionNewParams.project_root`、`-32807`；v0.14 加性 `file/list` 参数 `query` / 结果 `total`
+  与 `SessionNewResult`/`SessionStatusResult.project_root`（21 方法 / 51 schemas，
+  PROTOCOL_VERSION 0.14.0）。
 - `agentj-core`（内核）：Kernel 混合总线 + 模块 trait 注册表
   + ServiceRegistry（同步/异步） + TurnRunner 总线化 turn 编排
   + `ToolCallContext`（会话根上下文，工具相对路径重定基）
@@ -578,22 +610,27 @@ Desktop：Tauri v2 壳套 `apps/web` 产物，四件套 deb/AppImage/dmg/msi，
   SPA fallback）+ `web_config()` 访问器；`serve_connection`/`TcpIpcServer` 遗留
   token 参数与死字段清理
   + question notifier/settle hook 接线
-  + `error.data` 透传 + 非法请求回显可确定 id（`-32600`；语法错误 `-32700`+null，v0.16.3）；
-  v0.19.0 新增依赖 `tower-http`（fs/set-header）+ `uuid`（v4）；v0.20.0 无新依赖）。
+  + `error.data` 透传 + 非法请求回显可确定 id（`-32600`；语法错误 `-32700`+null，v0.16.3）
+  + **v0.22.0**：`login_limiter::snapshot()` 只读投影（`ip`/`failures`/`locked`/`retry_after`/`last_seen`）
+  + `auth_required()` + 鉴权门控 `GET /metrics`（Prometheus 文本；`/version` 契约零变化）
+  + 清单解析结果保留与 60s / 8 文件运行期抽检（`SpotCheckConfig` + `RwLock<SpotCheckReport>`，
+  结果经 `/version` `integrity.runtime` 与 `/metrics` 双面暴露）+ `file/list` query-aware 遍历
+  （独立访问预算 20000 + rank + Top-100 + `total`）；
+  v0.19.0 新增依赖 `tower-http`（fs/set-header）+ `uuid`（v4）；v0.20.0 / v0.22.0 无新依赖）。
 - `agentj-cli`：`agentj` 二进制（run/serve/dashboard，模块注册进 Kernel，
   agentj-question 的 stdio 与 `serve --port` 两条装配路径；v0.19.0 `serve`/`dashboard`
   新增 `--web-dist <PATH>` 四级发现 + 启动打印 `http://<host>:<port>/` + 缺失告警；
   v0.20.0 经 `web_config().startup_warnings()` 启动打印 dist 版本警告，不阻断服务）。
 - `agentj-plugin-fixture`（dev-only）：插件 cdylib 测试夹具。
 - `schemas/*.json`：51 JSON Schema（schemars 生成，提交件 + drift 门禁）。
-- `protocol/methods.json`：方法注册表（method ↔ schema/方向/类型）。
+- `protocol/methods.json`：方法注册表（method ↔ schema/方向/类型；21 方法，protocol_version 0.14.0）。
 - `docs/specs/ipc-protocol.md`：人类可读协议规范（11 节）。
 - `agentj-ui/packages/protocol`：协议包（原 `bindings` 迁入，
   `schemas/*.json` → `types.d.ts`，`json-schema-to-typescript` + `tsc --noEmit`，
   为 drift 门禁后第一门）。
 - `agentj-ui/packages/sdk`：共享 SDK（`src/client.ts` RpcClient +
   `src/router.ts` ResponseRouter/RpcTransport + `src/config.ts`
-   `VERSION="0.21.1"` + `PROTOCOL_VERSION="0.13.0"` + `resolveWsUrl` + `src/methods.ts` METHODS
+   `VERSION="0.22.0"` + `PROTOCOL_VERSION="0.14.0"` + `resolveWsUrl` + `src/methods.ts` METHODS
   + `transports/websocket.ts` WebSocketTransport
   + `transports/tcp.ts` TcpTransport；`RpcClient.request` 拦截空/未定义 method（v0.16.3）；
   v0.20.0 `index.ts` barrel 导出 `VERSION`（Web `ConnectionStatus` 消费），
@@ -644,11 +681,14 @@ Desktop：Tauri v2 壳套 `apps/web` 产物，四件套 deb/AppImage/dmg/msi，
   v0.20.0 Files 视图：`files.ts` 纯函数（flatten/format/color/updateNode）+
   `files.tsx` `FilesView` + `useFileTree`（懒加载 `file/list` depth=1、
   stale-reply 代际守卫、collapse 保留子树、refresh 根+已展开、会话切换清空重取、
-  不持久化）+ Threads/Files 切换（`f`）+ 键位 `j,k,↑,↓`/`Enter,l,→`/`h,←`/`r`）。
+  不持久化）+ Threads/Files 切换（`f`）+ 键位 `j,k,↑,↓`/`Enter,l,→`/`h,←`/`r`；
+  v0.22.0 搜索改防抖 150ms 服务端查询（`file/list {path:null,depth:8,query}`，rank + `total`；
+  旧内核无 `total` → 自动降级 depth-8 本地过滤）+ 展开态键 = 会话有效 `project_root`
+  （`session/new`/`session/status` 捕获，未知回退 `__default__`））。
 - `agentj-ui/apps/desktop`：Desktop 壳（Tauri v2，`frontendDist` →
-    `../../web/dist`，与 workspace 版本同源 `0.21.1`，四件套打包）。
+    `../../web/dist`，与 workspace 版本同源 `0.22.0`，四件套打包）。
 - `agentj-ui/` 根：`package.json` workspaces `["apps/*","packages/*"]`
-  （frontend stays in-repo，前端不拆独立仓，与 Rust 共享 0.21.1）。
+  （frontend stays in-repo，前端不拆独立仓，与 Rust 共享 0.22.0）。
 - **守护内核（v0.4 已实现）**：统一 Connection 抽象 + `serve --port`
   常驻多客户端 + `run --attach` + `dashboard`（见 daemon-kernel 设计文档）。
 
