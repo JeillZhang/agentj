@@ -366,3 +366,30 @@ fn silent_when_manifest_matches() {
 
     std::fs::remove_dir_all(&dist).ok();
 }
+
+#[test]
+fn manifest_with_root_level_public_asset_verifies_silently() {
+    let dist = temp_dist("public-root"); // index.html + assets/app.js
+    std::fs::write(dist.join("favicon.svg"), "<svg/>").unwrap();
+    write_asset_manifest(
+        &dist,
+        &[
+            ("/index.html", &sha384_b64(b"<html>agentj-e2e-index</html>")),
+            ("/assets/app.js", &sha384_b64(b"console.log(1)")),
+            ("/favicon.svg", &sha384_b64(b"<svg/>")),
+        ],
+    );
+    let stderr = run_serve_and_capture(&dist, |addr| {
+        let ver = http_get(addr, "/version");
+        assert!(
+            ver.contains("\"checked\":3"),
+            "checked must cover root assets: {ver}"
+        );
+    });
+    assert!(
+        !stderr.contains("integrity"),
+        "unexpected warning: {stderr}"
+    );
+
+    std::fs::remove_dir_all(&dist).ok();
+}
