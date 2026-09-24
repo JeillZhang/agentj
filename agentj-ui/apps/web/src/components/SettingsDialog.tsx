@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
 import ConnectionBar from "../ConnectionBar";
 import { isDemoEnabled, setDemoEnabled, subscribeDemo } from "../demoData";
+import { firstIndex, lastIndex, moveSelection, tabIndexFor } from "../hooks/useRovingFocus";
 import ModalDialog from "./ModalDialog";
 import SettingsDisplayPanel from "./SettingsDisplayPanel";
 import SettingsProjectPanel from "./SettingsProjectPanel";
@@ -34,6 +35,7 @@ export default function SettingsDialog({ onConnect, onClose }: Props) {
   const [active, setActive] = useState<CategoryId>("connection");
   const [demo, setDemo] = useState(isDemoEnabled);
   const tabRefs = useRef(new Map<CategoryId, HTMLButtonElement | null>());
+  const activeIndex = CATEGORIES.findIndex((category) => category.id === active);
 
   useEffect(() => subscribeDemo(setDemo), []);
 
@@ -44,24 +46,25 @@ export default function SettingsDialog({ onConnect, onClose }: Props) {
 
   const onTabKeyDown = useCallback(
     (event: KeyboardEvent<HTMLButtonElement>) => {
-      const idx = CATEGORIES.findIndex((c) => c.id === active);
-      let next = -1;
-      if (event.key === "ArrowDown") next = (idx + 1) % CATEGORIES.length;
-      else if (event.key === "ArrowUp") next = (idx - 1 + CATEGORIES.length) % CATEGORIES.length;
-      else if (event.key === "Home") next = 0;
-      else if (event.key === "End") next = CATEGORIES.length - 1;
+      const count = CATEGORIES.length;
+      let next: number;
+      if (event.key === "ArrowDown") next = moveSelection(activeIndex, 1, count, { wrap: true });
+      else if (event.key === "ArrowUp") next = moveSelection(activeIndex, -1, count, { wrap: true });
+      else if (event.key === "Home") next = firstIndex(count);
+      else if (event.key === "End") next = lastIndex(count);
+      else return;
       if (next < 0) return;
       event.preventDefault();
       select(CATEGORIES[next].id);
     },
-    [active, select],
+    [activeIndex, select],
   );
 
   return (
     <ModalDialog title="设置" onClose={onClose} cardClassName="aj-settings" minWidth={560}>
       <div className="aj-settings-body">
         <div className="aj-settings-nav" role="tablist" aria-orientation="vertical" aria-label="设置分类">
-          {CATEGORIES.map((category) => (
+          {CATEGORIES.map((category, index) => (
             <button
               key={category.id}
               ref={(el) => {
@@ -72,7 +75,7 @@ export default function SettingsDialog({ onConnect, onClose }: Props) {
               role="tab"
               aria-selected={active === category.id}
               aria-controls={panelId(category.id)}
-              tabIndex={active === category.id ? 0 : -1}
+              tabIndex={tabIndexFor(index, activeIndex)}
               className={`aj-settings-nav__item${active === category.id ? " aj-settings-nav__item--active" : ""}`}
               onClick={() => select(category.id)}
               onKeyDown={onTabKeyDown}

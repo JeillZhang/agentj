@@ -60,6 +60,17 @@ test("keeps keyboard roaming across four tabs", () => {
   expect(document.activeElement?.textContent).toBe("演示数据");
 });
 
+test("keeps wrap + Home/End via shared helpers", () => {
+  localStorage.clear();
+  render(<SettingsDialog onConnect={() => {}} onClose={() => {}} />);
+  const connection = screen.getByRole("tab", { name: "连接" });
+  connection.focus();
+  fireEvent.keyDown(connection, { key: "End" });
+  expect(document.activeElement).toHaveTextContent(/演示数据/);
+  fireEvent.keyDown(document.activeElement as Element, { key: "ArrowDown" }); // wraps to first
+  expect(document.activeElement).toHaveTextContent(/^连接$/);
+});
+
 test("demo toggle flips the flag and reflects state text", () => {
   localStorage.clear();
   render(<SettingsDialog onConnect={() => {}} onClose={() => {}} />);
