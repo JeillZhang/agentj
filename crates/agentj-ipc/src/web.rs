@@ -4,7 +4,7 @@
 use axum::response::IntoResponse as _;
 use base64::Engine as _;
 use sha2::{Digest as _, Sha384};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::login_limiter::{Counters, IpSnapshot, LoginLimiter, Throttle};
 
@@ -90,6 +90,30 @@ fn validate_manifest(manifest: &AssetManifest) -> Result<(), String> {
     Ok(())
 }
 
+/// Outcome of hashing one manifest entry against the bytes on disk.
+enum AssetCheck {
+    Match,
+    Mismatch,
+    Missing,
+}
+
+/// Hash one manifest entry against the bytes on disk; shared by the startup
+/// sweep and the runtime spot-check rounds.
+fn check_asset(dist: &std::path::Path, key: &str, expected: &str) -> AssetCheck {
+    let rel = key.strip_prefix('/').unwrap_or(key);
+    match std::fs::read(dist.join(rel)) {
+        Ok(bytes) => {
+            let encoded = base64::engine::general_purpose::STANDARD.encode(Sha384::digest(&bytes));
+            if expected.strip_prefix("sha384-") == Some(encoded.as_str()) {
+                AssetCheck::Match
+            } else {
+                AssetCheck::Mismatch
+            }
+        }
+        Err(_) => AssetCheck::Missing,
+    }
+}
+
 /// Hash every manifest entry against the bytes on disk (design D6/D7):
 /// `checked` counts entries whose file exists, and offending keys are collected
 /// so the startup warning can name them.
@@ -99,18 +123,14 @@ fn verify_assets(dist: &std::path::Path, manifest: &AssetManifest) -> IntegrityR
         ..Default::default()
     };
     for (key, expected) in &manifest.assets {
-        let rel = key.strip_prefix('/').unwrap_or(key);
-        match std::fs::read(dist.join(rel)) {
-            Ok(bytes) => {
+        match check_asset(dist, key, expected) {
+            AssetCheck::Match => report.checked += 1,
+            AssetCheck::Mismatch => {
                 report.checked += 1;
-                let encoded =
-                    base64::engine::general_purpose::STANDARD.encode(Sha384::digest(&bytes));
-                if expected.strip_prefix("sha384-") != Some(encoded.as_str()) {
-                    report.mismatched += 1;
-                    report.offenses.push(key.clone());
-                }
+                report.mismatched += 1;
+                report.offenses.push(key.clone());
             }
-            Err(_) => {
+            AssetCheck::Missing => {
                 report.missing += 1;
                 report.offenses.push(key.clone());
             }
@@ -120,18 +140,22 @@ fn verify_assets(dist: &std::path::Path, manifest: &AssetManifest) -> IntegrityR
 }
 
 /// Read + verify the manifest once at startup (design D7). A missing dist stays
-/// silent; every other failure yields a non-blocking warning (design D8).
-fn read_integrity(dist: Option<&std::path::Path>) -> (IntegrityReport, Option<String>) {
+/// silent; every other failure yields a non-blocking warning (design D8). The
+/// parsed manifest is handed back so runtime spot checks can reuse it (D6/D7).
+fn read_integrity(
+    dist: Option<&std::path::Path>,
+) -> (IntegrityReport, Option<String>, Option<AssetManifest>) {
     let Some(dir) = dist else {
-        return (IntegrityReport::default(), None);
+        return (IntegrityReport::default(), None, None);
     };
     match read_asset_manifest(Some(dir)) {
-        (Some(manifest), _) => (verify_assets(dir, &manifest), None),
+        (Some(manifest), _) => (verify_assets(dir, &manifest), None, Some(manifest)),
         (None, Some(err)) => (
             IntegrityReport::default(),
             Some(format!(
                 "warning: web dist asset manifest is unusable ({err}); skipping integrity verification"
             )),
+            None,
         ),
         (None, None) => (
             IntegrityReport::default(),
@@ -139,6 +163,7 @@ fn read_integrity(dist: Option<&std::path::Path>) -> (IntegrityReport, Option<St
                 "warning: web dist has no asset-manifest.json (stale build?); rebuild the UI"
                     .to_string(),
             ),
+            None,
         ),
     }
 }
@@ -172,6 +197,48 @@ pub(crate) struct IntegrityReport {
     offenses: Vec<String>,
 }
 
+/// Runtime spot-check schedule (design D6): each round hashes `sample` manifest
+/// entries, advancing a cursor over the sorted key set so the full manifest is
+/// covered every `ceil(keys / sample)` rounds.
+#[allow(dead_code)] // fields are read by the periodic spot-check task (plan T4)
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SpotCheckConfig {
+    pub(crate) interval: Duration,
+    pub(crate) sample: usize,
+}
+
+impl Default for SpotCheckConfig {
+    fn default() -> Self {
+        Self {
+            interval: Duration::from_secs(60),
+            sample: 8,
+        }
+    }
+}
+
+/// Cumulative runtime spot-check state (design D7): written by the periodic
+/// task, read by `/version` and `/metrics`.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct SpotCheckReport {
+    pub(crate) rounds: u64,
+    pub(crate) checked: u64,
+    pub(crate) mismatched: u64,
+    pub(crate) missing: u64,
+    pub(crate) last_run: Option<Instant>,
+}
+
+/// Outcome of one spot-check round. `offenses` names mismatched and missing
+/// paths that were not reported by an earlier round, so the periodic task can
+/// warn once per path (design D7).
+#[allow(dead_code)] // fields are read by the periodic spot-check task (plan T4)
+#[derive(Debug, Clone, Default)]
+pub(crate) struct SpotRound {
+    pub(crate) checked: u64,
+    pub(crate) mismatched: u64,
+    pub(crate) missing: u64,
+    pub(crate) offenses: Vec<String>,
+}
+
 /// Static-web-UI runtime config: resolved dist directory plus the optional
 /// access token and the in-memory set of issued sessions (D3, no persistence).
 pub struct WebConfig {
@@ -181,6 +248,15 @@ pub struct WebConfig {
     dist_version_error: Option<String>,
     integrity: IntegrityReport,
     integrity_error: Option<String>,
+    #[allow(dead_code)] // sampled by the periodic spot-check task (plan T4)
+    manifest: Option<AssetManifest>,
+    #[allow(dead_code)] // read by the periodic spot-check task (plan T4)
+    spot: SpotCheckConfig,
+    spot_report: std::sync::RwLock<SpotCheckReport>,
+    #[allow(dead_code)] // recorded by the periodic spot-check task (plan T4)
+    warned: std::sync::Mutex<std::collections::HashSet<String>>,
+    #[allow(dead_code)] // rotated by the periodic spot-check task (plan T4)
+    spot_cursor: std::sync::atomic::AtomicUsize,
     sessions: std::sync::RwLock<std::collections::HashSet<String>>,
     login_limiter: LoginLimiter,
 }
@@ -192,7 +268,7 @@ impl WebConfig {
     /// Empty-string tokens normalize to `None` (no auth configured).
     pub fn new(dist: Option<std::path::PathBuf>, token: Option<String>) -> Self {
         let (dist_version, dist_version_error) = read_dist_version(dist.as_deref());
-        let (integrity, integrity_error) = read_integrity(dist.as_deref());
+        let (integrity, integrity_error, manifest) = read_integrity(dist.as_deref());
         Self {
             dist,
             token: token.filter(|t| !t.is_empty()),
@@ -200,6 +276,11 @@ impl WebConfig {
             dist_version_error,
             integrity,
             integrity_error,
+            manifest,
+            spot: SpotCheckConfig::default(),
+            spot_report: std::sync::RwLock::new(SpotCheckReport::default()),
+            warned: std::sync::Mutex::new(std::collections::HashSet::new()),
+            spot_cursor: std::sync::atomic::AtomicUsize::new(0),
             sessions: std::sync::RwLock::new(std::collections::HashSet::new()),
             login_limiter: LoginLimiter::new(),
         }
@@ -208,6 +289,72 @@ impl WebConfig {
     pub(crate) fn with_login_limiter(mut self, limiter: LoginLimiter) -> Self {
         self.login_limiter = limiter;
         self
+    }
+    #[cfg(test)]
+    pub(crate) fn with_spot_check(mut self, spot: SpotCheckConfig) -> Self {
+        self.spot = spot;
+        self
+    }
+    /// Run one spot-check round (design D6): hash up to `spot.sample` manifest
+    /// entries starting at the rotating cursor over the sorted key set, fold the
+    /// outcome into the shared report and return it. Offending paths recorded in
+    /// `warned` by an earlier round are omitted, and the task records new ones
+    /// (design D7) so persistent tampering warns once per path.
+    #[allow(dead_code)] // invoked by the periodic spot-check task (plan T4)
+    pub(crate) fn run_spot_round(&self) -> SpotRound {
+        let (Some(dist), Some(manifest)) = (&self.dist, &self.manifest) else {
+            return SpotRound::default();
+        };
+        let mut keys: Vec<&str> = manifest.assets.keys().map(String::as_str).collect();
+        if keys.is_empty() {
+            return SpotRound::default();
+        }
+        keys.sort_unstable();
+        let sample = self.spot.sample.max(1).min(keys.len());
+        let cursor = self
+            .spot_cursor
+            .fetch_add(sample, std::sync::atomic::Ordering::Relaxed);
+        let start = cursor % keys.len();
+        let mut round = SpotRound::default();
+        for index in 0..sample {
+            let key = keys[(start + index) % keys.len()];
+            match check_asset(dist, key, &manifest.assets[key]) {
+                AssetCheck::Match => round.checked += 1,
+                AssetCheck::Mismatch => {
+                    round.checked += 1;
+                    round.mismatched += 1;
+                    round.offenses.push(key.to_string());
+                }
+                AssetCheck::Missing => {
+                    round.missing += 1;
+                    round.offenses.push(key.to_string());
+                }
+            }
+        }
+        {
+            let mut report = self.spot_report.write().unwrap_or_else(|e| e.into_inner());
+            report.rounds += 1;
+            report.checked += round.checked;
+            report.mismatched += round.mismatched;
+            report.missing += round.missing;
+            report.last_run = Some(Instant::now());
+        }
+        let warned = self.warned.lock().unwrap_or_else(|e| e.into_inner());
+        round.offenses.retain(|path| !warned.contains(path));
+        round
+    }
+    /// The runtime spot-check report plus the age of its last round in whole
+    /// seconds; the age is `None` until the first round has run (design G7).
+    pub(crate) fn runtime_snapshot(&self) -> (SpotCheckReport, Option<u64>) {
+        let report = self
+            .spot_report
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let age = report
+            .last_run
+            .map(|t| Instant::now().duration_since(t).as_secs());
+        (report, age)
     }
     /// The static web UI is served only when a dist directory was resolved.
     pub fn enabled(&self) -> bool {
@@ -569,14 +716,25 @@ fn static_surface(
 
 /// Unauthenticated version probe: reports this server's product/protocol
 /// versions, the optional facts read from the mounted dist, the aggregate
-/// login-limiter counters and the startup integrity summary, so a remote client
-/// or operator can detect a stale UI and observe throttling without holding a
-/// session cookie. Registered as an explicit route (like `/login`), so the login
-/// gate and the SPA fallback never answer it.
+/// login-limiter counters, the startup integrity summary and the runtime
+/// spot-check block, so a remote client or operator can detect a stale UI and
+/// observe throttling without holding a session cookie. Registered as an
+/// explicit route (like `/login`), so the login gate and the SPA fallback never
+/// answer it.
 async fn version_handler(web: std::sync::Arc<WebConfig>) -> axum::response::Response {
     let dist = web.dist_version();
     let counters = web.login_limiter.counters(Instant::now());
     let integrity = web.integrity();
+    let (runtime, last_run_age) = web.runtime_snapshot();
+    let mut runtime_json = serde_json::json!({
+        "rounds": runtime.rounds,
+        "checked": runtime.checked,
+        "mismatched": runtime.mismatched,
+        "missing": runtime.missing,
+    });
+    if let Some(age) = last_run_age {
+        runtime_json["last_run_age_secs"] = serde_json::json!(age);
+    }
     let body = serde_json::json!({
         "product_version": env!("CARGO_PKG_VERSION"),
         "protocol_version": agentj_protocol::PROTOCOL_VERSION,
@@ -599,6 +757,7 @@ async fn version_handler(web: std::sync::Arc<WebConfig>) -> axum::response::Resp
             "checked": integrity.checked,
             "mismatched": integrity.mismatched,
             "missing": integrity.missing,
+            "runtime": runtime_json,
         },
     });
     let mut res = axum::Json(body).into_response();
@@ -638,16 +797,18 @@ async fn metrics_handler(
 }
 
 /// Prometheus text exposition (design G2): limiter aggregates, the ranked
-/// per-IP series capped at [`PER_IP_SERIES_LIMIT`] and the startup integrity
-/// summary. Spot-check counters are appended once the spot task exists (T3).
+/// per-IP series capped at [`PER_IP_SERIES_LIMIT`], the startup integrity
+/// summary and the runtime spot-check counters.
 fn prometheus_text(web: &WebConfig) -> String {
     let now = Instant::now();
     let counters = web.login_limiter.counters(now);
     let series = web.login_limiter.snapshot(now);
+    let (runtime, _) = web.runtime_snapshot();
     let mut out = String::new();
     push_login_aggregates(&mut out, &counters);
     push_login_ip_series(&mut out, &series, now);
     push_integrity_summary(&mut out, web.integrity());
+    push_spot_summary(&mut out, &runtime);
     out
 }
 
@@ -767,6 +928,38 @@ fn push_integrity_summary(out: &mut String, report: &IntegrityReport) {
         "agentj_web_assets_missing",
         "gauge",
         "Startup integrity check: manifest entries missing on disk.",
+        report.missing,
+    );
+}
+
+/// Runtime spot-check counters (design G2), cumulative across rounds.
+fn push_spot_summary(out: &mut String, report: &SpotCheckReport) {
+    push_metric(
+        out,
+        "agentj_web_spot_rounds_total",
+        "counter",
+        "Web asset spot-check rounds completed.",
+        report.rounds,
+    );
+    push_metric(
+        out,
+        "agentj_web_spot_checked_total",
+        "counter",
+        "Web asset spot-check: files hashed across rounds.",
+        report.checked,
+    );
+    push_metric(
+        out,
+        "agentj_web_spot_mismatched_total",
+        "counter",
+        "Web asset spot-check: digest mismatches across rounds.",
+        report.mismatched,
+    );
+    push_metric(
+        out,
+        "agentj_web_spot_missing_total",
+        "counter",
+        "Web asset spot-check: manifest entries missing on disk across rounds.",
         report.missing,
     );
 }
@@ -1128,6 +1321,56 @@ mod tests {
         assert!(cfg.startup_warnings().is_empty());
     }
 
+    #[test]
+    fn spot_round_rotates_samples_and_counts_mismatches_once() {
+        let dist = temp_dist("spot-core");
+        std::fs::write(dist.join("assets/b.js"), "b").unwrap();
+        std::fs::write(dist.join("assets/c.js"), "c").unwrap();
+        write_manifest(
+            &dist,
+            &[
+                ("/assets/app.js", &sha384_b64(b"console.log(1)")),
+                ("/assets/b.js", &sha384_b64(b"b")),
+                ("/assets/c.js", &sha384_b64(b"c")),
+            ],
+        );
+        let web = WebConfig::new(Some(dist.clone()), None).with_spot_check(SpotCheckConfig {
+            interval: Duration::from_secs(60),
+            sample: 1,
+        });
+        assert_eq!(web.run_spot_round().checked, 1); // /assets/app.js
+        std::fs::write(dist.join("assets/b.js"), "tampered").unwrap();
+        let round = web.run_spot_round(); // /assets/b.js
+        assert_eq!(round.mismatched, 1);
+        assert_eq!(round.offenses, vec!["/assets/b.js".to_string()]);
+        std::fs::remove_file(dist.join("assets/c.js")).unwrap();
+        assert_eq!(web.run_spot_round().missing, 1); // /assets/c.js deleted
+        assert_eq!(web.run_spot_round().checked, 1); // wraps to /assets/app.js
+        let (report, age) = web.runtime_snapshot();
+        assert_eq!(
+            (
+                report.rounds,
+                report.checked,
+                report.mismatched,
+                report.missing
+            ),
+            (4, 3, 1, 1)
+        );
+        assert!(report.last_run.is_some());
+        assert!(age.is_some());
+        let text = prometheus_text(&web);
+        assert!(text.contains("agentj_web_spot_rounds_total 4"));
+        assert!(text.contains("agentj_web_spot_checked_total 3"));
+        web.warned
+            .lock()
+            .unwrap()
+            .insert("/assets/b.js".to_string());
+        let repeated = web.run_spot_round(); // /assets/b.js again
+        assert_eq!(repeated.mismatched, 1);
+        assert!(repeated.offenses.is_empty());
+        std::fs::remove_dir_all(&dist).ok();
+    }
+
     #[tokio::test]
     async fn version_endpoint_reports_server_and_dist_versions() {
         let dist = temp_dist("version-route");
@@ -1262,6 +1505,37 @@ mod tests {
         assert_eq!(v["integrity"]["manifest_present"], false);
         assert_eq!(v["integrity"]["checked"], 0);
         std::fs::remove_dir_all(&bare).ok();
+    }
+
+    #[tokio::test]
+    async fn version_omits_last_run_age_before_any_round() {
+        let state = test_state(crate::web::WebConfig::new(None, None));
+        let local: std::net::SocketAddr = "127.0.0.1:4444".parse().unwrap();
+        let (_, _, body) = get(crate::web::build_router(state, local), "/version").await;
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let runtime = &v["integrity"]["runtime"];
+        assert!(runtime.is_object(), "runtime block missing: {body}");
+        assert_eq!(runtime["rounds"], 0);
+        assert!(runtime.get("last_run_age_secs").is_none());
+    }
+
+    #[tokio::test]
+    async fn version_reports_spot_runtime_after_a_round() {
+        let dist = temp_dist("version-runtime");
+        write_manifest(&dist, &[("/assets/app.js", &sha384_b64(b"console.log(1)"))]);
+        let state = test_state(crate::web::WebConfig::new(Some(dist.clone()), None));
+        let local: std::net::SocketAddr = "127.0.0.1:4444".parse().unwrap();
+        state.web.run_spot_round();
+        let (_, _, body) = get(crate::web::build_router(state, local), "/version").await;
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let runtime = &v["integrity"]["runtime"];
+        assert_eq!(runtime["rounds"], 1);
+        assert_eq!(runtime["checked"], 1);
+        assert_eq!(runtime["mismatched"], 0);
+        assert_eq!(runtime["missing"], 0);
+        assert!(runtime["last_run_age_secs"].as_u64().is_some());
+        assert_eq!(v["integrity"]["checked"], 1); // startup fields unchanged
+        std::fs::remove_dir_all(&dist).ok();
     }
 
     #[tokio::test]
