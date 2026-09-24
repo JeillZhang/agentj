@@ -1734,6 +1734,7 @@ async fn attach_git_statuses(result: FileListResult, root: &std::path::Path) -> 
     FileListResult {
         entries,
         truncated: result.truncated,
+        total: result.total,
     }
 }
 

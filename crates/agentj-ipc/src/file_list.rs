@@ -323,6 +323,7 @@ impl Walk {
         FileListResult {
             entries: self.entries,
             truncated: self.truncated,
+            total: None,
         }
     }
 }

@@ -27,6 +27,10 @@ pub struct FileListParams {
 pub struct FileListResult {
     pub entries: Vec<FileEntry>,
     pub truncated: bool,
+    /// Full match count discovered by a query scan (lower bound when truncated).
+    /// @since 0.14.0
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total: Option<u64>,
 }
 
 /// One directory entry (`path` relative to the project root, no `./` prefix).
@@ -207,6 +211,7 @@ mod tests {
                 git_status: Some(GitFileStatus::A),
             }],
             truncated: true,
+            total: None,
         };
         let v = serde_json::to_value(&r).unwrap();
         assert_eq!(v["entries"][0]["path"], "src/lib.rs");
@@ -215,6 +220,22 @@ mod tests {
         let back: FileListResult = serde_json::from_value(v).unwrap();
         assert_eq!(back.entries.len(), 1);
         assert!(back.truncated);
+    }
+
+    #[test]
+    fn file_list_result_total_is_omitted_when_none() {
+        let none = FileListResult {
+            entries: vec![],
+            truncated: false,
+            total: None,
+        };
+        assert!(serde_json::to_value(&none).unwrap().get("total").is_none());
+        let some = FileListResult {
+            entries: vec![],
+            truncated: false,
+            total: Some(7),
+        };
+        assert_eq!(serde_json::to_value(some).unwrap()["total"], 7);
     }
 
     #[test]
