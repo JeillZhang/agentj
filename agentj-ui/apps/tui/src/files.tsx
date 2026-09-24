@@ -103,7 +103,10 @@ export function FilesView(props: FilesViewProps) {
   if (noSession) return <text style={{ fg: palette.textMuted }}>select a session to browse files</text>;
   if (!nodes && !error && !searching) return <text style={{ fg: palette.textMuted }}>loading…</text>;
   if (searching && search) {
-    const hint = search.truncated ? `${SEARCH_HINT} · partial` : SEARCH_HINT;
+    const partial = search.truncated ? " · partial" : "";
+    const remaining = search.total - search.rows.length;
+    const more = remaining > 0 ? ` · ${remaining} more` : "";
+    const hint = `${SEARCH_HINT}${partial}${more}`;
     return (
       <box flexDirection="column" flexGrow={1}>
         <text style={{ fg: palette.textMuted }}>{hint}</text>
