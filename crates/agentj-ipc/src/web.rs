@@ -4,7 +4,9 @@
 use axum::response::IntoResponse as _;
 use base64::Engine as _;
 use sha2::{Digest as _, Sha384};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tokio::task::JoinHandle;
 
 use crate::login_limiter::{Counters, IpSnapshot, LoginLimiter, Throttle};
 
@@ -200,7 +202,6 @@ pub(crate) struct IntegrityReport {
 /// Runtime spot-check schedule (design D6): each round hashes `sample` manifest
 /// entries, advancing a cursor over the sorted key set so the full manifest is
 /// covered every `ceil(keys / sample)` rounds.
-#[allow(dead_code)] // fields are read by the periodic spot-check task (plan T4)
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct SpotCheckConfig {
     pub(crate) interval: Duration,
@@ -230,7 +231,6 @@ pub(crate) struct SpotCheckReport {
 /// Outcome of one spot-check round. `offenses` names mismatched and missing
 /// paths that were not reported by an earlier round, so the periodic task can
 /// warn once per path (design D7).
-#[allow(dead_code)] // fields are read by the periodic spot-check task (plan T4)
 #[derive(Debug, Clone, Default)]
 pub(crate) struct SpotRound {
     pub(crate) checked: u64,
@@ -248,15 +248,12 @@ pub struct WebConfig {
     dist_version_error: Option<String>,
     integrity: IntegrityReport,
     integrity_error: Option<String>,
-    #[allow(dead_code)] // sampled by the periodic spot-check task (plan T4)
     manifest: Option<AssetManifest>,
-    #[allow(dead_code)] // read by the periodic spot-check task (plan T4)
     spot: SpotCheckConfig,
     spot_report: std::sync::RwLock<SpotCheckReport>,
-    #[allow(dead_code)] // recorded by the periodic spot-check task (plan T4)
     warned: std::sync::Mutex<std::collections::HashSet<String>>,
-    #[allow(dead_code)] // rotated by the periodic spot-check task (plan T4)
     spot_cursor: std::sync::atomic::AtomicUsize,
+    spot_task: std::sync::Mutex<Option<tokio::task::AbortHandle>>,
     sessions: std::sync::RwLock<std::collections::HashSet<String>>,
     login_limiter: LoginLimiter,
 }
@@ -281,6 +278,7 @@ impl WebConfig {
             spot_report: std::sync::RwLock::new(SpotCheckReport::default()),
             warned: std::sync::Mutex::new(std::collections::HashSet::new()),
             spot_cursor: std::sync::atomic::AtomicUsize::new(0),
+            spot_task: std::sync::Mutex::new(None),
             sessions: std::sync::RwLock::new(std::collections::HashSet::new()),
             login_limiter: LoginLimiter::new(),
         }
@@ -300,7 +298,6 @@ impl WebConfig {
     /// outcome into the shared report and return it. Offending paths recorded in
     /// `warned` by an earlier round are omitted, and the task records new ones
     /// (design D7) so persistent tampering warns once per path.
-    #[allow(dead_code)] // invoked by the periodic spot-check task (plan T4)
     pub(crate) fn run_spot_round(&self) -> SpotRound {
         let (Some(dist), Some(manifest)) = (&self.dist, &self.manifest) else {
             return SpotRound::default();
@@ -355,6 +352,49 @@ impl WebConfig {
             .last_run
             .map(|t| Instant::now().duration_since(t).as_secs());
         (report, age)
+    }
+    /// Spawn the periodic spot-check task (design D6/D7): every tick runs one
+    /// round and warns once per newly offending path. `None` when the manifest
+    /// is absent/unusable or has no keys (nothing to sample); the abort handle
+    /// is retained for [`Self::stop_spot_check`].
+    pub(crate) fn spawn_spot_check(self: &Arc<Self>) -> Option<JoinHandle<()>> {
+        let manifest = self.manifest.as_ref()?;
+        if manifest.assets.is_empty() {
+            return None;
+        }
+        let web = Arc::clone(self);
+        let handle = tokio::spawn(async move {
+            let mut ticks = tokio::time::interval(web.spot.interval);
+            loop {
+                ticks.tick().await;
+                let round = web.run_spot_round();
+                for path in round.offenses {
+                    let first = web
+                        .warned
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .insert(path.clone());
+                    if first {
+                        tracing::warn!(path = %path, "web asset spot check failed");
+                    }
+                }
+            }
+        });
+        let abort = handle.abort_handle();
+        *self.spot_task.lock().unwrap_or_else(|e| e.into_inner()) = Some(abort);
+        Some(handle)
+    }
+    /// Abort the periodic spot-check task, if one is running (server shutdown,
+    /// tests).
+    pub(crate) fn stop_spot_check(&self) {
+        let task = self
+            .spot_task
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        if let Some(task) = task {
+            task.abort();
+        }
     }
     /// The static web UI is served only when a dist directory was resolved.
     pub fn enabled(&self) -> bool {
@@ -1368,6 +1408,120 @@ mod tests {
         let repeated = web.run_spot_round(); // /assets/b.js again
         assert_eq!(repeated.mismatched, 1);
         assert!(repeated.offenses.is_empty());
+        std::fs::remove_dir_all(&dist).ok();
+    }
+
+    /// Bounded wait on the spawned spot task: `interval` fires its first tick
+    /// immediately, so a 20ms schedule reaches the target well within 2s. Real
+    /// time instead of `start_paused` — tokio's `test-util` feature is not a
+    /// dependency of this crate (plan T4 fallback).
+    async fn wait_for_spot_rounds(web: &WebConfig, target: u64) {
+        let reached = tokio::time::timeout(Duration::from_secs(2), async {
+            while web.runtime_snapshot().0.rounds < target {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        assert!(
+            reached.is_ok(),
+            "spot task did not reach {target} rounds within 2s"
+        );
+    }
+
+    fn msec_spot(ms: u64, sample: usize) -> SpotCheckConfig {
+        SpotCheckConfig {
+            interval: Duration::from_millis(ms),
+            sample,
+        }
+    }
+
+    #[tokio::test]
+    async fn spot_task_runs_rounds_on_the_interval() {
+        let dist = temp_dist("spot-task");
+        write_temp_dist_manifest(&dist);
+        let web = std::sync::Arc::new(
+            WebConfig::new(Some(dist.clone()), None).with_spot_check(msec_spot(20, 1)),
+        );
+        assert!(
+            web.spawn_spot_check().is_some(),
+            "a usable manifest must spawn the periodic task"
+        );
+        wait_for_spot_rounds(&web, 1).await;
+        assert!(web.runtime_snapshot().0.rounds >= 1);
+        web.stop_spot_check();
+        std::fs::remove_dir_all(&dist).ok();
+    }
+
+    #[test]
+    fn spawn_spot_check_is_a_noop_without_a_usable_manifest() {
+        let no_dist = std::sync::Arc::new(WebConfig::new(None, None));
+        assert!(no_dist.spawn_spot_check().is_none());
+        let empty_dist = temp_dist("spot-empty-manifest");
+        write_manifest(&empty_dist, &[]);
+        let empty = std::sync::Arc::new(WebConfig::new(Some(empty_dist.clone()), None));
+        assert!(empty.spawn_spot_check().is_none());
+        assert_eq!(empty.runtime_snapshot().0.rounds, 0);
+        let broken_dist = temp_dist("spot-broken-manifest");
+        std::fs::write(broken_dist.join("asset-manifest.json"), "{not json").unwrap();
+        let broken = std::sync::Arc::new(WebConfig::new(Some(broken_dist.clone()), None));
+        assert!(broken.spawn_spot_check().is_none());
+        for dir in [empty_dist, broken_dist] {
+            std::fs::remove_dir_all(&dir).ok();
+        }
+    }
+
+    /// WARN-level capture for the current thread. `#[tokio::test]` defaults to
+    /// the current-thread runtime, so the spawned spot task is polled on this
+    /// thread and its warnings land in the buffer (mirrors the `login_limiter`
+    /// capture helper).
+    #[derive(Clone, Default)]
+    struct WarnCapture(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for WarnCapture {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for WarnCapture {
+        type Writer = WarnCapture;
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    fn capture_warnings() -> (WarnCapture, tracing::subscriber::DefaultGuard) {
+        let buf = WarnCapture::default();
+        let sub = tracing_subscriber::fmt()
+            .with_writer(buf.clone())
+            .with_ansi(false)
+            .with_max_level(tracing::Level::WARN)
+            .finish();
+        (buf, tracing::subscriber::set_default(sub))
+    }
+
+    #[tokio::test]
+    async fn spot_task_warns_once_per_offending_path_across_rounds() {
+        let dist = temp_dist("spot-dedup");
+        write_manifest(&dist, &[("/assets/app.js", "sha384-AAAA")]);
+        let web = std::sync::Arc::new(
+            WebConfig::new(Some(dist.clone()), None).with_spot_check(msec_spot(20, 1)),
+        );
+        let (buf, _guard) = capture_warnings();
+        assert!(web.spawn_spot_check().is_some());
+        wait_for_spot_rounds(&web, 3).await; // the same key is sampled again
+        web.stop_spot_check();
+        let out = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap_or_default();
+        assert!(out.contains("web asset spot check failed"), "{out}");
+        assert_eq!(
+            out.matches("/assets/app.js").count(),
+            1,
+            "persistent offense must warn exactly once: {out}"
+        );
         std::fs::remove_dir_all(&dist).ok();
     }
 
