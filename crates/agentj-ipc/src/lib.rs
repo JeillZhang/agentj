@@ -644,12 +644,18 @@ impl IpcServer {
         req: &JsonRpcRequest,
         conn_id: &str,
     ) -> Result<Value, DispatchError> {
-        let project_root = Self::resolve_project_root(req.params.as_ref())?;
+        let requested = Self::resolve_project_root(req.params.as_ref())?;
+        let effective = match &requested {
+            Some(root) => root.clone(),
+            None => std::env::current_dir()
+                .and_then(|dir| dir.canonicalize())
+                .map_err(|e| DispatchError::internal(e.to_string()))?,
+        };
         let sid = self
             .session_store
             .create()
             .map_err(|e| DispatchError::internal(e.to_string()))?;
-        if let Some(root) = project_root
+        if let Some(root) = requested
             && let Err(e) = self.session_store.set_project_root(&sid, root)
         {
             let _ = self.session_store.delete(&sid);
@@ -661,7 +667,10 @@ impl IpcServer {
         if let Ok(mut reg) = self.registry.write() {
             reg.set_session_owner(&sid, conn_id);
         }
-        Ok(serde_json::json!({ "session_id": sid }))
+        Ok(serde_json::json!({
+            "session_id": sid,
+            "project_root": effective.to_string_lossy(),
+        }))
     }
 
     /// Validate `session/new {project_root}` (design item 6): absent params keep
@@ -1043,9 +1052,18 @@ impl IpcServer {
         )
         .map_err(|e| DispatchError::invalid_params(e.to_string()))?;
         let status = self.require_session_status(&params.session_id)?;
+        let project_root = self
+            .session_store
+            .project_root(&params.session_id)
+            .or_else(|| {
+                std::env::current_dir()
+                    .ok()
+                    .and_then(|d| d.canonicalize().ok())
+            })
+            .map(|p| p.to_string_lossy().into_owned());
         let result = SessionStatusResult {
             status: Self::wire_session_status(status),
-            project_root: None,
+            project_root,
         };
         Ok(serde_json::to_value(result).expect("serializable"))
     }
@@ -2917,6 +2935,12 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
         assert!(v["result"]["session_id"].is_string());
         assert!(!v["result"]["session_id"].as_str().unwrap().is_empty());
+        let cwd = std::env::current_dir().unwrap().canonicalize().unwrap();
+        assert_eq!(
+            v["result"]["project_root"],
+            cwd.to_str().unwrap(),
+            "session/new without project_root must return the canonicalized cwd"
+        );
     }
 
     /// Temp tree for `session/new` project_root tests (mirrors `temp_dir_traj`).
@@ -2949,6 +2973,11 @@ mod tests {
             "valid project_root must not error: {resp}"
         );
         let sid = v["result"]["session_id"].as_str().unwrap().to_string();
+        assert_eq!(
+            v["result"]["project_root"],
+            canonical.to_str().unwrap(),
+            "session/new must echo the canonicalized request value"
+        );
         assert_eq!(store.project_root(&sid), Some(canonical));
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -4993,6 +5022,58 @@ mod tests {
         let resp = server.handle_request(&raw).await.unwrap();
         let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
         assert_eq!(v["result"]["status"], "archived");
+    }
+
+    /// T14: `session/status` reports the effective project root — the stored
+    /// canonicalized root when present, else the canonicalized cwd fallback.
+    #[tokio::test]
+    async fn dispatch_session_status_reports_effective_project_root() {
+        let store = stub_session();
+        let server = IpcServer::new(Kernel::new(), store.clone());
+        let dir = temp_dir_root("status-eff-root");
+        let canonical = dir.canonicalize().unwrap();
+        let raw = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 20,
+            "method": "session/new",
+            "params": { "project_root": dir.to_str().unwrap() },
+        })
+        .to_string();
+        let resp = server.handle_request(&raw).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        let sid = v["result"]["session_id"].as_str().unwrap().to_string();
+        let raw = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 21,
+            "method": "session/status",
+            "params": { "session_id": sid },
+        })
+        .to_string();
+        let resp = server.handle_request(&raw).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(
+            v["result"]["project_root"],
+            canonical.to_str().unwrap(),
+            "status must report the stored canonicalized root"
+        );
+
+        let bare = store.create().unwrap();
+        let raw = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 22,
+            "method": "session/status",
+            "params": { "session_id": bare.as_str() },
+        })
+        .to_string();
+        let resp = server.handle_request(&raw).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        let cwd = std::env::current_dir().unwrap().canonicalize().unwrap();
+        assert_eq!(
+            v["result"]["project_root"],
+            cwd.to_str().unwrap(),
+            "status without a stored root must fall back to the canonicalized cwd"
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// Unknown session id maps to the documented `-32802 SessionNotFound`
