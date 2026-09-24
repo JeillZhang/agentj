@@ -53,24 +53,33 @@ const SORT_OPTIONS: ReadonlyArray<{ value: SidebarSort; label: string }> = [
 ];
 
 /** ArrowUp/Down (wrapping), Home and End roving for an open flyout. */
-function roveFlyout(roving: RovingFocus, count: number, event: ReactKeyboardEvent<HTMLDivElement>): void {
+function roveFlyout(
+  roving: RovingFocus,
+  count: number,
+  event: ReactKeyboardEvent<HTMLDivElement>,
+  keyboardNavRef: { current: boolean },
+): void {
   switch (event.key) {
     case "ArrowDown":
       event.preventDefault();
+      keyboardNavRef.current = true;
       if (roving.selected < 0) roving.setSelected(firstIndex(count));
       else roving.moveBy(1);
       return;
     case "ArrowUp":
       event.preventDefault();
+      keyboardNavRef.current = true;
       if (roving.selected < 0) roving.setSelected(lastIndex(count));
       else roving.moveBy(-1);
       return;
     case "Home":
       event.preventDefault();
+      keyboardNavRef.current = true;
       roving.setSelected(firstIndex(count));
       return;
     case "End":
       event.preventDefault();
+      keyboardNavRef.current = true;
       roving.setSelected(lastIndex(count));
       return;
     default:
@@ -97,16 +106,28 @@ export default function SessionListMenu({ deletableCount, busy, onCleanup }: Pro
   const sortRoving = useRovingFocus({ count: SORT_OPTIONS.length, wrap: true });
   const filterItemRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const sortItemRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const keyboardNavRef = useRef(false);
 
   useEffect(() => subscribeSidebarPrefs(setPrefs), []);
 
+  // Seed the open flyout's first row as its single tab stop without stealing
+  // focus; only keyboard roving (flagged below) moves focus into the flyout.
   useEffect(() => {
-    if (filterRoving.selected < 0) return;
+    if (!flyout) return;
+    keyboardNavRef.current = false;
+    if (flyout === "filter") filterRoving.setSelected(0);
+    else sortRoving.setSelected(0);
+  }, [flyout, filterRoving.setSelected, sortRoving.setSelected]);
+
+  useEffect(() => {
+    if (!keyboardNavRef.current) return;
+    keyboardNavRef.current = false;
     filterItemRefs.current[filterRoving.selected]?.focus({ preventScroll: true });
   }, [filterRoving.selected]);
 
   useEffect(() => {
-    if (sortRoving.selected < 0) return;
+    if (!keyboardNavRef.current) return;
+    keyboardNavRef.current = false;
     sortItemRefs.current[sortRoving.selected]?.focus({ preventScroll: true });
   }, [sortRoving.selected]);
 
@@ -344,7 +365,7 @@ export default function SessionListMenu({ deletableCount, busy, onCleanup }: Pro
                   aria-label="过滤"
                   onMouseEnter={cancelClose}
                   onMouseLeave={scheduleClose}
-                  onKeyDown={(event) => roveFlyout(filterRoving, FILTER_OPTIONS.length, event)}
+                  onKeyDown={(event) => roveFlyout(filterRoving, FILTER_OPTIONS.length, event, keyboardNavRef)}
                 >
                   {FILTER_OPTIONS.map((option, index) => (
                     <button
@@ -404,7 +425,7 @@ export default function SessionListMenu({ deletableCount, busy, onCleanup }: Pro
                   aria-label="排序"
                   onMouseEnter={cancelClose}
                   onMouseLeave={scheduleClose}
-                  onKeyDown={(event) => roveFlyout(sortRoving, SORT_OPTIONS.length, event)}
+                  onKeyDown={(event) => roveFlyout(sortRoving, SORT_OPTIONS.length, event, keyboardNavRef)}
                 >
                   {SORT_OPTIONS.map((option, index) => (
                     <button
