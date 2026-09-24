@@ -5,7 +5,7 @@ export type SidebarHintProps = {
   searching: boolean;
 };
 
-/** Contextual, display-only shortcut hint line. Styling lands in T24's sidebar.css. */
+/** Contextual, display-only shortcut hint line. */
 export default function SidebarHint({ view, searching }: SidebarHintProps) {
   const text = view === "threads"
     ? SIDEBAR_HINTS.threads

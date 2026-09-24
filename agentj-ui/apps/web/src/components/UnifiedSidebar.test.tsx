@@ -424,7 +424,7 @@ it("swaps the sidebar hint to the active view when f toggles tabs", async () => 
   (flat.querySelector(".aj-sess") as HTMLElement).focus();
   fireEvent.keyDown(document, { key: "f" });
   await waitFor(() =>
-    expect(screen.getByTestId("sidebar-hint")).toHaveTextContent(/s 搜索/),
+    expect(screen.getByTestId("sidebar-hint")).toHaveTextContent(/r 刷新/),
   );
   expect(screen.getByTestId("sidebar-hint")).toHaveAttribute("aria-hidden", "true");
 });
