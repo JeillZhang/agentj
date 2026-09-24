@@ -416,6 +416,19 @@ it("toggles the sidebar tab with f and persists it", async () => {
   expect(localStorage.getItem("agentj.layout.leftTab")).toBe("files");
 });
 
+it("swaps the sidebar hint to the active view when f toggles tabs", async () => {
+  // The searching state is not reachable in Web yet (Web 不接入服务端搜索);
+  // its component-level coverage lives in sidebarHint.test.tsx.
+  const { flat } = await renderShortcutSidebar();
+  expect(screen.getByTestId("sidebar-hint")).toHaveTextContent(/j\/k 移动/);
+  (flat.querySelector(".aj-sess") as HTMLElement).focus();
+  fireEvent.keyDown(document, { key: "f" });
+  await waitFor(() =>
+    expect(screen.getByTestId("sidebar-hint")).toHaveTextContent(/s 搜索/),
+  );
+  expect(screen.getByTestId("sidebar-hint")).toHaveAttribute("aria-hidden", "true");
+});
+
 it("keeps focus inside the sidebar after f switches to the files tab (BUG-011)", async () => {
   const { flat } = await renderShortcutSidebar();
   const sidebar = document.getElementById("aj-sidebar") as HTMLElement;

@@ -272,6 +272,19 @@
   font-size: var(--aj-font-sm);
 }
 
+.aj-sidebar__hint {
+  flex: 0 0 auto;
+  padding: 6px 12px;
+  border-top: 0.5px solid var(--aj-border);
+  color: var(--aj-textMuted);
+  font-size: 11px;
+  line-height: 1.4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  user-select: none;
+}
+
 .aj-session-list .aj-sidebar__subgroup {
   display: flex;
   align-items: center;

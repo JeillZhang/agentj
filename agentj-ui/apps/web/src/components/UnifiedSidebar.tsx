@@ -21,6 +21,7 @@ import { isDemoEnabled, subscribeDemo } from "../demoData";
 import { moveSelection, tabIndexFor } from "../hooks/useRovingFocus";
 import { useShortcutScope } from "../hooks/useShortcutScope";
 import SidebarTabs from "./SidebarTabs";
+import SidebarHint from "./SidebarHint";
 import FileTree from "./FileTree";
 import type { FileTreeHandle } from "./FileTree";
 import ModalDialog from "./ModalDialog";
@@ -443,6 +444,13 @@ export default function UnifiedSidebar({
 
   useShortcutScope(rootRef, shortcutHandlers);
 
+  // Bottom hint mirrors the active view. Web does not wire server-side search
+  // (design non-goal ③: Web 不接入服务端搜索), so the Web hint is effectively
+  // two-state and `searching` stays false; once a Web search mode lands this
+  // becomes `searchMode !== null`.
+  const hintView: "threads" | "files" = tab === "sessions" ? "threads" : "files";
+  const searching = false;
+
   return (
     <section
       ref={rootRef}
@@ -599,6 +607,7 @@ export default function UnifiedSidebar({
           </div>
         </ModalDialog>
       )}
+      <SidebarHint view={hintView} searching={searching} />
     </section>
   );
 }
