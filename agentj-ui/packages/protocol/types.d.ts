@@ -190,6 +190,10 @@ export interface FileListParams {
    * Directory path relative to the project root; absent = root.
    */
   path?: string | null;
+  /**
+   * Case-insensitive substring filter; empty/whitespace is treated as absent. @since 0.14.0
+   */
+  query?: string | null;
   session_id: string;
   [k: string]: unknown;
 }
@@ -209,6 +213,11 @@ export interface FileListParams {
  */
 export interface FileListResult {
   entries: FileEntry[];
+  /**
+   * Full match count discovered by a query scan (lower bound when truncated).
+   * @since 0.14.0
+   */
+  total?: number | null;
   truncated: boolean;
   [k: string]: unknown;
 }
@@ -701,6 +710,10 @@ export interface SessionNewParams {
 }
 
 export interface SessionNewResult {
+  /**
+   * Effective canonicalized session root (cwd fallback). @since 0.14.0
+   */
+  project_root?: string | null;
   session_id: string;
   [k: string]: unknown;
 }
@@ -727,6 +740,10 @@ export interface SessionRunResult {
 
 
 export interface SessionStatusResult {
+  /**
+   * Effective canonicalized session root (cwd fallback). @since 0.14.0
+   */
+  project_root?: string | null;
   status: SessionStatus;
   [k: string]: unknown;
 }
