@@ -1,6 +1,6 @@
 import { expect, test, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
-import { render, screen, fireEvent, within, waitFor } from "@testing-library/react";
+import { act, render, screen, fireEvent, within, waitFor } from "@testing-library/react";
 import TopbarMenu from "./TopbarMenu";
 import { createProject, loadProjects, saveProjectDefaults, setCurrentProject } from "../projectStore";
 
@@ -55,6 +55,33 @@ test("项目 flyout opens on hover, shows projects with the current one checked,
   fireEvent.mouseLeave(trigger.parentElement!);
   await waitFor(() => expect(screen.queryByRole("menu", { name: "项目" })).toBeNull());
   expect(trigger).toHaveAttribute("aria-expanded", "false");
+  localStorage.clear();
+});
+
+test("roves with wrap, Home/End and a single tab stop", () => {
+  localStorage.clear();
+  createProject("Alpha");
+  render(<TopbarMenu onConnect={() => {}} onContinue={() => {}} />);
+  openMenu();
+  openProjectFlyout();
+  const flyout = screen.getByRole("menu", { name: "项目" });
+  // The roving set is every focusable flyout item: the project radios plus the
+  // trailing "＋ 添加项目" menuitem (mirrors the pre-migration arrow navigation).
+  const items = [
+    ...within(flyout).getAllByRole("menuitemradio"),
+    within(flyout).getByRole("menuitem", { name: "＋ 添加项目" }),
+  ];
+  expect(items.length).toBeGreaterThan(1);
+  act(() => items[0].focus());
+  fireEvent.keyDown(items[0], { key: "ArrowDown" });
+  expect(document.activeElement).toBe(items[1]);
+  fireEvent.keyDown(items[1], { key: "End" });
+  expect(document.activeElement).toBe(items[items.length - 1]);
+  fireEvent.keyDown(items[items.length - 1], { key: "ArrowDown" }); // wraps
+  expect(document.activeElement).toBe(items[0]);
+  expect(items[0]).toHaveAttribute("tabindex", "0");
+  expect(items[1]).toHaveAttribute("tabindex", "-1");
+  expect(items.filter((item) => item.getAttribute("tabindex") === "0")).toHaveLength(1);
   localStorage.clear();
 });
 
