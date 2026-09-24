@@ -43,6 +43,15 @@ struct Entry {
     last: Instant,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct IpSnapshot {
+    pub(crate) ip: IpAddr,
+    pub(crate) failures: u32,
+    pub(crate) locked: bool,
+    pub(crate) retry_after: Duration,
+    pub(crate) last_seen: Instant,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) struct Counters {
     pub(crate) attempts: u64,
@@ -165,6 +174,35 @@ impl LoginLimiter {
             locked_now,
             tracked_ips: entries.len() as u64,
         }
+    }
+
+    /// Read-only projection under the existing entries lock (≤ max_tracked, no await).
+    pub(crate) fn snapshot(&self, now: Instant) -> Vec<IpSnapshot> {
+        let entries = self.entries.lock().expect("limiter lock");
+        let mut out: Vec<IpSnapshot> = entries
+            .iter()
+            .map(|(ip, entry)| {
+                let locked = matches!(Self::status(entry, now), Throttle::Locked { .. });
+                let retry_after = match Self::status(entry, now) {
+                    Throttle::Locked { retry_after } => retry_after,
+                    Throttle::Allow => Duration::ZERO,
+                };
+                IpSnapshot {
+                    ip: *ip,
+                    failures: entry.failures,
+                    locked,
+                    retry_after,
+                    last_seen: entry.last,
+                }
+            })
+            .collect();
+        out.sort_by(|a, b| {
+            b.locked
+                .cmp(&a.locked)
+                .then(b.failures.cmp(&a.failures))
+                .then(a.ip.cmp(&b.ip))
+        });
+        out
     }
 
     fn lockout_for(&self, failures: u32) -> Duration {
@@ -359,6 +397,31 @@ mod tests {
             (3, 0),
             "cumulative counters never reset"
         );
+    }
+
+    #[test]
+    fn snapshot_sorts_locked_first_then_failures_then_ip() {
+        // free_attempts = 2: the 2nd failure locks, so locked_ip ends locked (failures=2)
+        // while busy_ip stays allowed (failures=1) — a deterministic rank difference.
+        let limiter = LoginLimiter::with_policy(Policy {
+            free_attempts: 2,
+            ..Policy::default()
+        });
+        let t0 = Instant::now();
+        let locked_ip = ip("203.0.113.9");
+        let busy_ip = ip("198.51.100.4");
+        let _ = limiter.record_failure(locked_ip, t0);
+        let _ = limiter.record_failure(locked_ip, t0); // locks (free_attempts = 2)
+        let _ = limiter.record_failure(busy_ip, t0); // still allowed
+        let snap = limiter.snapshot(t0);
+        assert_eq!(snap.len(), 2);
+        assert_eq!(snap[0].ip, locked_ip);
+        assert!(snap[0].locked);
+        assert!(snap[0].retry_after > Duration::ZERO);
+        assert_eq!(snap[1].ip, busy_ip);
+        assert!(!snap[1].locked);
+        assert_eq!(snap[1].retry_after, Duration::ZERO);
+        assert!(limiter.snapshot(t0).iter().all(|s| s.last_seen == t0));
     }
 
     #[derive(Clone, Default)]
