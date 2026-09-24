@@ -6,10 +6,14 @@ use base64::Engine as _;
 use sha2::{Digest as _, Sha384};
 use std::time::Instant;
 
-use crate::login_limiter::{LoginLimiter, Throttle};
+use crate::login_limiter::{Counters, IpSnapshot, LoginLimiter, Throttle};
 
 /// Cookie carrying the opaque session id issued after a successful login.
 pub const SESSION_COOKIE: &str = "agentj_session";
+
+/// Upper bound on the per-IP series exported by `GET /metrics` (design G2):
+/// the aggregate gauges stay exact, the series are ranked and capped.
+pub const PER_IP_SERIES_LIMIT: usize = 50;
 
 /// Version facts written by the UI build into `dist/version.json`, so the
 /// kernel can flag a dist that predates (or postdates) this server.
@@ -487,8 +491,18 @@ pub fn gate_required(
     peer: std::net::SocketAddr,
     headers: &axum::http::HeaderMap,
 ) -> bool {
-    web.enabled()
-        && web.token.is_some()
+    web.enabled() && auth_required(web, peer, headers)
+}
+
+/// Auth check without the dist requirement (design G3): the machine surface
+/// (`/metrics`) must answer even when no static UI is mounted. A token must be
+/// configured, the peer must be remote and no valid session cookie presented.
+pub fn auth_required(
+    web: &WebConfig,
+    peer: std::net::SocketAddr,
+    headers: &axum::http::HeaderMap,
+) -> bool {
+    web.token.is_some()
         && !peer_is_loopback(peer)
         && !session_cookie(headers).is_some_and(|sid| web.is_valid_session(sid))
 }
@@ -595,10 +609,213 @@ async fn version_handler(web: std::sync::Arc<WebConfig>) -> axum::response::Resp
     res
 }
 
+/// Auth-gated Prometheus scrape endpoint (design G2/D1): the machine surface
+/// answers `401` without a redirect, so scrapers never chase the login page.
+async fn metrics_handler(
+    web: std::sync::Arc<WebConfig>,
+    peer: std::net::SocketAddr,
+    headers: axum::http::HeaderMap,
+) -> axum::response::Response {
+    if auth_required(&web, peer, &headers) {
+        return (
+            axum::http::StatusCode::UNAUTHORIZED,
+            [
+                ("content-type", "text/plain"),
+                ("cache-control", "no-store"),
+            ],
+            "unauthorized\n",
+        )
+            .into_response();
+    }
+    (
+        [
+            ("content-type", "text/plain; version=0.0.4; charset=utf-8"),
+            ("cache-control", "no-store"),
+        ],
+        prometheus_text(&web),
+    )
+        .into_response()
+}
+
+/// Prometheus text exposition (design G2): limiter aggregates, the ranked
+/// per-IP series capped at [`PER_IP_SERIES_LIMIT`] and the startup integrity
+/// summary. Spot-check counters are appended once the spot task exists (T3).
+fn prometheus_text(web: &WebConfig) -> String {
+    let now = Instant::now();
+    let counters = web.login_limiter.counters(now);
+    let series = web.login_limiter.snapshot(now);
+    let mut out = String::new();
+    push_login_aggregates(&mut out, &counters);
+    push_login_ip_series(&mut out, &series, now);
+    push_integrity_summary(&mut out, web.integrity());
+    out
+}
+
+fn push_login_aggregates(out: &mut String, counters: &Counters) {
+    push_metric(
+        out,
+        "agentj_login_attempts_total",
+        "counter",
+        "Login attempts that reached the throttler.",
+        counters.attempts,
+    );
+    push_metric(
+        out,
+        "agentj_login_failures_total",
+        "counter",
+        "Token check failures (locked-out attempts excluded).",
+        counters.failures,
+    );
+    push_metric(
+        out,
+        "agentj_login_lockouts_total",
+        "counter",
+        "Lockouts newly triggered (extensions excluded).",
+        counters.lockouts,
+    );
+    push_metric(
+        out,
+        "agentj_login_blocked_total",
+        "counter",
+        "Requests rejected while their source IP was locked out.",
+        counters.blocked,
+    );
+    push_metric(
+        out,
+        "agentj_login_locked_ips",
+        "gauge",
+        "Source IPs currently locked out.",
+        counters.locked_now,
+    );
+    push_metric(
+        out,
+        "agentj_login_tracked_ips",
+        "gauge",
+        "Source IPs currently tracked by the throttler.",
+        counters.tracked_ips,
+    );
+}
+
+fn push_login_ip_series(out: &mut String, snapshot: &[IpSnapshot], now: Instant) {
+    let truncated = snapshot.len() > PER_IP_SERIES_LIMIT;
+    let shown = &snapshot[..snapshot.len().min(PER_IP_SERIES_LIMIT)];
+    push_ip_family(
+        out,
+        "agentj_login_ip_failures_total",
+        "counter",
+        "Token check failures per source IP (top series by lock state and failures).",
+        shown,
+        |s| u64::from(s.failures),
+    );
+    push_ip_family(
+        out,
+        "agentj_login_ip_locked",
+        "gauge",
+        "Whether the source IP is currently locked out (1) or not (0).",
+        shown,
+        |s| u64::from(s.locked),
+    );
+    push_ip_family(
+        out,
+        "agentj_login_ip_retry_after_seconds",
+        "gauge",
+        "Remaining lockout for the source IP in whole seconds (0 when unlocked).",
+        shown,
+        |s| s.retry_after.as_secs(),
+    );
+    push_ip_family(
+        out,
+        "agentj_login_ip_last_seen_seconds",
+        "gauge",
+        "Seconds since the source IP last reached the throttler.",
+        shown,
+        |s| now.duration_since(s.last_seen).as_secs(),
+    );
+    push_metric(
+        out,
+        "agentj_login_ip_series_truncated",
+        "gauge",
+        "Whether the per-IP series were capped at the Top-50 limit (1) or not (0).",
+        u64::from(truncated),
+    );
+}
+
+fn push_integrity_summary(out: &mut String, report: &IntegrityReport) {
+    push_metric(
+        out,
+        "agentj_web_manifest_present",
+        "gauge",
+        "Whether the dist asset manifest was present and usable (1) or not (0).",
+        u64::from(report.manifest_present),
+    );
+    push_metric(
+        out,
+        "agentj_web_assets_checked",
+        "gauge",
+        "Startup integrity check: assets hashed.",
+        report.checked,
+    );
+    push_metric(
+        out,
+        "agentj_web_assets_mismatched",
+        "gauge",
+        "Startup integrity check: digest mismatches.",
+        report.mismatched,
+    );
+    push_metric(
+        out,
+        "agentj_web_assets_missing",
+        "gauge",
+        "Startup integrity check: manifest entries missing on disk.",
+        report.missing,
+    );
+}
+
+fn push_metric(out: &mut String, name: &str, kind: &str, help: &str, value: u64) {
+    out.push_str(&format!(
+        "# HELP {name} {help}\n# TYPE {name} {kind}\n{name} {value}\n"
+    ));
+}
+
+/// Family header followed by one labelled sample per shown IP; the text format
+/// wants each family's samples contiguous, so callers loop one family at a time.
+fn push_ip_family(
+    out: &mut String,
+    name: &str,
+    kind: &str,
+    help: &str,
+    series: &[IpSnapshot],
+    value: impl Fn(&IpSnapshot) -> u64,
+) {
+    out.push_str(&format!("# HELP {name} {help}\n# TYPE {name} {kind}\n"));
+    for snap in series {
+        out.push_str(&format!(
+            "{name}{{ip=\"{}\"}} {}\n",
+            escape_label(&snap.ip.to_string()),
+            value(snap)
+        ));
+    }
+}
+
+/// Escape a Prometheus label value: `\`, `"` and newlines (text format 0.0.4).
+fn escape_label(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
 /// Build the HTTP router for one accepted connection: the `/ws` upgrade route
 /// plus — when a dist was resolved — the statically gated SPA surface. `/ws`,
-/// `/login`, `/logout` and `/version` are never behind the gate (no redirect
-/// loop; the version probe stays readable for remote peers).
+/// `/login`, `/logout`, `/version` and `/metrics` are never behind the static
+/// gate (no redirect loop; the probes stay reachable for remote peers and the
+/// metrics endpoint gates itself with a plain `401`).
 pub fn build_router(
     state: std::sync::Arc<crate::ws::WsServerState>,
     peer: std::net::SocketAddr,
@@ -619,9 +836,17 @@ pub fn build_router(
             async move { version_handler(web).await }
         }
     };
+    let metrics_route = {
+        let web = state.web.clone();
+        move |headers: axum::http::HeaderMap| {
+            let web = web.clone();
+            async move { metrics_handler(web, peer, headers).await }
+        }
+    };
     let mut router = axum::Router::new()
         .route("/ws", ws_route)
-        .route("/version", axum::routing::get(version_route));
+        .route("/version", axum::routing::get(version_route))
+        .route("/metrics", axum::routing::get(metrics_route));
     router = auth_routes(router, state.web.clone(), peer);
     if let Some(dist) = state.web.dist.clone() {
         router = static_surface(router, state.web.clone(), peer, &dist);
@@ -1037,6 +1262,113 @@ mod tests {
         assert_eq!(v["integrity"]["manifest_present"], false);
         assert_eq!(v["integrity"]["checked"], 0);
         std::fs::remove_dir_all(&bare).ok();
+    }
+
+    #[tokio::test]
+    async fn metrics_gates_remote_peers_and_formats_prometheus() {
+        let state = test_state(crate::web::WebConfig::new(None, Some("s3cret".into())));
+        let remote: std::net::SocketAddr = "203.0.113.7:5555".parse().unwrap();
+        let (status, headers, body) =
+            get(crate::web::build_router(state.clone(), remote), "/metrics").await;
+        assert_eq!(status, axum::http::StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            headers.get(axum::http::header::CACHE_CONTROL).unwrap(),
+            "no-store"
+        );
+        assert!(!body.contains("agentj_login_attempts_total"));
+
+        let local: std::net::SocketAddr = "127.0.0.1:4444".parse().unwrap();
+        let (status, headers, body) = get(crate::web::build_router(state, local), "/metrics").await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert!(
+            headers
+                .get(axum::http::header::CONTENT_TYPE)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with("text/plain")
+        );
+        assert_eq!(
+            headers.get(axum::http::header::CACHE_CONTROL).unwrap(),
+            "no-store"
+        );
+        assert!(body.contains("# TYPE agentj_login_attempts_total counter"));
+    }
+
+    #[tokio::test]
+    async fn metrics_exposes_the_startup_integrity_summary() {
+        let dist = temp_dist("metrics-integrity");
+        write_temp_dist_manifest(&dist);
+        let state = test_state(crate::web::WebConfig::new(Some(dist.clone()), None));
+        let local: std::net::SocketAddr = "127.0.0.1:4444".parse().unwrap();
+        let (status, _, body) = get(crate::web::build_router(state, local), "/metrics").await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert!(body.contains("agentj_web_manifest_present 1"));
+        assert!(body.contains("agentj_web_assets_checked 2"));
+        std::fs::remove_dir_all(&dist).ok();
+    }
+
+    #[tokio::test]
+    async fn metrics_passes_tokenless_servers_and_valid_cookies() {
+        let remote: std::net::SocketAddr = "203.0.113.7:41000".parse().unwrap();
+        let tokenless = test_state(crate::web::WebConfig::new(None, None));
+        let (status, _, _) = get(crate::web::build_router(tokenless, remote), "/metrics").await;
+        assert_eq!(status, axum::http::StatusCode::OK, "no token: open");
+
+        let web = crate::web::WebConfig::new(None, Some("secret".into()));
+        let sid = web.issue_session();
+        let state = test_state(web);
+        use tower::util::ServiceExt;
+        let res = crate::web::build_router(state, remote)
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/metrics")
+                    .header(axum::http::header::COOKIE, format!("agentj_session={sid}"))
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), axum::http::StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn metrics_truncates_per_ip_series_after_locked_and_failure_ranking() {
+        let policy = crate::login_limiter::Policy {
+            free_attempts: 2,
+            ..crate::login_limiter::Policy::default()
+        };
+        let limiter = crate::login_limiter::LoginLimiter::with_policy(policy);
+        let t0 = Instant::now();
+        for i in 1..=50u8 {
+            let ip: std::net::IpAddr = format!("10.0.0.{i}").parse().unwrap();
+            let _ = limiter.record_failure(ip, t0);
+        }
+        let locked: std::net::IpAddr = "203.0.113.9".parse().unwrap();
+        let _ = limiter.record_failure(locked, t0);
+        let _ = limiter.record_failure(locked, t0); // second failure locks
+        let web = crate::web::WebConfig::new(None, None).with_login_limiter(limiter);
+        let state = test_state(web);
+        let local: std::net::SocketAddr = "127.0.0.1:4444".parse().unwrap();
+        let (status, _, body) = get(crate::web::build_router(state, local), "/metrics").await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert!(body.contains("agentj_login_ip_series_truncated 1"));
+        assert_eq!(
+            body.matches("agentj_login_ip_failures_total{").count(),
+            PER_IP_SERIES_LIMIT
+        );
+        let locked_at = body.find("ip=\"203.0.113.9\"").expect("locked series");
+        let busy_at = body.find("ip=\"10.0.0.1\"").expect("allowed series");
+        assert!(locked_at < busy_at, "locked IPs rank first");
+        assert!(body.contains("agentj_login_ip_locked{ip=\"203.0.113.9\"} 1"));
+        assert!(body.contains("agentj_login_ip_last_seen_seconds{ip=\"203.0.113.9\"}"));
+        assert!(body.contains("ip=\"10.0.0.49\""));
+        assert!(!body.contains("ip=\"10.0.0.50\""), "51st series is dropped");
+    }
+
+    #[test]
+    fn prometheus_labels_escape_quotes_backslashes_and_newlines() {
+        assert_eq!(escape_label("a\"b\\c\nd"), "a\\\"b\\\\c\\nd");
     }
 
     fn test_state(web: crate::web::WebConfig) -> std::sync::Arc<crate::ws::WsServerState> {
