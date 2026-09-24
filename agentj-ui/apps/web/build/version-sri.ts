@@ -1,6 +1,6 @@
 // agentj-ui/apps/web/build/version-sri.ts (pure helpers, zero deps)
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 export type DistVersions = { productVersion: string; protocolVersion: string; buildTime: string };
@@ -21,7 +21,7 @@ function isLocalRef(ref: string): boolean {
   return ref.startsWith("/") && !ref.startsWith("//");
 }
 
-function integrityOf(bytes: Buffer): string {
+export function integrityOf(bytes: Buffer): string {
   return `sha384-${createHash("sha384").update(bytes).digest("base64")}`;
 }
 
@@ -88,6 +88,38 @@ function collectBundleFiles(distDir: string, files: string[]): AssetFile[] {
   return out;
 }
 
+function parentDirs(keys: Iterable<string>): Set<string> {
+  const dirs = new Set<string>();
+  for (const key of keys) {
+    const rel = key.replace(/^\/+/, "");
+    const slash = rel.lastIndexOf("/");
+    if (slash > 0) dirs.add(rel.slice(0, slash));
+  }
+  return dirs;
+}
+
+// Vite copies public/ passthrough files into dist before writeBundle. Directories already covered
+// by hashed keys are bundler-managed, so stale outputs there must never enter the manifest.
+function collectPassthroughFiles(distDir: string, skip: HashMap): AssetFile[] {
+  const out: AssetFile[] = [];
+  const managedDirs = parentDirs(Object.keys(skip));
+  const walk = (relDir: string): void => {
+    for (const entry of readdirSync(join(distDir, relDir), { withFileTypes: true })) {
+      if (entry.name.startsWith(".")) continue;
+      const rel = relDir ? `${relDir}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) {
+        if (!managedDirs.has(rel)) walk(rel);
+      } else if (entry.isFile() && !EXCLUDED_FILES.has(entry.name)) {
+        const key = `/${rel}`;
+        if (key === "/index.html" || skip[key]) continue;
+        out.push({ path: key, bytes: readFileSync(join(distDir, rel)) });
+      }
+    }
+  };
+  walk("");
+  return out;
+}
+
 function readLocal(distDir: string, ref: string): Buffer | null {
   const file = join(distDir, ref.replace(/^\//, ""));
   return existsSync(file) ? readFileSync(file) : null;
@@ -100,7 +132,9 @@ export function finalizeDist(distDir: string, v: DistVersions, bundleFiles: stri
   const bundleHashes = hashAssets(collectBundleFiles(distDir, bundleFiles));
   const result = injectSri(html, (ref) => readLocal(distDir, ref), bundleHashes);
   writeFileSync(htmlPath, result.html);
+  const distHashes = hashAssets(collectPassthroughFiles(distDir, result.hashes));
   const hashes: HashMap = {
+    ...distHashes,
     ...result.hashes,
     "/index.html": integrityOf(Buffer.from(result.html)),
   };
