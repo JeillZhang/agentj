@@ -49,7 +49,7 @@
 | 门禁 | 结果 |
 |---|---|
 | `cargo fmt --check` | clean |
-| `cargo test --workspace` | **648 passed / 0 failed**（49 test binaries） |
+| `cargo test --workspace` | **646 passed / 0 failed**（44 test binaries） |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 零警告 |
 | `cargo test -p agentj-protocol -- drift` | 2 passed |
 | `npm --prefix agentj-ui test --workspace=@agentj/sdk` | 47 passed（6 files） |
@@ -61,7 +61,10 @@
 
 > 环境预置清理：`rm -f ~/.local/share/agentj/sessions/s1.{json,trajectory}`
 > （e2e_permission 硬编码 `s1` 会话，前次运行被中断会 hang —— 预存在环境问题，非本特性引入）。
-> **验收状态：待执行**（live/实机验收由 `jskill-test-acceptance` 负责，尚未运行）。
+> **验收状态：PASS（2026-09-25，`jskill-test-acceptance`）**——0 个新 Bug、10 项门禁独立复跑全绿、
+> 4 条实机验收项全 PASS（`/metrics` 门控矩阵 + 错 token 锁定 per-IP series；清单含根级 public +
+> 独立 sha384 复核 + 篡改抽检告警 + 无清单不抽检；WS 探针深路径 query/有效根/仅文件命中；
+> Playwright 22/22 菜单 roving/tablist/提示行两态/composer 零误触）；PR 由流程自动创建（用户合并）。
 
 ## 遗留问题 / 已知限制
 
@@ -89,8 +92,8 @@
 
 ## 下一步
 
-- **等待 `jskill-test-acceptance` 验收**（live/实机验收由该流程负责）；
-  验收通过后由流程**自动创建 PR**；**合并由用户负责**（用户手动合并）。
+- **验收 PASS（0 Bug）→ 流程自动创建 PR**（验收修复提交无——本轮零 Bug）；
+  **合并由用户负责**（用户手动合并）。
 - 后续候选：① 指标导出扩展（计数持久化/跨实例共享、代理头解析）；② 抽检扩展
   （逐请求校验 / 手动全量触发端点）；③ Web 接入服务端搜索（打通 Files 搜索态提示）；
   ④ rank 规则单一真源化（消除跨语言镜像漂移）。

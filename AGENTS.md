@@ -288,7 +288,7 @@
 > `__default__`）。④ Web 共享 `useRovingFocus`（`wrap`/Home-End）收口 TopbarMenu/
 > SessionListMenu/SidebarTabs/SettingsDialog（ComposerOptions listbox 保留独立模式）+
 > 侧栏底部快捷键提示行（三态文案组件；Web 当前两态可达，搜索态待 Web 搜索特性；
-> 单一常量源、`aria-hidden`）。门禁全绿：cargo fmt / **648 Rust tests** / clippy 零警告 /
+> 单一常量源、`aria-hidden`）。门禁全绿：cargo fmt / **646 Rust tests** / clippy 零警告 /
 > drift 2 passed / sdk 47 / **web 552 tests（51 files）** / **tui 142 tests（19 files）** /
 > web build / check-version **0.22.0** / desktop-ui；PROTOCOL_VERSION 0.14.0；
 > 工作区 0.21.1 → 0.22.0。
@@ -309,7 +309,7 @@ per-IP 序列 Top-50 截断 + `agentj_login_ip_series_truncated` + integrity 摘
 服务端搜索（旧内核无 `total` 自动降级）+ 展开态键 = 会话有效 `project_root`（`session/new`/`session/status` 加性
 `project_root` 捕获）；④ Web 共享 `useRovingFocus`（wrap/Home-End）收口 TopbarMenu/SessionListMenu/SidebarTabs/
 SettingsDialog + 侧栏底部快捷键提示行（三态文案组件；Web 当前两态可达，搜索态待 Web 搜索特性）。
-门禁全绿：cargo fmt / **648 Rust tests** / clippy 零警告 / drift 2 passed / sdk 47 /
+门禁全绿：cargo fmt / **646 Rust tests** / clippy 零警告 / drift 2 passed / sdk 47 /
 web **552 tests（51 files）** / tui **142 tests（19 files）** / web build / check-version **0.22.0** /
 desktop-ui；PROTOCOL_VERSION 0.14.0；工作区 0.21.1 → 0.22.0）。
 v0.21.1 已落地：**验收修复（BUG-011/BUG-012，bugfix，无协议变更）**
@@ -529,7 +529,7 @@ Desktop：Tauri v2 壳套 `apps/web` 产物，四件套 deb/AppImage/dmg/msi，
 ## Commands
 
 - `cargo test --workspace` — 全量测试
-  （648 passed / 0 failed；含 bus 密封 + FileBackedStore/Config/CLI 单测
+  （646 passed / 0 failed；含 bus 密封 + FileBackedStore/Config/CLI 单测
   + e2e_cli/e2e_permission/e2e_serve/e2e_ws/e2e_http_static 密封测试）
 - `cargo clippy --workspace --all-targets -- -D warnings` — lint 门禁（零警告）
 - `cargo bench -p agentj-model` — 模型流式基准（criterion）

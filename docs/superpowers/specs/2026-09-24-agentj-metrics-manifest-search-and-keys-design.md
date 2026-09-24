@@ -423,7 +423,7 @@ listbox 用 highlight + `aria-activedescendant`（焦点留在触发器/输入�
   | 门禁 | 结果 |
   |---|---|
   | `cargo fmt --check` | clean |
-  | `cargo test --workspace` | **648 passed / 0 failed**（49 test binaries） |
+  | `cargo test --workspace` | **646 passed / 0 failed**（44 test binaries） |
   | `cargo clippy --workspace --all-targets -- -D warnings` | 零警告 |
   | `cargo test -p agentj-protocol -- drift` | 2 passed |
   | `npm --prefix agentj-ui test --workspace=@agentj/sdk` | 47 passed（6 files） |
@@ -438,8 +438,9 @@ listbox 用 highlight + `aria-activedescendant`（焦点留在触发器/输入�
   键盘进入路径（方向键无法进入子菜单）→ 恢复飞出层方向键进入（`cd24cb2`，含回归用例）；
   并修正提示行宣传未绑定键位（Files 浏览态去除 Web 不存在的 `s 搜索`，`784ed8b`）；
   上表为修复波后全量复跑结果。
-- **验收（live acceptance）**：**待执行**：实机/HTTP/Playwright 验收由
-  `jskill-test-acceptance` 负责（deferred，尚未运行）；验收通过后由流程自动创建 PR，
-  **合并由用户负责**。
+- **验收（live acceptance）**：**PASS（2026-09-25，`jskill-test-acceptance`）**——0 个新 Bug；
+  10 项门禁独立复跑全绿；4 条实机验收项全 PASS（`/metrics` 门控矩阵与锁定 per-IP series、
+  清单 public 覆盖 + 篡改抽检告警 + 无清单不抽检、WS 深路径 query/有效根/仅文件命中、
+  Playwright 菜单 roving/tablist/提示行/composer）；PR 由流程自动创建，**合并由用户负责**。
 - **文档同步**：`AGENTS.md` / `README.md` / `.agents/summary/summary_and_next.md` /
   `docs/specs/ipc-protocol.md` 已同步 v0.22.0 事实（本 T31；含 design 回填与准确性修正）。
