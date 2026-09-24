@@ -1520,15 +1520,15 @@
       then: "version-ok (0.22.0 workspace/sdk/desktop; 0.14.0 PROTOCOL_VERSION)"
     - given: "the lockfile"
       when: "grepped"
-      then: "agentj-desktop is recorded at 0.22.0"
+      then: "agentj-ui is recorded at 0.22.0"
   regression:
     - "./scripts/check-version.sh"
   test_code: |
-    grep -A1 'name = "agentj-desktop"' agentj-ui/apps/desktop/src-tauri/Cargo.lock | grep 0.22.0 || echo "expected stale lock before refresh"
+    grep -A1 'name = "agentj-ui"' agentj-ui/apps/desktop/src-tauri/Cargo.lock | grep 0.22.0 || echo "expected stale lock before refresh"
   impl_code: |
     cargo check --manifest-path agentj-ui/apps/desktop/src-tauri/Cargo.toml --offline
   verify:
-    - "grep -A1 'name = \"agentj-desktop\"' agentj-ui/apps/desktop/src-tauri/Cargo.lock | grep 0.22.0"
+    - "grep -A1 'name = \"agentj-ui\"' agentj-ui/apps/desktop/src-tauri/Cargo.lock | grep 0.22.0"
     - "./scripts/check-version.sh"
 ```
 
