@@ -1045,6 +1045,7 @@ impl IpcServer {
         let status = self.require_session_status(&params.session_id)?;
         let result = SessionStatusResult {
             status: Self::wire_session_status(status),
+            project_root: None,
         };
         Ok(serde_json::to_value(result).expect("serializable"))
     }
