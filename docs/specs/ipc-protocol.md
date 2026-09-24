@@ -748,7 +748,7 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 | `truncated` | boolean | 是 | 是否被截断（缺省模式：2000 条目上限；query 模式：`SEARCH_VISIT_LIMIT` 访问预算耗尽） |
 | `total` | integer | 否 | query 模式发现的匹配总数（`@since 0.14.0` 加性字段，`u64`）；受访问预算限制时为**下界**；缺省模式省略 |
 
-- **query 模式（`@since 0.14.0`，加性）**：在 `path` 子树内搜索（缺省 = 项目根）；`.git` 排除、根外符号链接条目跳过、沙箱规则与错误码均不变；**`depth` 被忽略**。
+- **query 模式（`@since 0.14.0`，加性）**：在 `path` 子树内搜索（缺省 = 项目根）；**命中仅限文件**（目录参与遍历/访问预算，但不作为命中返回）；`.git` 排除、根外符号链接条目跳过、沙箱规则与错误码均不变；**`depth` 被忽略**。
   - **访问预算**：`SEARCH_VISIT_LIMIT = 20_000` 个访问条目；耗尽 → `truncated: true`（结果可能不完整，`total` 为下界）。
   - **排序（rank）**：名称前缀（0）> 名称子串（1）> 路径子串（2）；大小写不敏感；同 rank tie-break 路径升序。
   - **返回**：Top `SEARCH_RESULT_LIMIT = 100`；`total > entries.len()` 时客户端展示 `N more`。

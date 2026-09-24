@@ -191,6 +191,7 @@ flowchart TB
 | `agentj_login_ip_failures_total{ip="..."}` | counter | per-IP 失败数（Top-50 截断内） |
 | `agentj_login_ip_locked{ip="..."}` | gauge | 该 IP 是否锁定（0/1） |
 | `agentj_login_ip_retry_after_seconds{ip="..."}` | gauge | 剩余锁定秒数（未锁定 = 0） |
+| `agentj_login_ip_last_seen_seconds{ip="..."}` | gauge | 距该 IP 上次可见的秒数（`@since 0.14.0` 加性；消费 `IpSnapshot.last_seen`，避免该字段只产不用） |
 | `agentj_login_ip_series_truncated` | gauge | per-IP 序列是否被 Top-50 截断（0/1） |
 | `agentj_web_manifest_present` | gauge | 清单存在且可解析（0/1） |
 | `agentj_web_assets_checked` / `_mismatched` / `_missing` | gauge | 启动全量校验计数（既有摘要） |
@@ -218,6 +219,7 @@ flowchart TB
 ```
 
 - `runtime.last_run_age_secs` 为 `Option<u64>`（未运行过则省略）；manifest 缺失/不可用 → `runtime` 全零。
+- **首轮时机**：抽检任务 spawn 后**首轮在启动时立即执行**（`tokio::time::interval` 首个 tick 立即返回），此后每 60s 一轮；即 `rounds` 在启动后很快变为 1，而非等待 60s。
 - 既有字段（`manifest_present/checked/mismatched/missing`）逐字保留。
 
 ### `file/list`（③，加性）
@@ -227,7 +229,7 @@ flowchart TB
 | `query` | params | `string?` | trim 后空串视作缺省；大小写不敏感子串匹配（名称/路径） |
 | `total` | result | `u64?` | query 模式：发现的匹配总数（受 visit 预算下限）；缺省模式省略 |
 
-- **query 模式**：在 `path` 子树内搜索（默认项目根）；`.git` 排除、符号链接逃逸跳过、沙箱规则与错误码不变；**`depth` 忽略**。
+- **query 模式**：在 `path` 子树内搜索（默认项目根）；`.git` 排除、符号链接逃逸跳过、沙箱规则与错误码不变；**`depth` 忽略**；**命中仅限文件**（目录会被遍历/访问并计入 visit 预算，但不作为命中返回）。
 - **预算**：`SEARCH_VISIT_LIMIT = 20_000` 访问条目；耗尽 → `truncated: true`（结果可能不完整，`total` 为下界）。
 - **排序**：名称前缀（0）> 名称子串（1）> 路径子串（2）；大小写不敏感；tie-break 路径升序。
 - **返回**：Top `SEARCH_RESULT_LIMIT = 100`；`total > entries.len()` 由客户端展示 `N more`。
@@ -254,11 +256,14 @@ flowchart TB
 | 状态 | 文案 |
 |---|---|
 | Sessions 视图 | `j/k 移动 · Enter 打开 · n 新建 · f 文件视图` |
-| Files 视图（浏览） | `j/k 移动 · Enter 展开 · s 搜索 · r 刷新` |
+| Files 视图（浏览） | `j/k 移动 · Enter 展开 · r 刷新` |
 | Files 视图（搜索中） | `输入过滤 · Enter 跳转 · Esc 返回` |
 
 - 位置：侧栏底部（两视图统一）；`aria-hidden="true"`；muted 样式；窄视口省略号截断。
 - 文案与 handler 共享单一常量源（新模块，如 `shortcutHints.ts`），防键位漂移。
+- **Web 实际可达两态**：Web 无搜索模式（设计非目标 ③「Web 不接入服务端搜索」），
+  故 Files 搜索态文案组件虽已支持但**不可达**；Files 浏览态文案此前误含 `s 搜索`
+  （Web 未绑定该键），已从提示中移除，现为 `j/k 移动 · Enter 展开 · r 刷新`。
 
 ## 关键设计决策
 
@@ -338,7 +343,7 @@ listbox 用 highlight + `aria-activedescendant`（焦点留在触发器/输入�
 
 1. **① limiter**：`snapshot()` 排序（locked → failures → ip）、`retry_after` 计算、空表；`/metrics` 聚合值、per-IP 标签与转义、Top-50 截断 + `ip_series_truncated`、`Content-Type`/`no-store`、门控矩阵（回环直出 / 未配 token 直出 / 远程无 cookie 401 / 有效 cookie 200）。
 2. **② 内核**：`verify_assets` 对 public 类根级条目（既有测试扩展）；抽检采样函数（游标轮转、样本数、missing/mismatched 计数、warn 去重、`now` 注入）；`/version` `runtime` 块（运行过/未运行/manifest 缺失）；e2e_http_static：fixture 清单含根级 public 文件 → 静默；篡改 → 启动警告（既有模式）。
-3. **③ 协议与 dispatch**：`file/list` query rank 顺序（前缀>子串>路径，tie 路径升序）、大小写、visit 预算截断 + `total` 下界、Top-100、`.git` 排除、`path` 子域、`depth` 忽略、空 query = 列表、错误码不变；`session/new`/`session/status` `project_root`（canonicalized、cwd 回退、旧快照无根）；serde roundtrip（`total` 缺省省略）；drift + registry（方法数不变 21）+ contract 字面量更新。
+3. **③ 协议与 dispatch**：`file/list` query rank 顺序（前缀>子串>路径，tie 路径升序）、大小写、**命中仅限文件（目录可被遍历但不返回）**、visit 预算截断 + `total` 下界、Top-100、`.git` 排除、`path` 子域、`depth` 忽略、空 query = 列表、错误码不变；`session/new`/`session/status` `project_root`（canonicalized、cwd 回退、旧快照无根）；serde roundtrip（`total` 缺省省略）；drift + registry（方法数不变 21）+ contract 字面量更新。
 4. **Web 构建纯函数**：dist 枚举合并（根级 + 子目录 public、隐藏跳过、bundle 优先、排除项）、键规范、既有 10+3 例不回归。
 
 ### Web（vitest）
@@ -400,6 +405,41 @@ listbox 用 highlight + `aria-activedescendant`（焦点留在触发器/输入�
 ## 已知限制
 
 1. **① `/metrics` 为进程内计数**：重启清零、无跨实例共享、无 per-IP 历史；per-IP Top-50 截断（全量需 `RUST_LOG=debug` 日志）；Prometheus 拉取需网络可达（门控下需 cookie）。
-2. **② 抽检为采样**：非全量、非实时；60s 间隔内存在检测窗口；`public/` 覆盖依赖 dist 实目录（隐藏文件不在清单）；浏览器端动态 import 仍无 SRI（既有定位：部署完整性）。
-3. **③ 搜索受预算限制**：visit ≤20 000、返回 ≤100；子串匹配（无 glob/regex/模糊）；`total` 在截断时为下界；防抖引入 ≤150ms 输入延迟；旧内核降级为 depth≤8/≤2000 索引（不完整）；TUI 仍不发送 `project_root`（键为内核 cwd 回退）。
-4. **④ 菜单 Tab 行为变更**：迁移后 Tab 不再逐项循环（ARIA 对齐，显式记录）；ComposerOptions 保持独立模式；提示行不覆盖菜单/对话框键位（「帮助」项仍为 no-op）。
+2. **② 抽检为采样**：非全量、非实时；60s 间隔内存在检测窗口；`public/` 覆盖依赖 dist 实目录（隐藏文件不在清单）；浏览器端动态 import 仍无 SRI（既有定位：部署完整性）。**首轮在启动时立即执行**（Tokio interval 首 tick），与最初「启动后 60s」的措辞差异已澄清；**任务生命周期边界**：`tokio::spawn` 后无 abort-before-replace，`TcpIpcServer::run` 错误路径不调用 `stop_spot_check`（进程退出即回收，无泄漏影响）。
+3. **③ 搜索受预算限制**：visit ≤20 000、返回 ≤100；子串匹配（无 glob/regex/模糊）；`total` 在截断时为下界；防抖引入 ≤150ms 输入延迟；旧内核降级为 depth≤8/≤2000 索引（不完整）；TUI 仍不发送 `project_root`（键为内核 cwd 回退）。**命中仅限文件**（目录参与遍历/预算但不作为命中返回）。**降级边界**：`r` 若在 150ms 防抖窗口内按下，该次搜索会话回退为本地索引模式。
+4. **④ 菜单 Tab 行为变更**：迁移后 Tab 不再逐项循环（ARIA 对齐，显式记录）；ComposerOptions 保持独立模式；提示行不覆盖菜单/对话框键位（「帮助」项仍为 no-op）；Web 无搜索模式，Files 搜索态提示组件支持但不可达。
+5. **③ rank 规则三处镜像**：名称前缀 > 名称子串 > 路径子串的 rank 分别实现于 Rust `file_list::search_rank`、TUI `files.ts::searchRank` 与 mock kernel，属跨语言镜像，未来变更存在漂移风险。
+6. **④ 展开态键仅 Web-safe**：`filetree.json` 保存时，既非 `__default__` 也不以 `/` 开头的键（如 Windows `C:\...`）会被剪除，仅保留当前活动键。
+
+## 实施状态
+
+- **已实施（v0.22.0，2026-09-25）**：计划
+  `docs/superpowers/plans/2026-09-24-agentj-metrics-manifest-search-and-keys-plan.md`
+  T0–T31 全部落地；工作区 0.21.1 → **0.22.0**（feature minor）；`PROTOCOL_VERSION`
+  0.13.0 → **0.14.0**（三处加性 wire：`file/list` `query`/`total`、
+  `SessionNewResult.project_root`、`SessionStatusResult.project_root`；无新方法/schema，
+  schema 总数仍为 51）。
+- **自动化门禁（T31 全量复核 + Phase-5 修复波后复跑，10 项全绿）**：
+  | 门禁 | 结果 |
+  |---|---|
+  | `cargo fmt --check` | clean |
+  | `cargo test --workspace` | **648 passed / 0 failed**（49 test binaries） |
+  | `cargo clippy --workspace --all-targets -- -D warnings` | 零警告 |
+  | `cargo test -p agentj-protocol -- drift` | 2 passed |
+  | `npm --prefix agentj-ui test --workspace=@agentj/sdk` | 47 passed（6 files） |
+  | `npm --prefix agentj-ui test --workspace=@agentj/web` | **552 passed（51 files）** |
+  | `bun --cwd agentj-ui/apps/tui test` | **142 passed（19 files）** |
+  | `npm --prefix agentj-ui run build --workspace=@agentj/web` | clean |
+  | `./scripts/check-version.sh` | version-ok（**0.22.0**；`PROTOCOL_VERSION` **0.14.0**） |
+  | `node agentj-ui/apps/desktop/check-desktop-ui.mjs` | desktop-ui-ok |
+
+- **Phase 5 全分支复核（Oracle）+ 修复波**：复核 PASS-WITH-MUST-FIX，1 项 must-fix
+  （a11y）：四处共享 `useRovingFocus` 迁移后 `SessionListMenu` 的过滤/排序飞出层丢失
+  键盘进入路径（方向键无法进入子菜单）→ 恢复飞出层方向键进入（`cd24cb2`，含回归用例）；
+  并修正提示行宣传未绑定键位（Files 浏览态去除 Web 不存在的 `s 搜索`，`784ed8b`）；
+  上表为修复波后全量复跑结果。
+- **验收（live acceptance）**：**待执行**：实机/HTTP/Playwright 验收由
+  `jskill-test-acceptance` 负责（deferred，尚未运行）；验收通过后由流程自动创建 PR，
+  **合并由用户负责**。
+- **文档同步**：`AGENTS.md` / `README.md` / `.agents/summary/summary_and_next.md` /
+  `docs/specs/ipc-protocol.md` 已同步 v0.22.0 事实（本 T31；含 design 回填与准确性修正）。

@@ -287,8 +287,11 @@
 > 有效 `project_root`（`session/new`/`session/status` 加性 `project_root` 捕获，未知回退
 > `__default__`）。④ Web 共享 `useRovingFocus`（`wrap`/Home-End）收口 TopbarMenu/
 > SessionListMenu/SidebarTabs/SettingsDialog（ComposerOptions listbox 保留独立模式）+
-> 侧栏底部三态快捷键提示行（单一常量源、`aria-hidden`）。门禁计数待 T31 填充；
-> PROTOCOL_VERSION 0.14.0；工作区 0.21.1 → 0.22.0。
+> 侧栏底部快捷键提示行（三态文案组件；Web 当前两态可达，搜索态待 Web 搜索特性；
+> 单一常量源、`aria-hidden`）。门禁全绿：cargo fmt / **648 Rust tests** / clippy 零警告 /
+> drift 2 passed / sdk 47 / **web 552 tests（51 files）** / **tui 142 tests（19 files）** /
+> web build / check-version **0.22.0** / desktop-ui；PROTOCOL_VERSION 0.14.0；
+> 工作区 0.21.1 → 0.22.0。
 > (17 crates + agentj-ui monorepo：Web / TUI / Desktop + SDK + tokens，
 > npm workspaces `apps/*`+`packages/*`，共享 SDK + protocol + tokens，
 > WebSocket 网关同端口复用，后端零改造，frontend stays in-repo)
@@ -305,8 +308,10 @@ per-IP 序列 Top-50 截断 + `agentj_login_ip_series_truncated` + integrity 摘
 `query`（`path` 子树、忽略 `depth`、访问预算 20000、rank 前缀 > 子串 > 路径、Top-100）与 `total` + TUI 防抖 150ms
 服务端搜索（旧内核无 `total` 自动降级）+ 展开态键 = 会话有效 `project_root`（`session/new`/`session/status` 加性
 `project_root` 捕获）；④ Web 共享 `useRovingFocus`（wrap/Home-End）收口 TopbarMenu/SessionListMenu/SidebarTabs/
-SettingsDialog + 侧栏底部三态快捷键提示行。**门禁计数待 T31 填充**；PROTOCOL_VERSION 0.14.0；工作区 0.21.1 →
-0.22.0）。
+SettingsDialog + 侧栏底部快捷键提示行（三态文案组件；Web 当前两态可达，搜索态待 Web 搜索特性）。
+门禁全绿：cargo fmt / **648 Rust tests** / clippy 零警告 / drift 2 passed / sdk 47 /
+web **552 tests（51 files）** / tui **142 tests（19 files）** / web build / check-version **0.22.0** /
+desktop-ui；PROTOCOL_VERSION 0.14.0；工作区 0.21.1 → 0.22.0）。
 v0.21.1 已落地：**验收修复（BUG-011/BUG-012，bugfix，无协议变更）**
 （实机验收（Playwright chromium headless / HTTP / TUI）PASS；BUG-011（low）：`f` 切换侧栏视图
 后焦点掉出侧栏（`<body>`，后续 `j`/`k`/`r`/`Esc` 失效直至重新点击/Tab）→ `SidebarTabs` 活动
@@ -524,7 +529,7 @@ Desktop：Tauri v2 壳套 `apps/web` 产物，四件套 deb/AppImage/dmg/msi，
 ## Commands
 
 - `cargo test --workspace` — 全量测试
-  （622 passed / 0 failed；含 bus 密封 + FileBackedStore/Config/CLI 单测
+  （648 passed / 0 failed；含 bus 密封 + FileBackedStore/Config/CLI 单测
   + e2e_cli/e2e_permission/e2e_serve/e2e_ws/e2e_http_static 密封测试）
 - `cargo clippy --workspace --all-targets -- -D warnings` — lint 门禁（零警告）
 - `cargo bench -p agentj-model` — 模型流式基准（criterion）
@@ -537,13 +542,13 @@ Desktop：Tauri v2 壳套 `apps/web` 产物，四件套 deb/AppImage/dmg/msi，
   47 tests）
 - `npm --prefix agentj-ui run generate --workspace=@agentj/sdk` — 生成 `METHODS` 常量
   （`protocol/methods.json` → `agentj-ui/packages/sdk/src/methods.ts`）
-- `npm --prefix agentj-ui test --workspace=@agentj/web` — Web 单测（vitest，539 tests / 50 files）
+- `npm --prefix agentj-ui test --workspace=@agentj/web` — Web 单测（vitest，552 tests / 51 files）
 - `npm --prefix agentj-ui run build --workspace=@agentj/web` — Web 构建（`tsc -b && vite build`）
   > 注意：Vite dev server 不监听 root 之外的 `packages/sdk` 源（alias 直连源码）；
   > 改动 SDK 后须重启 dev server，否则运行陈旧的 `METHODS`（v0.16.3「加载中」根因）。
   > Web 新依赖 `rehype-highlight`（hljs common 语言集，随 `npm --prefix agentj-ui install`
   > + lockfile 落地，v0.17.0）。
-- `bun --cwd agentj-ui/apps/tui test` — TUI 单测（含 mock WS e2e，130 tests / 19 files）
+- `bun --cwd agentj-ui/apps/tui test` — TUI 单测（含 mock WS e2e，142 tests / 19 files）
 - `./agentj-ui/apps/desktop/check-artifacts.sh linux` — Desktop 产物校验
 - `node agentj-ui/apps/desktop/check-desktop-ui.mjs` — Desktop 前端产物/配置一致性校验
 - `./scripts/check-version.sh` — 版本一致性（Cargo + sdk VERSION + desktop 均为 0.22.0，
@@ -671,6 +676,10 @@ Desktop：Tauri v2 壳套 `apps/web` 产物，四件套 deb/AppImage/dmg/msi，
   同源 script/stylesheet/modulepreload 注入 `sha384` `integrity`，缺失即构建失败）+
   `ConnectionStatus` 版本行「版本 UI x · 内核 y」（`App` 消费
   `initialize.server_info.version`；不一致 `data-state="warn"` + `⚠`）；
+  **v0.22.0 键位收口**：共享 `useRovingFocus`（`wrap`/Home-End）迁移
+  TopbarMenu / SessionListMenu / SidebarTabs / SettingsDialog
+  （ComposerOptions listbox 保留独立模式）+ 侧栏底部快捷键提示行
+  （三态文案组件；Web 当前两态可达，搜索态待 Web 搜索特性）；
   `layoutStore` 宽度/面板持久化，
   `todoState`/`changes` reducer，`deriveChanges` 半推导退役；
   布局/会话/Composer/对话/轨迹/Hero/对话框拆 `components/*.css`，vitest + vite build）。
