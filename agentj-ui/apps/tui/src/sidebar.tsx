@@ -1,129 +1,82 @@
-import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
-import { FilesView } from "./files.tsx";
+import { FilesView, SEARCH_HINT } from "./files.tsx";
 import type { FilesViewProps } from "./files.tsx";
+import { getConfigDir, readJsonFile, writeJsonFile } from "./config.ts";
 
 export const SIDEBAR_WIDTH = 32;
 
 export type SidebarView = "threads" | "files";
 
-// Config dir mirrors session.tsx / theme.tsx
-export function getConfigDir(): string {
-  const xdg = process.env.XDG_CONFIG_HOME;
-  if (xdg && xdg.length > 0) return path.join(xdg, "agentj");
-  try {
-    return path.join(os.homedir(), ".config", "agentj");
-  } catch {
-    return path.join("/tmp", "agentj");
-  }
-}
+export { getConfigDir };
 
 export function getProjectsPath(): string {
   return path.join(getConfigDir(), "projects.json");
 }
 
 export function loadCollapsed(): Record<string, boolean> {
-  try {
-    const p = getProjectsPath();
-    if (!fs.existsSync(p)) return {};
-    const raw = fs.readFileSync(p, "utf8");
-    const parsed: unknown = JSON.parse(raw);
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      const obj = parsed as Record<string, unknown>;
-      if ("collapsed" in obj && obj.collapsed && typeof obj.collapsed === "object" && !Array.isArray(obj.collapsed)) {
-        const out: Record<string, boolean> = {};
-        for (const [k, v] of Object.entries(obj.collapsed as Record<string, unknown>)) {
-          if (typeof v === "boolean") out[k] = v;
-        }
-        return out;
-      }
-      // flat map case: all boolean top-level keys are collapsed
+  const parsed = readJsonFile<unknown>("projects.json");
+  if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+    const obj = parsed as Record<string, unknown>;
+    if ("collapsed" in obj && obj.collapsed && typeof obj.collapsed === "object" && !Array.isArray(obj.collapsed)) {
       const out: Record<string, boolean> = {};
-      let hasBool = false;
-      for (const [k, v] of Object.entries(obj)) {
-        if (typeof v === "boolean") {
-          out[k] = v;
-          hasBool = true;
-        }
+      for (const [k, v] of Object.entries(obj.collapsed as Record<string, unknown>)) {
+        if (typeof v === "boolean") out[k] = v;
       }
-      if (hasBool) return out;
+      return out;
     }
-    return {};
-  } catch {
-    return {};
+    // flat map case: all boolean top-level keys are collapsed
+    const out: Record<string, boolean> = {};
+    let hasBool = false;
+    for (const [k, v] of Object.entries(obj)) {
+      if (typeof v === "boolean") {
+        out[k] = v;
+        hasBool = true;
+      }
+    }
+    if (hasBool) return out;
   }
+  return {};
 }
 
 export function saveCollapsed(map: Record<string, boolean>): void {
-  try {
-    const p = getProjectsPath();
-    fs.mkdirSync(path.dirname(p), { recursive: true });
-    let existing: Record<string, unknown> = {};
-    try {
-      if (fs.existsSync(p)) {
-        const raw = fs.readFileSync(p, "utf8");
-        const parsed: unknown = JSON.parse(raw);
-        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-          existing = parsed as Record<string, unknown>;
-        }
-      }
-    } catch {}
-    const next: Record<string, unknown> = { ...existing, collapsed: map };
-    // remove stale flat boolean keys
-    for (const k of Object.keys(next)) {
-      if (k !== "collapsed" && k !== "projects" && k !== "map" && k !== "sessions" && typeof next[k] === "boolean") {
-        delete next[k];
-      }
+  const parsed = readJsonFile<unknown>("projects.json");
+  const existing =
+    parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : {};
+  const next: Record<string, unknown> = { ...existing, collapsed: map };
+  // remove stale flat boolean keys
+  for (const k of Object.keys(next)) {
+    if (k !== "collapsed" && k !== "projects" && k !== "map" && k !== "sessions" && typeof next[k] === "boolean") {
+      delete next[k];
     }
-    fs.writeFileSync(p, JSON.stringify(next, null, 2), "utf8");
-  } catch {}
+  }
+  writeJsonFile("projects.json", next);
 }
 
 export function loadProjects(): Project[] {
-  try {
-    const p = getProjectsPath();
-    if (!fs.existsSync(p)) return [{ id: "default", name: "Inbox" }];
-    const raw = fs.readFileSync(p, "utf8");
-    const parsed: unknown = JSON.parse(raw);
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      const obj = parsed as Record<string, unknown>;
-      if (Array.isArray(obj.projects)) {
-        const list = (obj.projects as unknown[]).filter(
-          (v): v is Project => !!v && typeof (v as Project).id === "string" && typeof (v as Project).name === "string",
-        );
-        if (list.length > 0) return list;
-      }
-    }
-    if (Array.isArray(parsed)) {
-      const list = (parsed as unknown[]).filter(
+  const parsed = readJsonFile<unknown>("projects.json");
+  if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+    const obj = parsed as Record<string, unknown>;
+    if (Array.isArray(obj.projects)) {
+      const list = (obj.projects as unknown[]).filter(
         (v): v is Project => !!v && typeof (v as Project).id === "string" && typeof (v as Project).name === "string",
       );
       if (list.length > 0) return list;
     }
-    return [{ id: "default", name: "Inbox" }];
-  } catch {
-    return [{ id: "default", name: "Inbox" }];
   }
+  if (Array.isArray(parsed)) {
+    const list = (parsed as unknown[]).filter(
+      (v): v is Project => !!v && typeof (v as Project).id === "string" && typeof (v as Project).name === "string",
+    );
+    if (list.length > 0) return list;
+  }
+  return [{ id: "default", name: "Inbox" }];
 }
 
 export function saveProjects(projects: Project[]): void {
-  try {
-    const p = getProjectsPath();
-    fs.mkdirSync(path.dirname(p), { recursive: true });
-    let existing: Record<string, unknown> = {};
-    try {
-      if (fs.existsSync(p)) {
-        const raw = fs.readFileSync(p, "utf8");
-        const parsed: unknown = JSON.parse(raw);
-        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-          existing = parsed as Record<string, unknown>;
-        }
-      }
-    } catch {}
-    const next: Record<string, unknown> = { ...existing, projects };
-    fs.writeFileSync(p, JSON.stringify(next, null, 2), "utf8");
-  } catch {}
+  const parsed = readJsonFile<unknown>("projects.json");
+  const existing =
+    parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : {};
+  writeJsonFile("projects.json", { ...existing, projects });
 }
 
 // Simple project/session types for TUI (mirror projectStore)
@@ -150,6 +103,7 @@ export type SidebarProps = {
   view?: SidebarView;
   filesProps?: FilesViewProps;
   focusMode?: "composer" | "sidebar";
+  searchMode?: { query: string } | null;
 };
 
 function countForProject(project: Project, sessions: SidebarSession[], allProjects: Project[]): number {
@@ -177,7 +131,7 @@ function truncate(s: string, max: number): string {
 }
 
 export default function Sidebar(props: SidebarProps) {
-  const { projects, sessions, activeId, collapsed = {}, query, width, view, focusMode } = props;
+  const { projects, sessions, activeId, collapsed = {}, query, width, view, focusMode, searchMode } = props;
   const w = width ?? SIDEBAR_WIDTH;
 
   // query filtering for sessions (case-insensitive on id/preview)
@@ -193,9 +147,12 @@ export default function Sidebar(props: SidebarProps) {
       {/* Header */}
       <box flexDirection="column" marginBottom={1}>
         <text>{view === "files" ? "Files" : "Threads"}</text>
-        {view === "files" && focusMode === "sidebar" ? (
+        {view === "files" && focusMode === "sidebar" && searchMode ? (
+          <text>{SEARCH_HINT}</text>
+        ) : view === "files" && focusMode === "sidebar" ? (
           <>
-            <text>r refresh · f threads</text>
+            <text>s search · r refresh</text>
+            <text>f threads</text>
             <text>tab: compose</text>
           </>
         ) : view === "files" ? (

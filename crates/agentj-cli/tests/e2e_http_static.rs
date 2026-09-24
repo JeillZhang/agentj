@@ -2,8 +2,11 @@
 //! UI on the same port as the JSON-RPC/WS gateway (T3 static mount + T7 CLI
 //! discovery). Covers `GET /`, the immutable `/assets` cache header, the SPA
 //! fallback, the explicit `/ws` route winning over that fallback, and the
-//! missing-dist 404 + startup warning. Helpers are defined in-file: integration
-//! test crates are separate, so the `e2e_serve.rs` helpers cannot be imported.
+//! missing-dist 404 + startup warning. T8 extends this with the
+//! `asset-manifest.json` integrity fixtures (matching manifest stays silent,
+//! tampered hash warns + shows up on `/version`). Helpers are defined in-file:
+//! integration test crates are separate, so the `e2e_serve.rs` helpers cannot
+//! be imported.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
@@ -31,6 +34,30 @@ fn write_version_json(dir: &std::path::Path, product: &str, protocol: &str) {
         ),
     )
     .unwrap();
+}
+
+/// `sha384-<base64>` digest in the SRI format the asset manifest uses.
+fn sha384_b64(bytes: &[u8]) -> String {
+    use base64::Engine as _;
+    use sha2::Digest as _;
+    format!(
+        "sha384-{}",
+        base64::engine::general_purpose::STANDARD.encode(sha2::Sha384::digest(bytes))
+    )
+}
+
+/// Write an `asset-manifest.json` with the given `/`-prefixed entries.
+fn write_asset_manifest(dir: &std::path::Path, entries: &[(&str, &str)]) {
+    let assets: std::collections::BTreeMap<&str, &str> = entries.iter().copied().collect();
+    let json = serde_json::json!({ "algorithm": "sha384", "assets": assets });
+    std::fs::write(dir.join("asset-manifest.json"), json.to_string()).unwrap();
+}
+
+/// A manifest hashing exactly the two files `temp_dist` writes.
+fn write_matching_manifest(dir: &std::path::Path) {
+    let index = sha384_b64(b"<html>agentj-e2e-index</html>");
+    let app = sha384_b64(b"console.log(1)");
+    write_asset_manifest(dir, &[("/index.html", &index), ("/assets/app.js", &app)]);
 }
 
 /// Issue a raw HTTP/1.1 GET and return the raw response text. The 5s read
@@ -89,6 +116,41 @@ fn serve_config() -> &'static str {
     )
 }
 
+/// Spawn `agentj serve --web-dist <dist>`, wait for its listening address, run
+/// `probe` against that address, then kill the child and return its stderr.
+/// The stdout reader is held for the whole run (see the static e2e note).
+fn run_serve_and_capture(dist: &std::path::Path, probe: impl FnOnce(&str)) -> String {
+    let mut child = AutoReap(
+        Command::new(env!("CARGO_BIN_EXE_agentj"))
+            .args([
+                "--config",
+                serve_config(),
+                "serve",
+                "--port",
+                "0",
+                "--web-dist",
+                dist.to_str().unwrap(),
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let mut stderr = child.0.stderr.take().unwrap();
+    let mut reader = BufReader::new(child.0.stdout.take().unwrap());
+    let addr = read_listening_addr(&mut reader);
+    probe(&addr);
+
+    // The warning is written before the accept loop; kill the child to close
+    // stderr and read the already-emitted output without blocking.
+    let _ = child.0.kill();
+    let _ = child.0.wait();
+    let mut err = String::new();
+    let _ = stderr.read_to_string(&mut err);
+    err
+}
+
 #[test]
 fn serve_serves_web_dist_with_spa_fallback_and_cache_headers() {
     let dist = temp_dist("e2e");
@@ -97,6 +159,7 @@ fn serve_serves_web_dist_with_spa_fallback_and_cache_headers() {
         env!("CARGO_PKG_VERSION"),
         agentj_protocol::PROTOCOL_VERSION,
     );
+    write_matching_manifest(&dist);
     let mut child = AutoReap(
         Command::new(env!("CARGO_BIN_EXE_agentj"))
             .args([
@@ -214,6 +277,7 @@ fn serve_without_dist_returns_404_and_warns() {
 fn serve_warns_when_dist_version_mismatches() {
     let dist = temp_dist("e2e-mismatch");
     write_version_json(&dist, "0.0.0-test", agentj_protocol::PROTOCOL_VERSION);
+    write_matching_manifest(&dist);
     let mut child = AutoReap(
         Command::new(env!("CARGO_BIN_EXE_agentj"))
             .args([
@@ -251,6 +315,53 @@ fn serve_warns_when_dist_version_mismatches() {
     assert!(
         err.contains("0.0.0-test"),
         "mismatch warning must name the dist version: {err}"
+    );
+
+    std::fs::remove_dir_all(&dist).ok();
+}
+
+#[test]
+fn warns_when_manifest_hash_does_not_match() {
+    let dist = temp_dist("e2e-integrity-tampered");
+    write_version_json(
+        &dist,
+        env!("CARGO_PKG_VERSION"),
+        agentj_protocol::PROTOCOL_VERSION,
+    );
+    write_asset_manifest(&dist, &[("/index.html", "sha384-AAAA")]);
+
+    let err = run_serve_and_capture(&dist, |addr| {
+        let ver = http_get(addr, "/version");
+        assert!(ver.contains("\"manifest_present\":true"), "/version: {ver}");
+        assert!(ver.contains("\"mismatched\":1"), "/version: {ver}");
+    });
+    assert!(
+        err.contains("integrity"),
+        "tampered manifest hash must warn on stderr: {err}"
+    );
+
+    std::fs::remove_dir_all(&dist).ok();
+}
+
+#[test]
+fn silent_when_manifest_matches() {
+    let dist = temp_dist("e2e-integrity-matching");
+    write_version_json(
+        &dist,
+        env!("CARGO_PKG_VERSION"),
+        agentj_protocol::PROTOCOL_VERSION,
+    );
+    write_matching_manifest(&dist);
+
+    let err = run_serve_and_capture(&dist, |addr| {
+        let ver = http_get(addr, "/version");
+        assert!(ver.starts_with("HTTP/1.1 200"), "/version: {ver}");
+        assert!(ver.contains("\"manifest_present\":true"), "/version: {ver}");
+        assert!(ver.contains("\"mismatched\":0"), "/version: {ver}");
+    });
+    assert!(
+        !err.contains("integrity"),
+        "matching manifest must not warn: {err}"
     );
 
     std::fs::remove_dir_all(&dist).ok();

@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "agentj-cli"
-version = "0.20.1"
+version = "0.21.1"
 dependencies = [
  "agentj-config",
  "agentj-context",
@@ -27,6 +27,7 @@ dependencies = [
  "futures",
  "libc",
  "serde_json",
+ "sha2",
  "tokio",
  "tokio-tungstenite 0.26.2",
  "tracing",
@@ -35,7 +36,7 @@ dependencies = [
 
 [[package]]
 name = "agentj-config"
-version = "0.20.1"
+version = "0.21.1"
 dependencies = [
  "agentj-core",
  "agentj-permission",
@@ -46,7 +47,7 @@ dependencies = [
 
 [[package]]
 name = "agentj-context"
-version = "0.20.1"
+version = "0.21.1"
 dependencies = [
  "agentj-core",
  "serde_json",
@@ -54,7 +55,7 @@ dependencies = [
 
 [[package]]
 name = "agentj-core"
-version = "0.20.1"
+version = "0.21.1"
 dependencies = [
  "agentj-context",
  "agentj-model",
@@ -73,7 +74,7 @@ dependencies = [
 
 [[package]]
 name = "agentj-ipc"
-version = "0.20.1"
+version = "0.21.1"
 dependencies = [
  "agentj-context",
  "agentj-core",
@@ -84,22 +85,25 @@ dependencies = [
  "agentj-session",
  "async-trait",
  "axum",
+ "base64",
  "futures",
  "hyper",
  "hyper-util",
  "serde",
  "serde_json",
+ "sha2",
  "tokio",
  "tokio-tungstenite 0.26.2",
  "tower",
  "tower-http",
  "tracing",
+ "tracing-subscriber",
  "uuid",
 ]
 
 [[package]]
 name = "agentj-license"
-version = "0.20.1"
+version = "0.21.1"
 dependencies = [
  "base64",
  "ed25519-dalek",
@@ -109,7 +113,7 @@ dependencies = [
 
 [[package]]
 name = "agentj-mcp"
-version = "0.20.1"
+version = "0.21.1"
 dependencies = [
  "agentj-core",
  "serde_json",
@@ -119,7 +123,7 @@ dependencies = [
 
 [[package]]
 name = "agentj-model"
-version = "0.20.1"
+version = "0.21.1"
 dependencies = [
  "agentj-core",
  "async-trait",
@@ -136,7 +140,7 @@ dependencies = [
 
 [[package]]
 name = "agentj-permission"
-version = "0.20.1"
+version = "0.21.1"
 dependencies = [
  "agentj-core",
  "agentj-protocol",
@@ -152,7 +156,7 @@ dependencies = [
 
 [[package]]
 name = "agentj-plugin"
-version = "0.20.1"
+version = "0.21.1"
 dependencies = [
  "agentj-core",
  "libloading",
@@ -164,7 +168,7 @@ dependencies = [
 
 [[package]]
 name = "agentj-plugin-fixture"
-version = "0.20.1"
+version = "0.21.1"
 dependencies = [
  "agentj-core",
  "agentj-plugin",
@@ -172,7 +176,7 @@ dependencies = [
 
 [[package]]
 name = "agentj-protocol"
-version = "0.20.1"
+version = "0.21.1"
 dependencies = [
  "schemars",
  "serde",
@@ -181,7 +185,7 @@ dependencies = [
 
 [[package]]
 name = "agentj-question"
-version = "0.20.1"
+version = "0.21.1"
 dependencies = [
  "agentj-core",
  "agentj-protocol",
@@ -192,7 +196,7 @@ dependencies = [
 
 [[package]]
 name = "agentj-session"
-version = "0.20.1"
+version = "0.21.1"
 dependencies = [
  "agentj-core",
  "serde_json",
@@ -204,7 +208,7 @@ dependencies = [
 
 [[package]]
 name = "agentj-skills"
-version = "0.20.1"
+version = "0.21.1"
 dependencies = [
  "tempfile",
  "tracing",
@@ -212,14 +216,14 @@ dependencies = [
 
 [[package]]
 name = "agentj-stats"
-version = "0.20.1"
+version = "0.21.1"
 dependencies = [
  "agentj-core",
 ]
 
 [[package]]
 name = "agentj-tools"
-version = "0.20.1"
+version = "0.21.1"
 dependencies = [
  "agentj-core",
  "libc",
@@ -1378,6 +1382,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
 
 [[package]]
+name = "matchers"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d1525a2a28c7f4fa0fc98bb91ae755d1e2d1505079e05539e35bc876b5d65ae9"
+dependencies = [
+ "regex-automata",
+]
+
+[[package]]
 name = "matchit"
 version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2515,10 +2528,14 @@ version = "0.3.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cb7f578e5945fb242538965c2d0b04418d38ec25c79d160cd279bf0731c8d319"
 dependencies = [
+ "matchers",
  "nu-ansi-term",
+ "once_cell",
+ "regex-automata",
  "sharded-slab",
  "smallvec",
  "thread_local",
+ "tracing",
  "tracing-core",
  "tracing-log",
 ]

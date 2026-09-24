@@ -56,6 +56,11 @@ WebSocket 与 raw TCP 同端口共存，通过连接分类器按首字节区分 
 - **WS cookie 通道（HTTP 层，v0.19.0）**：`/ws` upgrade 除既有双通道外新增第三条通道——cookie（须携带**同源** `Origin`，其 authority 必须等于 `Host`）+ 有效会话即可升级；cookie 通道连接免 `initialize.token`。`?token=` 与 `initialize.token` 两通道语义不变；无有效通道仍 403。
 - **版本探针 `GET /version`（HTTP 层，v0.20.0，未鉴权）**：返回 `200 application/json` 且 `Cache-Control: no-store`；JSON 形状 `{product_version, protocol_version, dist_present, dist: {product_version, protocol_version, build_time} | null}`（`product_version` = 内核二进制版本，`protocol_version` = 编译期协议常量；`dist` = 挂载 dist 的 `version.json` 事实，缺失或不可解析时为 `null`，此时仍返回 200）。与 `/login` 同类显式注册为路由（**不置于登录门后**），并**优先于 SPA fallback**——否则会被 `index.html` 以 200 吞掉。
 - **登录限流（HTTP 层，v0.20.0）**：`/login` POST 按来源 IP 计数失败尝试，第 5 次失败起指数锁定（`min(30s × 2^(n−5), 900s)`，即 30s 起、×2、封顶 15min）；锁定期响应 `429` + `Retry-After: <秒，向上取整、≥1>`，且**不校验 token**（避免时序侧信道），锁定期内的新尝试继续升级锁定；登录成功清零。内存态、无持久化，重启即清空。
+- **限流可观测性（HTTP 层，v0.21.0）**：`login_limiter` 在状态变化点发出 tracing 事件——`warn!` 仅锁定**新触发**（避免攻击流量下日志洪泛）、`info!` 成功登录（含 `prior_failures`）、`debug!` 逐次失败与锁定期拒绝明细；进程内聚合计数经 `GET /version` 加性暴露（见下）。CLI 日志订阅器改用 `EnvFilter`（`RUST_LOG` 可配，未设时默认 `info`，输出与 v0.20.0 逐字一致）。限流策略语义（阈值/锁定/429/Retry-After/成功清零）零变化。
+- **`GET /version` 加性字段（HTTP 层，v0.21.0）**：既有形状 `{product_version, protocol_version, dist_present, dist}` 追加两块（未鉴权语义与 `Cache-Control: no-store` 不变；**不含 per-IP 明细**）：
+  - `login_limiter`：`{attempts, failures, lockouts, blocked, locked_now, tracked_ips}`。`attempts` = 到达 limiter 的 `/login` POST 次数（含成功、失败、锁定期拒绝）；`failures` = token 校验失败次数（不含锁定期拒绝）；`lockouts` = 锁定**新触发**次数（`locked_until` 由非锁定态进入锁定态，延长不计）；`blocked` = 锁定期被拒请求数（未校验 token）；`locked_now` / `tracked_ips` = 快照时处于锁定中的 IP 数与 entries 条目数（扫描推导）。
+  - `integrity`：`{manifest_present, checked, mismatched, missing}`（见下）。
+- **资产完整性清单 `asset-manifest.json`（构建产物 + 内核启动校验，v0.21.0）**：构建期在 `dist/` 生成 `{"algorithm":"sha384","assets":{"/path":"sha384-<base64>"}}`，覆盖全部 Rollup bundle 产物（entry chunk、动态 chunk、CSS 及被引用资产）与 **SRI 注入之后**重写过的 `/index.html`；`assets` 键必须为以 `/` 开头、不含 `..` 的规范服务路径（违反 → 清单视为不可解析），值格式与 SRI `integrity` 同源（单遍哈希，逐字节一致）。**排除** `version.json`（由版本比对覆盖）、`asset-manifest.json` 自身与 `public/` 透传文件（不经 bundle，如 `favicon.svg`）。内核启动读取清单并逐文件比对哈希：缺失 / 不可解析 / 哈希不符 / 文件缺失 → 追加 `startup_warnings()` 警告（打印 stderr，**不阻断服务**；定位为部署完整性，非安全边界）；摘要进 `GET /version` 的 `integrity` 块（`manifest_present` = 是否存在且可解析、`checked` = 已校验文件数、`mismatched` = 哈希不符数、`missing` = 清单列出但文件缺失数）。
 - **说明**：以上均为 **HTTP 层行为**；wire 契约、方法/schema 与 `PROTOCOL_VERSION`（`0.13.0`）不变。
 - **生命周期**：WS 连接不参与「最后连接断开 → 全局关闭」（浏览器会话短，不决定内核存亡）；`max_connections` 对 WS 独立计数。
 
@@ -949,6 +954,13 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 - **HTTP 面新增**：`GET /version` 未鉴权版本探针（`200 application/json` + `Cache-Control: no-store`，返回内核 `product_version`/`protocol_version` 与 dist 版本事实 `dist_present`/`dist`；显式路由优先于 SPA fallback、不置于登录门后）；`/login` POST 登录限流（按来源 IP 计数，第 5 次失败起指数锁定 30s ×2 封顶 15min，`429 + Retry-After`（秒、向上取整、≥1），锁定期不校验 token 且新尝试升级锁定，成功清零）。
 - **构建工具链新增**：web 构建生成 `dist/version.json`（`product_version`/`protocol_version`/`build_time`）并向入口 HTML 同源引用注入 `sha384` `integrity`（本地引用缺失即构建失败）；内核启动比对 dist 版本，缺失/不可解析/不一致 → 启动警告（**不阻断服务**）。
 - 另含**纯前端** TUI 侧栏 `Files` 视图（复用既有 `file/list`，无 wire 变化）；全部为 HTTP 层与构建期新增，此前客户端零破坏；工作区 `0.19.0 → 0.20.0`。
+
+#### 0.21.0（限流可观测 + 资产完整性 + TUI 搜索 + Web 焦点作用域：HTTP 层与前端）
+
+- **wire 零变化**：方法面、`schemas/*` 与 `PROTOCOL_VERSION`（保持 `0.13.0`）均不变；新增能力全部位于 **HTTP 层与前端**（`GET /version` 加性块为 HTTP 静态面字段，**非** JSON-RPC 方法）。
+- **HTTP 面新增（① ②）**：`login_limiter` tracing 事件（锁定新触发 `warn`、成功登录 `info`、明细 `debug`）+ CLI `RUST_LOG` 支持（`EnvFilter`，默认 `info`）；`GET /version` 加性 `login_limiter` 聚合计数块（`attempts`/`failures`/`lockouts`/`blocked`/`locked_now`/`tracked_ips`，无 per-IP 明细）与 `integrity` 清单摘要块（`manifest_present`/`checked`/`mismatched`/`missing`）；构建期 `dist/asset-manifest.json`（`sha384` 覆盖全部 bundle 产物 + 重写后 `index.html`，排除 `version.json`/自身/`public/` 透传）与内核启动逐文件校验（警告并入 `startup_warnings()`，**不阻断服务**）。限流策略语义（429/Retry-After/锁定升级/清零）零变化。
+- **纯前端新增（③ ④）**：TUI Files 搜索（`s` 进入 + `depth=8` 单请求扁平索引 + 客户端过滤，`Esc` 清空后退出、`Enter` 跳转并展开祖先、`r` 重建、`truncated` 显示 `· partial`）与展开状态持久化 `filetree.json`（按本地项目键，per-key ≤100、恢复 ≤50、失效路径静默跳过）；Web 焦点作用域（`useShortcutScope`：焦点位于侧栏且无模态/菜单时 `f`/`n`/`r`/`j`/`k`/`Esc` 生效，**不劫持 Tab**）+ 文件树/会话列表 roving 键盘导航 + `ModalDialog` 焦点恢复。均为前端行为，无 wire 变化。
+- 全部为 HTTP 层与服务/前端行为新增，此前客户端零破坏；工作区 `0.20.1 → 0.21.0`。
 
 #### 后续版本
 

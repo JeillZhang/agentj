@@ -207,6 +207,73 @@ test("pointercancel ends the resize without leaving drag state behind", () => {
   expect(frame.dataset.resizing).toBeUndefined();
 });
 
+test("restores focus to the opener on unmount", () => {
+  const { rerender } = render(
+    <>
+      <button data-testid="open">open</button>
+    </>,
+  );
+  const trigger = screen.getByTestId("open");
+  trigger.focus();
+  rerender(
+    <>
+      <button data-testid="open">open</button>
+      <ModalDialog title="t" onClose={() => {}}>x</ModalDialog>
+    </>,
+  );
+  screen.getByLabelText("close").focus();
+  expect(document.activeElement).toBe(screen.getByLabelText("close"));
+  rerender(
+    <>
+      <button data-testid="open">open</button>
+    </>,
+  );
+  expect(document.activeElement).toBe(screen.getByTestId("open"));
+});
+
+test("leaves focus alone without throwing when the opener was removed from the DOM", () => {
+  const { rerender } = render(
+    <>
+      <button data-testid="open">open</button>
+    </>,
+  );
+  screen.getByTestId("open").focus();
+  rerender(
+    <>
+      <button data-testid="open">open</button>
+      <ModalDialog title="t" onClose={() => {}}>x</ModalDialog>
+    </>,
+  );
+  expect(() => rerender(<></>)).not.toThrow();
+  expect(document.activeElement).toBe(document.body);
+});
+
+test("nested dialog restores focus to the element focused before it opened", () => {
+  const { rerender } = render(
+    <ModalDialog title="A" onClose={() => {}}>
+      <button data-testid="open-inner">open inner</button>
+    </ModalDialog>,
+  );
+  screen.getByTestId("open-inner").focus();
+  rerender(
+    <>
+      <ModalDialog title="A" onClose={() => {}}>
+        <button data-testid="open-inner">open inner</button>
+      </ModalDialog>
+      <ModalDialog title="B" onClose={() => {}}>b</ModalDialog>
+    </>,
+  );
+  const innerClose = screen.getByLabelText("B").querySelector('[aria-label="close"]') as HTMLElement;
+  innerClose.focus();
+  expect(document.activeElement).toBe(innerClose);
+  rerender(
+    <ModalDialog title="A" onClose={() => {}}>
+      <button data-testid="open-inner">open inner</button>
+    </ModalDialog>,
+  );
+  expect(document.activeElement).toBe(screen.getByTestId("open-inner"));
+});
+
 test("re-clamps a manually sized dialog when the viewport shrinks", () => {
   render(<ModalDialog title="A" onClose={() => {}}><p /></ModalDialog>);
   const dialog = screen.getByLabelText("A");

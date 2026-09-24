@@ -4,7 +4,10 @@
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
+
+use tracing::{debug, info, warn};
 
 #[derive(Clone, Debug)]
 pub(crate) struct Policy {
@@ -40,9 +43,28 @@ struct Entry {
     last: Instant,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct Counters {
+    pub(crate) attempts: u64,
+    pub(crate) failures: u64,
+    pub(crate) lockouts: u64,
+    pub(crate) blocked: u64,
+    pub(crate) locked_now: u64,
+    pub(crate) tracked_ips: u64,
+}
+
+#[derive(Default)]
+struct CounterAtoms {
+    attempts: AtomicU64,
+    failures: AtomicU64,
+    lockouts: AtomicU64,
+    blocked: AtomicU64,
+}
+
 pub(crate) struct LoginLimiter {
     policy: Policy,
     entries: Mutex<HashMap<IpAddr, Entry>>,
+    counters: CounterAtoms,
 }
 
 impl LoginLimiter {
@@ -54,15 +76,27 @@ impl LoginLimiter {
         Self {
             policy,
             entries: Mutex::new(HashMap::new()),
+            counters: CounterAtoms::default(),
         }
     }
 
     pub(crate) fn check(&self, ip: IpAddr, now: Instant) -> Throttle {
-        let mut entries = self.entries.lock().expect("login limiter");
-        Self::prune_idle(&mut entries, ip, self.policy.idle_ttl, now);
-        entries
-            .get(&ip)
-            .map_or(Throttle::Allow, |e| Self::status(e, now))
+        self.counters.attempts.fetch_add(1, Ordering::Relaxed);
+        let throttle = {
+            let mut entries = self.entries.lock().expect("login limiter");
+            Self::prune_idle(&mut entries, ip, self.policy.idle_ttl, now);
+            entries
+                .get(&ip)
+                .map_or(Throttle::Allow, |e| Self::status(e, now))
+        };
+        if let Throttle::Locked { retry_after } = &throttle {
+            debug!(
+                ip = %ip,
+                retry_after_secs = retry_after.as_secs(),
+                "login blocked while locked"
+            );
+        }
+        throttle
     }
 
     pub(crate) fn record_failure(&self, ip: IpAddr, now: Instant) -> Throttle {
@@ -76,20 +110,61 @@ impl LoginLimiter {
             locked_until: None,
             last: now,
         });
+        let was_locked = matches!(Self::status(entry, now), Throttle::Locked { .. });
+        if was_locked {
+            self.counters.blocked.fetch_add(1, Ordering::Relaxed);
+        } else {
+            self.counters.failures.fetch_add(1, Ordering::Relaxed);
+        }
         entry.failures = entry.failures.saturating_add(1);
         entry.last = now;
         if entry.failures < self.policy.free_attempts {
+            debug!(ip = %ip, failures = entry.failures, "login failure");
             return Throttle::Allow;
         }
         let lockout = self.lockout_for(entry.failures);
         entry.locked_until = Some(now + lockout);
+        let retry_after_secs = lockout.as_secs();
+        if was_locked {
+            debug!(ip = %ip, retry_after_secs, "login lockout extended");
+        } else {
+            self.counters.lockouts.fetch_add(1, Ordering::Relaxed);
+            warn!(
+                ip = %ip,
+                failures = entry.failures,
+                retry_after_secs,
+                "login lockout"
+            );
+        }
         Throttle::Locked {
             retry_after: lockout,
         }
     }
 
     pub(crate) fn record_success(&self, ip: IpAddr) {
-        self.entries.lock().expect("login limiter").remove(&ip);
+        let prior_failures = self
+            .entries
+            .lock()
+            .expect("login limiter")
+            .remove(&ip)
+            .map_or(0, |entry| entry.failures);
+        info!(ip = %ip, prior_failures, "login ok");
+    }
+
+    pub(crate) fn counters(&self, now: Instant) -> Counters {
+        let entries = self.entries.lock().expect("login limiter");
+        let locked_now = entries
+            .values()
+            .filter(|e| matches!(Self::status(e, now), Throttle::Locked { .. }))
+            .count() as u64;
+        Counters {
+            attempts: self.counters.attempts.load(Ordering::Relaxed),
+            failures: self.counters.failures.load(Ordering::Relaxed),
+            lockouts: self.counters.lockouts.load(Ordering::Relaxed),
+            blocked: self.counters.blocked.load(Ordering::Relaxed),
+            locked_now,
+            tracked_ips: entries.len() as u64,
+        }
     }
 
     fn lockout_for(&self, failures: u32) -> Duration {
@@ -235,6 +310,151 @@ mod tests {
             limiter.record_failure(ip("10.0.0.1"), at(t0, 21)),
             Throttle::Allow,
             "evicted entry restarts from zero"
+        );
+    }
+
+    #[test]
+    fn counters_track_attempts_failures_lockouts_and_blocks() {
+        let limiter = LoginLimiter::with_policy(Policy {
+            free_attempts: 3,
+            ..Policy::default()
+        });
+        let t0 = Instant::now();
+        let ip = ip("198.51.100.9");
+        for _ in 0..2 {
+            let _ = limiter.check(ip, t0); // attempts += 1
+            let _ = limiter.record_failure(ip, t0); // failures += 1
+        }
+        let snap = limiter.counters(t0);
+        assert_eq!(
+            (snap.attempts, snap.failures, snap.lockouts, snap.blocked),
+            (2, 2, 0, 0)
+        );
+        let _ = limiter.check(ip, t0);
+        assert!(matches!(
+            limiter.record_failure(ip, t0),
+            Throttle::Locked { .. }
+        ));
+        assert_eq!(
+            limiter.counters(t0).lockouts,
+            1,
+            "3rd failure starts the lockout"
+        );
+        let _ = limiter.check(ip, t0); // blocked attempt
+        let _ = limiter.record_failure(ip, t0); // escalation
+        let snap = limiter.counters(t0);
+        assert_eq!(
+            (
+                snap.blocked,
+                snap.lockouts,
+                snap.locked_now,
+                snap.tracked_ips
+            ),
+            (1, 1, 1, 1)
+        );
+        limiter.record_success(ip);
+        let snap = limiter.counters(t0);
+        assert_eq!(
+            (snap.failures, snap.tracked_ips),
+            (3, 0),
+            "cumulative counters never reset"
+        );
+    }
+
+    #[derive(Clone, Default)]
+    struct CaptureWriter(std::sync::Arc<Mutex<Vec<u8>>>);
+
+    impl std::io::Write for CaptureWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for CaptureWriter {
+        type Writer = CaptureWriter;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    fn capture() -> (CaptureWriter, tracing::subscriber::DefaultGuard) {
+        let buf = CaptureWriter::default();
+        let sub = tracing_subscriber::fmt()
+            .with_writer(buf.clone())
+            .with_ansi(false)
+            .with_max_level(tracing::Level::DEBUG)
+            .finish();
+        let guard = tracing::subscriber::set_default(sub);
+        (buf, guard)
+    }
+
+    fn captured(buf: &CaptureWriter) -> String {
+        String::from_utf8(buf.0.lock().unwrap().clone()).unwrap()
+    }
+
+    #[test]
+    fn lockout_emits_warn_and_success_emits_info() {
+        let (buf, _guard) = capture();
+        let limiter = LoginLimiter::with_policy(Policy {
+            free_attempts: 1,
+            ..Policy::default()
+        });
+        let t0 = Instant::now();
+        let ip = ip("203.0.113.5");
+        let _ = limiter.record_failure(ip, t0);
+        limiter.record_success(ip);
+        let out = captured(&buf);
+        assert!(out.contains("login lockout"), "warn expected: {out}");
+        assert!(out.contains("ip=203.0.113.5"), "ip field expected: {out}");
+        assert!(
+            out.contains("retry_after_secs=30"),
+            "retry_after_secs field expected: {out}"
+        );
+        assert!(out.contains("login ok"), "info expected: {out}");
+        assert!(
+            out.contains("prior_failures=1"),
+            "prior_failures field expected: {out}"
+        );
+    }
+
+    #[test]
+    fn ordinary_failure_and_blocked_attempt_emit_debug_lines() {
+        let (buf, _guard) = capture();
+        let limiter = LoginLimiter::with_policy(Policy {
+            free_attempts: 3,
+            ..Policy::default()
+        });
+        let t0 = Instant::now();
+        let who = ip("198.51.100.44");
+        assert_eq!(limiter.record_failure(who, t0), Throttle::Allow);
+        let _ = limiter.record_failure(who, at(t0, 1));
+        let _ = limiter.record_failure(who, at(t0, 2)); // 3rd failure locks
+        assert!(matches!(
+            limiter.check(who, at(t0, 3)),
+            Throttle::Locked { .. }
+        ));
+        let out = captured(&buf);
+        let failure_line = out
+            .lines()
+            .find(|line| line.contains("login failure"))
+            .unwrap_or_else(|| panic!("DEBUG failure line expected: {out}"));
+        assert!(
+            failure_line.contains("DEBUG"),
+            "ordinary failure must be DEBUG: {failure_line}"
+        );
+        let blocked_line = out
+            .lines()
+            .find(|line| line.contains("login blocked while locked"))
+            .unwrap_or_else(|| panic!("DEBUG blocked line expected: {out}"));
+        assert!(
+            blocked_line.contains("DEBUG"),
+            "blocked attempt must be DEBUG: {blocked_line}"
         );
     }
 }
