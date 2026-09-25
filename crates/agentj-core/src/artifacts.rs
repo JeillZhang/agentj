@@ -162,35 +162,25 @@ pub fn write_change(
         };
     }
     let text = outcome.text.unwrap_or_default();
-    if text.len() > DIFF_MAX_BYTES {
+    let (diff, diff_truncated, total_bytes) = if text.len() > DIFF_MAX_BYTES {
         let total = text.len() as u64;
-        FileChangeArtifact {
-            path: path.to_string(),
-            op,
-            additions: outcome.additions,
-            deletions: outcome.deletions,
-            tool_call_id: tid,
-            diff: Some(text[..DIFF_MAX_BYTES].to_string()),
-            diff_truncated: true,
-            run_id: None,
-            seq: None,
-            source: Some(FileChangeSource::Write),
-            total_bytes: Some(total),
-        }
+        let cut = text.floor_char_boundary(DIFF_MAX_BYTES);
+        (Some(text[..cut].to_string()), true, Some(total))
     } else {
-        FileChangeArtifact {
-            path: path.to_string(),
-            op,
-            additions: outcome.additions,
-            deletions: outcome.deletions,
-            tool_call_id: tid,
-            diff: Some(text),
-            diff_truncated: false,
-            run_id: None,
-            seq: None,
-            source: Some(FileChangeSource::Write),
-            total_bytes: None,
-        }
+        (Some(text), false, None)
+    };
+    FileChangeArtifact {
+        path: path.to_string(),
+        op,
+        additions: outcome.additions,
+        deletions: outcome.deletions,
+        tool_call_id: tid,
+        diff,
+        diff_truncated,
+        run_id: None,
+        seq: None,
+        source: Some(FileChangeSource::Write),
+        total_bytes,
     }
 }
 
@@ -571,6 +561,25 @@ mod tests {
         assert!(art.diff.as_ref().unwrap().len() <= 64 * 1024);
     }
 
+    #[test]
+    fn write_change_truncation_handles_utf8_boundary() {
+        // Diff is header (16) + "+" + after + "\n"; choose a_len so
+        // 64 KiB cut lands inside the 4-byte emoji.
+        // Header 16 + "+" 1 = 17; emoji start = 17 + a_len.
+        // Need start < 65536 < start+4 => a_len in 65516..65518.
+        let s = "a".repeat(65517) + "😀";
+        let c = write_change("big.txt", None, &s, Some("c1"));
+        assert!(c.diff.is_some(), "diff must be Some");
+        let d = c.diff.unwrap();
+        assert!(d.len() <= DIFF_MAX_BYTES, "truncated prefix must fit cap");
+        assert!(c.diff_truncated, "must be flagged truncated");
+        assert!(c.total_bytes.is_some(), "total_bytes must be Some");
+        assert!(c.total_bytes.unwrap() > DIFF_MAX_BYTES as u64);
+        // Original diff length is header + prefix overhead; total_bytes
+        // must be > cap, not necessarily equal to s.len().
+        assert!(d.is_char_boundary(d.len()));
+        assert_eq!(c.source, Some(FileChangeSource::Write));
+    }
     #[test]
     fn bash_changes_tagged_bash() {
         let changes = bash_file_changes(vec![("a.txt", 5, 1), ("b.txt", 2, 0)], Some("call2"));
