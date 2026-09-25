@@ -43,14 +43,15 @@ function dedup(rows: FileChangeRow[]): FileChangeRow[] {
 }
 
 function SourceBadge({ row }: { row: FileChangeRow }) {
-  if (row.source === "bash") {
+  const effectiveSource = row.source ?? (row.diff ? "write" : undefined);
+  if (effectiveSource === "bash") {
     return (
       <span className="src-badge src-bash" title="bash 变更无 diff，仅计数">
         bash
       </span>
     );
   }
-  if (row.source === "write") {
+  if (effectiveSource === "write") {
     return <span className="src-badge src-write">write</span>;
   }
   return null;
@@ -182,7 +183,8 @@ export default function ChangeList({ changes, rows, emptyText, highlightedPath, 
             <div className="file-changes">
               {displayRows.map((row) => {
                 const compositeKey = keyOf(row);
-                const isBash = row.source === "bash";
+                const effectiveSource = row.source ?? (row.diff ? "write" : undefined);
+                const isBash = effectiveSource === "bash";
                 const isExpandable = row.diff !== null && !isBash;
                 const isOpen = expandedKey === compositeKey;
                 if (!isExpandable) {
