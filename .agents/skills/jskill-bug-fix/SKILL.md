@@ -120,11 +120,22 @@ After branch finishing is resolved, output:
    Fix: <summary of change>
    Result: <merged/PR created/kept/discarded>
 ```
-
 `jskill-bug-fix` is an independent entry point. No further pipeline handoff.
 
-## Bug Fix Discipline (NON-NEGOTIABLE)
+### Global Subagent Timeout Policy（全量子 agent 10 min 看门狗）
 
+**Scope:** 本 skill 内所有子 agent 派发（Phase 1 `systematic-debugging` 假设并行验证 + Oracle 正交分析 + Phase 5 `requesting-code-review`）**统一 10 min 超时**。此为 bug-fix 独立看门狗，与 feature-dev / test-acceptance 的同规正交。
+
+**Dispatch 必须带超时：** 每次派发显式设 `timeout: 600s`（10 min）。
+
+**10 min 到点检查（先判完成，再判卡死）：**
+1. **已完成** — 子 agent 已产出预期交付（debugging：≥3 假设 + 根因证据；Oracle：新视角；review：checklist 结论）→ 直接采纳。
+2. **卡死/无输出** — 10 min 内无任何输出 → 判定卡死 → **终止会话** → 用**相同 brief** 重新派发全新子 agent（fresh session）。
+3. **有输出但未完成** → 给予一次 `≤5 min` 宽限；仍无进展则按 (2) 终止重派。**绝不无界等待。**
+
+**重派上限与升级：** 单一派发累计 **≤2 次重派**（含首发共 3 次尝试）。达到上限仍超时 → 标记 `blocked`，升级 Oracle/报告用户。
+
+## Bug Fix Discipline (NON-NEGOTIABLE)
 | Rule | Why |
 |------|-----|
 | **Fix minimally** | One bug, one fix. No "while I'm here" refactoring. |
