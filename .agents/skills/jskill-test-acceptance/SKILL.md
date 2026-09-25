@@ -72,7 +72,7 @@ flowchart TB
 ### Phase 4: 版本 bump + 收尾
 
 - 验收全部通过后，统一 bump **产品**版本 patch（如 `Cargo.toml`，遵循 AGENTS.md「bugfix → patch」）；无版本清单则跳过
-- 遵循 AGENTS.md 执行文档自动同步（AGENTS.md / README.md / summary_and_next.md）
+- 遵循 AGENTS.md 执行文档自动同步（AGENTS.md / README.md / summary_and_next_se.md + summary_and_next_fe.md，按触及侧）
 
 ### Phase 5: 判定与报告
 
@@ -104,7 +104,7 @@ flowchart TB
      --title "<conventional-commits 风格标题>" --body "<描述>"
    ```
 3. **Title 遵循仓库惯例**（conventional commits），如：`feat: <特性简述> + acceptance fixes (BUG-00N...) + bump to x.y.z`
-4. **Body 包含**：功能摘要（来自 summary / spec）、验收结果（Bug 总数/级别、回归轮次、门禁结果、版本 bump）、fix 提交列表
+4. **Body 包含**：功能摘要（来自 summary (se/fe) / spec）、验收结果（Bug 总数/级别、回归轮次、门禁结果、版本 bump）、fix 提交列表
 5. 输出 PR 链接
 
 **失败处理：** `gh` 不可用或创建失败 → 输出错误与推送状态，提示用户手工创建，不静默跳过、不虚构链接。
@@ -157,6 +157,23 @@ CONTEXT: Bug 条目 = <id/标题/级别/重现步骤>；特性范围 = <...>；�
 | 提交信息英文 | `fix: <bug-id> <英文简述>`（遵循 AGENTS.md） |
 
 违规处理：驳回，要求 bug-fixer 拆分/重写提交，直至合规。
+
+## Global Subagent Timeout Policy（全量子 agent 10 min 看门狗）
+
+**Scope:** 本 skill 内所有子 agent 派发（Phase 1 `ajteam-tester` test 模式 + Phase 2 `ajteam-bug-fixer` 逐 Bug + Phase 3 `ajteam-tester` regression 模式 + Oracle/escalation 派发）**统一 10 min 超时**。
+
+**Dispatch 必须带超时：** 每次 `task(subagent_type=...)` 显式设 `timeout: 600s`（10 min）。编排器以 10 min 为 deadline 等待；不得无界等待。
+
+**10 min 到点检查（先判完成，再判卡死）：**
+1. **已完成** — 子 agent 已产出预期完成信号（tester：`bugs.md` 已更新含新 Bug 或 `报告零 Bug` 且门禁输出可查；bug-fixer：对应 `BUG-00N` 的失败测试已通过 + 门禁不回归 + 已产生 `fix: <bug-id>` 单提交）→ 直接采纳，进入下一阶段。
+2. **卡死/无输出** — 10 min 内无任何输出（无 stdout/stderr 增量、无 `bugs.md`/文件变更、心跳缺失）→ 判定卡死 → **终止该子 agent 会话** → 用**相同 prompt/brief** 重新派发全新子 agent（fresh session，不复用上下文；bug-fixer 仍遵循每 Bug 一提交纪律）。
+3. **有输出但未完成**（进行中）→ 给予一次 `≤5 min` 宽限；宽限内仍无进展则按 (2) 终止重派。**绝不无界等待。**
+
+**重派上限与升级：**
+- 单一派发累计 **≤2 次重派**（含首发共 3 次尝试）。达到上限仍卡死/超时 → 该项标记 `blocked`，上报用户/Oracle，**绝不静默通过**；回归阶段的 `blocked` 按既有「3 轮未收敛 → STOP」规则结算。
+- 每次超时/重派记录到 `.superpowers/acceptance/bugs.md` 对应条目的备注与编排日志。
+
+**与既有门的区别：** `Phase 3 回归 3 轮 cap` / `bug-fixer 3 次失败 cap` 针对内容不达标；本 10 min 看门狗针对**调度层面卡死/无响应**，两者叠加生效。
 
 ## 循环终止条件
 

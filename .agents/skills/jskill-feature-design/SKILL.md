@@ -43,7 +43,7 @@ flowchart TB
 
 ### Phase 0: Intake & Classify
 
-1. Read the project summary file (per AGENTS.md, e.g. `.agents/summary/summary_and_next.md`) to understand current project state and pending features.
+1. Read both project summary files (per AGENTS.md): `.agents/summary/summary_and_next_se.md` (backend) and `.agents/summary/summary_and_next_fe.md` (frontend) to understand current project state and pending features.
 2. Read `docs/superpowers/specs/` for any relevant existing design docs.
 3. Restate the feature request in your own words. **Classify its size:**
 
@@ -127,6 +127,19 @@ Do NOT invoke `jskill-feature-plan` automatically — let the user start it when
 ## 依赖
 <需要的前置条件、外部依赖、阻塞项>
 ```
+
+### Global Subagent Timeout Policy（全量子 agent 10 min 看门狗）
+
+**Scope:** 本 skill 内所有子 agent 派发（Phase 1 并行 explore / librarian + brainstorming 子流程派发）**统一 10 min 超时**。此为设计阶段独立看门狗，验收/开发阶段各自另有同规但不共享计数。
+
+**Dispatch 必须带超时：** 每次派发显式设 `timeout: 600s`（10 min）。编排器以 10 min 为 deadline 等待；不得无界等待。
+
+**10 min 到点检查（先判完成，再判卡死）：**
+1. **已完成** — 子 agent 已产出预期交付（explore：返回模式/约束摘要；librarian：外部 API 结论）→ 直接采纳。
+2. **卡死/无输出** — 10 min 内无任何输出（无 stdout/stderr 增量、无文件变更、心跳缺失）→ 判定卡死 → **终止该子 agent 会话** → 用**相同任务描述** 重新派发全新子 agent（fresh session）。
+3. **有输出但未完成** → 给予一次 `≤5 min` 宽限；仍无进展则按 (2) 终止重派。**绝不无界等待。**
+
+**重派上限与升级：** 单一派发累计 **≤2 次重派**（含首发共 3 次尝试）。达到上限仍超时 → 标记该调研项为 `blocked`，主流程记录缺失并继续（设计不因单点调研阻塞），必要时升级 Oracle/报告用户。
 
 ## HARD GATE
 
