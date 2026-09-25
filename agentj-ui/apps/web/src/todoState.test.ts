@@ -3,6 +3,7 @@ import type { ProgressFrame } from "@agentj/sdk";
 import {
   EMPTY_TODO_STATE,
   applyTodoFrame,
+  focusRun,
   todosFromHistory,
   type TodoState,
 } from "./todoState";
@@ -10,6 +11,16 @@ import type { RawEvent } from "./Trajectory";
 
 const todoFrame = (revision: number, items: { id: string; content: string; status: string }[]): ProgressFrame =>
   ({ kind: "todo", session_id: "s1", revision, items });
+
+const runFrame = (
+  runId: string | undefined,
+  revision: number,
+  items: { id: string; content: string; status: string }[] = [],
+): ProgressFrame =>
+  ({ kind: "todo", session_id: "s1", runId, revision, items }) as unknown as ProgressFrame;
+
+const UUID_A = "11111111-1111-4111-8111-111111111111";
+const UUID_B = "22222222-2222-4222-8222-222222222222";
 
 describe("applyTodoFrame", () => {
   it("drops stale revisions", () => {
@@ -44,6 +55,31 @@ describe("applyTodoFrame", () => {
       { id: "b", content: "known task", status: "in_progress" },
     ]);
   });
+
+  it("gates revisions per run and drops stale frames", () => {
+    const base = applyTodoFrame(EMPTY_TODO_STATE, runFrame(UUID_A, 2, [{ id: "a", content: "t", status: "pending" }]));
+    const stale = applyTodoFrame(base, runFrame(UUID_A, 1, []));
+    expect(stale).toBe(base);
+    const fresh = applyTodoFrame(base, runFrame(UUID_A, 3, []));
+    expect(fresh.revision).toBe(3);
+    const otherRun = applyTodoFrame(base, runFrame(UUID_B, 1, []));
+    expect(otherRun.revision).toBe(1);
+  });
+
+  it("falls back to the legacy revision gate when run_id is absent", () => {
+    const state: TodoState = { revision: 5, items: [] };
+    expect(applyTodoFrame(state, todoFrame(4, []))).toBe(state);
+    expect(applyTodoFrame(state, todoFrame(6, [])).revision).toBe(6);
+  });
+
+  it("buckets an illegal run_id under null instead of throwing", () => {
+    const illegal = applyTodoFrame(EMPTY_TODO_STATE, runFrame("not-a-uuid", 1, []));
+    expect(illegal.revision).toBe(1);
+    const byRun = (illegal as unknown as { byRun: Map<string | null, unknown> }).byRun;
+    expect(byRun.has(null)).toBe(true);
+    expect(applyTodoFrame(illegal, runFrame(undefined, 0, []))).toBe(illegal);
+    expect(applyTodoFrame(illegal, runFrame(undefined, 2, [])).revision).toBe(2);
+  });
 });
 
 describe("todosFromHistory", () => {
@@ -70,5 +106,44 @@ describe("todosFromHistory", () => {
     expect(todosFromHistory([{ session_id: "s1", seq: 1, value: { kind: "text", content: "x" } }])).toBe(
       EMPTY_TODO_STATE,
     );
+  });
+});
+
+describe("focusRun", () => {
+  it("switches to the selected bucket and preserves the per-run map metadata", () => {
+    let state = applyTodoFrame(
+      EMPTY_TODO_STATE,
+      runFrame(UUID_A, 2, [{ id: "a", content: "A", status: "pending" }]),
+    );
+    state = applyTodoFrame(state, runFrame(UUID_B, 5, [{ id: "b", content: "B", status: "completed" }]));
+    const mapBefore = (state as unknown as { byRun: Map<string | null, unknown> }).byRun;
+
+    const focused = focusRun(state, UUID_A);
+    expect(focused).not.toBe(state);
+    expect(focused.items).toEqual([{ id: "a", content: "A", status: "pending" }]);
+    expect(focused.revision).toBe(2);
+
+    const meta = focused as unknown as {
+      byRun: Map<string | null, unknown>;
+      runId: string;
+      currentRunId: string;
+    };
+    expect(meta.byRun).toBe(mapBefore);
+    expect(meta.byRun.get(UUID_B)).toEqual({
+      revision: 5,
+      items: [{ id: "b", content: "B", status: "completed" }],
+    });
+    expect(meta.runId).toBe(UUID_A);
+    expect(meta.currentRunId).toBe(UUID_A);
+    expect(Object.keys(focused).sort()).toEqual(["items", "revision"]);
+  });
+
+  it("returns the same reference for unknown runs and states without a map", () => {
+    const state = applyTodoFrame(
+      EMPTY_TODO_STATE,
+      runFrame(UUID_A, 1, [{ id: "a", content: "A", status: "pending" }]),
+    );
+    expect(focusRun(state, UUID_B)).toBe(state);
+    expect(focusRun(EMPTY_TODO_STATE, UUID_A)).toBe(EMPTY_TODO_STATE);
   });
 });

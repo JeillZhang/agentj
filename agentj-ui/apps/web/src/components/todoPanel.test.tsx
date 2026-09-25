@@ -46,9 +46,9 @@ test("section collapses when the title button is clicked", () => {
   expect(toggle).toHaveAttribute("aria-expanded", "true");
 });
 
-test("empty state shows protocol gap notice", () => {
+test("empty state shows 暂无任务", () => {
   render(<TodoPanel items={[]} />);
-  expect(screen.getByText("待协议支持")).toBeInTheDocument();
+  expect(screen.getByText("暂无任务")).toBeInTheDocument();
 });
 
 test("empty items always shows header with 0 / 0 counter", () => {
@@ -57,7 +57,7 @@ test("empty items always shows header with 0 / 0 counter", () => {
   expect(toggle).toHaveAttribute("aria-expanded", "true");
   expect(toggle).toHaveAttribute("aria-controls", "todo-section-body");
   expect(screen.getByText("0 / 0")).toBeInTheDocument();
-  expect(screen.getByText("待协议支持")).toBeInTheDocument();
+  expect(screen.getByText("暂无任务")).toBeInTheDocument();
 });
 
 test("collapsed empty items hides placeholder but keeps the header", () => {
@@ -67,7 +67,7 @@ test("collapsed empty items hides placeholder but keeps the header", () => {
   expect(toggle).toHaveAttribute("aria-expanded", "false");
   expect(screen.getByText("任务")).toBeInTheDocument();
   expect(screen.getByText("0 / 0")).toBeInTheDocument();
-  expect(screen.queryByText("待协议支持")).toBeNull();
+  expect(screen.queryByText("暂无任务")).toBeNull();
 });
 
 test("collapse state persists across unmount/remount", () => {

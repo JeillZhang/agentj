@@ -174,3 +174,36 @@ export function todosFromHistory(events: RawEvent[], runIdFilter?: string | null
   }
   return withMeta;
 }
+
+/**
+ * Focus an already-known run bucket while preserving the per-run map metadata.
+ * Object spread/rest drops the non-enumerable `byRun` attached by the reducers,
+ * so callers must use this instead of `{ ...state, items, revision }`.
+ * Returns the same reference when `byRun` is absent or has no entry for `runId`.
+ */
+export function focusRun(state: TodoState, runId: string): TodoState {
+  const byRun = state.byRun;
+  if (!(byRun instanceof Map)) return state;
+  const entry = byRun.get(runId);
+  if (!entry) return state;
+  const out: TodoState = { revision: entry.revision, items: entry.items };
+  Object.defineProperty(out, "runId", {
+    value: runId,
+    enumerable: false,
+    writable: true,
+    configurable: true,
+  });
+  Object.defineProperty(out, "currentRunId", {
+    value: runId,
+    enumerable: false,
+    writable: true,
+    configurable: true,
+  });
+  Object.defineProperty(out, "byRun", {
+    value: byRun,
+    enumerable: false,
+    writable: true,
+    configurable: true,
+  });
+  return out;
+}
