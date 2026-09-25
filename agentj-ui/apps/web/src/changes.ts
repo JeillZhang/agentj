@@ -120,7 +120,7 @@ export function applyFileChange(prev: FileChangeRow[], frame: ProgressFrame): Fi
   if (row === null) return prev;
   const outer = (frame as { runId?: string }).runId;
   const outerNorm = normalizeRunId(outer);
-  const eff = outerNorm ?? (row.runId ?? null);
+  const eff = (row.runId ?? outerNorm) ?? null;
   if (eff !== null) defineHidden(row, "runId", eff);
   else if (row.runId != null) delete (row as Record<string, unknown>).runId;
   return upsert(prev, row);
@@ -138,7 +138,7 @@ export function changesFromHistory(events: RawEvent[], runIdFilter?: string | nu
     if (row === null) continue;
     const outerRunRaw = value.run_id;
     const outerNorm = normalizeRunId(outerRunRaw);
-    const eff = outerNorm ?? (row.runId ?? null);
+    const eff = (row.runId ?? outerNorm) ?? null;
     if (eff !== null) defineHidden(row, "runId", eff);
     defineHidden(row, "eventSeq", typeof event.seq === "number" ? event.seq : undefined);
     if (hasFilter && eff !== normFilter) continue;
