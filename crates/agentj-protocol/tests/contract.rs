@@ -88,6 +88,7 @@ fn session_new_response_wire_shape() {
         id: Id::Number(2),
         result: serde_json::to_value(SessionNewResult {
             session_id: "s1".into(),
+            project_root: None,
         })
         .unwrap(),
     };
@@ -231,6 +232,7 @@ fn file_list_request_wire_shape() {
                 session_id: "s1".into(),
                 path: Some("src".into()),
                 depth: Some(1),
+                query: None,
             })
             .unwrap(),
         ),

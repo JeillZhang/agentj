@@ -18,6 +18,9 @@ pub struct SessionNewParams {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SessionNewResult {
     pub session_id: SessionId,
+    /// Effective canonicalized session root (cwd fallback). @since 0.14.0
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_root: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -53,6 +56,9 @@ pub struct SessionIdParams {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SessionStatusResult {
     pub status: SessionStatus,
+    /// Effective canonicalized session root (cwd fallback). @since 0.14.0
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_root: Option<String>,
 }
 
 /// `session/subscribe` params — subscribe to a session's running progress
@@ -207,8 +213,31 @@ mod tests {
     fn session_new_result_roundtrip() {
         let r = SessionNewResult {
             session_id: "s1".into(),
+            project_root: None,
         };
         assert_eq!(serde_json::to_value(&r).unwrap()["session_id"], "s1");
+    }
+
+    #[test]
+    fn session_new_result_project_root_is_additive() {
+        let none = SessionNewResult {
+            session_id: "s1".into(),
+            project_root: None,
+        };
+        assert!(
+            serde_json::to_value(&none)
+                .unwrap()
+                .get("project_root")
+                .is_none()
+        );
+        let some = SessionNewResult {
+            session_id: "s1".into(),
+            project_root: Some("/tmp/proj".into()),
+        };
+        assert_eq!(
+            serde_json::to_value(some).unwrap()["project_root"],
+            "/tmp/proj"
+        );
     }
 
     #[test]
@@ -246,8 +275,23 @@ mod tests {
     fn session_status_result_serialize() {
         let r = SessionStatusResult {
             status: SessionStatus::Archived,
+            project_root: None,
         };
         assert_eq!(serde_json::to_value(&r).unwrap()["status"], "archived");
+    }
+
+    #[test]
+    fn session_status_result_project_root_is_additive() {
+        let none = SessionStatusResult {
+            status: SessionStatus::Active,
+            project_root: None,
+        };
+        assert!(
+            serde_json::to_value(&none)
+                .unwrap()
+                .get("project_root")
+                .is_none()
+        );
     }
 
     #[test]

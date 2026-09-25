@@ -50,15 +50,42 @@ export type SearchState = {
   truncated: boolean;
   error: string | null;
   idx: number;
+  mode: "unknown" | "server" | "local";
 };
+
+type FileListSearchReply = { entries?: RawFileEntry[]; total?: number; truncated?: boolean };
 
 const SEARCH_INDEX_DEPTH = 8;
 const MAX_SEARCH_INDEX = 2000;
 const SEARCH_RESULT_LIMIT = 100;
+const SEARCH_DEBOUNCE_MS = 150;
 
 function withSearchQuery(state: SearchState, query: string): SearchState {
   const { rows, total } = filterEntries(state.index, query, SEARCH_RESULT_LIMIT);
   return { ...state, query, rows, total, idx: 0 };
+}
+
+// A reply carrying `total` is a server-ranked search (new kernel); without it the
+// old kernel ignored the query and the depth-8 listing becomes the local index.
+function applySearchReply(state: SearchState, query: string, reply: FileListSearchReply): SearchState {
+  const entries = reply.entries ?? [];
+  if (typeof reply.total === "number") {
+    const rows = buildSearchIndex(entries);
+    return {
+      ...state,
+      query,
+      mode: "server",
+      index: rows,
+      rows,
+      total: reply.total,
+      truncated: Boolean(reply.truncated),
+      idx: 0,
+      error: null,
+    };
+  }
+  const index = buildSearchIndex(entries.slice(0, MAX_SEARCH_INDEX));
+  const truncated = Boolean(reply.truncated) || entries.length > MAX_SEARCH_INDEX;
+  return withSearchQuery({ ...state, mode: "local", index, truncated, error: null }, query);
 }
 
 type SearchKey =
@@ -303,7 +330,8 @@ function useSessionState(): SessionState {
 }
 
 function useAppHandlers(client: RpcClient | null, st: SessionState) {
-  const { createNew, continueSession } = useSession(client);
+  const session = useSession(client);
+  const { createNew, continueSession } = session;
   const handleSelect = useCallback(
     async (id: string) => {
       st.setErr(null);
@@ -339,7 +367,7 @@ function useAppHandlers(client: RpcClient | null, st: SessionState) {
       st.setErr(msg);
     }
   }, [createNew, st]);
-  return { handleSelect, handleNew };
+  return { handleSelect, handleNew, projectRoot: session.projectRoot };
 }
 
 function getStatusLine(authError: string | null, status: TransportStatus): string {
@@ -399,7 +427,8 @@ function AppInner({ url, createTransport, backoffBaseMs = 1000 }: AppProps) {
   useCtrlCExit();
   const { status, authError, client } = useConnection(url, createTransport, backoffBaseMs);
   const st = useSessionState();
-  const { handleSelect, handleNew } = useAppHandlers(client, st);
+  const session = useAppHandlers(client, st);
+  const { handleSelect, handleNew } = session;
   const { pending: permReq, respond: handlePermRespond, clear: clearPerm } = usePermissionState(client);
   const { toggle: toggleTheme, palette } = useTheme();
   const statusLine = getStatusLine(authError, status);
@@ -415,15 +444,21 @@ function AppInner({ url, createTransport, backoffBaseMs = 1000 }: AppProps) {
     () => st.history.map((id) => ({ id, preview: id })),
     [st.history],
   );
-  // D11: browse state keys off the session's local project group; sessions
-  // without one are grouped under the first project, as the sidebar does.
-  const activeSession = sidebarSessions.find((s) => s.id === st.activeId);
-  const activeProjectKey = activeSession?.projectId ?? projects[0]?.id ?? DEFAULT_PROJECT_KEY;
+  // G12/D11: browse state keys off the session's effective filesystem root
+  // (the file/list sandbox), shared by same-root sessions; unknown → __default__.
+  const activeProjectKey = session.projectRoot ?? DEFAULT_PROJECT_KEY;
   const fileTree = useFileTree(client, sidebarView === "files" ? st.activeId : null, activeProjectKey);
   const filesRows = useMemo(() => flattenVisible(fileTree.nodes ?? []), [fileTree.nodes]);
   const [search, setSearch] = useState<SearchState | null>(null);
+  const searchRef = useRef<SearchState | null>(null);
+  const searchQueryRef = useRef("");
+  const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const revealRef = useRef<string | null>(null);
   const paletteCtrl = usePaletteControl(toggleTheme, search !== null);
+  useEffect(() => {
+    searchRef.current = search;
+    if (search === null) searchQueryRef.current = "";
+  }, [search]);
   useEffect(() => {
     setFilesIdx((v) => clampSelection(v, filesRows.length));
   }, [filesRows.length]);
@@ -466,34 +501,112 @@ function AppInner({ url, createTransport, backoffBaseMs = 1000 }: AppProps) {
   useEffect(() => {
     advanceReveal();
   }, [advanceReveal]);
-  const loadSearchIndex = useCallback(async (): Promise<void> => {
-    const sid = st.activeId;
-    if (!client || !sid) return;
-    try {
-      const reply = (await client.request(METHODS.fileList, {
-        session_id: sid, path: null, depth: SEARCH_INDEX_DEPTH,
-      })) as { entries?: RawFileEntry[]; truncated?: boolean };
-      const entries = reply.entries ?? [];
-      const index = buildSearchIndex(entries.slice(0, MAX_SEARCH_INDEX));
-      const truncated = Boolean(reply.truncated) || entries.length > MAX_SEARCH_INDEX;
-      setSearch((prev) =>
-        prev ? withSearchQuery({ ...prev, index, truncated, error: null }, prev.query) : prev);
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      setSearch((prev) => (prev ? { ...prev, index: [], rows: [], total: 0, idx: 0, error: msg } : prev));
+  const cancelSearchDebounce = useCallback((): void => {
+    if (searchTimerRef.current !== null) {
+      clearTimeout(searchTimerRef.current);
+      searchTimerRef.current = null;
     }
-  }, [client, st.activeId]);
+  }, []);
+  useEffect(() => cancelSearchDebounce, [cancelSearchDebounce]);
+  const runServerSearch = useCallback(
+    async (query: string, force = false): Promise<void> => {
+      const sid = st.activeId;
+      const current = searchRef.current;
+      if (!client || !sid || !current || searchQueryRef.current !== query) return;
+      if (!force && (current.mode === "local" || current.error !== null)) {
+        setSearch((prev) => (prev && prev.query === query ? withSearchQuery(prev, query) : prev));
+        return;
+      }
+      try {
+        const reply = (await client.request(METHODS.fileList, {
+          session_id: sid,
+          path: null,
+          depth: SEARCH_INDEX_DEPTH,
+          query,
+        })) as FileListSearchReply;
+        if (searchRef.current === null || searchQueryRef.current !== query) return;
+        setSearch((prev) => (prev && prev.query === query ? applySearchReply(prev, query, reply) : prev));
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        setSearch((prev) =>
+          prev && prev.query === query
+            ? { ...prev, index: [], rows: [], total: 0, idx: 0, error: msg }
+            : prev,
+        );
+      }
+    },
+    [client, st.activeId],
+  );
+  const loadSearchIndex = useCallback(
+    async (query: string): Promise<void> => {
+      const sid = st.activeId;
+      if (!client || !sid) return;
+      try {
+        const reply = (await client.request(METHODS.fileList, {
+          session_id: sid,
+          path: null,
+          depth: SEARCH_INDEX_DEPTH,
+        })) as FileListSearchReply;
+        if (searchRef.current === null || searchQueryRef.current !== query) return;
+        setSearch((prev) => (prev && prev.query === query ? applySearchReply(prev, query, reply) : prev));
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        setSearch((prev) =>
+          prev && prev.query === query
+            ? { ...prev, index: [], rows: [], total: 0, idx: 0, error: msg }
+            : prev,
+        );
+      }
+    },
+    [client, st.activeId],
+  );
+  const applyQuery = useCallback(
+    (next: string): void => {
+      cancelSearchDebounce();
+      searchQueryRef.current = next;
+      setSearch((prev) => {
+        if (!prev) return prev;
+        if (next.length === 0) return { ...prev, query: "", rows: [], total: 0, idx: 0 };
+        return { ...prev, query: next, idx: 0 };
+      });
+      if (next.length === 0) return;
+      searchTimerRef.current = setTimeout(() => {
+        searchTimerRef.current = null;
+        void runServerSearch(next);
+      }, SEARCH_DEBOUNCE_MS);
+    },
+    [cancelSearchDebounce, runServerSearch],
+  );
+  const rebuildSearch = useCallback((): void => {
+    cancelSearchDebounce();
+    const current = searchRef.current;
+    if (!current) return;
+    const query = searchQueryRef.current;
+    if (current.mode === "server") void runServerSearch(query, true);
+    else void loadSearchIndex(query);
+  }, [cancelSearchDebounce, loadSearchIndex, runServerSearch]);
   const startSearch = useCallback((): void => {
     if (st.activeId === null) return;
     st.setErr(null);
-    setSearch({ query: "", index: [], rows: [], total: 0, truncated: false, error: null, idx: 0 });
-    void loadSearchIndex();
-  }, [st.activeId, st.setErr, loadSearchIndex]);
+    cancelSearchDebounce();
+    searchQueryRef.current = "";
+    setSearch({
+      query: "",
+      index: [],
+      rows: [],
+      total: 0,
+      truncated: false,
+      error: null,
+      idx: 0,
+      mode: "unknown",
+    });
+  }, [st.activeId, st.setErr, cancelSearchDebounce]);
   const beginReveal = useCallback((path: string): void => {
+    cancelSearchDebounce();
     setSearch(null);
     revealRef.current = path;
     advanceReveal();
-  }, [advanceReveal]);
+  }, [advanceReveal, cancelSearchDebounce]);
   useEffect(() => {
     setTranscriptRows([]);
     setTodos(EMPTY_TODOS);
@@ -580,22 +693,28 @@ function AppInner({ url, createTransport, backoffBaseMs = 1000 }: AppProps) {
       return;
     }
     if (search && sidebarView === "files") {
-      const decision = searchKey(key, search);
+      const decision = searchKey(key, {
+        query: searchQueryRef.current,
+        rows: search.rows,
+        idx: search.idx,
+      });
       if (decision === null) {
         setFocus("composer");
         return;
       }
       switch (decision.kind) {
         case "clear":
-          setSearch((prev) => (prev ? withSearchQuery(prev, "") : prev));
+          applyQuery("");
           return;
         case "exit":
+          cancelSearchDebounce();
           setSearch(null);
           return;
-        case "backspace":
-          setSearch((prev) =>
-            prev && prev.query.length > 0 ? withSearchQuery(prev, prev.query.slice(0, -1)) : prev);
+        case "backspace": {
+          const current = searchQueryRef.current;
+          if (current.length > 0) applyQuery(current.slice(0, -1));
           return;
+        }
         case "move":
           setSearch((prev) =>
             prev ? { ...prev, idx: moveSelection(prev.idx, decision.delta, prev.rows.length) } : prev);
@@ -604,10 +723,10 @@ function AppInner({ url, createTransport, backoffBaseMs = 1000 }: AppProps) {
           beginReveal(decision.path);
           return;
         case "rebuild":
-          void loadSearchIndex();
+          rebuildSearch();
           return;
         case "append":
-          setSearch((prev) => (prev ? withSearchQuery(prev, prev.query + decision.ch) : prev));
+          applyQuery(searchQueryRef.current + decision.ch);
           return;
         default:
           return;

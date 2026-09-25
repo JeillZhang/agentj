@@ -3,6 +3,13 @@
   "title": "SessionNewResult",
   "type": "object",
   "properties": {
+    "project_root": {
+      "description": "Effective canonicalized session root (cwd fallback). @since 0.14.0",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "session_id": {
       "type": "string"
     }

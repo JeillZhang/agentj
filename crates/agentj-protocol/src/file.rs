@@ -16,6 +16,9 @@ pub struct FileListParams {
     /// Enumeration depth 1..=8 (default 1, server-validated). @since 0.13.0
     #[serde(skip_serializing_if = "Option::is_none")]
     pub depth: Option<u32>,
+    /// Case-insensitive substring filter; empty/whitespace is treated as absent. @since 0.14.0
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub query: Option<String>,
 }
 
 /// `file/list` result — entries capped at 2000; `truncated` flags the cap.
@@ -24,6 +27,10 @@ pub struct FileListParams {
 pub struct FileListResult {
     pub entries: Vec<FileEntry>,
     pub truncated: bool,
+    /// Full match count discovered by a query scan (lower bound when truncated).
+    /// @since 0.14.0
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total: Option<u64>,
 }
 
 /// One directory entry (`path` relative to the project root, no `./` prefix).
@@ -86,11 +93,34 @@ mod tests {
             session_id: "s1".into(),
             path: None,
             depth: Some(2),
+            query: None,
         };
         let v = serde_json::to_value(&p).unwrap();
         assert_eq!(v["session_id"], "s1");
         assert_eq!(v["depth"], 2);
         assert!(v.get("path").is_none());
+    }
+
+    #[test]
+    fn file_list_params_query_is_additive() {
+        let legacy: FileListParams =
+            serde_json::from_value(serde_json::json!({"session_id": "s1"})).unwrap();
+        assert!(legacy.query.is_none());
+        let with_query = FileListParams {
+            session_id: "s1".into(),
+            path: None,
+            depth: None,
+            query: Some("src".into()),
+        };
+        let json = serde_json::to_value(&with_query).unwrap();
+        assert_eq!(json["query"], "src");
+        let none = FileListParams {
+            session_id: "s1".into(),
+            path: None,
+            depth: None,
+            query: None,
+        };
+        assert!(serde_json::to_value(none).unwrap().get("query").is_none());
     }
 
     #[test]
@@ -181,6 +211,7 @@ mod tests {
                 git_status: Some(GitFileStatus::A),
             }],
             truncated: true,
+            total: None,
         };
         let v = serde_json::to_value(&r).unwrap();
         assert_eq!(v["entries"][0]["path"], "src/lib.rs");
@@ -189,6 +220,22 @@ mod tests {
         let back: FileListResult = serde_json::from_value(v).unwrap();
         assert_eq!(back.entries.len(), 1);
         assert!(back.truncated);
+    }
+
+    #[test]
+    fn file_list_result_total_is_omitted_when_none() {
+        let none = FileListResult {
+            entries: vec![],
+            truncated: false,
+            total: None,
+        };
+        assert!(serde_json::to_value(&none).unwrap().get("total").is_none());
+        let some = FileListResult {
+            entries: vec![],
+            truncated: false,
+            total: Some(7),
+        };
+        assert_eq!(serde_json::to_value(some).unwrap()["total"], 7);
     }
 
     #[test]

@@ -10,7 +10,8 @@ import type { TransportHandle } from "./app.tsx";
 import { METHODS, ResponseRouter } from "@agentj/sdk";
 import type { TransportStatus } from "@agentj/sdk";
 import { MODEL_CONFIG, providersFromStatus, renderModelList } from "./models.tsx";
-import { loadFileTreePrefs } from "./filetreePrefs.ts";
+import { loadFileTreePrefs, saveFileTreePrefs } from "./filetreePrefs.ts";
+import { saveSessionHistory } from "./session.tsx";
 import { saveProjects } from "./sidebar.tsx";
 import type { RawFileEntry } from "./files.ts";
 
@@ -42,6 +43,7 @@ function getInput(setup: TestRendererSetup) {
       else if (k === "up") setup.mockInput.pressArrow("up");
       else if (k === "enter" || k === "return") setup.mockInput.pressEnter();
       else if (k === "esc" || k === "escape") setup.mockInput.pressEscape();
+      else if (k === "backspace") setup.mockInput.pressBackspace();
       else if (k === "tab") setup.mockInput.pressTab();
       else setup.mockInput.pressKey(k);
     };
@@ -99,7 +101,16 @@ type FakeKernel = {
   handle: TransportHandle & { send: (line: string) => Promise<string> };
 };
 
-function fakeKernel(): FakeKernel {
+// Server mode answers a string query with ranked matches + total; legacy mode
+// (and the default) ignores the query and returns the depth-8 listing as v0.21.
+function rankEntry(entry: RawFileEntry, query: string): number {
+  const name = entry.name.toLowerCase();
+  if (name.startsWith(query)) return 0;
+  if (name.includes(query)) return 1;
+  return 2;
+}
+
+function fakeKernel(options: { search?: "server" | "legacy"; sessionRoot?: string } = {}): FakeKernel {
   const calls: KernelCall[] = [];
   const dropped = new Set<string>();
   let depthEightFailures = 0;
@@ -114,7 +125,14 @@ function fakeKernel(): FakeKernel {
       const params = req.params ?? {};
       calls.push({ method: req.method, ...params });
       let result: unknown = {};
-      if (req.method === METHODS.sessionNew) result = { session_id: "s1" };
+      if (req.method === METHODS.sessionNew) {
+        result = options.sessionRoot
+          ? { session_id: "s1", project_root: options.sessionRoot }
+          : { session_id: "s1" };
+      }
+      if (req.method === METHODS.sessionStatus && options.sessionRoot) {
+        result = { status: "active", project_root: options.sessionRoot };
+      }
       if (req.method === METHODS.fileList) {
         const depth = typeof params.depth === "number" ? params.depth : 1;
         if (depth >= 8) {
@@ -124,7 +142,19 @@ function fakeKernel(): FakeKernel {
             depthEightFailures -= 1;
             throw new Error("index unavailable");
           }
-          result = { entries: flat(), truncated: false };
+          if (options.search === "server") {
+            const query = typeof params.query === "string" ? params.query.trim().toLowerCase() : "";
+            const matches = flat().filter(
+              (e) => query.length > 0 && (e.name.toLowerCase().includes(query) ||
+                e.path.toLowerCase().includes(query)),
+            );
+            matches.sort(
+              (a, b) => rankEntry(a, query) - rankEntry(b, query) || a.path.localeCompare(b.path),
+            );
+            result = { entries: matches, total: matches.length, truncated: false };
+          } else {
+            result = { entries: flat(), truncated: false };
+          }
         } else {
           result = { entries: live(params.path === null ? "" : String(params.path)), truncated: false };
         }
@@ -174,6 +204,14 @@ async function pressEscape(setup: TestRendererSetup, input: AppInput): Promise<v
     input.press("esc");
     await setup.flush();
     await new Promise((resolve) => setTimeout(resolve, 30));
+    await setup.flush();
+  });
+}
+
+// Search input debounces 150ms before issuing file/list; wait past it and flush.
+async function settleDebounce(setup: TestRendererSetup): Promise<void> {
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 200));
     await setup.flush();
   });
 }
@@ -512,23 +550,28 @@ describe("files search mode", () => {
     const { setup, input } = await renderApp(kernel);
     await openFilesSidebar(setup, input);
     await act(async () => { input.press("s"); await setup.flush(); });
-    expect(depthEightCalls(kernel)).toHaveLength(1);
-    expect(depthEightCalls(kernel)[0]).toMatchObject({ path: null, depth: 8 });
+    expect(depthEightCalls(kernel)).toHaveLength(0); // no upfront index fetch
     await act(async () => {
       await setup.waitFor(() => setup.captureCharFrame().includes("type filter"));
     });
     await act(async () => { await input.type("fnc"); await setup.flush(); });
-    expect(depthEightCalls(kernel)).toHaveLength(1); // f/n/c stay query text
+    expect(depthEightCalls(kernel)).toHaveLength(0); // f/n/c stay query text, debounce pending
     expect(kernel.calls.filter((c) => c.method === METHODS.sessionNew)).toHaveLength(1);
-    await act(async () => {
-      await setup.waitFor(() => setup.captureCharFrame().includes("type filter"));
-    });
+    await settleDebounce(setup);
+    expect(depthEightCalls(kernel)).toHaveLength(1);
+    expect(depthEightCalls(kernel)[0]).toMatchObject({ path: null, depth: 8, query: "fnc" });
     expect(setup.captureCharFrame()).toContain("Files");
     expect(setup.captureCharFrame()).not.toContain("Threads");
     await pressEscape(setup, input); // clears the query
-    await act(async () => { await input.type("main"); await setup.flush(); });
-    await act(async () => { input.press("r"); await setup.flush(); }); // rebuilds the index
+    await act(async () => {
+      await input.type("main");
+      input.press("r"); // rebuilds the index before the debounce fires
+      await setup.flush();
+    });
     expect(depthEightCalls(kernel)).toHaveLength(2);
+    await act(async () => {
+      await setup.waitFor(() => setup.captureCharFrame().includes("main.rs"));
+    });
     const callsBeforeJump = kernel.calls.filter((c) => c.method === METHODS.fileList).length;
     await act(async () => { input.press("enter"); await setup.flush(); }); // jump
     await act(async () => {
@@ -549,6 +592,10 @@ describe("files search mode", () => {
     await openFilesSidebar(setup, input);
     await act(async () => { input.press("s"); await setup.flush(); });
     await act(async () => { await input.type("components"); await setup.flush(); });
+    await settleDebounce(setup);
+    await act(async () => {
+      await setup.waitFor(() => setup.captureCharFrame().includes("components"));
+    });
     await act(async () => { input.press("enter"); await setup.flush(); });
     await act(async () => {
       await setup.waitFor(() => !setup.captureCharFrame().includes("type filter"));
@@ -594,11 +641,12 @@ describe("files search mode", () => {
     await openFilesSidebar(setup, input);
     kernel.failDepthEight(1);
     await act(async () => { input.press("s"); await setup.flush(); });
+    await act(async () => { await input.type("main"); await setup.flush(); });
+    await settleDebounce(setup); // the debounced query request fails
     await act(async () => {
       await setup.waitFor(() => setup.captureCharFrame().includes("index unavailable"));
     });
     expect(depthEightCalls(kernel)).toHaveLength(1);
-    await act(async () => { await input.type("main"); await setup.flush(); });
     await act(async () => { input.press("r"); await setup.flush(); });
     await act(async () => {
       await setup.waitFor(() => !setup.captureCharFrame().includes("index unavailable"));
@@ -616,17 +664,21 @@ describe("files search mode", () => {
     await openFilesSidebar(setup, input);
     const release = kernel.deferDepthEight();
     await act(async () => { input.press("s"); await setup.flush(); });
-    await act(async () => {
-      await setup.waitFor(() => depthEightCalls(kernel).length === 1);
-    });
-    // the depth-8 reply is unresolved: every keystroke must stay in the query
     await act(async () => { await input.type("main"); await setup.flush(); });
+    await settleDebounce(setup);
+    expect(depthEightCalls(kernel)).toHaveLength(1); // the debounced reply is gated
+    // the depth-8 reply is unresolved: every keystroke must stay in the query
+    await act(async () => { await input.type("x"); await setup.flush(); });
     await act(async () => { release(); await setup.flush(); });
-    await act(async () => {
-      await setup.waitFor(() => setup.captureCharFrame().includes("main.rs"));
-    });
-    expect(depthEightCalls(kernel)).toHaveLength(1);
-    expect(setup.captureCharFrame()).not.toContain("README.md");
+    await settleDebounce(setup); // the follow-up debounce must query the typed "mainx"
+    const queried = (query: string): number =>
+      kernel.calls.filter((c) => c.method === METHODS.fileList && c.query === query).length;
+    expect(queried("mainx")).toBe(1);
+    expect(queried("main")).toBe(1);
+    // the stale reply ("main") must not overwrite rows for the typed "mainx"
+    await repaint(setup);
+    expect(setup.captureCharFrame()).not.toContain("main.rs");
+    expect(setup.captureCharFrame()).toContain("type filter");
     act(() => setup.renderer.destroy());
   });
 
@@ -636,17 +688,23 @@ describe("files search mode", () => {
     await openFilesSidebar(setup, input);
     kernel.failDepthEight(1);
     await act(async () => { input.press("s"); await setup.flush(); });
+    await act(async () => { await input.type("main"); await setup.flush(); });
+    await settleDebounce(setup); // the debounced query request fails
     await act(async () => {
       await setup.waitFor(() => setup.captureCharFrame().includes("index unavailable"));
     });
-    await act(async () => { await input.type("main"); await setup.flush(); });
+    // C2: while the error is up, keystrokes filter locally and must not hide it
+    await act(async () => { await input.type("x"); await setup.flush(); });
+    await settleDebounce(setup);
     await repaint(setup);
-    // C2: keystrokes must not hide the failure; only a successful r clears it
     expect(setup.captureCharFrame()).toContain("index unavailable");
+    expect(depthEightCalls(kernel)).toHaveLength(1); // errored: typing issues no request
+    await act(async () => { input.press("backspace"); await setup.flush(); });
     await act(async () => { input.press("r"); await setup.flush(); });
     await act(async () => {
       await setup.waitFor(() => !setup.captureCharFrame().includes("index unavailable"));
     });
+    expect(depthEightCalls(kernel)).toHaveLength(2);
     await act(async () => {
       await setup.waitFor(() => setup.captureCharFrame().includes("main.rs"));
     });
@@ -659,6 +717,10 @@ describe("files search mode", () => {
     await openFilesSidebar(setup, input);
     await act(async () => { input.press("s"); await setup.flush(); });
     await act(async () => { await input.type("Button"); await setup.flush(); });
+    await settleDebounce(setup);
+    await act(async () => {
+      await setup.waitFor(() => setup.captureCharFrame().includes("Button"));
+    });
     await act(async () => { input.press("enter"); await setup.flush(); });
     await act(async () => {
       await setup.waitFor(() => /●\s+Button\.tsx/.test(setup.captureCharFrame()));
@@ -675,8 +737,12 @@ describe("files search mode", () => {
     const kernel = fakeKernel();
     const { setup, input } = await renderApp(kernel);
     await openFilesSidebar(setup, input);
-    await act(async () => { input.press("s"); await setup.flush(); }); // index snapshot has main.rs
+    await act(async () => { input.press("s"); await setup.flush(); }); // search starts with no index
     await act(async () => { await input.type("main"); await setup.flush(); });
+    await settleDebounce(setup); // the reply's snapshot has main.rs
+    await act(async () => {
+      await setup.waitFor(() => setup.captureCharFrame().includes("main.rs"));
+    });
     kernel.drop("src/main.rs"); // deleted after indexing: reveal must notice
     const rootCalls = () =>
       kernel.calls.filter((c) => c.method === METHODS.fileList && c.depth === 1 && c.path === null).length;
@@ -726,7 +792,7 @@ describe("files search mode", () => {
     act(() => setup.renderer.destroy());
   });
 
-  test("persists expansion under the active session's project group", async () => {
+  test("persists expansion under the __default__ fallback, not the local project id", async () => {
     saveProjects([{ id: "p1", name: "Foo" }]);
     const kernel = fakeKernel();
     const { setup, input } = await renderApp(kernel);
@@ -738,7 +804,99 @@ describe("files search mode", () => {
     await act(async () => { await setup.waitFor(() => setup.captureCharFrame().includes("README.md")); });
     await act(async () => { input.press("enter"); await setup.flush(); });
     await act(async () => { await setup.waitFor(() => setup.captureCharFrame().includes("main.rs")); });
-    expect(loadFileTreePrefs().expanded.p1).toEqual(["src"]);
+    expect(loadFileTreePrefs().expanded.__default__).toEqual(["src"]);
+    expect(loadFileTreePrefs().expanded.p1).toBeUndefined();
+    act(() => setup.renderer.destroy());
+  });
+
+  test("keys filetree prefs by the session project_root", async () => {
+    const kernel = fakeKernel({ sessionRoot: "/tmp/proj" });
+    const { setup, input } = await renderApp(kernel);
+    await openFilesSidebar(setup, input);                                  // creates the session
+    await act(async () => { input.press("enter"); await setup.flush(); }); // expand src
+    expect(loadFileTreePrefs().expanded["/tmp/proj"]).toEqual(["src"]);
+    act(() => setup.renderer.destroy());
+  });
+
+  test("falls back to __default__ when the kernel omits project_root", async () => {
+    const kernel = fakeKernel(); // no project_root in session/new
+    const { setup, input } = await renderApp(kernel);
+    await openFilesSidebar(setup, input);
+    await act(async () => { input.press("enter"); await setup.flush(); });
+    expect(loadFileTreePrefs().expanded.__default__).toEqual(["src"]);
+    act(() => setup.renderer.destroy());
+  });
+
+  test("prunes stale project-id keys on save while keeping root keys", async () => {
+    saveFileTreePrefs({ expanded: { p1: ["src"], "/old/root": ["x"] } }, ["p1", "/old/root"]);
+    const kernel = fakeKernel({ sessionRoot: "/tmp/proj" });
+    const { setup, input } = await renderApp(kernel);
+    await openFilesSidebar(setup, input);
+    await act(async () => { input.press("enter"); await setup.flush(); });
+    const expanded = loadFileTreePrefs().expanded;
+    expect(expanded.p1).toBeUndefined();
+    expect(expanded["/old/root"]).toEqual(["x"]);
+    expect(expanded["/tmp/proj"]).toEqual(["src"]);
+    act(() => setup.renderer.destroy());
+  });
+
+  test("continue captures project_root from session/status for the prefs key", async () => {
+    saveSessionHistory(["s9"]);
+    const kernel = fakeKernel({ sessionRoot: "/tmp/proj2" });
+    const { setup, input } = await renderApp(kernel);
+    await act(async () => { input.press("enter"); await setup.flush(); }); // select s9
+    await act(async () => { input.press("tab"); await setup.flush(); });
+    await act(async () => { input.press("f"); await setup.flush(); });
+    await act(async () => { await setup.waitFor(() => setup.captureCharFrame().includes("README.md")); });
+    await act(async () => { input.press("enter"); await setup.flush(); });
+    const expanded = loadFileTreePrefs().expanded;
+    expect(kernel.calls).toContainEqual(
+      expect.objectContaining({ method: METHODS.sessionStatus, session_id: "s9" }),
+    );
+    expect(kernel.calls.some((c) => c.method === METHODS.sessionNew)).toBe(false);
+    expect(expanded["/tmp/proj2"]).toEqual(["src"]);
+    expect(expanded.__default__).toBeUndefined();
+    act(() => setup.renderer.destroy());
+  });
+
+  test("server search debounces, renders ranked rows and shows total", async () => {
+    const kernel = fakeKernel({ search: "server" });
+    const { setup, input } = await renderApp(kernel);
+    await openFilesSidebar(setup, input);
+    await act(async () => { input.press("s"); await setup.flush(); });
+    await act(async () => { await input.type("mai"); await setup.flush(); });
+    await settleDebounce(setup);
+    const queryCalls = kernel.calls.filter(
+      (c) => c.method === METHODS.fileList && c.query === "mai",
+    );
+    expect(queryCalls).toHaveLength(1); // debounced to a single request
+    expect(queryCalls[0]).toMatchObject({ path: null, depth: 8 });
+    await act(async () => {
+      await setup.waitFor(() => setup.captureCharFrame().includes("main.rs"));
+    });
+    // the server-ranked reply drops non-matches (total itself rides in state)
+    expect(setup.captureCharFrame()).not.toContain("README.md");
+    act(() => setup.renderer.destroy());
+  });
+
+  test("falls back to the local index when the kernel omits total", async () => {
+    const kernel = fakeKernel({ search: "legacy" });
+    const { setup, input } = await renderApp(kernel);
+    await openFilesSidebar(setup, input);
+    await act(async () => { input.press("s"); await setup.flush(); });
+    await act(async () => { await input.type("main"); await setup.flush(); });
+    await settleDebounce(setup);
+    const withQuery = (): number =>
+      kernel.calls.filter(
+        (c) => c.method === METHODS.fileList && typeof c.query === "string",
+      ).length;
+    expect(withQuery()).toBe(1); // first reply (no total) becomes the local index
+    await act(async () => {
+      await setup.waitFor(() => setup.captureCharFrame().includes("main.rs"));
+    });
+    await act(async () => { await input.type("."); await setup.flush(); });
+    await settleDebounce(setup);
+    expect(withQuery()).toBe(1); // local filtering issues no further requests
     act(() => setup.renderer.destroy());
   });
 });

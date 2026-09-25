@@ -157,6 +157,7 @@ impl TcpIpcServer {
             options.web_dist.clone(),
             options.token.clone(),
         ));
+        let _ = web.spawn_spot_check();
         Ok(Self {
             listener,
             shared: shared.clone(),
@@ -236,6 +237,7 @@ impl TcpIpcServer {
                 }
             }
         }
+        self.ws_state.web.stop_spot_check();
         Ok(())
     }
 }

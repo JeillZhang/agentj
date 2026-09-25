@@ -9,6 +9,11 @@ export type MockKernel = {
   calls: MockCall[];
 };
 
+export type MockKernelOptions = {
+  /** Force the v0.21 reply shape: `query` is ignored and no `total` is returned. */
+  legacySearch?: boolean;
+};
+
 // Flat depth=8 index served for search mode: nested paths as plain entries.
 const SEARCH_FIXTURE = [
   { name: "src", path: "src", kind: "dir", git_status: "M" },
@@ -18,12 +23,39 @@ const SEARCH_FIXTURE = [
   { name: "readme.md", path: "docs/readme.md", kind: "file", git_status: "A" },
 ];
 
+type FixtureEntry = (typeof SEARCH_FIXTURE)[number];
+
+// Mirrors the TUI rank rule (files.ts::searchRank): name prefix 0 < name
+// substring 1 < path substring 2; case-insensitive, path-ascending tie-break.
+function rankFixtureEntry(entry: FixtureEntry, query: string): number | null {
+  const name = entry.name.toLowerCase();
+  if (name.startsWith(query)) return 0;
+  if (name.includes(query)) return 1;
+  return entry.path.toLowerCase().includes(query) ? 2 : null;
+}
+
+// Query scans keep matching files only (the kernel skips directory entries).
+function searchFixture(query: string): { entries: FixtureEntry[]; total: number } {
+  const matches: Array<{ entry: FixtureEntry; rank: number }> = [];
+  for (const entry of SEARCH_FIXTURE) {
+    if (entry.kind !== "file") continue;
+    const rank = rankFixtureEntry(entry, query);
+    if (rank !== null) matches.push({ entry, rank });
+  }
+  matches.sort(
+    (a, b) =>
+      a.rank - b.rank || (a.entry.path < b.entry.path ? -1 : a.entry.path > b.entry.path ? 1 : 0),
+  );
+  return { entries: matches.map((m) => m.entry), total: matches.length };
+}
+
 type Pending = {
   id: number;
   method: string;
 };
 
-export async function startMockKernel(): Promise<MockKernel> {
+export async function startMockKernel(options: MockKernelOptions = {}): Promise<MockKernel> {
+  const legacySearch = options.legacySearch ?? false;
   const server = createServer();
   const wss = new WebSocketServer({ noServer: true });
   const calls: MockCall[] = [];
@@ -46,7 +78,7 @@ export async function startMockKernel(): Promise<MockKernel> {
         return;
       }
       calls.push({ method: msg.method ?? "", ...(msg.params ?? {}) });
-      handleMessage(ws, msg);
+      handleMessage(ws, msg, legacySearch);
     });
   });
 
@@ -106,7 +138,20 @@ function handlePermissionRespond(ws: WebSocket, id: number | undefined): void {
   }, 20);
 }
 
-function handleFileList(ws: WebSocket, msg: { id?: number; params?: Record<string, unknown> }): void {
+function handleFileList(
+  ws: WebSocket,
+  msg: { id?: number; params?: Record<string, unknown> },
+  legacySearch: boolean,
+): void {
+  const rawQuery = msg.params?.["query"];
+  if (typeof rawQuery === "string" && !legacySearch) {
+    const query = rawQuery.trim().toLowerCase();
+    if (query) {
+      const { entries, total } = searchFixture(query);
+      reply(ws, msg.id, { entries, total, truncated: false });
+      return;
+    }
+  }
   const depthRaw = msg.params?.["depth"];
   const depth = typeof depthRaw === "number" ? depthRaw : 1;
   if (depth === 8) {
@@ -126,6 +171,7 @@ function handleFileList(ws: WebSocket, msg: { id?: number; params?: Record<strin
 function handleMessage(
   ws: WebSocket,
   msg: { id?: number; method?: string; params?: Record<string, unknown> },
+  legacySearch: boolean,
 ): void {
   if (msg.method === "initialize") {
     handleInitialize(ws, msg.id);
@@ -152,7 +198,7 @@ function handleMessage(
     return;
   }
   if (msg.method === "file/list") {
-    handleFileList(ws, msg);
+    handleFileList(ws, msg, legacySearch);
     return;
   }
   if (msg.id !== undefined) reply(ws, msg.id, {});
