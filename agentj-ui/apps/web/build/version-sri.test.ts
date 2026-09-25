@@ -4,7 +4,14 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildManifestJson, buildVersionJson, finalizeDist, hashAssets, injectSri } from "./version-sri";
+import {
+  buildManifestJson,
+  buildVersionJson,
+  finalizeDist,
+  hashAssets,
+  injectSri,
+  integrityOf,
+} from "./version-sri";
 
 const APP_JS = "console.log(1)\n";
 const EXPECTED = "sha384-M203vLCvZdI2DAFEpVs3YNPxNFNtwrWrHY9XrXkEzOjLmndNNAWAdMk0uRYc2i2r";
@@ -114,4 +121,19 @@ it("excludes version.json and asset-manifest.json from the manifest", () => {
   const manifest = JSON.parse(readFileSync(join(dir, "asset-manifest.json"), "utf8"));
   expect(Object.keys(manifest.assets).sort()).toEqual(["/assets/a.js", "/index.html"]);
   rmSync(dir, { recursive: true, force: true });
+});
+
+it("includes dist root files such as public passthrough in the manifest", () => {
+  const dist = mkdtempSync(join(tmpdir(), "aj-sri-public-"));
+  writeFileSync(join(dist, "index.html"), '<script src="/assets/a.js"></script>');
+  mkdirSync(join(dist, "assets"), { recursive: true });
+  writeFileSync(join(dist, "assets/a.js"), "console.log(1)");
+  writeFileSync(join(dist, "favicon.svg"), "<svg/>");
+  writeFileSync(join(dist, ".DS_Store"), "junk");
+  finalizeDist(dist, { productVersion: "0.22.0", protocolVersion: "0.14.0", buildTime: "t" }, ["assets/a.js"]);
+  const manifest = JSON.parse(readFileSync(join(dist, "asset-manifest.json"), "utf8"));
+  expect(Object.keys(manifest.assets).sort()).toEqual(["/assets/a.js", "/favicon.svg", "/index.html"]);
+  expect(manifest.assets["/favicon.svg"]).toBe(integrityOf(Buffer.from("<svg/>")));
+  expect(manifest.assets["/.DS_Store"]).toBeUndefined();
+  rmSync(dist, { recursive: true, force: true });
 });

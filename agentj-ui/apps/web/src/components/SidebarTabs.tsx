@@ -1,5 +1,6 @@
 import { useRef } from "react";
 import type { KeyboardEvent } from "react";
+import { moveSelection, tabIndexFor } from "../hooks/useRovingFocus";
 import "./sidebar.css";
 
 export type SidebarTab = "sessions" | "files";
@@ -15,11 +16,12 @@ const LABELS: Record<SidebarTab, string> = { sessions: "会话", files: "文件"
 export default function SidebarTabs({ tab, onChange }: SidebarTabsProps) {
   const tabRefs = useRef(new Map<SidebarTab, HTMLButtonElement | null>());
 
+  const selected = TABS.indexOf(tab);
+
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    const index = TABS.indexOf(tab);
-    let next = -1;
-    if (event.key === "ArrowRight") next = (index + 1) % TABS.length;
-    else if (event.key === "ArrowLeft") next = (index - 1 + TABS.length) % TABS.length;
+    const delta = event.key === "ArrowRight" ? 1 : event.key === "ArrowLeft" ? -1 : 0;
+    if (delta === 0) return;
+    const next = moveSelection(selected, delta, TABS.length, { wrap: true });
     if (next < 0) return;
     event.preventDefault();
     const nextTab = TABS[next];
@@ -29,7 +31,7 @@ export default function SidebarTabs({ tab, onChange }: SidebarTabsProps) {
 
   return (
     <div className="aj-seg" role="tablist" aria-label="侧栏切换" onKeyDown={onKeyDown}>
-      {TABS.map((id) => (
+      {TABS.map((id, index) => (
         <button
           key={id}
           ref={(el) => {
@@ -39,7 +41,7 @@ export default function SidebarTabs({ tab, onChange }: SidebarTabsProps) {
           role="tab"
           data-tab={id}
           aria-selected={tab === id}
-          tabIndex={tab === id ? 0 : -1}
+          tabIndex={tabIndexFor(index, selected)}
           className={tab === id ? "active" : ""}
           onClick={() => onChange(id)}
         >

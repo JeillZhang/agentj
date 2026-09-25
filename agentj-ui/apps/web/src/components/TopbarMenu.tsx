@@ -16,6 +16,7 @@ import {
   setCurrentProject,
 } from "../projectStore";
 import type { Project } from "../projectStore";
+import { firstIndex, lastIndex, tabIndexFor, useRovingFocus } from "../hooks/useRovingFocus";
 import ModalDialog from "./ModalDialog";
 import SettingsDialog from "./SettingsDialog";
 import "./topbarmenu.css";
@@ -47,6 +48,26 @@ export default function TopbarMenu({ onConnect, onContinue }: Props) {
   const closeTimerRef = useRef<number | null>(null);
   const suppressToggleRef = useRef(false);
   const suppressFocusOpenRef = useRef(false);
+  const flyoutItemRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const keyboardNavRef = useRef(false);
+
+  // Roving set = every focusable flyout row (project radios + "＋ 添加项目",
+  // or favorite rows). Mirrors the pre-migration arrow navigation scope.
+  const flyoutItemCount =
+    flyout === "project" ? projects.length + 1 : flyout === "favorites" ? favorites.length : 0;
+  const { selected, setSelected, moveBy } = useRovingFocus({ count: flyoutItemCount, wrap: true });
+
+  useEffect(() => {
+    if (!flyout) return;
+    keyboardNavRef.current = false;
+    setSelected(0);
+  }, [flyout, setSelected]);
+
+  useEffect(() => {
+    if (!keyboardNavRef.current) return;
+    keyboardNavRef.current = false;
+    flyoutItemRefs.current[selected]?.focus();
+  }, [selected]);
 
   const cancelClose = useCallback(() => {
     if (closeTimerRef.current != null) {
@@ -176,17 +197,20 @@ export default function TopbarMenu({ onConnect, onContinue }: Props) {
     if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setFlyout(null);
   }, []);
 
-  const onFlyoutKeyDown = useCallback((event: ReactKeyboardEvent<HTMLDivElement>) => {
-    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
-    const items = Array.from(
-      event.currentTarget.querySelectorAll<HTMLElement>('[role="menuitem"], [role="menuitemradio"]'),
-    );
-    if (items.length === 0) return;
-    const idx = items.indexOf(document.activeElement as HTMLElement);
-    const next = event.key === "ArrowDown" ? (idx + 1) % items.length : (idx - 1 + items.length) % items.length;
-    event.preventDefault();
-    items[next]?.focus();
-  }, []);
+  const onFlyoutKeyDown = useCallback(
+    (event: ReactKeyboardEvent<HTMLDivElement>) => {
+      const { key } = event;
+      if (key !== "ArrowDown" && key !== "ArrowUp" && key !== "Home" && key !== "End") return;
+      if (flyoutItemCount === 0) return;
+      event.preventDefault();
+      keyboardNavRef.current = true;
+      if (key === "ArrowDown") moveBy(1);
+      else if (key === "ArrowUp") moveBy(-1);
+      else if (key === "Home") setSelected(firstIndex(flyoutItemCount));
+      else setSelected(lastIndex(flyoutItemCount));
+    },
+    [flyoutItemCount, moveBy, setSelected],
+  );
 
   const onTriggerMouseDown = useCallback((event: ReactMouseEvent<HTMLButtonElement>) => {
     suppressToggleRef.current = document.activeElement !== event.currentTarget;
@@ -254,13 +278,18 @@ export default function TopbarMenu({ onConnect, onContinue }: Props) {
                 onMouseLeave={scheduleClose}
                 onKeyDown={onFlyoutKeyDown}
               >
-                {projects.map((p) => (
+                {projects.map((p, index) => (
                   <button
                     key={p.id}
+                    ref={(el) => {
+                      flyoutItemRefs.current[index] = el;
+                    }}
                     type="button"
                     role="menuitemradio"
                     aria-checked={p.id === currentProjectId}
+                    tabIndex={tabIndexFor(index, selected)}
                     className="aj-menu__item aj-menu__item--sub"
+                    onFocus={() => setSelected(index)}
                     onClick={() => pickProject(p.id)}
                   >
                     <span>{p.name}</span>
@@ -269,9 +298,14 @@ export default function TopbarMenu({ onConnect, onContinue }: Props) {
                 ))}
                 <div className="aj-menu__sep" role="separator" />
                 <button
+                  ref={(el) => {
+                    flyoutItemRefs.current[projects.length] = el;
+                  }}
                   type="button"
                   role="menuitem"
+                  tabIndex={tabIndexFor(projects.length, selected)}
                   className="aj-menu__item aj-menu__item--sub"
+                  onFocus={() => setSelected(projects.length)}
                   onClick={openAddProject}
                 >
                   ＋ 添加项目
@@ -322,12 +356,17 @@ export default function TopbarMenu({ onConnect, onContinue }: Props) {
                 {favorites.length === 0 ? (
                   <p className="aj-menu__empty">暂无收藏</p>
                 ) : (
-                  favorites.map((id) => (
+                  favorites.map((id, index) => (
                     <button
                       key={id}
+                      ref={(el) => {
+                        flyoutItemRefs.current[index] = el;
+                      }}
                       type="button"
                       role="menuitem"
+                      tabIndex={tabIndexFor(index, selected)}
                       className="aj-menu__item aj-menu__item--sub"
+                      onFocus={() => setSelected(index)}
                       onClick={() => pickFavorite(id)}
                     >
                       {id}

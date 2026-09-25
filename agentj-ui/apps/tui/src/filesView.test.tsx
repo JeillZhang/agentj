@@ -150,6 +150,45 @@ describe("FilesView search mode", () => {
     act(() => setup.renderer.destroy());
   });
 
+  test("shows the remaining count when the server total exceeds the rendered rows", async () => {
+    const setup = await renderView({
+      nodes: null, selected: 0, error: null, truncated: false, noSession: false, width: 28,
+      search: { active: true, query: "ma", rows: TWO_ROWS, total: 5, truncated: false, error: null },
+    });
+    expect(setup.captureCharFrame()).toContain("type filter · enter jump · esc back · 3 more");
+    act(() => setup.renderer.destroy());
+  });
+
+  test("combines partial with the remaining count when both apply", async () => {
+    const setup = await renderView({
+      nodes: null, selected: 0, error: null, truncated: false, noSession: false, width: 28,
+      search: { active: true, query: "ma", rows: TWO_ROWS, total: 9, truncated: true, error: null },
+    });
+    expect(setup.captureCharFrame()).toContain("esc back · partial · 7 more");
+    act(() => setup.renderer.destroy());
+  });
+
+  test("omits the remaining count when every match fits in the rendered rows", async () => {
+    const setup = await renderView({
+      nodes: null, selected: 0, error: null, truncated: false, noSession: false, width: 28,
+      search: { active: true, query: "ma", rows: TWO_ROWS, total: 2, truncated: false, error: null },
+    });
+    const hint = setup.captureCharFrame().split("\n")[0]!;
+    expect(hint).toContain("esc back");
+    expect(hint).not.toContain("more");
+    act(() => setup.renderer.destroy());
+  });
+
+  test("omits the remaining count outside search mode", async () => {
+    const setup = await renderView({
+      nodes: [node({ name: "src", path: "src", kind: "dir" })],
+      selected: 0, error: null, truncated: false, noSession: false, width: 28,
+      search: { active: false, query: "", rows: [], total: 7, truncated: false, error: null },
+    });
+    expect(setup.captureCharFrame()).not.toContain("more");
+    act(() => setup.renderer.destroy());
+  });
+
   test("scrolls the results so a distant selection stays visible", async () => {
     const control = { setSelected: (_: number) => {} };
     const setup = await testRender(

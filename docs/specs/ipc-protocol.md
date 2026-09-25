@@ -2,7 +2,7 @@
 
 > 本文档是 AgentJ 内核对外暴露的统一 UI 接口协议（IPC）的**人类可读权威规范**。
 > 机器可读工件（`schemas/*.json` 与 `protocol/methods.json`）是本规范的机器事实来源，见 [机器可读模型](#10-机器可读模型)。
-> 协议当前版本：`0.13.0`。
+> 协议当前版本：`0.14.0`。
 
 ## 1. 范围与一致性
 
@@ -60,8 +60,15 @@ WebSocket 与 raw TCP 同端口共存，通过连接分类器按首字节区分 
 - **`GET /version` 加性字段（HTTP 层，v0.21.0）**：既有形状 `{product_version, protocol_version, dist_present, dist}` 追加两块（未鉴权语义与 `Cache-Control: no-store` 不变；**不含 per-IP 明细**）：
   - `login_limiter`：`{attempts, failures, lockouts, blocked, locked_now, tracked_ips}`。`attempts` = 到达 limiter 的 `/login` POST 次数（含成功、失败、锁定期拒绝）；`failures` = token 校验失败次数（不含锁定期拒绝）；`lockouts` = 锁定**新触发**次数（`locked_until` 由非锁定态进入锁定态，延长不计）；`blocked` = 锁定期被拒请求数（未校验 token）；`locked_now` / `tracked_ips` = 快照时处于锁定中的 IP 数与 entries 条目数（扫描推导）。
   - `integrity`：`{manifest_present, checked, mismatched, missing}`（见下）。
-- **资产完整性清单 `asset-manifest.json`（构建产物 + 内核启动校验，v0.21.0）**：构建期在 `dist/` 生成 `{"algorithm":"sha384","assets":{"/path":"sha384-<base64>"}}`，覆盖全部 Rollup bundle 产物（entry chunk、动态 chunk、CSS 及被引用资产）与 **SRI 注入之后**重写过的 `/index.html`；`assets` 键必须为以 `/` 开头、不含 `..` 的规范服务路径（违反 → 清单视为不可解析），值格式与 SRI `integrity` 同源（单遍哈希，逐字节一致）。**排除** `version.json`（由版本比对覆盖）、`asset-manifest.json` 自身与 `public/` 透传文件（不经 bundle，如 `favicon.svg`）。内核启动读取清单并逐文件比对哈希：缺失 / 不可解析 / 哈希不符 / 文件缺失 → 追加 `startup_warnings()` 警告（打印 stderr，**不阻断服务**；定位为部署完整性，非安全边界）；摘要进 `GET /version` 的 `integrity` 块（`manifest_present` = 是否存在且可解析、`checked` = 已校验文件数、`mismatched` = 哈希不符数、`missing` = 清单列出但文件缺失数）。
-- **说明**：以上均为 **HTTP 层行为**；wire 契约、方法/schema 与 `PROTOCOL_VERSION`（`0.13.0`）不变。
+- **资产完整性清单 `asset-manifest.json`（构建产物 + 内核启动校验，v0.21.0；v0.22.0 覆盖扩展）**：构建期在 `dist/` 生成 `{"algorithm":"sha384","assets":{"/path":"sha384-<base64>"}}`，覆盖全部 Rollup bundle 产物（entry chunk、动态 chunk、CSS 及被引用资产）与 **SRI 注入之后**重写过的 `/index.html`；`assets` 键必须为以 `/` 开头、不含 `..` 的规范服务路径（违反 → 清单视为不可解析），值格式与 SRI `integrity` 同源（单遍哈希，逐字节一致）。**v0.22.0 起覆盖 dist 实目录全部部署文件**——`writeBundle` 枚举 dist 实目录中未入清单的其余文件（含 `public/` 透传，如 `/favicon.svg`）并合并（bundle 产物键优先，同键 public 项跳过）；**排除** `version.json`（由版本比对覆盖）、`asset-manifest.json` 自身与名称以 `.` 开头的隐藏文件/目录；枚举中文件不可读 → 构建失败。内核启动读取清单并逐文件比对哈希：缺失 / 不可解析 / 哈希不符 / 文件缺失 → 追加 `startup_warnings()` 警告（打印 stderr，**不阻断服务**；定位为部署完整性，非安全边界）；摘要进 `GET /version` 的 `integrity` 块（`manifest_present` = 是否存在且可解析、`checked` = 已校验文件数、`mismatched` = 哈希不符数、`missing` = 清单列出但文件缺失数）。
+- **指标导出 `GET /metrics`（HTTP 层，v0.22.0，鉴权门控）**：与 `/version` 并列的显式路由（先于静态面/登录门与 SPA fallback；**不依赖 dist 存在**）。门控 `auth_required()` = 已配置 token ∧ 非回环 peer ∧ 无有效会话 cookie；**未通过 → `401 text/plain` + `Cache-Control: no-store`（不重定向，脚本/监控友好）**，通过（回环 / 未配 token / 有效 cookie）→ 200。响应 `Content-Type: text/plain; version=0.0.4; charset=utf-8` + `Cache-Control: no-store`；每条指标附 `# HELP` / `# TYPE`；无 per-IP 历史、无持久化。暴露面分四组：
+  - 限流计数（counter）：`agentj_login_attempts_total`（到达 limiter 的 `/login` POST 次数，含成功/失败/锁定期拒绝）、`agentj_login_failures_total`（token 校验失败，不含锁定期拒绝）、`agentj_login_lockouts_total`（锁定**新触发**，延长不计）、`agentj_login_blocked_total`（锁定期被拒请求数）。
+  - 限流快照（gauge）：`agentj_login_locked_ips`（快照时锁定中的 IP 数）、`agentj_login_tracked_ips`（entries 条目数）。
+  - per-IP 序列（带 `ip="..."` 标签；上限 `PER_IP_SERIES_LIMIT = 50`）：`agentj_login_ip_failures_total`（counter）、`agentj_login_ip_locked`（gauge 0/1）、`agentj_login_ip_retry_after_seconds`（gauge，未锁定 = 0）；`agentj_login_ip_series_truncated`（gauge 0/1，per-IP 序列是否被 Top-50 截断）。排序 `locked desc → failures desc → ip asc`；聚合 gauge 恒精确，全量明细经 `RUST_LOG=debug` 日志下探。
+  - 资产完整性（gauge）：`agentj_web_manifest_present`（清单存在且可解析 0/1）、`agentj_web_assets_checked` / `agentj_web_assets_mismatched` / `agentj_web_assets_missing`（启动全量校验计数）；抽检累计（counter）：`agentj_web_spot_rounds_total`（轮数）、`agentj_web_spot_checked_total`（累计校验文件数）、`agentj_web_spot_mismatched_total` / `agentj_web_spot_missing_total`（累计不符 / 缺失数）。
+- **运行期资产抽检（HTTP 层，v0.22.0）**：`TcpIpcServer` 启动后按 `SpotCheckConfig`（`interval` 默认 60s、`sample` 默认 8，测试可注入）`tokio::spawn` 周期任务，以排序键游标轮转抽样 `sample` 个清单文件比对 `sha384`（全量随轮转有界覆盖）；哈希不符计入 `mismatched`、文件缺失计入 `missing`，并 `warn!`（按路径进程内去重防刷屏）；manifest 缺失/不可用 → 任务不启动。结果经 `GET /version` 的 `integrity.runtime` 与 `GET /metrics` 双面暴露。
+- **`GET /version` `integrity` 加性嵌套 `runtime`（HTTP 层，v0.22.0）**：既有 `integrity` 块追加嵌套 `runtime`：`{rounds, checked, mismatched, missing, last_run_age_secs?}`——前四者为运行期抽检累计（`u64`，未运行过为 0），`last_run_age_secs` 为距上次抽检的秒数（`Option<u64>`，**未运行过则省略**）；manifest 缺失/不可用 → `runtime` 全零。既有字段（`manifest_present`/`checked`/`mismatched`/`missing`）逐字保留，`/version` 未鉴权语义与 `Cache-Control: no-store` 不变。
+- **说明**：以上 HTTP 层行为（`/metrics`、抽检、清单覆盖）本身不改变 wire 契约与方法/schema；同版本另有三处**加性 wire 变更**（`file/list` 的 `query`/`total`、`SessionNewResult.project_root`、`SessionStatusResult.project_root`，见 §8.6 / §8.8 / §8.20 与 §11.3），`PROTOCOL_VERSION` 升至 `0.14.0`。
 - **生命周期**：WS 连接不参与「最后连接断开 → 全局关闭」（浏览器会话短，不决定内核存亡）；`max_connections` 对 WS 独立计数。
 
 ### 2.4 消息大小上限
@@ -447,12 +454,13 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 - **响应**：`SessionNewResult`。
 
 ```json
-{ "jsonrpc": "2.0", "id": 2, "result": { "session_id": "s-1" } }
+{ "jsonrpc": "2.0", "id": 2, "result": { "session_id": "s-1", "project_root": "/home/me/proj" } }
 ```
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | `session_id` | string | 是 | 新会话的全局唯一标识 |
+| `project_root` | string | 否 | 会话**有效** `project_root`：请求给定值经 canonicalize 后的结果，请求缺省时为内核进程 CWD（`@since 0.14.0` 加性字段；与 `file/list` 沙箱根同源，见 8.20） |
 
 - **部分结果**：无。
 - **error.data**：`project_root` 不是存在的绝对目录 → `-32602`，MAY 携带 `{ "project_root": "<原值>" }`；`-32603` 时 MAY 携带内部上下文。
@@ -503,12 +511,13 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 - **响应**：`SessionStatusResult`。
 
 ```json
-{ "jsonrpc": "2.0", "id": 4, "result": { "status": "active" } }
+{ "jsonrpc": "2.0", "id": 4, "result": { "status": "active", "project_root": "/home/me/proj" } }
 ```
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | `status` | SessionStatus | 是 | `active` \| `archived` \| `deleted`（未知值见 §9） |
+| `project_root` | string | 否 | 会话**有效** `project_root`（canonicalized；与 `file/list` 沙箱根同源，`@since 0.14.0` 加性字段） |
 
 - **部分结果**：无。
 - **error.data**：`-32802 SessionNotFound`，MAY 携带 `{ "session_id": "s-1" }`。
@@ -709,15 +718,17 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 { "jsonrpc": "2.0", "id": 10, "method": "file/list", "params": {
   "session_id": "s-1",
   "path": "src",
-  "depth": 1
+  "depth": 1,
+  "query": "main"
 } }
 ```
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | `session_id` | string | 是 | 解析会话 `project_root` 与归属 |
-| `path` | string | 否 | 相对项目根的目录路径；缺省 / `""` = 根 |
-| `depth` | integer | 否 | 列举深度 `1..=8`，缺省 1；越界 → `-32602` |
+| `path` | string | 否 | 相对项目根的目录路径；缺省 / `""` = 根；query 模式下为搜索子树根 |
+| `depth` | integer | 否 | 列举深度 `1..=8`，缺省 1；越界 → `-32602`；query 模式下**忽略** |
+| `query` | string | 否 | 搜索子串（`@since 0.14.0` 加性字段）；trim 后空串视作缺省；大小写不敏感，匹配条目名称或相对路径 |
 
 - **响应**：`FileListResult`。
 
@@ -726,14 +737,22 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
   "entries": [
     { "name": "main.rs", "path": "src/main.rs", "kind": "file", "size": 42, "mtime_ms": 1700000000000, "git_status": "M" }
   ],
-  "truncated": false
+  "truncated": false,
+  "total": 1
 } }
 ```
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| `entries` | FileEntry[] | 是 | 目录条目；上限 2000，超出截断 |
-| `truncated` | boolean | 是 | 是否因 2000 条目上限被截断 |
+| `entries` | FileEntry[] | 是 | 目录条目；缺省模式上限 2000，query 模式返回 Top-100，超出截断 |
+| `truncated` | boolean | 是 | 是否被截断（缺省模式：2000 条目上限；query 模式：`SEARCH_VISIT_LIMIT` 访问预算耗尽） |
+| `total` | integer | 否 | query 模式发现的匹配总数（`@since 0.14.0` 加性字段，`u64`）；受访问预算限制时为**下界**；缺省模式省略 |
+
+- **query 模式（`@since 0.14.0`，加性）**：在 `path` 子树内搜索（缺省 = 项目根）；**命中仅限文件**（目录参与遍历/访问预算，但不作为命中返回）；`.git` 排除、根外符号链接条目跳过、沙箱规则与错误码均不变；**`depth` 被忽略**。
+  - **访问预算**：`SEARCH_VISIT_LIMIT = 20_000` 个访问条目；耗尽 → `truncated: true`（结果可能不完整，`total` 为下界）。
+  - **排序（rank）**：名称前缀（0）> 名称子串（1）> 路径子串（2）；大小写不敏感；同 rank tie-break 路径升序。
+  - **返回**：Top `SEARCH_RESULT_LIMIT = 100`；`total > entries.len()` 时客户端展示 `N more`。
+  - **兼容**：旧内核忽略未知 `query` 字段 → 退化为缺省 listing（响应无 `total`），新客户端据此自愈降级为客户端过滤，无需握手探测。
 
 - **FileEntry**：`name`（不含分隔符）、`path`（相对项目根，无 `./` 前缀）、`kind`（`file` \| `dir`，见 §9）、`size`（integer，可选；目录为省略）、`mtime_ms`（integer，可选，epoch 毫秒）、`git_status`（`M` \| `A` \| `U` \| `D`，可选；目录 / clean / 非 git 仓库省略）。
 - **排序与排除**：目录在前、同类按名称升序；`.git` 目录本身不返回、不下钻；其余隐藏文件正常返回。
@@ -837,6 +856,7 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 - 协议演进严格「只加不改」：新方法、新字段、新枚举值均为加性，MUST NOT 修改或删除已发布字段的语义。
 - 新增的字段 / 方法 / 枚举值 SHOULD 以 `@since` 注解标注引入版本（如 `@since 0.2.0`）。
 - 协议扩展（0.13.0）新增的 `-32807 PathNotAllowed`、`$/progress` 的 `todo` / `file_change` kind、`file/list`、`$/askQuestion` / `question/respond`、`session/new` 的 `project_root`，以及 `FileKind` / `TodoStatus` / `FileChangeKind` 三个值枚举，均遵循该加性纪律并标注 `@since 0.13.0`；`session/list` / `session/history` 与 `usage` / `permission` kind 为 0.12.0 引入，本规范补录其小节（§8.18 / §8.19、§7.3）。
+- 协议扩展（0.14.0）新增的 `file/list` 参数 `query` 与结果 `total`、`SessionNewResult.project_root`、`SessionStatusResult.project_root` 同为**加性字段**（标注 `@since 0.14.0`；不新增方法、不新增 schema、不改既有字段语义）。
 - 破坏性变更只能通过 major 版本引入，且 MUST 在变更日志（§11）中说明迁移路径。
 
 ## 10. 机器可读模型
@@ -844,7 +864,7 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 本规范是叙述性人类规范；机器事实来源为以下两个工件，两者由 CI 门禁保证与实现一致：
 
 - **`schemas/*.json`**：51 个 JSON Schema（JSON Schema Draft 2020-12），由 Rust `agentj-protocol` 的 serde 类型经 `schemars` 生成并提交。它们是所有消息 payload 结构的唯一事实来源，任意语言可从中生成绑定或做运行时校验。
-- **`protocol/methods.json`**：方法注册表，捕获 JSON Schema 表达不了的方法语义（method 字符串 ↔ params/result schema 引用、方向、类型）。当前收录 21 个方法，`protocol_version` 为 `0.13.0`。
+- **`protocol/methods.json`**：方法注册表，捕获 JSON Schema 表达不了的方法语义（method 字符串 ↔ params/result schema 引用、方向、类型）。当前收录 21 个方法，`protocol_version` 为 `0.14.0`。
 
 对应关系：
 
@@ -872,7 +892,7 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 | `$/askQuestion` | `AskQuestionParams.json` | — |
 | `question/respond` | `QuestionRespondParams.json` | `QuestionRespondResult.json` |
 
-信封与公共类型见 `RequestMessage.json`、`NotificationMessage.json`、`ResponseMessage.json`、`ErrorObject.json`、`Id.json`、`ProgressToken.json`、`ProgressValue.json`、`Role.json`、`PermissionDecision.json` 等；协议扩展（0.13.0）新增 / 更新的公共类型见 `SessionNewParams.json`、`SessionSummary.json`、`FileListParams.json`、`FileListResult.json`、`FileEntry.json`、`FileKind.json`、`AskQuestionParams.json`、`AskOption.json`、`QuestionRespondParams.json`、`QuestionRespondResult.json`、`TodoItem.json`、`TodoStatus.json`、`FileChange.json`、`FileChangeKind.json`、`UsageInfo.json`。
+信封与公共类型见 `RequestMessage.json`、`NotificationMessage.json`、`ResponseMessage.json`、`ErrorObject.json`、`Id.json`、`ProgressToken.json`、`ProgressValue.json`、`Role.json`、`PermissionDecision.json` 等；协议扩展（0.13.0）新增 / 更新的公共类型见 `SessionNewParams.json`、`SessionSummary.json`、`FileListParams.json`、`FileListResult.json`、`FileEntry.json`、`FileKind.json`、`AskQuestionParams.json`、`AskOption.json`、`QuestionRespondParams.json`、`QuestionRespondResult.json`、`TodoItem.json`、`TodoStatus.json`、`FileChange.json`、`FileChangeKind.json`、`UsageInfo.json`。协议扩展（0.14.0）不新增 schema，仅向既有 schema 追加字段：`FileListParams.json`（`query`）、`FileListResult.json`（`total`）、`SessionNewResult.json` 与 `SessionStatusResult.json`（`project_root`）；schema 总数仍为 51。
 
 一致性锚点：Rust 侧 `schemars` 生成 `schemas/*.json` 并提交，契约测试断言实际 wire 输出与 Schema 一致，CI 漂移门禁在生成结果与提交版本不一致时失败。
 
@@ -880,7 +900,7 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 
 ### 11.1 版本策略
 
-协议版本遵循语义化版本（semver），规则见 §4.3：major 破坏 / minor 加方法 / patch 修 bug。当前版本 `0.13.0`（`protocol/methods.json` 中 `protocol_version` 字段为准）。
+协议版本遵循语义化版本（semver），规则见 §4.3：major 破坏 / minor 加方法或加性字段 / patch 修 bug。当前版本 `0.14.0`（`protocol/methods.json` 中 `protocol_version` 字段为准）。
 
 ### 11.2 命名归一化决策（v0.1.0 记录）
 
@@ -961,6 +981,15 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 - **HTTP 面新增（① ②）**：`login_limiter` tracing 事件（锁定新触发 `warn`、成功登录 `info`、明细 `debug`）+ CLI `RUST_LOG` 支持（`EnvFilter`，默认 `info`）；`GET /version` 加性 `login_limiter` 聚合计数块（`attempts`/`failures`/`lockouts`/`blocked`/`locked_now`/`tracked_ips`，无 per-IP 明细）与 `integrity` 清单摘要块（`manifest_present`/`checked`/`mismatched`/`missing`）；构建期 `dist/asset-manifest.json`（`sha384` 覆盖全部 bundle 产物 + 重写后 `index.html`，排除 `version.json`/自身/`public/` 透传）与内核启动逐文件校验（警告并入 `startup_warnings()`，**不阻断服务**）。限流策略语义（429/Retry-After/锁定升级/清零）零变化。
 - **纯前端新增（③ ④）**：TUI Files 搜索（`s` 进入 + `depth=8` 单请求扁平索引 + 客户端过滤，`Esc` 清空后退出、`Enter` 跳转并展开祖先、`r` 重建、`truncated` 显示 `· partial`）与展开状态持久化 `filetree.json`（按本地项目键，per-key ≤100、恢复 ≤50、失效路径静默跳过）；Web 焦点作用域（`useShortcutScope`：焦点位于侧栏且无模态/菜单时 `f`/`n`/`r`/`j`/`k`/`Esc` 生效，**不劫持 Tab**）+ 文件树/会话列表 roving 键盘导航 + `ModalDialog` 焦点恢复。均为前端行为，无 wire 变化。
 - 全部为 HTTP 层与服务/前端行为新增，此前客户端零破坏；工作区 `0.20.1 → 0.21.0`。
+
+#### 0.14.0（指标导出 + 清单扩展抽检 + `file/list` 搜索 + 会话有效根）
+
+- **方法面不变**：仍为 21 方法、51 schemas；本版本为**三处加性 wire 变更**，无新方法、无新 schema、无新错误码。
+- **HTTP 面新增（仅 HTTP 层，不属 JSON-RPC 方法面）**：鉴权门控的 `GET /metrics`（Prometheus 文本 `text/plain; version=0.0.4` + `Cache-Control: no-store`；聚合计数 + per-IP 序列 Top-50 截断 + 资产完整性摘要；门控 `auth_required()` = 已配 token ∧ 非回环 ∧ 无 cookie，未通过 → `401 text/plain` 不重定向）；`GET /version` 的 `integrity` 块加性嵌套 `runtime{rounds,checked,mismatched,missing,last_run_age_secs?}`（运行期 60s / 8 文件游标轮转抽检）；`asset-manifest.json` 覆盖扩展至 dist 实目录全部部署文件（含 `public/` 透传，bundle 键优先；排除 `version.json`/自身/隐藏文件）。既有 `/version`、静态面与限流策略契约零变化。
+- **`file/list` 加性字段**：参数 `query`（trim 后空串视作缺省；`path` 子树内、忽略 `depth`、大小写不敏感子串匹配；访问预算 `SEARCH_VISIT_LIMIT = 20_000`；rank 名称前缀 > 名称子串 > 路径子串、tie-break 路径升序；返回 Top-100）与结果 `total`（匹配总数，预算受限时为**下界**，缺省模式省略）。缺省 listing 行为（`ENTRY_LIMIT=2000`、`depth` 1..=8、`truncated` 语义）零变化；旧内核忽略 `query` → 新客户端据「响应无 `total`」自愈降级为客户端过滤。
+- **会话结果加性字段**：`SessionNewResult.project_root`（请求值 canonicalize 结果，请求缺省 = 内核 CWD）与 `SessionStatusResult.project_root`（有效根，与 `file/list` 沙箱根同源）。
+- **纯前端（无 wire 变化）**：TUI Files 搜索改防抖服务端查询 + 旧内核降级、展开态键改为会话有效 `project_root`；Web 共享 roving 收口（TopbarMenu / SessionListMenu / SidebarTabs / SettingsDialog）+ 侧栏底部快捷键提示行。
+- 协议版本 minor 递增 `0.13.0 → 0.14.0`；工作区 `0.21.1 → 0.22.0`；此前客户端零破坏。
 
 #### 后续版本
 

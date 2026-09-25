@@ -644,12 +644,18 @@ impl IpcServer {
         req: &JsonRpcRequest,
         conn_id: &str,
     ) -> Result<Value, DispatchError> {
-        let project_root = Self::resolve_project_root(req.params.as_ref())?;
+        let requested = Self::resolve_project_root(req.params.as_ref())?;
+        let effective = match &requested {
+            Some(root) => root.clone(),
+            None => std::env::current_dir()
+                .and_then(|dir| dir.canonicalize())
+                .map_err(|e| DispatchError::internal(e.to_string()))?,
+        };
         let sid = self
             .session_store
             .create()
             .map_err(|e| DispatchError::internal(e.to_string()))?;
-        if let Some(root) = project_root
+        if let Some(root) = requested
             && let Err(e) = self.session_store.set_project_root(&sid, root)
         {
             let _ = self.session_store.delete(&sid);
@@ -661,7 +667,10 @@ impl IpcServer {
         if let Ok(mut reg) = self.registry.write() {
             reg.set_session_owner(&sid, conn_id);
         }
-        Ok(serde_json::json!({ "session_id": sid }))
+        Ok(serde_json::json!({
+            "session_id": sid,
+            "project_root": effective.to_string_lossy(),
+        }))
     }
 
     /// Validate `session/new {project_root}` (design item 6): absent params keep
@@ -1043,8 +1052,18 @@ impl IpcServer {
         )
         .map_err(|e| DispatchError::invalid_params(e.to_string()))?;
         let status = self.require_session_status(&params.session_id)?;
+        let project_root = self
+            .session_store
+            .project_root(&params.session_id)
+            .or_else(|| {
+                std::env::current_dir()
+                    .ok()
+                    .and_then(|d| d.canonicalize().ok())
+            })
+            .map(|p| p.to_string_lossy().into_owned());
         let result = SessionStatusResult {
             status: Self::wire_session_status(status),
+            project_root,
         };
         Ok(serde_json::to_value(result).expect("serializable"))
     }
@@ -1129,7 +1148,16 @@ impl IpcServer {
             Some(root) => root,
             None => std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
         };
-        match file_list::list(&root, params.path.as_deref(), params.depth) {
+        let query = params
+            .query
+            .as_deref()
+            .map(str::trim)
+            .filter(|q| !q.is_empty());
+        let result = match query {
+            Some(q) => file_list::search(&root, params.path.as_deref(), q),
+            None => file_list::list(&root, params.path.as_deref(), params.depth),
+        };
+        match result {
             Ok(result) => {
                 let result = attach_git_statuses(result, &root).await;
                 Ok(serde_json::to_value(result).expect("serializable"))
@@ -1734,6 +1762,7 @@ async fn attach_git_statuses(result: FileListResult, root: &std::path::Path) -> 
     FileListResult {
         entries,
         truncated: result.truncated,
+        total: result.total,
     }
 }
 
@@ -2906,6 +2935,12 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
         assert!(v["result"]["session_id"].is_string());
         assert!(!v["result"]["session_id"].as_str().unwrap().is_empty());
+        let cwd = std::env::current_dir().unwrap().canonicalize().unwrap();
+        assert_eq!(
+            v["result"]["project_root"],
+            cwd.to_str().unwrap(),
+            "session/new without project_root must return the canonicalized cwd"
+        );
     }
 
     /// Temp tree for `session/new` project_root tests (mirrors `temp_dir_traj`).
@@ -2938,6 +2973,11 @@ mod tests {
             "valid project_root must not error: {resp}"
         );
         let sid = v["result"]["session_id"].as_str().unwrap().to_string();
+        assert_eq!(
+            v["result"]["project_root"],
+            canonical.to_str().unwrap(),
+            "session/new must echo the canonicalized request value"
+        );
         assert_eq!(store.project_root(&sid), Some(canonical));
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -4984,6 +5024,58 @@ mod tests {
         assert_eq!(v["result"]["status"], "archived");
     }
 
+    /// T14: `session/status` reports the effective project root — the stored
+    /// canonicalized root when present, else the canonicalized cwd fallback.
+    #[tokio::test]
+    async fn dispatch_session_status_reports_effective_project_root() {
+        let store = stub_session();
+        let server = IpcServer::new(Kernel::new(), store.clone());
+        let dir = temp_dir_root("status-eff-root");
+        let canonical = dir.canonicalize().unwrap();
+        let raw = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 20,
+            "method": "session/new",
+            "params": { "project_root": dir.to_str().unwrap() },
+        })
+        .to_string();
+        let resp = server.handle_request(&raw).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        let sid = v["result"]["session_id"].as_str().unwrap().to_string();
+        let raw = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 21,
+            "method": "session/status",
+            "params": { "session_id": sid },
+        })
+        .to_string();
+        let resp = server.handle_request(&raw).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(
+            v["result"]["project_root"],
+            canonical.to_str().unwrap(),
+            "status must report the stored canonicalized root"
+        );
+
+        let bare = store.create().unwrap();
+        let raw = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 22,
+            "method": "session/status",
+            "params": { "session_id": bare.as_str() },
+        })
+        .to_string();
+        let resp = server.handle_request(&raw).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        let cwd = std::env::current_dir().unwrap().canonicalize().unwrap();
+        assert_eq!(
+            v["result"]["project_root"],
+            cwd.to_str().unwrap(),
+            "status without a stored root must fall back to the canonicalized cwd"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     /// Unknown session id maps to the documented `-32802 SessionNotFound`
     /// with `error.data.session_id` (§8.8), never the generic `-32601`.
     #[tokio::test]
@@ -5254,6 +5346,40 @@ mod tests {
         .to_string();
         let resp = server.handle_request(&raw).await.unwrap();
         serde_json::from_str(&resp).unwrap()
+    }
+
+    /// Query variant of `file_list_call` (the shared helper has no query param).
+    async fn file_list_search_call(
+        server: &IpcServer,
+        sid: &str,
+        path: Option<&str>,
+        query: &str,
+    ) -> serde_json::Value {
+        let raw = serde_json::json!({
+            "jsonrpc": "2.0", "id": 22, "method": "file/list",
+            "params": { "session_id": sid, "path": path, "query": query },
+        })
+        .to_string();
+        serde_json::from_str(&server.handle_request(&raw).await.unwrap()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn dispatch_file_list_query_returns_ranked_matches_with_total() {
+        let root = temp_dir_filelist("query");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/main.rs"), "x").unwrap();
+        std::fs::write(root.join("README.md"), "x").unwrap();
+        let (server, sid) = file_list_server(&root);
+        let v = file_list_search_call(&server, &sid, None, "main").await;
+        assert!(v["error"].is_null(), "query call must succeed: {v}");
+        assert_eq!(v["result"]["total"], 1);
+        assert_eq!(v["result"]["entries"][0]["path"], "src/main.rs");
+        let blank = file_list_search_call(&server, &sid, None, "   ").await;
+        assert!(
+            blank["result"].get("total").is_none(),
+            "blank query = legacy listing"
+        );
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[tokio::test]

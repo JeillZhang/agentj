@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import SessionListMenu, { chooseFlyoutSide, clampMenuLeft } from "./SessionListMenu";
@@ -86,7 +86,35 @@ describe("SessionListMenu", () => {
     open();
     fireEvent.mouseEnter(screen.getByRole("menuitem", { name: /过滤/ }));
     fireEvent.keyDown(screen.getByRole("menu", { name: "过滤" }), { key: "ArrowDown" });
-    expect(document.activeElement?.textContent).toMatch(/全部/);
+    expect(document.activeElement?.textContent).toMatch(/仅收藏/);
+  });
+
+  it("roves the flyout with wrap and Home/End", () => {
+    render(<SessionListMenu deletableCount={1} onCleanup={() => {}} />);
+    open();
+    fireEvent.mouseEnter(screen.getByRole("menuitem", { name: /排序/ }));
+    const radios = screen.getAllByRole("menuitemradio");
+    const flyout = screen.getByRole("menu", { name: "排序" });
+    fireEvent.keyDown(flyout, { key: "End" });
+    expect(document.activeElement).toBe(radios[radios.length - 1]);
+    fireEvent.keyDown(flyout, { key: "ArrowDown" }); // wraps
+    expect(document.activeElement).toBe(radios[0]);
+  });
+
+  it("moves keyboard focus into the flyout and roves with a single tab stop", () => {
+    render(<SessionListMenu deletableCount={1} onCleanup={() => {}} />);
+    open();
+    // Keyboard-focusing the 过滤 trigger opens the flyout with the first item as
+    // its single tab stop, so Tab from the trigger enters the flyout.
+    fireEvent.focus(screen.getByRole("menuitem", { name: /过滤/ }));
+    const flyout = screen.getByRole("menu", { name: "过滤" });
+    const items = within(flyout).getAllByRole("menuitemradio");
+    expect(items.filter((el) => el.getAttribute("tabindex") === "0")).toHaveLength(1);
+    expect(items[0]).toHaveAttribute("tabindex", "0");
+    fireEvent.keyDown(items[0], { key: "ArrowDown" });
+    expect(document.activeElement).toBe(items[1]);
+    fireEvent.keyDown(items[1], { key: "End" });
+    expect(document.activeElement).toBe(items[items.length - 1]);
   });
 
   it("closes the flyout after the 120ms leave delay", () => {

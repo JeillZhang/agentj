@@ -4,12 +4,18 @@
 use axum::response::IntoResponse as _;
 use base64::Engine as _;
 use sha2::{Digest as _, Sha384};
-use std::time::Instant;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+use tokio::task::JoinHandle;
 
-use crate::login_limiter::{LoginLimiter, Throttle};
+use crate::login_limiter::{Counters, IpSnapshot, LoginLimiter, Throttle};
 
 /// Cookie carrying the opaque session id issued after a successful login.
 pub const SESSION_COOKIE: &str = "agentj_session";
+
+/// Upper bound on the per-IP series exported by `GET /metrics` (design G2):
+/// the aggregate gauges stay exact, the series are ranked and capped.
+pub const PER_IP_SERIES_LIMIT: usize = 50;
 
 /// Version facts written by the UI build into `dist/version.json`, so the
 /// kernel can flag a dist that predates (or postdates) this server.
@@ -86,6 +92,30 @@ fn validate_manifest(manifest: &AssetManifest) -> Result<(), String> {
     Ok(())
 }
 
+/// Outcome of hashing one manifest entry against the bytes on disk.
+enum AssetCheck {
+    Match,
+    Mismatch,
+    Missing,
+}
+
+/// Hash one manifest entry against the bytes on disk; shared by the startup
+/// sweep and the runtime spot-check rounds.
+fn check_asset(dist: &std::path::Path, key: &str, expected: &str) -> AssetCheck {
+    let rel = key.strip_prefix('/').unwrap_or(key);
+    match std::fs::read(dist.join(rel)) {
+        Ok(bytes) => {
+            let encoded = base64::engine::general_purpose::STANDARD.encode(Sha384::digest(&bytes));
+            if expected.strip_prefix("sha384-") == Some(encoded.as_str()) {
+                AssetCheck::Match
+            } else {
+                AssetCheck::Mismatch
+            }
+        }
+        Err(_) => AssetCheck::Missing,
+    }
+}
+
 /// Hash every manifest entry against the bytes on disk (design D6/D7):
 /// `checked` counts entries whose file exists, and offending keys are collected
 /// so the startup warning can name them.
@@ -95,18 +125,14 @@ fn verify_assets(dist: &std::path::Path, manifest: &AssetManifest) -> IntegrityR
         ..Default::default()
     };
     for (key, expected) in &manifest.assets {
-        let rel = key.strip_prefix('/').unwrap_or(key);
-        match std::fs::read(dist.join(rel)) {
-            Ok(bytes) => {
+        match check_asset(dist, key, expected) {
+            AssetCheck::Match => report.checked += 1,
+            AssetCheck::Mismatch => {
                 report.checked += 1;
-                let encoded =
-                    base64::engine::general_purpose::STANDARD.encode(Sha384::digest(&bytes));
-                if expected.strip_prefix("sha384-") != Some(encoded.as_str()) {
-                    report.mismatched += 1;
-                    report.offenses.push(key.clone());
-                }
+                report.mismatched += 1;
+                report.offenses.push(key.clone());
             }
-            Err(_) => {
+            AssetCheck::Missing => {
                 report.missing += 1;
                 report.offenses.push(key.clone());
             }
@@ -116,18 +142,22 @@ fn verify_assets(dist: &std::path::Path, manifest: &AssetManifest) -> IntegrityR
 }
 
 /// Read + verify the manifest once at startup (design D7). A missing dist stays
-/// silent; every other failure yields a non-blocking warning (design D8).
-fn read_integrity(dist: Option<&std::path::Path>) -> (IntegrityReport, Option<String>) {
+/// silent; every other failure yields a non-blocking warning (design D8). The
+/// parsed manifest is handed back so runtime spot checks can reuse it (D6/D7).
+fn read_integrity(
+    dist: Option<&std::path::Path>,
+) -> (IntegrityReport, Option<String>, Option<AssetManifest>) {
     let Some(dir) = dist else {
-        return (IntegrityReport::default(), None);
+        return (IntegrityReport::default(), None, None);
     };
     match read_asset_manifest(Some(dir)) {
-        (Some(manifest), _) => (verify_assets(dir, &manifest), None),
+        (Some(manifest), _) => (verify_assets(dir, &manifest), None, Some(manifest)),
         (None, Some(err)) => (
             IntegrityReport::default(),
             Some(format!(
                 "warning: web dist asset manifest is unusable ({err}); skipping integrity verification"
             )),
+            None,
         ),
         (None, None) => (
             IntegrityReport::default(),
@@ -135,6 +165,7 @@ fn read_integrity(dist: Option<&std::path::Path>) -> (IntegrityReport, Option<St
                 "warning: web dist has no asset-manifest.json (stale build?); rebuild the UI"
                     .to_string(),
             ),
+            None,
         ),
     }
 }
@@ -168,6 +199,46 @@ pub(crate) struct IntegrityReport {
     offenses: Vec<String>,
 }
 
+/// Runtime spot-check schedule (design D6): each round hashes `sample` manifest
+/// entries, advancing a cursor over the sorted key set so the full manifest is
+/// covered every `ceil(keys / sample)` rounds.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SpotCheckConfig {
+    pub(crate) interval: Duration,
+    pub(crate) sample: usize,
+}
+
+impl Default for SpotCheckConfig {
+    fn default() -> Self {
+        Self {
+            interval: Duration::from_secs(60),
+            sample: 8,
+        }
+    }
+}
+
+/// Cumulative runtime spot-check state (design D7): written by the periodic
+/// task, read by `/version` and `/metrics`.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct SpotCheckReport {
+    pub(crate) rounds: u64,
+    pub(crate) checked: u64,
+    pub(crate) mismatched: u64,
+    pub(crate) missing: u64,
+    pub(crate) last_run: Option<Instant>,
+}
+
+/// Outcome of one spot-check round. `offenses` names mismatched and missing
+/// paths that were not reported by an earlier round, so the periodic task can
+/// warn once per path (design D7).
+#[derive(Debug, Clone, Default)]
+pub(crate) struct SpotRound {
+    pub(crate) checked: u64,
+    pub(crate) mismatched: u64,
+    pub(crate) missing: u64,
+    pub(crate) offenses: Vec<String>,
+}
+
 /// Static-web-UI runtime config: resolved dist directory plus the optional
 /// access token and the in-memory set of issued sessions (D3, no persistence).
 pub struct WebConfig {
@@ -177,6 +248,12 @@ pub struct WebConfig {
     dist_version_error: Option<String>,
     integrity: IntegrityReport,
     integrity_error: Option<String>,
+    manifest: Option<AssetManifest>,
+    spot: SpotCheckConfig,
+    spot_report: std::sync::RwLock<SpotCheckReport>,
+    warned: std::sync::Mutex<std::collections::HashSet<String>>,
+    spot_cursor: std::sync::atomic::AtomicUsize,
+    spot_task: std::sync::Mutex<Option<tokio::task::AbortHandle>>,
     sessions: std::sync::RwLock<std::collections::HashSet<String>>,
     login_limiter: LoginLimiter,
 }
@@ -188,7 +265,7 @@ impl WebConfig {
     /// Empty-string tokens normalize to `None` (no auth configured).
     pub fn new(dist: Option<std::path::PathBuf>, token: Option<String>) -> Self {
         let (dist_version, dist_version_error) = read_dist_version(dist.as_deref());
-        let (integrity, integrity_error) = read_integrity(dist.as_deref());
+        let (integrity, integrity_error, manifest) = read_integrity(dist.as_deref());
         Self {
             dist,
             token: token.filter(|t| !t.is_empty()),
@@ -196,6 +273,12 @@ impl WebConfig {
             dist_version_error,
             integrity,
             integrity_error,
+            manifest,
+            spot: SpotCheckConfig::default(),
+            spot_report: std::sync::RwLock::new(SpotCheckReport::default()),
+            warned: std::sync::Mutex::new(std::collections::HashSet::new()),
+            spot_cursor: std::sync::atomic::AtomicUsize::new(0),
+            spot_task: std::sync::Mutex::new(None),
             sessions: std::sync::RwLock::new(std::collections::HashSet::new()),
             login_limiter: LoginLimiter::new(),
         }
@@ -204,6 +287,114 @@ impl WebConfig {
     pub(crate) fn with_login_limiter(mut self, limiter: LoginLimiter) -> Self {
         self.login_limiter = limiter;
         self
+    }
+    #[cfg(test)]
+    pub(crate) fn with_spot_check(mut self, spot: SpotCheckConfig) -> Self {
+        self.spot = spot;
+        self
+    }
+    /// Run one spot-check round (design D6): hash up to `spot.sample` manifest
+    /// entries starting at the rotating cursor over the sorted key set, fold the
+    /// outcome into the shared report and return it. Offending paths recorded in
+    /// `warned` by an earlier round are omitted, and the task records new ones
+    /// (design D7) so persistent tampering warns once per path.
+    pub(crate) fn run_spot_round(&self) -> SpotRound {
+        let (Some(dist), Some(manifest)) = (&self.dist, &self.manifest) else {
+            return SpotRound::default();
+        };
+        let mut keys: Vec<&str> = manifest.assets.keys().map(String::as_str).collect();
+        if keys.is_empty() {
+            return SpotRound::default();
+        }
+        keys.sort_unstable();
+        let sample = self.spot.sample.max(1).min(keys.len());
+        let cursor = self
+            .spot_cursor
+            .fetch_add(sample, std::sync::atomic::Ordering::Relaxed);
+        let start = cursor % keys.len();
+        let mut round = SpotRound::default();
+        for index in 0..sample {
+            let key = keys[(start + index) % keys.len()];
+            match check_asset(dist, key, &manifest.assets[key]) {
+                AssetCheck::Match => round.checked += 1,
+                AssetCheck::Mismatch => {
+                    round.checked += 1;
+                    round.mismatched += 1;
+                    round.offenses.push(key.to_string());
+                }
+                AssetCheck::Missing => {
+                    round.missing += 1;
+                    round.offenses.push(key.to_string());
+                }
+            }
+        }
+        {
+            let mut report = self.spot_report.write().unwrap_or_else(|e| e.into_inner());
+            report.rounds += 1;
+            report.checked += round.checked;
+            report.mismatched += round.mismatched;
+            report.missing += round.missing;
+            report.last_run = Some(Instant::now());
+        }
+        let warned = self.warned.lock().unwrap_or_else(|e| e.into_inner());
+        round.offenses.retain(|path| !warned.contains(path));
+        round
+    }
+    /// The runtime spot-check report plus the age of its last round in whole
+    /// seconds; the age is `None` until the first round has run (design G7).
+    pub(crate) fn runtime_snapshot(&self) -> (SpotCheckReport, Option<u64>) {
+        let report = self
+            .spot_report
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let age = report
+            .last_run
+            .map(|t| Instant::now().duration_since(t).as_secs());
+        (report, age)
+    }
+    /// Spawn the periodic spot-check task (design D6/D7): every tick runs one
+    /// round and warns once per newly offending path. `None` when the manifest
+    /// is absent/unusable or has no keys (nothing to sample); the abort handle
+    /// is retained for [`Self::stop_spot_check`].
+    pub(crate) fn spawn_spot_check(self: &Arc<Self>) -> Option<JoinHandle<()>> {
+        let manifest = self.manifest.as_ref()?;
+        if manifest.assets.is_empty() {
+            return None;
+        }
+        let web = Arc::clone(self);
+        let handle = tokio::spawn(async move {
+            let mut ticks = tokio::time::interval(web.spot.interval);
+            loop {
+                ticks.tick().await;
+                let round = web.run_spot_round();
+                for path in round.offenses {
+                    let first = web
+                        .warned
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .insert(path.clone());
+                    if first {
+                        tracing::warn!(path = %path, "web asset spot check failed");
+                    }
+                }
+            }
+        });
+        let abort = handle.abort_handle();
+        *self.spot_task.lock().unwrap_or_else(|e| e.into_inner()) = Some(abort);
+        Some(handle)
+    }
+    /// Abort the periodic spot-check task, if one is running (server shutdown,
+    /// tests).
+    pub(crate) fn stop_spot_check(&self) {
+        let task = self
+            .spot_task
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        if let Some(task) = task {
+            task.abort();
+        }
     }
     /// The static web UI is served only when a dist directory was resolved.
     pub fn enabled(&self) -> bool {
@@ -487,8 +678,18 @@ pub fn gate_required(
     peer: std::net::SocketAddr,
     headers: &axum::http::HeaderMap,
 ) -> bool {
-    web.enabled()
-        && web.token.is_some()
+    web.enabled() && auth_required(web, peer, headers)
+}
+
+/// Auth check without the dist requirement (design G3): the machine surface
+/// (`/metrics`) must answer even when no static UI is mounted. A token must be
+/// configured, the peer must be remote and no valid session cookie presented.
+pub fn auth_required(
+    web: &WebConfig,
+    peer: std::net::SocketAddr,
+    headers: &axum::http::HeaderMap,
+) -> bool {
+    web.token.is_some()
         && !peer_is_loopback(peer)
         && !session_cookie(headers).is_some_and(|sid| web.is_valid_session(sid))
 }
@@ -555,14 +756,25 @@ fn static_surface(
 
 /// Unauthenticated version probe: reports this server's product/protocol
 /// versions, the optional facts read from the mounted dist, the aggregate
-/// login-limiter counters and the startup integrity summary, so a remote client
-/// or operator can detect a stale UI and observe throttling without holding a
-/// session cookie. Registered as an explicit route (like `/login`), so the login
-/// gate and the SPA fallback never answer it.
+/// login-limiter counters, the startup integrity summary and the runtime
+/// spot-check block, so a remote client or operator can detect a stale UI and
+/// observe throttling without holding a session cookie. Registered as an
+/// explicit route (like `/login`), so the login gate and the SPA fallback never
+/// answer it.
 async fn version_handler(web: std::sync::Arc<WebConfig>) -> axum::response::Response {
     let dist = web.dist_version();
     let counters = web.login_limiter.counters(Instant::now());
     let integrity = web.integrity();
+    let (runtime, last_run_age) = web.runtime_snapshot();
+    let mut runtime_json = serde_json::json!({
+        "rounds": runtime.rounds,
+        "checked": runtime.checked,
+        "mismatched": runtime.mismatched,
+        "missing": runtime.missing,
+    });
+    if let Some(age) = last_run_age {
+        runtime_json["last_run_age_secs"] = serde_json::json!(age);
+    }
     let body = serde_json::json!({
         "product_version": env!("CARGO_PKG_VERSION"),
         "protocol_version": agentj_protocol::PROTOCOL_VERSION,
@@ -585,6 +797,7 @@ async fn version_handler(web: std::sync::Arc<WebConfig>) -> axum::response::Resp
             "checked": integrity.checked,
             "mismatched": integrity.mismatched,
             "missing": integrity.missing,
+            "runtime": runtime_json,
         },
     });
     let mut res = axum::Json(body).into_response();
@@ -595,10 +808,247 @@ async fn version_handler(web: std::sync::Arc<WebConfig>) -> axum::response::Resp
     res
 }
 
+/// Auth-gated Prometheus scrape endpoint (design G2/D1): the machine surface
+/// answers `401` without a redirect, so scrapers never chase the login page.
+async fn metrics_handler(
+    web: std::sync::Arc<WebConfig>,
+    peer: std::net::SocketAddr,
+    headers: axum::http::HeaderMap,
+) -> axum::response::Response {
+    if auth_required(&web, peer, &headers) {
+        return (
+            axum::http::StatusCode::UNAUTHORIZED,
+            [
+                ("content-type", "text/plain"),
+                ("cache-control", "no-store"),
+            ],
+            "unauthorized\n",
+        )
+            .into_response();
+    }
+    (
+        [
+            ("content-type", "text/plain; version=0.0.4; charset=utf-8"),
+            ("cache-control", "no-store"),
+        ],
+        prometheus_text(&web),
+    )
+        .into_response()
+}
+
+/// Prometheus text exposition (design G2): limiter aggregates, the ranked
+/// per-IP series capped at [`PER_IP_SERIES_LIMIT`], the startup integrity
+/// summary and the runtime spot-check counters.
+fn prometheus_text(web: &WebConfig) -> String {
+    let now = Instant::now();
+    let counters = web.login_limiter.counters(now);
+    let series = web.login_limiter.snapshot(now);
+    let (runtime, _) = web.runtime_snapshot();
+    let mut out = String::new();
+    push_login_aggregates(&mut out, &counters);
+    push_login_ip_series(&mut out, &series, now);
+    push_integrity_summary(&mut out, web.integrity());
+    push_spot_summary(&mut out, &runtime);
+    out
+}
+
+fn push_login_aggregates(out: &mut String, counters: &Counters) {
+    push_metric(
+        out,
+        "agentj_login_attempts_total",
+        "counter",
+        "Login attempts that reached the throttler.",
+        counters.attempts,
+    );
+    push_metric(
+        out,
+        "agentj_login_failures_total",
+        "counter",
+        "Token check failures (locked-out attempts excluded).",
+        counters.failures,
+    );
+    push_metric(
+        out,
+        "agentj_login_lockouts_total",
+        "counter",
+        "Lockouts newly triggered (extensions excluded).",
+        counters.lockouts,
+    );
+    push_metric(
+        out,
+        "agentj_login_blocked_total",
+        "counter",
+        "Requests rejected while their source IP was locked out.",
+        counters.blocked,
+    );
+    push_metric(
+        out,
+        "agentj_login_locked_ips",
+        "gauge",
+        "Source IPs currently locked out.",
+        counters.locked_now,
+    );
+    push_metric(
+        out,
+        "agentj_login_tracked_ips",
+        "gauge",
+        "Source IPs currently tracked by the throttler.",
+        counters.tracked_ips,
+    );
+}
+
+fn push_login_ip_series(out: &mut String, snapshot: &[IpSnapshot], now: Instant) {
+    let truncated = snapshot.len() > PER_IP_SERIES_LIMIT;
+    let shown = &snapshot[..snapshot.len().min(PER_IP_SERIES_LIMIT)];
+    push_ip_family(
+        out,
+        "agentj_login_ip_failures_total",
+        "counter",
+        "Token check failures per source IP (top series by lock state and failures).",
+        shown,
+        |s| u64::from(s.failures),
+    );
+    push_ip_family(
+        out,
+        "agentj_login_ip_locked",
+        "gauge",
+        "Whether the source IP is currently locked out (1) or not (0).",
+        shown,
+        |s| u64::from(s.locked),
+    );
+    push_ip_family(
+        out,
+        "agentj_login_ip_retry_after_seconds",
+        "gauge",
+        "Remaining lockout for the source IP in whole seconds (0 when unlocked).",
+        shown,
+        |s| s.retry_after.as_secs(),
+    );
+    push_ip_family(
+        out,
+        "agentj_login_ip_last_seen_seconds",
+        "gauge",
+        "Seconds since the source IP last reached the throttler.",
+        shown,
+        |s| now.duration_since(s.last_seen).as_secs(),
+    );
+    push_metric(
+        out,
+        "agentj_login_ip_series_truncated",
+        "gauge",
+        "Whether the per-IP series were capped at the Top-50 limit (1) or not (0).",
+        u64::from(truncated),
+    );
+}
+
+fn push_integrity_summary(out: &mut String, report: &IntegrityReport) {
+    push_metric(
+        out,
+        "agentj_web_manifest_present",
+        "gauge",
+        "Whether the dist asset manifest was present and usable (1) or not (0).",
+        u64::from(report.manifest_present),
+    );
+    push_metric(
+        out,
+        "agentj_web_assets_checked",
+        "gauge",
+        "Startup integrity check: assets hashed.",
+        report.checked,
+    );
+    push_metric(
+        out,
+        "agentj_web_assets_mismatched",
+        "gauge",
+        "Startup integrity check: digest mismatches.",
+        report.mismatched,
+    );
+    push_metric(
+        out,
+        "agentj_web_assets_missing",
+        "gauge",
+        "Startup integrity check: manifest entries missing on disk.",
+        report.missing,
+    );
+}
+
+/// Runtime spot-check counters (design G2), cumulative across rounds.
+fn push_spot_summary(out: &mut String, report: &SpotCheckReport) {
+    push_metric(
+        out,
+        "agentj_web_spot_rounds_total",
+        "counter",
+        "Web asset spot-check rounds completed.",
+        report.rounds,
+    );
+    push_metric(
+        out,
+        "agentj_web_spot_checked_total",
+        "counter",
+        "Web asset spot-check: files hashed across rounds.",
+        report.checked,
+    );
+    push_metric(
+        out,
+        "agentj_web_spot_mismatched_total",
+        "counter",
+        "Web asset spot-check: digest mismatches across rounds.",
+        report.mismatched,
+    );
+    push_metric(
+        out,
+        "agentj_web_spot_missing_total",
+        "counter",
+        "Web asset spot-check: manifest entries missing on disk across rounds.",
+        report.missing,
+    );
+}
+
+fn push_metric(out: &mut String, name: &str, kind: &str, help: &str, value: u64) {
+    out.push_str(&format!(
+        "# HELP {name} {help}\n# TYPE {name} {kind}\n{name} {value}\n"
+    ));
+}
+
+/// Family header followed by one labelled sample per shown IP; the text format
+/// wants each family's samples contiguous, so callers loop one family at a time.
+fn push_ip_family(
+    out: &mut String,
+    name: &str,
+    kind: &str,
+    help: &str,
+    series: &[IpSnapshot],
+    value: impl Fn(&IpSnapshot) -> u64,
+) {
+    out.push_str(&format!("# HELP {name} {help}\n# TYPE {name} {kind}\n"));
+    for snap in series {
+        out.push_str(&format!(
+            "{name}{{ip=\"{}\"}} {}\n",
+            escape_label(&snap.ip.to_string()),
+            value(snap)
+        ));
+    }
+}
+
+/// Escape a Prometheus label value: `\`, `"` and newlines (text format 0.0.4).
+fn escape_label(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
 /// Build the HTTP router for one accepted connection: the `/ws` upgrade route
 /// plus — when a dist was resolved — the statically gated SPA surface. `/ws`,
-/// `/login`, `/logout` and `/version` are never behind the gate (no redirect
-/// loop; the version probe stays readable for remote peers).
+/// `/login`, `/logout`, `/version` and `/metrics` are never behind the static
+/// gate (no redirect loop; the probes stay reachable for remote peers and the
+/// metrics endpoint gates itself with a plain `401`).
 pub fn build_router(
     state: std::sync::Arc<crate::ws::WsServerState>,
     peer: std::net::SocketAddr,
@@ -619,9 +1069,17 @@ pub fn build_router(
             async move { version_handler(web).await }
         }
     };
+    let metrics_route = {
+        let web = state.web.clone();
+        move |headers: axum::http::HeaderMap| {
+            let web = web.clone();
+            async move { metrics_handler(web, peer, headers).await }
+        }
+    };
     let mut router = axum::Router::new()
         .route("/ws", ws_route)
-        .route("/version", axum::routing::get(version_route));
+        .route("/version", axum::routing::get(version_route))
+        .route("/metrics", axum::routing::get(metrics_route));
     router = auth_routes(router, state.web.clone(), peer);
     if let Some(dist) = state.web.dist.clone() {
         router = static_surface(router, state.web.clone(), peer, &dist);
@@ -903,6 +1361,170 @@ mod tests {
         assert!(cfg.startup_warnings().is_empty());
     }
 
+    #[test]
+    fn spot_round_rotates_samples_and_counts_mismatches_once() {
+        let dist = temp_dist("spot-core");
+        std::fs::write(dist.join("assets/b.js"), "b").unwrap();
+        std::fs::write(dist.join("assets/c.js"), "c").unwrap();
+        write_manifest(
+            &dist,
+            &[
+                ("/assets/app.js", &sha384_b64(b"console.log(1)")),
+                ("/assets/b.js", &sha384_b64(b"b")),
+                ("/assets/c.js", &sha384_b64(b"c")),
+            ],
+        );
+        let web = WebConfig::new(Some(dist.clone()), None).with_spot_check(SpotCheckConfig {
+            interval: Duration::from_secs(60),
+            sample: 1,
+        });
+        assert_eq!(web.run_spot_round().checked, 1); // /assets/app.js
+        std::fs::write(dist.join("assets/b.js"), "tampered").unwrap();
+        let round = web.run_spot_round(); // /assets/b.js
+        assert_eq!(round.mismatched, 1);
+        assert_eq!(round.offenses, vec!["/assets/b.js".to_string()]);
+        std::fs::remove_file(dist.join("assets/c.js")).unwrap();
+        assert_eq!(web.run_spot_round().missing, 1); // /assets/c.js deleted
+        assert_eq!(web.run_spot_round().checked, 1); // wraps to /assets/app.js
+        let (report, age) = web.runtime_snapshot();
+        assert_eq!(
+            (
+                report.rounds,
+                report.checked,
+                report.mismatched,
+                report.missing
+            ),
+            (4, 3, 1, 1)
+        );
+        assert!(report.last_run.is_some());
+        assert!(age.is_some());
+        let text = prometheus_text(&web);
+        assert!(text.contains("agentj_web_spot_rounds_total 4"));
+        assert!(text.contains("agentj_web_spot_checked_total 3"));
+        web.warned
+            .lock()
+            .unwrap()
+            .insert("/assets/b.js".to_string());
+        let repeated = web.run_spot_round(); // /assets/b.js again
+        assert_eq!(repeated.mismatched, 1);
+        assert!(repeated.offenses.is_empty());
+        std::fs::remove_dir_all(&dist).ok();
+    }
+
+    /// Bounded wait on the spawned spot task: `interval` fires its first tick
+    /// immediately, so a 20ms schedule reaches the target well within 2s. Real
+    /// time instead of `start_paused` — tokio's `test-util` feature is not a
+    /// dependency of this crate (plan T4 fallback).
+    async fn wait_for_spot_rounds(web: &WebConfig, target: u64) {
+        let reached = tokio::time::timeout(Duration::from_secs(2), async {
+            while web.runtime_snapshot().0.rounds < target {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        assert!(
+            reached.is_ok(),
+            "spot task did not reach {target} rounds within 2s"
+        );
+    }
+
+    fn msec_spot(ms: u64, sample: usize) -> SpotCheckConfig {
+        SpotCheckConfig {
+            interval: Duration::from_millis(ms),
+            sample,
+        }
+    }
+
+    #[tokio::test]
+    async fn spot_task_runs_rounds_on_the_interval() {
+        let dist = temp_dist("spot-task");
+        write_temp_dist_manifest(&dist);
+        let web = std::sync::Arc::new(
+            WebConfig::new(Some(dist.clone()), None).with_spot_check(msec_spot(20, 1)),
+        );
+        assert!(
+            web.spawn_spot_check().is_some(),
+            "a usable manifest must spawn the periodic task"
+        );
+        wait_for_spot_rounds(&web, 1).await;
+        assert!(web.runtime_snapshot().0.rounds >= 1);
+        web.stop_spot_check();
+        std::fs::remove_dir_all(&dist).ok();
+    }
+
+    #[test]
+    fn spawn_spot_check_is_a_noop_without_a_usable_manifest() {
+        let no_dist = std::sync::Arc::new(WebConfig::new(None, None));
+        assert!(no_dist.spawn_spot_check().is_none());
+        let empty_dist = temp_dist("spot-empty-manifest");
+        write_manifest(&empty_dist, &[]);
+        let empty = std::sync::Arc::new(WebConfig::new(Some(empty_dist.clone()), None));
+        assert!(empty.spawn_spot_check().is_none());
+        assert_eq!(empty.runtime_snapshot().0.rounds, 0);
+        let broken_dist = temp_dist("spot-broken-manifest");
+        std::fs::write(broken_dist.join("asset-manifest.json"), "{not json").unwrap();
+        let broken = std::sync::Arc::new(WebConfig::new(Some(broken_dist.clone()), None));
+        assert!(broken.spawn_spot_check().is_none());
+        for dir in [empty_dist, broken_dist] {
+            std::fs::remove_dir_all(&dir).ok();
+        }
+    }
+
+    /// WARN-level capture for the current thread. `#[tokio::test]` defaults to
+    /// the current-thread runtime, so the spawned spot task is polled on this
+    /// thread and its warnings land in the buffer (mirrors the `login_limiter`
+    /// capture helper).
+    #[derive(Clone, Default)]
+    struct WarnCapture(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for WarnCapture {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for WarnCapture {
+        type Writer = WarnCapture;
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    fn capture_warnings() -> (WarnCapture, tracing::subscriber::DefaultGuard) {
+        let buf = WarnCapture::default();
+        let sub = tracing_subscriber::fmt()
+            .with_writer(buf.clone())
+            .with_ansi(false)
+            .with_max_level(tracing::Level::WARN)
+            .finish();
+        (buf, tracing::subscriber::set_default(sub))
+    }
+
+    #[tokio::test]
+    async fn spot_task_warns_once_per_offending_path_across_rounds() {
+        let dist = temp_dist("spot-dedup");
+        write_manifest(&dist, &[("/assets/app.js", "sha384-AAAA")]);
+        let web = std::sync::Arc::new(
+            WebConfig::new(Some(dist.clone()), None).with_spot_check(msec_spot(20, 1)),
+        );
+        let (buf, _guard) = capture_warnings();
+        assert!(web.spawn_spot_check().is_some());
+        wait_for_spot_rounds(&web, 3).await; // the same key is sampled again
+        web.stop_spot_check();
+        let out = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap_or_default();
+        assert!(out.contains("web asset spot check failed"), "{out}");
+        assert_eq!(
+            out.matches("/assets/app.js").count(),
+            1,
+            "persistent offense must warn exactly once: {out}"
+        );
+        std::fs::remove_dir_all(&dist).ok();
+    }
+
     #[tokio::test]
     async fn version_endpoint_reports_server_and_dist_versions() {
         let dist = temp_dist("version-route");
@@ -1037,6 +1659,144 @@ mod tests {
         assert_eq!(v["integrity"]["manifest_present"], false);
         assert_eq!(v["integrity"]["checked"], 0);
         std::fs::remove_dir_all(&bare).ok();
+    }
+
+    #[tokio::test]
+    async fn version_omits_last_run_age_before_any_round() {
+        let state = test_state(crate::web::WebConfig::new(None, None));
+        let local: std::net::SocketAddr = "127.0.0.1:4444".parse().unwrap();
+        let (_, _, body) = get(crate::web::build_router(state, local), "/version").await;
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let runtime = &v["integrity"]["runtime"];
+        assert!(runtime.is_object(), "runtime block missing: {body}");
+        assert_eq!(runtime["rounds"], 0);
+        assert!(runtime.get("last_run_age_secs").is_none());
+    }
+
+    #[tokio::test]
+    async fn version_reports_spot_runtime_after_a_round() {
+        let dist = temp_dist("version-runtime");
+        write_manifest(&dist, &[("/assets/app.js", &sha384_b64(b"console.log(1)"))]);
+        let state = test_state(crate::web::WebConfig::new(Some(dist.clone()), None));
+        let local: std::net::SocketAddr = "127.0.0.1:4444".parse().unwrap();
+        state.web.run_spot_round();
+        let (_, _, body) = get(crate::web::build_router(state, local), "/version").await;
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let runtime = &v["integrity"]["runtime"];
+        assert_eq!(runtime["rounds"], 1);
+        assert_eq!(runtime["checked"], 1);
+        assert_eq!(runtime["mismatched"], 0);
+        assert_eq!(runtime["missing"], 0);
+        assert!(runtime["last_run_age_secs"].as_u64().is_some());
+        assert_eq!(v["integrity"]["checked"], 1); // startup fields unchanged
+        std::fs::remove_dir_all(&dist).ok();
+    }
+
+    #[tokio::test]
+    async fn metrics_gates_remote_peers_and_formats_prometheus() {
+        let state = test_state(crate::web::WebConfig::new(None, Some("s3cret".into())));
+        let remote: std::net::SocketAddr = "203.0.113.7:5555".parse().unwrap();
+        let (status, headers, body) =
+            get(crate::web::build_router(state.clone(), remote), "/metrics").await;
+        assert_eq!(status, axum::http::StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            headers.get(axum::http::header::CACHE_CONTROL).unwrap(),
+            "no-store"
+        );
+        assert!(!body.contains("agentj_login_attempts_total"));
+
+        let local: std::net::SocketAddr = "127.0.0.1:4444".parse().unwrap();
+        let (status, headers, body) = get(crate::web::build_router(state, local), "/metrics").await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert!(
+            headers
+                .get(axum::http::header::CONTENT_TYPE)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with("text/plain")
+        );
+        assert_eq!(
+            headers.get(axum::http::header::CACHE_CONTROL).unwrap(),
+            "no-store"
+        );
+        assert!(body.contains("# TYPE agentj_login_attempts_total counter"));
+    }
+
+    #[tokio::test]
+    async fn metrics_exposes_the_startup_integrity_summary() {
+        let dist = temp_dist("metrics-integrity");
+        write_temp_dist_manifest(&dist);
+        let state = test_state(crate::web::WebConfig::new(Some(dist.clone()), None));
+        let local: std::net::SocketAddr = "127.0.0.1:4444".parse().unwrap();
+        let (status, _, body) = get(crate::web::build_router(state, local), "/metrics").await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert!(body.contains("agentj_web_manifest_present 1"));
+        assert!(body.contains("agentj_web_assets_checked 2"));
+        std::fs::remove_dir_all(&dist).ok();
+    }
+
+    #[tokio::test]
+    async fn metrics_passes_tokenless_servers_and_valid_cookies() {
+        let remote: std::net::SocketAddr = "203.0.113.7:41000".parse().unwrap();
+        let tokenless = test_state(crate::web::WebConfig::new(None, None));
+        let (status, _, _) = get(crate::web::build_router(tokenless, remote), "/metrics").await;
+        assert_eq!(status, axum::http::StatusCode::OK, "no token: open");
+
+        let web = crate::web::WebConfig::new(None, Some("secret".into()));
+        let sid = web.issue_session();
+        let state = test_state(web);
+        use tower::util::ServiceExt;
+        let res = crate::web::build_router(state, remote)
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/metrics")
+                    .header(axum::http::header::COOKIE, format!("agentj_session={sid}"))
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), axum::http::StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn metrics_truncates_per_ip_series_after_locked_and_failure_ranking() {
+        let policy = crate::login_limiter::Policy {
+            free_attempts: 2,
+            ..crate::login_limiter::Policy::default()
+        };
+        let limiter = crate::login_limiter::LoginLimiter::with_policy(policy);
+        let t0 = Instant::now();
+        for i in 1..=50u8 {
+            let ip: std::net::IpAddr = format!("10.0.0.{i}").parse().unwrap();
+            let _ = limiter.record_failure(ip, t0);
+        }
+        let locked: std::net::IpAddr = "203.0.113.9".parse().unwrap();
+        let _ = limiter.record_failure(locked, t0);
+        let _ = limiter.record_failure(locked, t0); // second failure locks
+        let web = crate::web::WebConfig::new(None, None).with_login_limiter(limiter);
+        let state = test_state(web);
+        let local: std::net::SocketAddr = "127.0.0.1:4444".parse().unwrap();
+        let (status, _, body) = get(crate::web::build_router(state, local), "/metrics").await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert!(body.contains("agentj_login_ip_series_truncated 1"));
+        assert_eq!(
+            body.matches("agentj_login_ip_failures_total{").count(),
+            PER_IP_SERIES_LIMIT
+        );
+        let locked_at = body.find("ip=\"203.0.113.9\"").expect("locked series");
+        let busy_at = body.find("ip=\"10.0.0.1\"").expect("allowed series");
+        assert!(locked_at < busy_at, "locked IPs rank first");
+        assert!(body.contains("agentj_login_ip_locked{ip=\"203.0.113.9\"} 1"));
+        assert!(body.contains("agentj_login_ip_last_seen_seconds{ip=\"203.0.113.9\"}"));
+        assert!(body.contains("ip=\"10.0.0.49\""));
+        assert!(!body.contains("ip=\"10.0.0.50\""), "51st series is dropped");
+    }
+
+    #[test]
+    fn prometheus_labels_escape_quotes_backslashes_and_newlines() {
+        assert_eq!(escape_label("a\"b\\c\nd"), "a\\\"b\\\\c\\nd");
     }
 
     fn test_state(web: crate::web::WebConfig) -> std::sync::Arc<crate::ws::WsServerState> {

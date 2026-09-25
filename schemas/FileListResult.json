@@ -10,6 +10,15 @@
         "$ref": "#/$defs/FileEntry"
       }
     },
+    "total": {
+      "description": "Full match count discovered by a query scan (lower bound when truncated).\n@since 0.14.0",
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint64",
+      "minimum": 0
+    },
     "truncated": {
       "type": "boolean"
     }

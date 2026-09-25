@@ -18,6 +18,10 @@ use agentj_protocol::file::{FileEntry, FileKind, FileListResult, GitFileStatus};
 pub const MAX_DEPTH: u32 = 8;
 /// Entry cap; exceeding it truncates the result and sets `truncated`.
 pub const ENTRY_LIMIT: usize = 2000;
+/// Query-mode visit budget; exhausting it sets `truncated` (`total` is a lower bound).
+pub const SEARCH_VISIT_LIMIT: usize = 20_000;
+/// Maximum ranked matches returned in query mode (Top-100).
+pub const SEARCH_RESULT_LIMIT: usize = 100;
 
 const GIT_DIR: &str = ".git";
 
@@ -47,6 +51,23 @@ pub fn list(
     if !(1..=MAX_DEPTH).contains(&depth) {
         return Err(FileListError::InvalidDepth);
     }
+    let scope = resolve_scope(root, path)?;
+    let mut walk = Walk::new(scope.root, depth);
+    walk.run(&scope.target, &scope.label, &scope.prefix)?;
+    Ok(walk.finish())
+}
+
+/// Canonicalized sandbox root plus the resolved target directory, its error
+/// label and its root-relative prefix (shared by listing and search).
+struct Scope {
+    root: PathBuf,
+    target: PathBuf,
+    label: String,
+    prefix: String,
+}
+
+/// Resolve `path` inside `root` with the sandbox rules of the listing walk.
+fn resolve_scope(root: &Path, path: Option<&str>) -> Result<Scope, FileListError> {
     let root = root.canonicalize().map_err(|e| FileListError::Io {
         path: root.display().to_string(),
         reason: e.to_string(),
@@ -63,9 +84,12 @@ pub fn list(
         return Err(FileListError::NotADirectory);
     }
     let prefix = requested_prefix(&root, requested, &target);
-    let mut walk = Walk::new(root, depth);
-    walk.run(&target, &label, &prefix)?;
-    Ok(walk.finish())
+    Ok(Scope {
+        root,
+        target,
+        label,
+        prefix,
+    })
 }
 
 /// Root-relative prefix of the requested directory (`""` for the root itself),
@@ -287,44 +311,50 @@ impl Walk {
         self.entries.extend(files);
     }
 
-    /// Build one entry; `None` skips entries whose metadata fails or whose
-    /// canonical path escapes the root (out-of-root symlinks).
+    /// Build one entry through the shared constructor below.
     fn entry_for(&self, abs: &Path, prefix: &str, name: &std::ffi::OsStr) -> Option<FileEntry> {
-        let canonical = abs.canonicalize().ok()?;
-        if !canonical.starts_with(&self.root) {
-            return None;
-        }
-        let metadata = std::fs::metadata(abs).ok()?;
-        let name = name.to_string_lossy().into_owned();
-        let path = if prefix.is_empty() {
-            name.clone()
-        } else {
-            format!("{prefix}/{name}")
-        };
-        Some(FileEntry {
-            name,
-            path,
-            kind: if metadata.is_dir() {
-                FileKind::Dir
-            } else {
-                FileKind::File
-            },
-            size: metadata.is_file().then_some(metadata.len()),
-            mtime_ms: metadata
-                .modified()
-                .ok()
-                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-                .map(|d| d.as_millis() as u64),
-            git_status: None,
-        })
+        entry_for(&self.root, abs, prefix, name)
     }
 
     fn finish(self) -> FileListResult {
         FileListResult {
             entries: self.entries,
             truncated: self.truncated,
+            total: None,
         }
     }
+}
+
+/// Build one entry; `None` skips entries whose metadata fails or whose
+/// canonical path escapes `root` (out-of-root symlinks).
+fn entry_for(root: &Path, abs: &Path, prefix: &str, name: &std::ffi::OsStr) -> Option<FileEntry> {
+    let canonical = abs.canonicalize().ok()?;
+    if !canonical.starts_with(root) {
+        return None;
+    }
+    let metadata = std::fs::metadata(abs).ok()?;
+    let name = name.to_string_lossy().into_owned();
+    let path = if prefix.is_empty() {
+        name.clone()
+    } else {
+        format!("{prefix}/{name}")
+    };
+    Some(FileEntry {
+        name,
+        path,
+        kind: if metadata.is_dir() {
+            FileKind::Dir
+        } else {
+            FileKind::File
+        },
+        size: metadata.is_file().then_some(metadata.len()),
+        mtime_ms: metadata
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as u64),
+        git_status: None,
+    })
 }
 
 /// Directory children sorted by file name; entry classification re-orders
@@ -334,6 +364,131 @@ fn read_sorted(dir: &Path) -> std::io::Result<Vec<std::fs::DirEntry>> {
         std::fs::read_dir(dir)?.filter_map(Result::ok).collect();
     children.sort_by_key(|entry| entry.file_name());
     Ok(children)
+}
+
+/// Query-mode search over the `path` subtree (design item 3): `.git` is
+/// skipped, escaping symlinks are dropped and the sandbox rules match [`list`].
+pub fn search(
+    root: &Path,
+    path: Option<&str>,
+    query: &str,
+) -> Result<FileListResult, FileListError> {
+    search_with_budget(root, path, query, SEARCH_VISIT_LIMIT)
+}
+
+/// [`search`] with an injectable visit budget; the scan stops after
+/// `visit_limit` entries, sets `truncated` and reports `total` as a lower bound.
+pub(crate) fn search_with_budget(
+    root: &Path,
+    path: Option<&str>,
+    query: &str,
+    visit_limit: usize,
+) -> Result<FileListResult, FileListError> {
+    let scope = resolve_scope(root, path)?;
+    let mut scan = SearchScan {
+        root: &scope.root,
+        needle: query.to_lowercase(),
+        visit_limit,
+        visited: 0,
+        budget_hit: false,
+        matches: Vec::new(),
+    };
+    scan.run(&scope.target, &scope.label, &scope.prefix)?;
+    Ok(scan.finish())
+}
+
+/// Rank a match exactly like the TUI `searchRank` (case-insensitive): name
+/// prefix 0 > name substring 1 > path substring 2; `None` = no match.
+fn search_rank(name: &str, path: &str, needle: &str) -> Option<u8> {
+    let name = name.to_lowercase();
+    if name.starts_with(needle) {
+        return Some(0);
+    }
+    if name.contains(needle) {
+        return Some(1);
+    }
+    path.to_lowercase().contains(needle).then_some(2)
+}
+
+/// BFS scan for [`search`]: visits entries (directories included) without a
+/// depth cap, descends into directories and keeps matching files only.
+struct SearchScan<'a> {
+    root: &'a Path,
+    needle: String,
+    visit_limit: usize,
+    visited: usize,
+    budget_hit: bool,
+    matches: Vec<(u8, FileEntry)>,
+}
+
+impl SearchScan<'_> {
+    /// Scan `target`; an unreadable target fails the request, while an
+    /// unreadable nested directory is skipped with a debug log.
+    fn run(&mut self, target: &Path, label: &str, prefix: &str) -> Result<(), FileListError> {
+        let children = read_sorted(target).map_err(|e| FileListError::Io {
+            path: label.to_string(),
+            reason: e.to_string(),
+        })?;
+        let mut queue: VecDeque<(PathBuf, String)> = VecDeque::new();
+        self.process(prefix, &children, &mut queue);
+        while let Some((dir, prefix)) = queue.pop_front() {
+            if self.budget_hit {
+                break;
+            }
+            match read_sorted(&dir) {
+                Ok(children) => self.process(&prefix, &children, &mut queue),
+                Err(e) => tracing::debug!(
+                    dir = %dir.display(),
+                    error = %e,
+                    "file/list search skips unreadable subdirectory"
+                ),
+            }
+        }
+        Ok(())
+    }
+
+    /// Examine one level in name order; each non-`.git` child costs one visit
+    /// and an exhausted budget stops the scan (`truncated`).
+    fn process(
+        &mut self,
+        prefix: &str,
+        children: &[std::fs::DirEntry],
+        queue: &mut VecDeque<(PathBuf, String)>,
+    ) {
+        for child in children {
+            if child.file_name() == GIT_DIR {
+                continue;
+            }
+            if self.visited >= self.visit_limit {
+                self.budget_hit = true;
+                return;
+            }
+            self.visited += 1;
+            let abs = child.path();
+            let Some(entry) = entry_for(self.root, &abs, prefix, &child.file_name()) else {
+                continue;
+            };
+            if entry.kind == FileKind::Dir {
+                queue.push_back((abs, entry.path.clone()));
+            } else if let Some(rank) = search_rank(&entry.name, &entry.path, &self.needle) {
+                self.matches.push((rank, entry));
+            }
+        }
+    }
+
+    /// Rank-then-path order, Top-[`SEARCH_RESULT_LIMIT`] cap; `total` counts
+    /// every match before the cap and `truncated` reflects the visit budget.
+    fn finish(mut self) -> FileListResult {
+        self.matches
+            .sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.path.cmp(&b.1.path)));
+        let total = self.matches.len() as u64;
+        self.matches.truncate(SEARCH_RESULT_LIMIT);
+        FileListResult {
+            entries: self.matches.into_iter().map(|(_, entry)| entry).collect(),
+            truncated: self.budget_hit,
+            total: Some(total),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -609,5 +764,90 @@ mod tests {
             None,
             "no statuses = no dir status"
         );
+    }
+
+    fn search_tree(tag: &str, files: &[&str]) -> PathBuf {
+        let root = temp_dir(tag);
+        for rel in files {
+            let path = root.join(rel);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, "x").unwrap();
+        }
+        root
+    }
+
+    #[test]
+    fn search_ranks_prefix_over_substring_over_path() {
+        let root = search_tree(
+            "search-rank",
+            &[
+                "src/main.rs",
+                "src/domain/domain_main.rs",
+                "docs/main-guide/readme.md",
+            ],
+        );
+        let result = search(&root, None, "main").unwrap();
+        let paths: Vec<_> = result.entries.iter().map(|e| e.path.as_str()).collect();
+        assert_eq!(
+            paths,
+            vec![
+                "src/main.rs",
+                "src/domain/domain_main.rs",
+                "docs/main-guide/readme.md",
+            ],
+            "rank: name prefix > name substring > path substring"
+        );
+        assert_eq!(result.total, Some(3));
+        assert!(!result.truncated);
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn search_is_case_insensitive_and_path_scoped() {
+        let root = search_tree("search-scope", &["src/MAIN.rs", "other/main.rs"]);
+        let scoped = search(&root, Some("src"), "main").unwrap();
+        assert_eq!(scoped.total, Some(1));
+        assert_eq!(scoped.entries[0].path, "src/MAIN.rs");
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn search_reports_truncation_when_the_visit_budget_runs_out() {
+        let root = search_tree("search-budget", &["a/x.rs", "b/y.rs", "c/z.rs"]);
+        let result = search_with_budget(&root, None, "rs", 2).unwrap();
+        assert!(
+            result.truncated,
+            "exhausted budget must mark the scan partial"
+        );
+        assert!(result.total.is_some(), "total is reported as a lower bound");
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn search_caps_entries_at_the_limit_and_keeps_total() {
+        let root = temp_dir("search-cap");
+        for i in 0..SEARCH_RESULT_LIMIT + 5 {
+            fs::write(root.join(format!("f{i:04}.txt")), "x").unwrap();
+        }
+        let result = search(&root, None, "f").unwrap();
+        assert_eq!(result.entries.len(), SEARCH_RESULT_LIMIT);
+        assert_eq!(result.total, Some((SEARCH_RESULT_LIMIT + 5) as u64));
+        assert!(!result.truncated, "the result cap is not a scan truncation");
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn search_skips_git_and_escaping_symlinks() {
+        let root = temp_dir("search-skip");
+        fs::create_dir(root.join(".git")).unwrap();
+        fs::write(root.join(".git").join("config.rs"), "x").unwrap();
+        fs::write(root.join("keep.rs"), "x").unwrap();
+        std::os::unix::fs::symlink("/etc/passwd.rs", root.join("escape.rs")).unwrap();
+        let result = search(&root, None, "rs").unwrap();
+        let paths: Vec<_> = result.entries.iter().map(|e| e.path.as_str()).collect();
+        assert_eq!(paths, ["keep.rs"]);
+        assert_eq!(result.total, Some(1));
+        fs::remove_dir_all(&root).ok();
     }
 }

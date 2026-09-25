@@ -23,17 +23,22 @@ async function rpc(ws: Ws, id: number, method: string, params?: unknown): Promis
   });
 }
 
+async function openWs(url: string): Promise<Ws> {
+  const { WebSocket } = await import("ws");
+  const ws = new WebSocket(url) as unknown as Ws;
+  await new Promise<void>((resolve, reject) => {
+    (ws as unknown as { on: (e: string, f: () => void) => void }).on("open", () => resolve());
+    (ws as unknown as { on: (e: string, f: (err: Error) => void) => void }).on("error", (err) =>
+      reject(err),
+    );
+  });
+  return ws;
+}
+
 describe("mock kernel file/list", () => {
   test("answers root and per-directory listings with git statuses", async () => {
     const k = await startMockKernel();
-    const { WebSocket } = await import("ws");
-    const ws = new WebSocket(k.url) as unknown as Ws;
-    await new Promise<void>((resolve, reject) => {
-      (ws as unknown as { on: (e: string, f: () => void) => void }).on("open", () => resolve());
-      (ws as unknown as { on: (e: string, f: (err: Error) => void) => void }).on("error", (err) =>
-        reject(err),
-      );
-    });
+    const ws = await openWs(k.url);
     await rpc(ws, 1, "initialize", { protocol_version: "0.13.0" });
     await rpc(ws, 2, "session/new", {});
     const root = (await rpc(ws, 3, "file/list", { session_id: "sess-1", depth: 1 })) as {
@@ -55,14 +60,7 @@ describe("mock kernel file/list", () => {
 
   test("depth 8 returns the flat search fixture", async () => {
     const k = await startMockKernel();
-    const { WebSocket } = await import("ws");
-    const ws = new WebSocket(k.url) as unknown as Ws;
-    await new Promise<void>((resolve, reject) => {
-      (ws as unknown as { on: (e: string, f: () => void) => void }).on("open", () => resolve());
-      (ws as unknown as { on: (e: string, f: (err: Error) => void) => void }).on("error", (err) =>
-        reject(err),
-      );
-    });
+    const ws = await openWs(k.url);
     await rpc(ws, 1, "initialize", { protocol_version: "0.13.0" });
     const res = (await rpc(ws, 2, "file/list", { session_id: "s1", depth: 8 })) as {
       entries: Array<{ path: string; kind: string; git_status: string | null }>;
@@ -77,5 +75,49 @@ describe("mock kernel file/list", () => {
     expect(res.truncated).toBe(false);
     ws.close();
     await k.close();
+  }, 10000);
+
+  test("answers query searches with ranked matches and total", async () => {
+    const k = await startMockKernel();
+    const ws = await openWs(k.url);
+    try {
+      await rpc(ws, 1, "initialize", { protocol_version: "0.14.0" });
+      await rpc(ws, 2, "session/new", {});
+      const reply = (await rpc(ws, 3, "file/list", {
+        session_id: "sess-1",
+        path: null,
+        depth: 8,
+        query: "main",
+      })) as { entries: Array<{ path: string }>; total?: number; truncated: boolean };
+      expect(reply.total).toBeGreaterThan(0);
+      expect(reply.entries[0].path).toContain("main");
+      expect(reply.truncated).toBe(false);
+    } finally {
+      ws.close();
+      await k.close();
+    }
+  }, 10000);
+
+  test("legacy mode ignores query and omits total", async () => {
+    const k = await startMockKernel({ legacySearch: true });
+    const ws = await openWs(k.url);
+    try {
+      await rpc(ws, 1, "initialize", { protocol_version: "0.14.0" });
+      await rpc(ws, 2, "session/new", {});
+      const reply = (await rpc(ws, 3, "file/list", {
+        session_id: "sess-1",
+        path: null,
+        depth: 8,
+        query: "main",
+      })) as { entries: Array<{ path: string }>; total?: number; truncated: boolean };
+      expect(reply.total).toBeUndefined();
+      const paths = reply.entries.map((e) => e.path);
+      expect(paths).toContain("src/main.rs");
+      expect(paths).toContain("docs/readme.md");
+      expect(reply.truncated).toBe(false);
+    } finally {
+      ws.close();
+      await k.close();
+    }
   }, 10000);
 });

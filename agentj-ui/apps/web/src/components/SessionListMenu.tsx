@@ -13,6 +13,8 @@ import type {
 import { MoreHorizontal } from "lucide-react";
 import { loadSidebarPrefs, saveSidebarPrefs, subscribeSidebarPrefs } from "../sidebarPrefsStore";
 import type { SidebarFilter, SidebarPrefs, SidebarSort } from "../sidebarPrefsStore";
+import { firstIndex, lastIndex, tabIndexFor, useRovingFocus } from "../hooks/useRovingFocus";
+import type { RovingFocus } from "../hooks/useRovingFocus";
 import "./topbarmenu.css";
 
 type Props = {
@@ -50,6 +52,41 @@ const SORT_OPTIONS: ReadonlyArray<{ value: SidebarSort; label: string }> = [
   { value: "created", label: "创建时间" },
 ];
 
+/** ArrowUp/Down (wrapping), Home and End roving for an open flyout. */
+function roveFlyout(
+  roving: RovingFocus,
+  count: number,
+  event: ReactKeyboardEvent<HTMLDivElement>,
+  keyboardNavRef: { current: boolean },
+): void {
+  switch (event.key) {
+    case "ArrowDown":
+      event.preventDefault();
+      keyboardNavRef.current = true;
+      if (roving.selected < 0) roving.setSelected(firstIndex(count));
+      else roving.moveBy(1);
+      return;
+    case "ArrowUp":
+      event.preventDefault();
+      keyboardNavRef.current = true;
+      if (roving.selected < 0) roving.setSelected(lastIndex(count));
+      else roving.moveBy(-1);
+      return;
+    case "Home":
+      event.preventDefault();
+      keyboardNavRef.current = true;
+      roving.setSelected(firstIndex(count));
+      return;
+    case "End":
+      event.preventDefault();
+      keyboardNavRef.current = true;
+      roving.setSelected(lastIndex(count));
+      return;
+    default:
+      return;
+  }
+}
+
 export default function SessionListMenu({ deletableCount, busy, onCleanup }: Props) {
   const [open, setOpen] = useState(false);
   const [flyout, setFlyout] = useState<FlyoutKind>(null);
@@ -65,8 +102,34 @@ export default function SessionListMenu({ deletableCount, busy, onCleanup }: Pro
   const closeTimerRef = useRef<number | null>(null);
   const suppressToggleRef = useRef(false);
   const suppressFocusOpenRef = useRef(false);
+  const filterRoving = useRovingFocus({ count: FILTER_OPTIONS.length, wrap: true });
+  const sortRoving = useRovingFocus({ count: SORT_OPTIONS.length, wrap: true });
+  const filterItemRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const sortItemRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const keyboardNavRef = useRef(false);
 
   useEffect(() => subscribeSidebarPrefs(setPrefs), []);
+
+  // Seed the open flyout's first row as its single tab stop without stealing
+  // focus; only keyboard roving (flagged below) moves focus into the flyout.
+  useEffect(() => {
+    if (!flyout) return;
+    keyboardNavRef.current = false;
+    if (flyout === "filter") filterRoving.setSelected(0);
+    else sortRoving.setSelected(0);
+  }, [flyout, filterRoving.setSelected, sortRoving.setSelected]);
+
+  useEffect(() => {
+    if (!keyboardNavRef.current) return;
+    keyboardNavRef.current = false;
+    filterItemRefs.current[filterRoving.selected]?.focus({ preventScroll: true });
+  }, [filterRoving.selected]);
+
+  useEffect(() => {
+    if (!keyboardNavRef.current) return;
+    keyboardNavRef.current = false;
+    sortItemRefs.current[sortRoving.selected]?.focus({ preventScroll: true });
+  }, [sortRoving.selected]);
 
   const cancelClose = useCallback(() => {
     if (closeTimerRef.current != null) {
@@ -218,19 +281,6 @@ export default function SessionListMenu({ deletableCount, busy, onCleanup }: Pro
     if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setFlyout(null);
   }, []);
 
-  const onFlyoutKeyDown = useCallback((event: ReactKeyboardEvent<HTMLDivElement>) => {
-    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
-    const items = Array.from(
-      event.currentTarget.querySelectorAll<HTMLElement>('[role="menuitem"], [role="menuitemradio"]'),
-    );
-    if (items.length === 0) return;
-    const idx = items.indexOf(document.activeElement as HTMLElement);
-    const next =
-      event.key === "ArrowDown" ? (idx + 1) % items.length : (idx - 1 + items.length) % items.length;
-    event.preventDefault();
-    items[next]?.focus();
-  }, []);
-
   const onTriggerMouseDown = useCallback((event: ReactMouseEvent<HTMLButtonElement>) => {
     suppressToggleRef.current = document.activeElement !== event.currentTarget;
   }, []);
@@ -315,14 +365,18 @@ export default function SessionListMenu({ deletableCount, busy, onCleanup }: Pro
                   aria-label="过滤"
                   onMouseEnter={cancelClose}
                   onMouseLeave={scheduleClose}
-                  onKeyDown={onFlyoutKeyDown}
+                  onKeyDown={(event) => roveFlyout(filterRoving, FILTER_OPTIONS.length, event, keyboardNavRef)}
                 >
-                  {FILTER_OPTIONS.map((option) => (
+                  {FILTER_OPTIONS.map((option, index) => (
                     <button
                       key={option.value}
+                      ref={(el) => {
+                        filterItemRefs.current[index] = el;
+                      }}
                       type="button"
                       role="menuitemradio"
                       aria-checked={prefs.filter === option.value}
+                      tabIndex={tabIndexFor(index, filterRoving.selected)}
                       className="aj-menu__item aj-menu__item--sub"
                       onClick={() => pickFilter(option.value)}
                     >
@@ -371,14 +425,18 @@ export default function SessionListMenu({ deletableCount, busy, onCleanup }: Pro
                   aria-label="排序"
                   onMouseEnter={cancelClose}
                   onMouseLeave={scheduleClose}
-                  onKeyDown={onFlyoutKeyDown}
+                  onKeyDown={(event) => roveFlyout(sortRoving, SORT_OPTIONS.length, event, keyboardNavRef)}
                 >
-                  {SORT_OPTIONS.map((option) => (
+                  {SORT_OPTIONS.map((option, index) => (
                     <button
                       key={option.value}
+                      ref={(el) => {
+                        sortItemRefs.current[index] = el;
+                      }}
                       type="button"
                       role="menuitemradio"
                       aria-checked={prefs.sort === option.value}
+                      tabIndex={tabIndexFor(index, sortRoving.selected)}
                       className="aj-menu__item aj-menu__item--sub"
                       onClick={() => pickSort(option.value)}
                     >

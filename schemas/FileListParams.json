@@ -20,6 +20,13 @@
         "null"
       ]
     },
+    "query": {
+      "description": "Case-insensitive substring filter; empty/whitespace is treated as absent. @since 0.14.0",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "session_id": {
       "type": "string"
     }
