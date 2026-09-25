@@ -158,6 +158,23 @@ CONTEXT: Bug 条目 = <id/标题/级别/重现步骤>；特性范围 = <...>；�
 
 违规处理：驳回，要求 bug-fixer 拆分/重写提交，直至合规。
 
+## Global Subagent Timeout Policy（全量子 agent 10 min 看门狗）
+
+**Scope:** 本 skill 内所有子 agent 派发（Phase 1 `ajteam-tester` test 模式 + Phase 2 `ajteam-bug-fixer` 逐 Bug + Phase 3 `ajteam-tester` regression 模式 + Oracle/escalation 派发）**统一 10 min 超时**。
+
+**Dispatch 必须带超时：** 每次 `task(subagent_type=...)` 显式设 `timeout: 600s`（10 min）。编排器以 10 min 为 deadline 等待；不得无界等待。
+
+**10 min 到点检查（先判完成，再判卡死）：**
+1. **已完成** — 子 agent 已产出预期完成信号（tester：`bugs.md` 已更新含新 Bug 或 `报告零 Bug` 且门禁输出可查；bug-fixer：对应 `BUG-00N` 的失败测试已通过 + 门禁不回归 + 已产生 `fix: <bug-id>` 单提交）→ 直接采纳，进入下一阶段。
+2. **卡死/无输出** — 10 min 内无任何输出（无 stdout/stderr 增量、无 `bugs.md`/文件变更、心跳缺失）→ 判定卡死 → **终止该子 agent 会话** → 用**相同 prompt/brief** 重新派发全新子 agent（fresh session，不复用上下文；bug-fixer 仍遵循每 Bug 一提交纪律）。
+3. **有输出但未完成**（进行中）→ 给予一次 `≤5 min` 宽限；宽限内仍无进展则按 (2) 终止重派。**绝不无界等待。**
+
+**重派上限与升级：**
+- 单一派发累计 **≤2 次重派**（含首发共 3 次尝试）。达到上限仍卡死/超时 → 该项标记 `blocked`，上报用户/Oracle，**绝不静默通过**；回归阶段的 `blocked` 按既有「3 轮未收敛 → STOP」规则结算。
+- 每次超时/重派记录到 `.superpowers/acceptance/bugs.md` 对应条目的备注与编排日志。
+
+**与既有门的区别：** `Phase 3 回归 3 轮 cap` / `bug-fixer 3 次失败 cap` 针对内容不达标；本 10 min 看门狗针对**调度层面卡死/无响应**，两者叠加生效。
+
 ## 循环终止条件
 
 - **PASS**：一次完整测试 round 零新 Bug，且所有 Bug 均 `verified`，门禁全绿

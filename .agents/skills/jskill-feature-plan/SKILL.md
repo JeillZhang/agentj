@@ -175,6 +175,19 @@ Next: Run `/jskill-feature-dev docs/superpowers/plans/<date>-<topic>-plan.md` to
 
 Do NOT invoke `jskill-feature-dev` automatically — let the user start it when ready.
 
+### Global Subagent Timeout Policy（全量子 agent 10 min 看门狗）
+
+**Scope:** 本 skill 内所有子 agent 派发（Phase 2 `momus` plan 评审 + 计划细化子任务派发）**统一 10 min 超时**。
+
+**Dispatch 必须带超时：** 每次派发显式设 `timeout: 600s`（10 min）。编排器以 10 min 为 deadline 等待；不得无界等待。
+
+**10 min 到点检查（先判完成，再判卡死）：**
+1. **已完成** — 子 agent 已产出预期交付（momus：含 `PASS/FAIL/REVISE` 的校验报告）→ 直接采纳。
+2. **卡死/无输出** — 10 min 内无任何输出（无 stdout/stderr 增量、无校验报告产出）→ 判定卡死 → **终止该子 agent 会话** → 用**相同审计任务** 重新派发全新子 agent（fresh session）。
+3. **有输出但未完成** → 给予一次 `≤5 min` 宽限；仍无进展则按 (2) 终止重派。**绝不无界等待。**
+
+**重派上限与升级：** 单一派发累计 **≤2 次重派**（含首发共 3 次尝试）。达到上限仍超时 → 标记 `blocked`，升级报告用户（不自动通过评审）。
+
 ## Plan Document Structure
 
 ```markdown

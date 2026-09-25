@@ -104,7 +104,20 @@ This produces an implementation plan at `docs/superpowers/plans/YYYY-MM-DD-<feat
 
 **GATE:** After the plan is approved, tell the user: "Implementation plan is ready. Run `/jskill-feature-dev docs/superpowers/plans/<plan-file>.md` to execute."
 
-## Feature-Specific Context
+### Global Subagent Timeout Policy（全量子 agent 10 min 看门狗）
+
+**Scope:** 本 skill 内所有子 agent 派发（`jskill-feature-design` / `jskill-feature-plan` 编排调用及其内部 explore/momus 子派发）**统一 10 min 超时**。此为编排层看门狗，底层 skill 各自另有同规不叠加计数。
+
+**Dispatch 必须带超时：** 每次 `task(...)` / Skill 调用派发显式设 `timeout: 600s`（10 min）。
+
+**10 min 到点检查（先判完成，再判卡死）：**
+1. **已完成** — 子调用已产出预期交付（design：`DESIGN.md` 落盘；plan：`PLAN.md` 落盘且校验 PASS）→ 直接采纳。
+2. **卡死/无输出** — 10 min 内无任何输出（无 stdout/stderr 增量、无文件落盘、心跳缺失）→ 判定卡死 → **终止该子 agent 会话** → 用**相同输入** 重新派发全新子 agent（fresh session）。
+3. **有输出但未完成** → 给予一次 `≤5 min` 宽限；仍无进展则按 (2) 终止重派。**绝不无界等待。**
+
+**重派上限与升级：** 单一派发累计 **≤2 次重派**（含首发共 3 次尝试）。达到上限仍超时 → 标记 `blocked`，输出当前进展与缺失，交用户决策。
+
+ ## Feature-Specific Context
 
 When the spec doc mentions the feature in multiple sections (e.g. overview table + detail section + gantt chart), gather ALL relevant context:
 

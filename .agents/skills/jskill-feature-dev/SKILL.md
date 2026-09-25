@@ -7,15 +7,15 @@ description: Use when an implementation plan has been approved and development n
 
 Orchestrates the full Superpowers development cycle: **plan intake validation** → feature branch → TDD → subagent execution → code review → system verification → version bump + doc auto-sync → branch finishing → **automatic hand-off to test acceptance** (which creates the PR when acceptance passes).
 
-## Parameters
-
 | Parameter | Required | Description |
 |-----------|----------|-------------|
 | `plan-path` | ✅ | Path to the implementation plan (PLAN.md) from `jskill-feature-plan`. Must be a valid file path. |
+| `skip-acceptance` | ❌ | 可选。显式跳过自动验收（等价 --skip-acceptance / --no-pr / 显式 Merge/Keep/Discard）。缺省自动验收。 |
 
 **Example:** `jskill-feature-dev docs/superpowers/plans/2026-08-09-oauth2-auth-plan.md`
+**Auto-acceptance:** 缺省全自动直通 `jskill-test-acceptance`，无需人工选 Continue；仅显式传参/显式要求合并/保留/丢弃时跳过。
 
-## Entry: Intake → Branch → TDD → Execute → Review → Verify → Sync → Finish → Auto Acceptance → PR
+## Entry: Intake → Branch → TDD → Execute → Review → Verify → Sync → Finish → Auto Acceptance → PR（全自动，默认直通）
 
 ```mermaid
 flowchart TB
@@ -33,9 +33,9 @@ flowchart TB
     J --> K["Phase 6: System Verification (conditional)"]
     K --> L["Phase 7: Final Verification + Version Bump"]
     L --> M["Phase 8: Doc Auto-Sync"]
-    M --> N["Phase 9: Branch Finishing (PR option removed)"]
-    N -- "默认 Continue" --> O["Phase 10: Auto Hand-off to Test Acceptance"]
-    N -- "Merge / Keep / Discard（显式退出）" --> P["跳过自动验收，输出提示"]
+    M --> N["Phase 9: Branch Finishing (auto-continue)"]
+    N --> O["Phase 10: Auto Hand-off to Test Acceptance"]
+    N -. "显式 --skip-acceptance / Merge/Keep/Discard" .-> P["跳过自动验收，输出提示"]
     O --> Q["jskill-test-acceptance：自动验收循环"]
     Q --> R["验收 PASS → 自动创建 PR"]
 ```
@@ -245,40 +245,51 @@ Run this **before** presenting any finish options. The doc sync commits must be 
 5. Commit the synced files together: `docs: auto-sync AGENTS.md, README.md, summary (fe/se), spec TODO after {phase} completion`.
 6. Do NOT skip this step — it is mandatory before proceeding to finish options.
 
-### Phase 9: Branch Finishing
+### Phase 9: Branch Finishing (auto-continue，全自动)
 
-**REQUIRED SUB-SKILL:** Load `superpowers:finishing-a-development-branch`
+**Verify working directory is clean** — all changes (including doc sync) must be committed. If dirty, auto-commit/stash or report and fix — do NOT proceed dirty.
 
-**Verify working directory is clean** — all changes (including doc sync) must be committed.
+**No interactive menu — auto-continue by default:** Do NOT present Continue / Merge / Keep / Discard choices or wait for user confirmation / timeout. The default path is **auto-continue**: keep the feature branch open and immediately hand off to Phase 10 (`jskill-test-acceptance`). PR creation remains deferred to acceptance PASS (Phase 10 → `jskill-test-acceptance` Phase 6). **The absence of an explicit opt-out flag means auto-continue — no prompt, no waiting.**
 
-**The "Create PR" option is REMOVED from the finish menu** — PR creation now happens automatically at the end of the test acceptance pipeline (so the PR includes acceptance bug-fix commits and the patch bump, per repo history e.g. PR #21). Present these 4 options:
+**Explicit opt-out only:** Skip the automatic hand-off ONLY when the user explicitly passes `--skip-acceptance` / `--no-pr` or explicitly requests `Merge` / `Keep as-is` / `Discard` in the invocation. In that case output the skip note and remind them `/jskill-test-acceptance` remains available manually. No flag → auto-continue.
 
-1. **Continue (default)** — keep the branch open. Phase 10 auto-hands-off to `jskill-test-acceptance`; on acceptance PASS the PR is created automatically. **PR will include doc sync commits from Phase 8 plus all acceptance fix commits.**
-2. **Merge** — merge into base branch, delete the feature branch. Explicit opt-out: **skips** the automatic acceptance & PR.
-3. **Keep as-is** — leave branch for later. Explicit opt-out: **skips** the automatic acceptance & PR.
-4. **Discard** — delete branch (requires explicit "discard" confirmation). Explicit opt-out: **skips** the automatic acceptance & PR.
+**CRITICAL:** Do NOT hand off to acceptance if the working directory is dirty or doc sync hasn't been committed yet. Go back and complete Phase 8 first (auto-fix, not interactive wait).
 
-**CRITICAL:** Do NOT hand off to acceptance (option 1) if the working directory is dirty or doc sync hasn't been committed yet. Go back and complete Phase 8 first.
+### Phase 10: Auto Hand-off to Test Acceptance（全自动，无需确认）
 
-### Phase 10: Auto Hand-off to Test Acceptance
-
-**Default path (option 1 in Phase 9):** the feature pipeline is NOT terminal anymore — hand off automatically:
+**Always auto hand-off by default — no user prompt needed:**
 
 1. Output the development summary (branch, result).
-2. **REQUIRED SUB-SKILL:** Load `jskill-test-acceptance` via the Skill tool — this automatically starts the acceptance loop (tester → bug-fixer → regression) on the current feature branch and creates the PR on PASS. No user prompt needed; the hand-off is automatic.
-3. If the user chose **Merge / Keep as-is / Discard** in Phase 9 (explicit opt-out): do NOT hand off. Output the skip note and remind them `/jskill-test-acceptance` remains available manually.
+2. **REQUIRED SUB-SKILL:** Load `jskill-test-acceptance` via the Skill tool — this automatically starts the acceptance loop (tester → bug-fixer → regression) on the current feature branch and creates the PR on PASS. **No user confirmation, no timeout — immediate.**
+3. **Skip only on explicit opt-out:** If the invocation explicitly contains `--skip-acceptance` / `--no-pr` or the user explicitly requested **Merge / Keep as-is / Discard**, do NOT hand off. Output the skip note and remind them `/jskill-test-acceptance` remains available manually. Otherwise always hand off.
 
 ```
 ✅ Feature development complete.
    Branch: feature/<name>
-   Result: <auto-handoff to acceptance / merged / kept / discarded>
+   Result: auto-handoff to acceptance (default) / skipped (--skip-acceptance / merged / kept / discarded)
 
-默认路径：自动启动测试验收（jskill-test-acceptance）→ 验收通过后自动创建 PR。
-若在 Phase 9 显式选择 合并/保留/丢弃：已跳过自动验收，可随时手动运行 /jskill-test-acceptance。
+默认路径（无显式退出标志）：自动启动测试验收（jskill-test-acceptance）→ 验收通过后自动创建 PR，无需确认。
+仅当显式传入 --skip-acceptance / --no-pr 或显式选择 合并/保留/丢弃 时：已跳过自动验收，可随时手动运行 /jskill-test-acceptance。
 ```
 
-`jskill-feature-dev` 是功能管线（design → plan → dev）的终点；测试验收（`jskill-test-acceptance`）在 Phase 10 **自动衔接**，验收通过后自动创建 PR。仅当用户在 Phase 9 显式选择 合并/保留/丢弃 时跳过自动验收。
+`jskill-feature-dev` 是功能管线（design → plan → dev）的终点；测试验收（`jskill-test-acceptance`）在 Phase 10 **全自动衔接**（默认直通，无人工门），验收通过后自动创建 PR。仅当显式传入跳过标志或显式要求合并/保留/丢弃时跳过自动验收。
 
+### Global Subagent Timeout Policy（全量子 agent 10 min 看门狗）
+
+**Scope:** 本 skill 内所有子 agent 派发（Phase 4 任务实现 subagent + `ajteam-task-reviewer` 门 + Phase 5 `requesting-code-review` + Phase 6 集成/e2e 子流程 + Oracle/escalation 派发）**统一 10 min 超时**。此为 Phase 4 `3 rounds bounce cap` 之外的正交超时层——超时不计入 bounce 轮次，单独计数。
+
+**Dispatch 必须带超时：** 每次 `task(...)` 派发显式设 `timeout: 600s`（10 min）。编排器以 10 min 为 deadline 等待；不得无界等待。
+
+**10 min 到点检查（先判完成，再判卡死）：**
+1. **已完成** — 子 agent 已产出预期完成信号（实现侧：测试通过 + lint 干净 + `progress.md`/commit 就绪；reviewer 侧：输出含 `VERDICT: PASS/FAIL` 的结构化报告）→ 直接采纳，无需重派。
+2. **卡死/无输出** — 10 min 内无任何输出（无 stdout/stderr 增量、无文件变更、`progress.md` 无更新、心跳缺失）→ 判定卡死 → **终止该子 agent 会话**（`task cancel` / 会话终止）→ 用**相同 brief** 重新派发全新子 agent（fresh session，不复用上下文）。
+3. **有输出但未完成**（进行中）→ 给予一次 `≤5 min` 宽限；宽限内仍无进展则按 (2) 终止重派。**绝不无界等待。**
+
+**重派上限与升级：**
+- 单任务累计 **≤2 次重派**（含首发共 3 次尝试）。达到上限仍卡死/超时 → 标记 `blocked`，升级 `Consult Oracle / report to user`，**绝不静默跳过**。
+- 每次超时/重派记录到 `.superpowers/sdd/progress.md`（任务 id、超时轮次、判定、重派结果）。
+
+**与既有门的区别：** `ajteam-task-reviewer` 的 `FAIL → 重试` 3 轮 cap 针对内容不达标；本 10 min 看门狗针对**调度层面卡死/无响应**，两者叠加生效。
 ## Failure Recovery
 
 ### If a task implementer subagent fails:
@@ -308,7 +319,8 @@ Run this **before** presenting any finish options. The doc sync commits must be 
 | "The plan is slightly off-template, I'll just start" | Intake validation exists to catch this. Fix the plan first. |
 | "Doc sync can wait, the user didn't ask" | AGENTS.md mandates it. Skip only if the user explicitly says so. |
 | "收尾直接选 Create PR，跳过验收" | 验收修复必须在 PR 里。PR 选项已从收尾菜单移除，由验收流程在 PASS 后自动创建。 |
-| "验收太麻烦，默认继续即可但手动确认" | 默认路径就是自动衔接，不需要用户确认；显式 合并/保留/丢弃 才退出管线。 |
+| "验收太麻烦，默认继续即可但手动确认" | 全自动默认直通，无需确认/超时等待；仅显式 --skip-acceptance / --no-pr / Merge/Keep/Discard 才退出管线。 |
+| "Phase 9 要弹菜单让用户选" | 已改为 auto-continue——无需菜单，不等待；脏区自动修复后直通 Phase 10。 |
 
 ## Error Handling
 
@@ -350,5 +362,5 @@ Run this **before** presenting any finish options. The doc sync commits must be 
 | 6 | System verification (conditional) | Integration/e2e green or noted skip |
 | 7 | Final verification + version bump | Clean gates, bumped version |
 | 8 | Doc auto-sync | AGENTS.md/README.md/summary (fe/se) committed |
-| 9 | finishing-a-development-branch | Continue / Merge / Keep / Discard (PR option removed — deferred) |
-| 10 | Auto hand-off to `jskill-test-acceptance` | 自动验收循环 → 验收 PASS 后自动创建 PR |
+| 9 | finishing-a-development-branch | auto-continue（无菜单，默认直通） |
+| 10 | Auto hand-off to `jskill-test-acceptance` | 全自动验收循环 → 验收 PASS 后自动创建 PR（无需确认） |
