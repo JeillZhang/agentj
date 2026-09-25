@@ -96,7 +96,7 @@ Every task in the implementation plan MUST use this schema. This is the **single
 **REQUIRED SUB-SKILL:** Load `superpowers:writing-plans` and follow it exactly.
 
 1. Read the approved design spec from `spec-path` (e.g. `docs/superpowers/specs/*-design.md`).
-2. Read the project summary file (per AGENTS.md, e.g. `.agents/summary/summary_and_next.md`) for current state and version.
+2. Read both project summary files (per AGENTS.md): `.agents/summary/summary_and_next_se.md` (backend) and `.agents/summary/summary_and_next_fe.md` (frontend) for current state and version.
 3. Write a detailed implementation plan:
    - Every task conforms to the **Task Template Specification above** (all fields, no placeholders)
    - Ordered task breakdown with explicit `depends_on` chains

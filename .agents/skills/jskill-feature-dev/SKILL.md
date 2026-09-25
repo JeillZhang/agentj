@@ -46,7 +46,7 @@ flowchart TB
 
 Read the plan file at `plan-path`. If the file does not exist, abort and ask the user to run `/jskill-feature-plan docs/superpowers/specs/<spec-file>.md` first.
 
-Read the project summary file (per AGENTS.md, e.g. `.agents/summary/summary_and_next.md`) for current state and version — AGENTS.md requires reading it before developing.
+Read both project summary files (per AGENTS.md): `.agents/summary/summary_and_next_se.md` (backend) and `.agents/summary/summary_and_next_fe.md` (frontend) for current state and version — AGENTS.md requires reading them before developing.
 
 **Validate the plan against the Task Template Specification (defined in `jskill-feature-plan`):**
 
@@ -240,9 +240,9 @@ Run this **before** presenting any finish options. The doc sync commits must be 
 
 1. Update `AGENTS.md` — sync version, migrations count, new API routes, architecture notes, config vars, crate/module boundaries — any structural change introduced in the phase.
 2. Update `README.md` — sync version tagline, features checklist, project structure tree, API endpoint tables, migrations count, config var table — any user-facing change.
-3. Update the project summary file (per AGENTS.md, e.g. `.agents/summary/summary_and_next.md`). **REPLACE, don't append:** rewrite it to retain ONLY the currently-developing feature's content — write a "## {phase}: {title} ✅ (本次完成)" section documenting what was built and verification results, list remaining issues and next steps, and update the "## 待实施" table. Remove any content belonging to previously completed or non-current features. Do NOT accumulate old feature sections.
+3. Update the project summary files (per AGENTS.md): `.agents/summary/summary_and_next_se.md` (backend) and `.agents/summary/summary_and_next_fe.md` (frontend). Update ONLY the file(s) for the side(s) this phase touched; a full-stack phase updates both, each with its own side's content — never cross-write. In each updated file: **REPLACE, don't append** — rewrite it to retain ONLY that side's currently-developing feature content: write a "## {phase}: {title} ✅ (本次完成)" section documenting what was built and verification results, list remaining issues and next steps. **Retention exception (MANDATORY):** the "## 待实施" (pending) table is NOT wiped on replace — carry over every entry not implemented in this phase unchanged with status 待实施 (including former 下一步 candidates), remove an entry only when this phase actually implemented it, and add new candidates as 待实施 rows. Remove any other content belonging to previously completed or non-current features. Do NOT accumulate old feature sections.
 4. Update the target spec doc in `docs/superpowers/specs/` — refresh its TODO list to reflect this phase's completion (per AGENTS.md: "Update docs/superpowers/specs target spec doc TODO list after each phase").
-5. Commit the four files together: `docs: auto-sync AGENTS.md, README.md, summary, spec TODO after {phase} completion`.
+5. Commit the synced files together: `docs: auto-sync AGENTS.md, README.md, summary (fe/se), spec TODO after {phase} completion`.
 6. Do NOT skip this step — it is mandatory before proceeding to finish options.
 
 ### Phase 9: Branch Finishing
@@ -335,7 +335,7 @@ Run this **before** presenting any finish options. The doc sync commits must be 
 | Backend functions exceeding 50 lines | Split into smaller helpers. Each function = one responsibility. |
 | Lines exceeding 120 characters | Break long expressions, chains, or string literals across multiple lines. |
 | Forgetting the version bump | AGENTS.md mandates bump on every feature/bugfix. |
-| Forgetting doc auto-sync | The branch must carry AGENTS.md/README.md/summary sync before finish. |
+| Forgetting doc auto-sync | The branch must carry AGENTS.md/README.md/summary (fe/se) sync before finish. |
 
 ## Quick Reference
 
@@ -349,6 +349,6 @@ Run this **before** presenting any finish options. The doc sync commits must be 
 | 5 | requesting-code-review | Pre-review checklist pass |
 | 6 | System verification (conditional) | Integration/e2e green or noted skip |
 | 7 | Final verification + version bump | Clean gates, bumped version |
-| 8 | Doc auto-sync | AGENTS.md/README.md/summary committed |
+| 8 | Doc auto-sync | AGENTS.md/README.md/summary (fe/se) committed |
 | 9 | finishing-a-development-branch | Continue / Merge / Keep / Discard (PR option removed — deferred) |
 | 10 | Auto hand-off to `jskill-test-acceptance` | 自动验收循环 → 验收 PASS 后自动创建 PR |

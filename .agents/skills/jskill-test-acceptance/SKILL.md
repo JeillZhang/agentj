@@ -72,7 +72,7 @@ flowchart TB
 ### Phase 4: 版本 bump + 收尾
 
 - 验收全部通过后，统一 bump **产品**版本 patch（如 `Cargo.toml`，遵循 AGENTS.md「bugfix → patch」）；无版本清单则跳过
-- 遵循 AGENTS.md 执行文档自动同步（AGENTS.md / README.md / summary_and_next.md）
+- 遵循 AGENTS.md 执行文档自动同步（AGENTS.md / README.md / summary_and_next_se.md + summary_and_next_fe.md，按触及侧）
 
 ### Phase 5: 判定与报告
 
@@ -104,7 +104,7 @@ flowchart TB
      --title "<conventional-commits 风格标题>" --body "<描述>"
    ```
 3. **Title 遵循仓库惯例**（conventional commits），如：`feat: <特性简述> + acceptance fixes (BUG-00N...) + bump to x.y.z`
-4. **Body 包含**：功能摘要（来自 summary / spec）、验收结果（Bug 总数/级别、回归轮次、门禁结果、版本 bump）、fix 提交列表
+4. **Body 包含**：功能摘要（来自 summary (se/fe) / spec）、验收结果（Bug 总数/级别、回归轮次、门禁结果、版本 bump）、fix 提交列表
 5. 输出 PR 链接
 
 **失败处理：** `gh` 不可用或创建失败 → 输出错误与推送状态，提示用户手工创建，不静默跳过、不虚构链接。

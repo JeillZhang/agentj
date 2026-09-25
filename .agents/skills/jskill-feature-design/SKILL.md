@@ -43,7 +43,7 @@ flowchart TB
 
 ### Phase 0: Intake & Classify
 
-1. Read the project summary file (per AGENTS.md, e.g. `.agents/summary/summary_and_next.md`) to understand current project state and pending features.
+1. Read both project summary files (per AGENTS.md): `.agents/summary/summary_and_next_se.md` (backend) and `.agents/summary/summary_and_next_fe.md` (frontend) to understand current project state and pending features.
 2. Read `docs/superpowers/specs/` for any relevant existing design docs.
 3. Restate the feature request in your own words. **Classify its size:**
 

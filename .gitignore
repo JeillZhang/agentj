@@ -29,7 +29,8 @@ Desktop.ini
 # ── Agent skills / subagents (.agents) ───────────────────────
 # Cross-tool home for skills + subagents (OpenCode / Codex / Pi / AgentJ) —
 # `.agents/skills` is discovered natively by all of them. `.agents/summary/
-# summary_and_next.md` IS a tracked deliverable (see AGENTS.md). Only
+# summary_and_next_se.md` + `summary_and_next_fe.md` ARE tracked deliverables
+# (see AGENTS.md). Only
 # project-authored `jskill-*` skills are versioned; every other skill is a
 # machine-local install — never commit it.
 .agents/skills/*

@@ -1,6 +1,6 @@
 ---
 name: jskill-feature-next
-description: Use to identify the next pending feature from the project summary and orchestrate the design→plan pipeline for it. Triggers on "what's next", "next feature", "continue the roadmap", "下一个功能", "接下来做什么", or after a feature phase completes.
+description: Use to identify the next pending feature from the project summaries (fe/se) and orchestrate the design→plan pipeline for it. Triggers on "what's next", "next feature", "continue the roadmap", "下一个功能", "接下来做什么", or after a feature phase completes.
 ---
 
 # JSkill Feature Next — Feature Entry Point
@@ -11,7 +11,7 @@ You are the **feature entry point**. Read the project's current state, identify 
 
 | Parameter | Required | Description |
 |-----------|----------|-------------|
-| — | — | No parameters. All context comes from the project summary file. |
+| — | — | No parameters. All context comes from the project summary files (`.agents/summary/summary_and_next_se.md` + `summary_and_next_fe.md`). |
 
 ## Entry: Load State → Identify Next → Present → Orchestrate
 
@@ -34,10 +34,11 @@ flowchart TB
 
 Read these files in parallel:
 
-1. The project summary file (per AGENTS.md, e.g. `.agents/summary/summary_and_next.md`) — extract:
+1. Both project summary files (per AGENTS.md, frontend/backend isolated): `.agents/summary/summary_and_next_se.md` (backend) and `.agents/summary/summary_and_next_fe.md` (frontend) — from each extract:
    - The "## 待实施" (Pending) table: phase, title, dependencies for each row.
    - The "## 下一步" (Next Step) hint if present.
    - The most recent completed phase (marked ✅).
+   Then merge the two pending tables for selection. Entries live in exactly one file (backend work → `_se.md`, frontend work → `_fe.md`); cross-cutting entries reference their counterpart file — do not duplicate.
 2. `docs/superpowers/specs/` — find the **latest** design spec doc (by filename date, most recent first). If it exists, read it and extract the section matching the next feature's phase code.
 
 ### Phase 1: Identify Next Feature
@@ -45,12 +46,12 @@ Read these files in parallel:
 Algorithm for selecting the next feature:
 
 ```
-FOR each row in "待实施" table, in order:
+FOR each row in the merged "待实施" tables (se + fe), in order:
   IF all dependency phases are marked ✅ in completed sections:
     → This is the next feature. STOP.
 ```
 
-**Tie-breaking:** the "## 下一步" hint in the summary file takes priority if it names a specific phase. Otherwise, use table order.
+**Tie-breaking:** the "## 下一步" hint in either summary file takes priority if it names a specific phase. Otherwise, use the merged table order (backend `_se.md` first, then frontend `_fe.md`).
 
 ### Phase 2: Present to User
 
@@ -66,7 +67,7 @@ Present the finding with context:
 
 ### Options:
 1. **Proceed** — Run `/jskill-feature-design <feature description>` to produce a design spec, then `/jskill-feature-plan docs/superpowers/specs/<spec-file>.md` to produce an implementation plan. Sequential with gates between each.
-2. **Pick a different feature** — Show the full "待实施" table and let the user choose.
+2. **Pick a different feature** — Show the merged "待实施" tables (se + fe) and let the user choose.
 3. **Skip** — Do nothing.
 ```
 
@@ -86,7 +87,7 @@ Source: {spec-doc-path}, section {section-name}
 
 Description: {full feature description from spec doc, including all sub-sections}
 
-Context from summary file:
+Context from summary files (fe/se):
 - Dependencies: {list}
 - Related completed features: {list}
 ```
@@ -118,11 +119,11 @@ Feed this complete context into the design phase so it doesn't miss constraints 
 
 | Condition | Action |
 |-----------|--------|
-| "待实施" table is empty | "All features are implemented. No pending features found. Check the summary file — if the table should be non-empty, update it first." |
+| Both "待实施" tables are empty | "All features are implemented. No pending features found. Check both summary files — if a table should be non-empty, update it first." |
 | Next feature has unmet dependencies | List what's blocking it. Suggest a feature with no dependencies that can proceed immediately. |
 | Latest spec doc doesn't cover the next feature | Check for an older spec doc, or note the feature needs a new spec. |
 | No spec docs exist at all | "No design specs found in docs/superpowers/specs/. Run `jskill-feature-design` with a feature description to create the first spec." |
-| Summary file missing or corrupt | "Cannot determine project state. Read AGENTS.md and docs/superpowers/specs/ manually to assess pending work." |
+| Either summary file missing or corrupt | "Cannot determine project state. Read AGENTS.md and docs/superpowers/specs/ manually to assess pending work." |
 
 ## Project-Specific Rules (from AGENTS.md)
 
@@ -130,13 +131,13 @@ Feed this complete context into the design phase so it doesn't miss constraints 
 - Plan tasks: TDD-first (test code before implementation), exact file paths, no placeholders, per the Task Template Specification.
 - Verification gates: project test + lint commands must pass.
 - Version bump: patch for fixes, minor for features.
-- Doc auto-sync: after each completed phase, sync AGENTS.md / README.md / summary and commit together.
+- Doc auto-sync: after each completed phase, sync AGENTS.md / README.md / summary (fe+se, touched side(s)) and commit together.
 
 ## Quick Reference
 
 | Step | Action | Output |
 |------|--------|--------|
-| 0 | Read summary + latest spec | Project state |
+| 0 | Read summaries (se + fe) + latest spec | Project state |
 | 1 | Identify next feature (deps ✅) | Candidate feature |
 | 2 | Present 3 options | User choice |
 | 3a | Run `/jskill-feature-design <feature description>` | Design spec |
