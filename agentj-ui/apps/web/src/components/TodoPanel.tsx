@@ -84,7 +84,7 @@ export default function TodoPanel({ items, byRun, state, activeRunId, onSelectRu
         <div id="todo-section-body" className="sec-body">
           {open &&
             (sorted.length === 0 ? (
-              <p className="aj-empty">待协议支持</p>
+              <p className="aj-empty">暂无任务</p>
             ) : (
               <div className="todo-groups">
                 {sorted.map(([runId, group]) => {
@@ -125,7 +125,7 @@ export default function TodoPanel({ items, byRun, state, activeRunId, onSelectRu
       </button>
       <div id="todo-section-body" className="sec-body">
         {open && (items.length === 0 ? (
-          <p className="aj-empty">待协议支持</p>
+          <p className="aj-empty">暂无任务</p>
         ) : (
           <TodoRows items={items} />
         ))}

@@ -374,6 +374,7 @@ mod tests {
         assert_eq!(changes[0].op, FileChangeOp::Add);
         assert_eq!(changes[0].additions, 2, "line count of the new file");
         assert_eq!(changes[0].deletions, 0);
+        assert_eq!(changes[0].source, Some(FileChangeSource::Bash));
         assert!(changes[0].diff.is_none(), "untracked files keep diff=None");
 
         let before = after;
@@ -468,6 +469,7 @@ mod tests {
         assert_eq!(changes.len(), 1, "one modify: {changes:?}");
         assert_eq!(changes[0].op, FileChangeOp::Modify);
         assert_eq!(changes[0].additions, 800);
+        assert_eq!(changes[0].source, Some(FileChangeSource::Bash));
         assert!(changes[0].diff.is_none(), "over-cap diff is dropped");
         assert!(changes[0].diff_truncated);
         let _ = std::fs::remove_dir_all(&root);

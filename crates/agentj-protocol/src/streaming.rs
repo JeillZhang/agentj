@@ -422,4 +422,84 @@ mod tests {
             serde_json::from_str(r#"{"version":"0.11.1","modules":[]}"#).unwrap();
         assert!(legacy.default_model.is_none() && legacy.providers.is_none());
     }
+
+    #[test]
+    fn file_change_source_unknown_tolerated() {
+        // Forward-compat: a future source string must not break parsing.
+        let fc: FileChange = serde_json::from_str(
+            r#"{"path":"a.txt","op":"modify","additions":1,"deletions":0,"source":"edit"}"#,
+        )
+        .unwrap();
+        assert_eq!(fc.source, Some(FileChangeSource::Unknown));
+    }
+
+    #[test]
+    fn file_change_new_fields_roundtrip() {
+        let fc = FileChange {
+            path: "src/main.rs".into(),
+            op: FileChangeKind::Modify,
+            additions: 10,
+            deletions: 2,
+            tool_call_id: Some("call_1".into()),
+            diff: Some("@@ -1 +1 @@\n-hi\n+hello".into()),
+            diff_truncated: Some(true),
+            run_id: Some("550e8400-e29b-41d4-a716-446655440000".into()),
+            seq: Some(5),
+            source: Some(FileChangeSource::Write),
+            total_bytes: Some(70000),
+        };
+        let v = serde_json::to_value(&fc).unwrap();
+        assert_eq!(v["source"], "write");
+        assert_eq!(v["seq"], 5);
+        assert_eq!(v["total_bytes"], 70000);
+        assert_eq!(v["run_id"], "550e8400-e29b-41d4-a716-446655440000");
+        let back: FileChange = serde_json::from_value(v).unwrap();
+        assert_eq!(back, fc);
+
+        let bare = FileChange {
+            path: "a.txt".into(),
+            op: FileChangeKind::Add,
+            additions: 0,
+            deletions: 0,
+            tool_call_id: None,
+            diff: None,
+            diff_truncated: None,
+            run_id: None,
+            seq: None,
+            source: None,
+            total_bytes: None,
+        };
+        let j = serde_json::to_value(&bare).unwrap();
+        assert!(j.get("run_id").is_none(), "None run_id must be omitted");
+        assert!(j.get("seq").is_none(), "None seq must be omitted");
+        assert!(j.get("source").is_none(), "None source must be omitted");
+        assert!(
+            j.get("total_bytes").is_none(),
+            "None total_bytes must be omitted"
+        );
+    }
+
+    #[test]
+    fn progress_todo_run_id_additive() {
+        let pv = ProgressValue::Todo {
+            session_id: "s1".into(),
+            run_id: Some("550e8400-e29b-41d4-a716-446655440000".into()),
+            revision: 3,
+            items: vec![],
+        };
+        let j = serde_json::to_value(&pv).unwrap();
+        assert_eq!(j["kind"], "todo");
+        assert_eq!(j["run_id"], "550e8400-e29b-41d4-a716-446655440000");
+        assert_eq!(j["revision"], 3);
+
+        // Legacy wire without run_id still deserializes (additive field).
+        let legacy: ProgressValue = serde_json::from_value(
+            serde_json::json!({"kind":"todo","session_id":"s1","revision":3,"items":[]}),
+        )
+        .unwrap();
+        match legacy {
+            ProgressValue::Todo { run_id, .. } => assert!(run_id.is_none()),
+            other => panic!("expected Todo, got {other:?}"),
+        }
+    }
 }

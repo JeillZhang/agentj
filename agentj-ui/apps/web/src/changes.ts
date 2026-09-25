@@ -1,8 +1,12 @@
 // Protocol-driven file-change rows for the right-panel ChangeList.
-// Live source: `$/progress` kind:"file_change" frames (upsert by (run_id, path)).
-// Replay source: session/history `TrajectoryValue::FileChange` events, merged in order
-// (design 决策 #9/#10). The legacy write tool_call half-derive is retired: tool_call
-// progress frames no longer produce rows.
+// Live source: `$/progress` kind:"file_change" frames. Replay source: session/history
+// `TrajectoryValue::FileChange` events.
+//
+// Two layers (design 决策 #3/#15):
+//   summary — de-dup key (runId, path), last wins, first-insert position preserved;
+//   history — append-only per event/frame (no de-dup) so the drawer can show the
+//             full timeline, ordered by `seq` then `eventSeq` fallback.
+// The legacy write tool_call half-derive is retired: tool_call frames produce no rows.
 
 import type { ProgressFrame } from "@agentj/sdk";
 import type { RawEvent } from "./Trajectory";
@@ -21,6 +25,12 @@ export type FileChangeRow = {
   diffTruncated?: boolean;
   eventSeq?: number;
 };
+
+/** Right-panel reducer state: summary layer + append-only history layer. */
+export type ChangesState = { summary: FileChangeRow[]; history: FileChangeRow[] };
+
+/** Initial/reset state (frozen identity; never mutated). */
+export const EMPTY_CHANGES: ChangesState = { summary: [], history: [] };
 
 const KNOWN_OPS: readonly FileChangeRow["op"][] = ["add", "modify", "delete"];
 
@@ -101,7 +111,7 @@ function upsert(prev: FileChangeRow[], row: FileChangeRow): FileChangeRow[] {
   return next;
 }
 
-/** Sort helper for drawer entries: seq asc, fallback to eventSeq, fallback to stable index. */
+/** Sort helper for history/drawer entries: seq asc, fallback to eventSeq, then stable. */
 export function sortBySeq(rows: FileChangeRow[]): FileChangeRow[] {
   return [...rows].sort((a, b) => {
     const sa = a.seq ?? a.eventSeq ?? Number.MAX_SAFE_INTEGER;
@@ -113,38 +123,50 @@ export function sortBySeq(rows: FileChangeRow[]): FileChangeRow[] {
   });
 }
 
-/** Live `$/progress` reducer; non-file_change frames (including write tool_call) keep the same reference. */
-export function applyFileChange(prev: FileChangeRow[], frame: ProgressFrame): FileChangeRow[] {
+/** Resolve the effective run id (inner `change.run_id` wins over the outer routing hint). */
+function effRunId(row: FileChangeRow, outerRaw: unknown): string | null {
+  return (row.runId ?? normalizeRunId(outerRaw)) ?? null;
+}
+
+/**
+ * Live `$/progress` reducer. Non-file_change / malformed frames return `prev` unchanged.
+ * Summary upserts by (runId, path); history always appends (append-only, no de-dup).
+ */
+export function applyFileChange(prev: ChangesState, frame: ProgressFrame): ChangesState {
   if (frame.kind !== "file_change") return prev;
   const row = toRow(frame.change);
   if (row === null) return prev;
   const outer = (frame as { runId?: string }).runId;
-  const outerNorm = normalizeRunId(outer);
-  const eff = (row.runId ?? outerNorm) ?? null;
+  const eff = effRunId(row, outer);
   if (eff !== null) defineHidden(row, "runId", eff);
   else if (row.runId != null) delete (row as Record<string, unknown>).runId;
-  return upsert(prev, row);
+  return {
+    summary: upsert(prev.summary, row),
+    history: [...prev.history, row],
+  };
 }
 
-/** Replay rebuild: merge history `file_change` events in order (upsert by (run_id, path)). */
-export function changesFromHistory(events: RawEvent[], runIdFilter?: string | null): FileChangeRow[] {
+/**
+ * Replay rebuild: summary upserts `file_change` events in order by (run_id, path);
+ * history is every matching row sorted by `seq` (fallback `eventSeq`).
+ * When a filter is given, events whose effective run id differs are dropped entirely.
+ */
+export function changesFromHistory(events: RawEvent[], runIdFilter?: string | null): ChangesState {
   const hasFilter = arguments.length >= 2;
   const normFilter = hasFilter ? normalizeRunId(runIdFilter) : undefined;
-  let rows: FileChangeRow[] = [];
+  let summary: FileChangeRow[] = [];
+  const history: FileChangeRow[] = [];
   for (const event of events) {
     const value = event.value as Record<string, unknown> | null;
     if (!value || typeof value !== "object" || value.kind !== "file_change") continue;
     const row = toRow(value.change);
     if (row === null) continue;
-    const outerRunRaw = value.run_id;
-    const outerNorm = normalizeRunId(outerRunRaw);
-    const eff = (row.runId ?? outerNorm) ?? null;
+    const eff = effRunId(row, value.run_id);
     if (eff !== null) defineHidden(row, "runId", eff);
     defineHidden(row, "eventSeq", typeof event.seq === "number" ? event.seq : undefined);
     if (hasFilter && eff !== normFilter) continue;
-    rows = upsert(rows, row);
+    summary = upsert(summary, row);
+    history.push(row);
   }
-  const anySeq = rows.some((r) => r.seq !== undefined);
-  if (hasFilter && anySeq) rows = sortBySeq(rows);
-  return rows;
+  return { summary, history: sortBySeq(history) };
 }

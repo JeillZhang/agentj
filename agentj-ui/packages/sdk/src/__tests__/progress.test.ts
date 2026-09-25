@@ -164,3 +164,152 @@ describe("regenerated method constants", () => {
     expect(METHODS.sessionHistory).toBe("session/history");
   });
 });
+
+describe("parseProgress run_id / file_change source enrichment", () => {
+  const RUN_A = "3f2a1c4e-5b6d-4e8f-9a0b-1c2d3e4f5a6b";
+  const RUN_B = "7c8d9e0f-1a2b-4c3d-8e4f-5a6b7c8d9e0f";
+
+  it("parses a todo frame with a UUID run_id and omits runId when absent", () => {
+    const withRun = parseProgress({
+      token: 7,
+      value: {
+        kind: "todo",
+        session_id: "s1",
+        run_id: RUN_A,
+        revision: 3,
+        items: [{ id: "a", content: "t", status: "pending" }],
+      },
+    });
+    expect(withRun.kind).toBe("todo");
+    if (withRun.kind === "todo") {
+      expect(withRun.runId).toBe(RUN_A);
+      expect(withRun.revision).toBe(3);
+    }
+    const withoutRun = parseProgress({
+      token: 7,
+      value: { kind: "todo", session_id: "s1", revision: 3, items: [] },
+    });
+    expect(withoutRun.kind).toBe("todo");
+    if (withoutRun.kind === "todo") expect(withoutRun.runId).toBeUndefined();
+  });
+
+  it("parses a file_change frame with source, seq and total_bytes but no diff", () => {
+    const frame = parseProgress({
+      token: 7,
+      value: {
+        kind: "file_change",
+        session_id: "s1",
+        run_id: RUN_A,
+        change: {
+          path: "a.txt",
+          op: "modify",
+          additions: 1,
+          deletions: 0,
+          source: "bash",
+          seq: 5,
+          total_bytes: 70000,
+        },
+      },
+    });
+    expect(frame.kind).toBe("file_change");
+    if (frame.kind === "file_change") {
+      expect(frame.runId).toBe(RUN_A);
+      expect(frame.change.source).toBe("bash");
+      expect(frame.change.seq).toBe(5);
+      expect(frame.change.total_bytes).toBe(70000);
+      expect(frame.change.diff).toBeNull();
+    }
+  });
+
+  it("preserves an unknown file_change source verbatim without throwing", () => {
+    const build = () =>
+      parseProgress({
+        token: 7,
+        value: {
+          kind: "file_change",
+          session_id: "s1",
+          change: { path: "a", op: "modify", additions: 0, deletions: 0, source: "edit" },
+        },
+      });
+    expect(build).not.toThrow();
+    const frame = build();
+    expect(frame.kind).toBe("file_change");
+    if (frame.kind === "file_change") expect(frame.change.source).toBe("edit");
+  });
+
+  it("keeps legacy file_change without source: diff preserved or null", () => {
+    const withDiff = parseProgress({
+      token: 7,
+      value: {
+        kind: "file_change",
+        session_id: "s1",
+        change: { path: "a", op: "modify", additions: 1, deletions: 0, diff: "@@ -1 +1 @@" },
+      },
+    });
+    expect(withDiff.kind).toBe("file_change");
+    if (withDiff.kind === "file_change") {
+      expect(withDiff.change.diff).toBe("@@ -1 +1 @@");
+      expect(withDiff.change.source).toBeUndefined();
+    }
+    const noDiff = parseProgress({
+      token: 7,
+      value: {
+        kind: "file_change",
+        session_id: "s1",
+        change: { path: "a", op: "modify", additions: 1, deletions: 0 },
+      },
+    });
+    expect(noDiff.kind).toBe("file_change");
+    if (noDiff.kind === "file_change") expect(noDiff.change.diff).toBeNull();
+  });
+
+  it("drops an illegal run_id (non-UUID or >128 chars) without throwing", () => {
+    const longId = "x".repeat(129);
+    for (const badId of ["not-a-uuid", longId]) {
+      const todo = parseProgress({
+        token: 7,
+        value: { kind: "todo", session_id: "s1", run_id: badId, revision: 1, items: [] },
+      });
+      expect(todo.kind).toBe("todo");
+      if (todo.kind === "todo") expect(todo.runId).toBeUndefined();
+
+      const fileChange = parseProgress({
+        token: 7,
+        value: {
+          kind: "file_change",
+          session_id: "s1",
+          run_id: badId,
+          change: { path: "a", op: "modify", additions: 1, deletions: 0, run_id: badId },
+        },
+      });
+      expect(fileChange.kind).toBe("file_change");
+      if (fileChange.kind === "file_change") {
+        expect(fileChange.runId).toBeUndefined();
+        expect(fileChange.change.run_id).toBeUndefined();
+      }
+    }
+  });
+
+  it("prefers the inner change.run_id over the outer run_id", () => {
+    const frame = parseProgress({
+      token: 7,
+      value: {
+        kind: "file_change",
+        session_id: "s1",
+        run_id: RUN_A,
+        change: { path: "a", op: "modify", additions: 1, deletions: 0, run_id: RUN_B },
+      },
+    });
+    expect(frame.kind).toBe("file_change");
+    if (frame.kind === "file_change") {
+      expect(frame.change.run_id).toBe(RUN_B);
+      expect(frame.runId).toBe(RUN_B);
+    }
+  });
+
+  it("returns the tolerant fallback for non-object or unknown-kind input", () => {
+    expect(parseProgress("junk")).toMatchObject({ kind: "unknown" });
+    expect(parseProgress(null)).toMatchObject({ kind: "unknown" });
+    expect(parseProgress({ token: 1, value: { kind: "future_kind" } })).toMatchObject({ kind: "unknown" });
+  });
+});

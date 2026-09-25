@@ -28,6 +28,9 @@ export type RightPanelProps = {
   children?: ReactNode;
   currentRunId?: string | null;
   groups?: RunGroup[];
+  history?: FileChangeRow[];
+  highlightedPath?: string | null;
+  onSelectRun?: (runId: string | null) => void;
   changes?: FileChangeRow[];
   todos?: TodoView[];
   todosByRun?: Map<string | null, TodoView[]>;
@@ -101,6 +104,9 @@ export default function RightPanel({
   children,
   currentRunId,
   groups,
+  history,
+  highlightedPath,
+  onSelectRun,
   changes,
   todos,
   todosByRun,
@@ -121,7 +127,11 @@ export default function RightPanel({
     };
   }, []);
 
-  const hasGrouping = groups !== undefined || changes !== undefined || todos !== undefined || todosByRun !== undefined;
+  const hasGrouping =
+    (groups !== undefined && groups.length > 0) ||
+    changes !== undefined ||
+    todos !== undefined ||
+    todosByRun !== undefined;
 
   const derivedGroups: RunGroup[] | null = (() => {
     if (!hasGrouping) return null;
@@ -229,9 +239,25 @@ export default function RightPanel({
         const key = group.runId ?? "__legacy__";
         const label = runLabel(group.runId, currentRunId ?? null);
         const emptyGroup = group.changes.length === 0 && group.todos.length === 0;
+        const isCurrent = currentRunId != null && group.runId === currentRunId;
+        const groupHistory = history
+          ? history.filter((r) => (r.runId ?? null) === group.runId)
+          : undefined;
+        const head = onSelectRun ? (
+          <button type="button" className="run-group__head" onClick={() => onSelectRun(group.runId)}>
+            {label}
+          </button>
+        ) : (
+          <div className="run-group__head">{label}</div>
+        );
         return (
-          <div key={key} className="run-group" data-run-id={key}>
-            <div className="run-group__head">{label}</div>
+          <div
+            key={key}
+            className="run-group"
+            data-run-id={key}
+            data-current={isCurrent ? "true" : undefined}
+          >
+            {head}
             {emptyGroup ? (
               <>
                 <p className="aj-empty">暂无任务</p>
@@ -242,12 +268,23 @@ export default function RightPanel({
                 {group.todos.length === 0 ? (
                   <p className="aj-empty">暂无任务</p>
                 ) : (
-                  <TodoPanel items={group.todos} />
+                  <TodoPanel
+                    items={group.todos}
+                    activeRunId={currentRunId ?? null}
+                    onSelectRun={onSelectRun}
+                  />
                 )}
                 {group.changes.length === 0 ? (
                   <p className="aj-empty">暂无变更</p>
                 ) : (
-                  <ChangeList changes={group.changes} emptyText="暂无变更" />
+                  <ChangeList
+                    changes={group.changes}
+                    history={groupHistory}
+                    emptyText="暂无变更"
+                    activeRunId={currentRunId ?? null}
+                    highlightedPath={highlightedPath}
+                    onSelectRun={onSelectRun}
+                  />
                 )}
               </>
             )}

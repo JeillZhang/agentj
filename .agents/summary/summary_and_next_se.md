@@ -6,40 +6,33 @@
 > **强制例外（跨阶段保留）**：「## 待实施」表中**尚未实施**的特性条目必须保留（状态 =
 > 待实施），不得随内容替换而删除；仅当该特性实际实施完成后才能移除（移入功能记录）。
 > 前端总结独立存放于 `summary_and_next_fe.md`；两文件内容隔离，互不写入对方文件。
-> 当前功能：**v0.23.0 右边栏运行详情 — run_id 维度 + FileChangeSource + total_bytes（七处加性 wire，PROTOCOL 0.14.0 → 0.15.0）——后端部分**
-> ——来源：用户请求「右边栏运行详情中，任务与文件变更协议设计实现」+ 设计文档
-> `docs/superpowers/specs/2026-09-25-agentj-right-panel-run-details-design.md`
-> + 实现计划 `docs/superpowers/plans/2026-09-25-agentj-right-panel-run-details-plan.md`
-> （T0–T11 全部落地，T7/T8 由前端侧落地，本文件仅后端）。
-> 后端范围：`agentj-protocol`（FileChangeSource + 7 处加性字段）+ `agentj-core`（TurnRunner per-run UUID + artifact source/total_bytes + git_sample bash 标记）+ `agentj-ipc`（broadcast sanitize + trajectory run_id + history 过滤 + SessionRunResult.run_id）+ `docs/specs/ipc-protocol.md`（§7.3/8.7/8.19/9.1/10/11 同步）+ `schemas/`（52 schemas）+ `protocol/methods.json`（0.15.0）；`PROTOCOL_VERSION` 0.14.0 → **0.15.0**；工作区 0.22.0 → **0.23.0**。
+> 当前功能：**v0.23.1 补齐 v0.23.0 计划遗漏（bugfix，无协议变更，PROTOCOL_VERSION 保持 0.15.0）——后端部分**
+> ——来源：v0.23.0 验收 PASS（BUG-013/014/015 verified per `.superpowers/acceptance/bugs.md`）后复核发现协议/IPC 计划测试缺漏与 `agentj-core` 死代码。
+> + 实现计划 `docs/superpowers/plans/2026-09-25-agentj-right-panel-run-details-plan.md`（T0/T5 后端侧补测）。
+> 后端范围：`agentj-protocol`（T0 补测 5）+ `agentj-ipc`（T5 补测 4）+ `agentj-core`（删除死代码 `bash_file_changes` + `git_sample` 生产路径断言）；`PROTOCOL_VERSION` 保持 **0.15.0**（52 schemas / 21 方法不变）；工作区 0.23.0 → **0.23.1**。
 > 前端部分见 `summary_and_next_fe.md`。
 
-## v0.23.0（后端部分）✅（本次完成）
+## v0.23.1（后端部分）✅（本次完成）
 
-- ✅ **T0 协议 wire**：`streaming.rs` 新增 `FileChangeSource`（Write/Bash + Unknown）与 `FileChange {run_id, seq, source, total_bytes}`（`Option` + `skip_serializing_if`）+ `ProgressValue::Todo/FileChange {run_id?}` 外层路由提示 + `TrajectoryValue::Todo/FileChange {run_id?}` + `SessionHistoryParams {run_id?}` + `SessionRunResult {run_id?}`；`schema.rs` 注册 `FileChangeSource`；现有测试补齐 `run_id` 缺省构造，`gen_schemas` 生成 `FileChangeSource.json`。
-- ✅ **T1 版本 bump**：`lib.rs:PROTOCOL_VERSION` 0.14.0 → **0.15.0**、`protocol/methods.json` 同步 0.15.0（21 方法不变），`registry` 测试同步；`check-version` 同步。
-- ✅ **T3 TurnRunner per-run**：`types.rs` `AgentEvent::Todo {run_id, revision}` / `Done {run_id}`；`turn_runner.rs` 新增 `todo_revisions: HashMap<RunId,u64>` + `file_change_seqs: HashMap<RunId,u64>`（UUID 键全局唯一），`spawn_turn` 入口 `Uuid::new_v4()`，`forward_artifacts` 写入 `change.run_id/seq` 与 `Done.run_id`；`Cargo.toml` 新增 `uuid v4`。
-- ✅ **T4 artifact 双源**：`artifacts.rs` 扩展 `FileChangeArtifact {run_id, seq, source, total_bytes}` + `pub use FileChangeSource`，`write_change` 按 `DIFF_MAX_BYTES` 截断时保留 64 KiB 前缀 + `total_bytes` 披露、`source=Write`；新增 `bash_file_changes` helper；`git_sample.rs:change_for` 补 `source=Bash`；T4 遗留单测 `write_change_diff_truncates_over_cap` 同步新语义。
-- ✅ **T5 IPC 接线**：`lib.rs` `dispatch_session_run` 新增 `current_run_id` 跟踪 + `sanitize_run_id`（非法/超长→None，不抛错）+ `is_valid_run_id`（`Uuid::parse_str` + ≤128）、`file_change_into_wire` 透传 `run_id/seq/source/total_bytes`、`ProgressValue::Todo/FileChange` 外层 `run_id`、轨迹落盘 `run_id`、`SessionRunResult.run_id` 回显；`dispatch_session_history` 加性 `run_id` 参数校验（非法→`-32602` + `data{reason:"invalid_run_id"}`）+ `history_events_filtered`（先按 `run_id` 过滤 Todo/FileChange，再按 `cursor/limit` 分页，其余 kind 全量）。
-- ✅ **T10 文档与 schema**：`docs/specs/ipc-protocol.md` 同步 0.15.0（§7.3 ProgressValue/FileChange、§8.7 SessionRunResult、§8.19 session/history run_id 过滤、§9.1 FileChangeSource、§10 52 schemas、§11.3 0.15.0 changelog）；`cargo gen_schemas` + `npm generate @agentj/protocol` 产出 `FileChangeSource.json` 与更新的 5 个 schema；`types.d.ts` 同步 `FileChangeSource`/`run_id`/`seq`/`source`/`total_bytes`。
-- ✅ **T11 最终门禁**：`Cargo.toml` 工作区 0.22.0→**0.23.0**（三处桌面 manifest 同步），`scripts/check-version.sh` 同步 0.23.0/0.15.0；`cargo fmt` + `clippy -D warnings`（补 collapsible-if 与 `is_multiple_of`）全绿。
+- ✅ **T0 协议补测（5 测）**：`FileChangeSource::Unknown` 容忍、`FileChange` 新字段（`run_id`/`seq`/`source`/`total_bytes`）往返序列化、`ProgressValue::Todo/FileChange` 外层 `run_id` 加性、`SessionHistoryParams {run_id?}` 与 `SessionRunResult {run_id?}` 缺省省略（不破坏旧报文）。
+- ✅ **T5 IPC 补测（4 测）**：broadcast `run_id` 透传（`file_change_into_wire`）、`session/history {run_id}` 过滤（先按 `run_id` 过滤 Todo/FileChange 再 `cursor/limit` 分页，其余 kind 全量）、非法 `run_id` → `-32602` + `data{reason:"invalid_run_id"}`、`sanitize_run_id`/`is_valid_run_id` 校验单元（非法/超长 → None 不抛错）。
+- ✅ **死代码清理**：删除 `agentj-core` 未接线的 `bash_file_changes` helper 及其单测（−1 test）；`git_sample` 测试改为在生产路径断言 `source == Some(FileChangeSource::Bash)`（不再依赖 helper）。
 
 ## 验证结果（后端门禁，2026-09-25）
 
 | 门禁 | 结果 |
 |---|---|
-| `cargo fmt --check` | clean（自动 `cargo fmt` 后校验） |
+| `cargo fmt --check` | clean |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 零警告 |
-| `cargo test --workspace` | **648 passed / 0 failed**（含 T3 新增 per-run 覆盖，旧 `e2e_permission` 硬编码 `s1` 需预清理 `~/.local/share/agentj/sessions/s1.*`） |
-| `cargo test -p agentj-protocol` | 85+4 passed；`drift` 2 passed（52 schemas） |
-| `cargo test -p agentj-protocol -- drift` | 2 passed |
-| `cargo test -p agentj-ipc` | 167 passed |
-| `./scripts/check-version.sh` | version-ok（**0.23.0**；`PROTOCOL_VERSION` **0.15.0**；`protocol/methods.json` 0.15.0） |
-| `npm --prefix agentj-ui run generate --workspace=@agentj/protocol` | `FileChangeSource` + 5 更新 schema 写入 `types.d.ts` |
+| `cargo test --workspace` | **660 passed / 0 failed**（v0.23.0 652 基线 +5 protocol +4 ipc −1 core 死测） |
+| `cargo test -p agentj-protocol` | **90 passed**（+5，T0）；`drift` 2 passed（52 schemas） |
+| `cargo test -p agentj-protocol -- drift` | 2 passed（52 schemas） |
+| `cargo test -p agentj-ipc` | **171 passed**（+4，T5） |
+| `./scripts/check-version.sh` | version-ok（**0.23.1**；`PROTOCOL_VERSION` **0.15.0**；`protocol/methods.json` 0.15.0） |
+| `npm --prefix agentj-ui run generate --workspace=@agentj/protocol` | 无漂移（52 schemas） |
 
-> 环境预置清理：`rm -f ~/.local/share/agentj/sessions/s1.{json,trajectory}`
-> （e2e_permission 硬编码 `s1` 会话，前次运行被中断会 hang —— 预存在环境问题，非本特性引入）。
-> **验收状态：待验收（`jskill-test-acceptance` 未跑）**——后端验收项：多 run `run_id` 隔离广播、history 按 `run_id` 过滤 + 分页、非法 run_id `-32602`、旧数据 `null` 兼容回放、全量门禁独立复跑目标。
+> **v0.23.0 验收：PASS**（BUG-013/014/015 verified per `.superpowers/acceptance/bugs.md`；Rust 回归后 646 → 652）。本波 v0.23.1 为计划遗漏补齐，**待 `jskill-test-acceptance` 复验**——后端验收项：`cargo test --workspace` 660 独立复跑、T0/T5 补测覆盖、死代码删除后 `git_sample` 生产路径 `source == Some(Bash)` 断言、`check-version` 0.23.1/0.15.0。
+> 环境预置清理（延续）：`rm -f ~/.local/share/agentj/sessions/s1.{json,trajectory}`（e2e_permission 硬编码 `s1` 会话，前次运行被中断会 hang —— 预存在环境问题，非本特性引入）。
 
 ## 遗留问题 / 已知限制（后端）
 
@@ -60,5 +53,5 @@
 
 ## 下一步
 
-- **v0.23.0 开发分支 `feature/right-panel-run-details` 全量落地，待 `jskill-test-acceptance` 验收后合并 main**；当前功能完结，下一特性从「待实施」表选择（`jskill-feature-next` 合并本表 + `_fe.md` 表）。
+- **v0.23.1 计划遗漏补齐已在开发分支落地，待 `jskill-test-acceptance` 复验后合并 main**；当前功能完结，下一特性从「待实施」表选择（`jskill-feature-next` 合并本表 + `_fe.md` 表）。
 - 后端候选即上表 ①②④（前端候选见 `summary_and_next_fe.md`）。
