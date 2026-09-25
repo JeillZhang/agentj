@@ -299,9 +299,12 @@ export default function App() {
   const [rightCollapsed, setRightCollapsed] = useState(() => loadLayout().rightCollapsed);
   const [fileChanges, setFileChanges] = useState<FileChangeRow[]>([]);
   const [todos, setTodos] = useState(EMPTY_TODO_STATE);
-
+  const [activeRunId, setActiveRunId] = useState<string | null>(null);
+  const [highlightedPath, setHighlightedPath] = useState<string | null>(null);
   const activeSessionRef = useRef<string | null>(activeSessionId);
+  const activeRunIdRef = useRef<string | null>(activeRunId);
   useEffect(() => { activeSessionRef.current = activeSessionId; }, [activeSessionId]);
+  useEffect(() => { activeRunIdRef.current = activeRunId; }, [activeRunId]);
 
   useEffect(() => subscribeDemo(setDemo), []);
 
@@ -310,6 +313,8 @@ export default function App() {
   useEffect(() => {
     setFileChanges([]);
     setTodos(EMPTY_TODO_STATE);
+    setActiveRunId(null);
+    setHighlightedPath(null);
   }, [activeSessionId]);
 
   // second notification handler (useSharedKernel owns the first): apply file_change frames
@@ -319,7 +324,9 @@ export default function App() {
       if (method !== METHODS.progress) return;
       const frame = parseProgress(params);
       if (frame.kind === "file_change" && frame.session_id !== activeSessionRef.current) return;
-      setFileChanges((prev) => applyFileChange(prev, frame));
+      if (frame.kind === "file_change" && frame.runId) setActiveRunId(frame.runId);
+      if (frame.kind === "todo" && frame.runId) setActiveRunId(frame.runId);
+      if (frame.kind === "file_change") setFileChanges((prev) => applyFileChange(prev, frame));
     };
     sharedClient.setNotificationHandler(handler);
     return () => { sharedClient.removeNotificationHandler?.(handler); };
@@ -332,6 +339,8 @@ export default function App() {
       if (method !== METHODS.progress) return;
       const frame = parseProgress(params);
       if (frame.kind === "todo" && frame.session_id !== activeSessionRef.current) return;
+      if (frame.kind === "todo" && frame.runId) setActiveRunId(frame.runId);
+      if (frame.kind === "file_change" && frame.runId) setActiveRunId(frame.runId);
       setTodos((prev) => applyTodoFrame(prev, frame));
     };
     sharedClient.setNotificationHandler(handler);
@@ -406,9 +415,16 @@ export default function App() {
         const all: RawEvent[] = [];
         let cursor = 0;
         for (let page = 0; page < 10; page++) {
-          const res = (await clientToUse!.request(METHODS.sessionHistory, {
-            session_id: activeSessionId, cursor, limit: 500,
-          })) as { events?: RawEvent[]; next_cursor?: number | null } | null;
+          const req: Record<string, unknown> = {
+            session_id: activeSessionId,
+            cursor,
+            limit: 500,
+          };
+          if (activeRunId) req.run_id = activeRunId;
+          const res = (await clientToUse!.request(METHODS.sessionHistory, req)) as {
+            events?: RawEvent[];
+            next_cursor?: number | null;
+          } | null;
           if (!cancelled && res?.events) all.push(...res.events);
           const next = res?.next_cursor;
           if (typeof next !== "number" || next <= cursor) break;
@@ -417,8 +433,13 @@ export default function App() {
         if (!cancelled) {
           setHistoryEvents(all);
           setHistorySession(activeSessionId);
-          setTodos(todosFromHistory(all));
-          setFileChanges(changesFromHistory(all));
+          if (activeRunId) {
+            setTodos(todosFromHistory(all, activeRunId));
+            setFileChanges(changesFromHistory(all, activeRunId));
+          } else {
+            setTodos(todosFromHistory(all));
+            setFileChanges(changesFromHistory(all));
+          }
         }
       } catch (err) {
         console.debug("history", err);
@@ -428,7 +449,7 @@ export default function App() {
       }
     })();
     return () => { cancelled = true; };
-  }, [wsUrl, activeSessionId, sharedClient]);
+  }, [wsUrl, activeSessionId, activeRunId, sharedClient]);
 
   const connState = connectionLight(status, unreachable);
 
@@ -515,8 +536,31 @@ export default function App() {
       <WorkspaceShell
         right={
           <RightPanel collapsed={rightCollapsed} onToggle={() => handleRightCollapsedChange(!rightCollapsed)}>
-            <TodoPanel items={demo ? DEMO_TODOS : todos.items} />
-            <ChangeList changes={demo ? DEMO_CHANGES : fileChanges} />
+            <TodoPanel
+              items={demo ? DEMO_TODOS : todos.items}
+              state={demo ? null : todos}
+              activeRunId={demo ? null : activeRunId}
+              onSelectRun={(runId) => {
+                if (runId === activeRunId) return;
+                setActiveRunId(runId);
+                if (runId) {
+                  setTodos((prev) => {
+                    const map = (prev as unknown as { byRun?: Map<string | null, { revision: number; items: ReturnType<typeof todosFromHistory>["items"] }> })?.byRun;
+                    if (map instanceof Map && map.has(runId)) {
+                      const entry = map.get(runId);
+                      if (entry) return { ...prev, items: entry.items, revision: entry.revision } as typeof prev;
+                    }
+                    return prev;
+                  });
+                }
+              }}
+            />
+            <ChangeList
+              changes={demo ? DEMO_CHANGES : fileChanges}
+              highlightedPath={demo ? null : highlightedPath}
+              activeRunId={demo ? null : activeRunId}
+              onSelectRun={setActiveRunId}
+            />
           </RightPanel>
         }
         rightCollapsed={rightCollapsed}
@@ -529,6 +573,7 @@ export default function App() {
           activeSessionId={activeSessionId}
           onActiveChange={(id) => { setActiveSessionId(id); handleProjectChange(loadCurrentProject()); setDrawerOpen(false); }}
           onSessionRemoved={(id) => { if (activeSessionRef.current === id) setActiveSessionId(null); }}
+          onFileSelect={(path) => setHighlightedPath(path)}
           unreachable={unreachable}
         />
         <div className="aj-main">
@@ -571,7 +616,7 @@ export default function App() {
             ) : (
               <>
                 {(historyEvents === null || historySession !== activeSessionId) && <p className="aj-empty">Loading history…</p>}
-                <RunPanel client={sharedClient} key={activeSessionId} activeSessionId={activeSessionId} initialEntries={historyEvents && historySession === activeSessionId ? historyToConversation(historyEvents) : []} pendingTool={pending?.tool} model={modelName ?? undefined} modules={modules} status={status} unreachable={unreachable} />
+                <RunPanel client={sharedClient} key={activeSessionId} activeSessionId={activeSessionId} initialEntries={historyEvents && historySession === activeSessionId ? historyToConversation(historyEvents) : []} pendingTool={pending?.tool} model={modelName ?? undefined} modules={modules} status={status} unreachable={unreachable} onRunId={(id) => setActiveRunId(id)} />
               </>
             )
           ) : activeSessionId && historySession === activeSessionId && historyEvents ? (

@@ -27,9 +27,9 @@ pub struct TurnRunner {
     sender: KernelSender,
     tool_executor_id: ModuleId,
     turns: Arc<Mutex<HashMap<SessionId, TurnHandle>>>,
-    todo_revisions: Arc<Mutex<HashMap<SessionId, u64>>>,
+    todo_revisions: Arc<Mutex<HashMap<String, u64>>>,
+    file_change_seqs: Arc<Mutex<HashMap<String, u64>>>,
 }
-
 impl TurnRunner {
     pub fn new(
         ctx: KernelContext,
@@ -58,6 +58,7 @@ impl TurnRunner {
             tool_executor_id,
             turns: Arc::new(Mutex::new(HashMap::new())),
             todo_revisions: Arc::new(Mutex::new(HashMap::new())),
+            file_change_seqs: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -113,6 +114,8 @@ impl TurnRunner {
         let tool_executor_id = self.tool_executor_id.clone();
         let turns = Arc::clone(&self.turns);
         let todo_revisions = Arc::clone(&self.todo_revisions);
+        let file_change_seqs = Arc::clone(&self.file_change_seqs);
+        let run_id = uuid::Uuid::new_v4().to_string();
         {
             let mut map = self
                 .turns
@@ -130,6 +133,7 @@ impl TurnRunner {
                 ctx,
                 pipeline,
                 session_id.clone(),
+                run_id.clone(),
                 content,
                 system_prompt,
                 max_iter,
@@ -137,6 +141,7 @@ impl TurnRunner {
                 sender,
                 tool_executor_id,
                 todo_revisions,
+                file_change_seqs,
                 cancel_rx,
                 on_done.clone(),
             )
@@ -156,13 +161,15 @@ impl TurnRunner {
         ctx: KernelContext,
         pipeline: Arc<dyn ContextPipeline>,
         session_id: SessionId,
+        run_id: String,
         user_input: String,
         system_prompt: String,
         max_iter: usize,
         reply: mpsc::Sender<AgentEvent>,
         sender: KernelSender,
         tool_executor_id: ModuleId,
-        todo_revisions: Arc<Mutex<HashMap<SessionId, u64>>>,
+        todo_revisions: Arc<Mutex<HashMap<String, u64>>>,
+        file_change_seqs: Arc<Mutex<HashMap<String, u64>>>,
         mut cancel_rx: tokio::sync::oneshot::Receiver<()>,
         on_done: Option<Arc<dyn Fn(&SessionId, Option<TokenUsage>) + Send + Sync>>,
     ) -> Result<(), String> {
@@ -236,6 +243,7 @@ impl TurnRunner {
                     .map_err(|e| route(e.to_string()))?;
                 if reply
                     .send(AgentEvent::Done {
+                        run_id: Some(run_id.clone()),
                         final_response: content,
                         tool_calls: all_tool_calls,
                         usage,
@@ -311,7 +319,15 @@ impl TurnRunner {
                 {
                     return Ok(());
                 }
-                if !Self::forward_artifacts(&reply, artifacts, &session_id, &todo_revisions).await {
+                if !Self::forward_artifacts(
+                    &reply,
+                    artifacts,
+                    &run_id,
+                    &todo_revisions,
+                    &file_change_seqs,
+                )
+                .await
+                {
                     return Ok(());
                 }
                 pipeline.reflux(&mut messages, &tc, tool_result);
@@ -341,16 +357,22 @@ impl TurnRunner {
     async fn forward_artifacts(
         reply: &mpsc::Sender<AgentEvent>,
         artifacts: Vec<TurnArtifact>,
-        session_id: &SessionId,
-        revisions: &Mutex<HashMap<SessionId, u64>>,
+        run_id: &str,
+        revisions: &Mutex<HashMap<String, u64>>,
+        seqs: &Mutex<HashMap<String, u64>>,
     ) -> bool {
         for artifact in artifacts {
             let event = match artifact {
                 TurnArtifact::Todo(snapshot) => AgentEvent::Todo {
-                    revision: next_todo_revision(revisions, session_id),
+                    run_id: Some(run_id.to_string()),
+                    revision: next_todo_revision(revisions, run_id),
                     snapshot,
                 },
-                TurnArtifact::FileChange(change) => AgentEvent::FileChange(change),
+                TurnArtifact::FileChange(mut change) => {
+                    change.run_id = Some(run_id.to_string());
+                    change.seq = Some(next_file_change_seq(seqs, run_id));
+                    AgentEvent::FileChange(change)
+                }
             };
             if reply.send(event).await.is_err() {
                 return false;
@@ -360,15 +382,21 @@ impl TurnRunner {
     }
 }
 
-fn next_todo_revision(revisions: &Mutex<HashMap<SessionId, u64>>, session_id: &SessionId) -> u64 {
+fn next_todo_revision(revisions: &Mutex<HashMap<String, u64>>, run_id: &str) -> u64 {
     let mut map = revisions
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let next = map.entry(session_id.clone()).or_insert(0);
+    let next = map.entry(run_id.to_string()).or_insert(0);
     *next += 1;
     *next
 }
 
+fn next_file_change_seq(seqs: &Mutex<HashMap<String, u64>>, run_id: &str) -> u64 {
+    let mut map = seqs.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let next = map.entry(run_id.to_string()).or_insert(0);
+    *next += 1;
+    *next
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -461,7 +489,7 @@ mod tests {
             _o: ModelOptions,
         ) -> Result<BoxStream<'static, Result<ModelEvent, ModelError>>, ModelError> {
             let n = self.calls.fetch_add(1, Ordering::SeqCst);
-            let events: Vec<Result<ModelEvent, ModelError>> = if n == 0 {
+            let events: Vec<Result<ModelEvent, ModelError>> = if n.is_multiple_of(2) {
                 vec![
                     Ok(ModelEvent::Delta("Hello".into())),
                     Ok(ModelEvent::ToolCall(self.tool.clone())),
@@ -986,7 +1014,9 @@ mod tests {
                 AgentEvent::Delta(_) => kinds.push("delta".into()),
                 AgentEvent::ToolCall(_) => kinds.push("tool_call".into()),
                 AgentEvent::ToolResult { .. } => kinds.push("tool_result".into()),
-                AgentEvent::Todo { revision, snapshot } => {
+                AgentEvent::Todo {
+                    revision, snapshot, ..
+                } => {
                     kinds.push(format!("todo#{revision}"));
                     todos.push((revision, snapshot));
                 }
@@ -1071,7 +1101,237 @@ mod tests {
                 "done"
             ]
         );
-        assert_eq!(received, Some(change));
+        let received = received.expect("file_change must be received");
+        // legacy fields must remain valid (no regression)
+        assert_eq!(received.path, change.path);
+        assert_eq!(received.op, change.op);
+        assert_eq!(received.additions, change.additions);
+        assert_eq!(received.deletions, change.deletions);
+        assert_eq!(received.tool_call_id, change.tool_call_id);
+        assert_eq!(received.diff, change.diff);
+        assert_eq!(received.diff_truncated, change.diff_truncated);
+        // new per-run fields must be populated
+        assert!(received.run_id.is_some(), "run_id must be Some");
+        assert!(uuid::Uuid::parse_str(received.run_id.as_ref().unwrap()).is_ok());
+        assert_eq!(received.seq, Some(1));
+        kernel.sender().send(KernelMessage::Shutdown).unwrap();
+    }
+
+    fn is_uuid_v4(s: &str) -> bool {
+        uuid::Uuid::parse_str(s).is_ok()
+    }
+
+    async fn collect_done_run_id(
+        mut rx: tokio::sync::mpsc::Receiver<AgentEvent>,
+    ) -> Option<String> {
+        while let Some(ev) = rx.recv().await {
+            if let AgentEvent::Done { run_id, .. } = ev {
+                return run_id;
+            }
+            if let AgentEvent::Error(e) = ev {
+                panic!("unexpected error: {e}");
+            }
+        }
+        None
+    }
+
+    #[tokio::test]
+    async fn run_id_unique_per_turn() {
+        let (kernel, sender) = spy_kernel_with(ToolSpy);
+        let ctx = loop_test_ctx();
+        let providers = ctx.providers.clone();
+        struct ImmediateDone;
+        #[async_trait]
+        impl crate::module::ModelProvider for ImmediateDone {
+            async fn chat_stream(
+                &self,
+                _m: Vec<ChatMessage>,
+                _t: Vec<ToolDefinition>,
+                _o: ModelOptions,
+            ) -> Result<BoxStream<'static, Result<ModelEvent, ModelError>>, ModelError>
+            {
+                Ok(Box::pin(stream::iter(vec![Ok(ModelEvent::Done)])))
+            }
+            async fn chat(
+                &self,
+                _m: Vec<ChatMessage>,
+                _o: ModelOptions,
+            ) -> Result<crate::types::ChatResponse, ModelError> {
+                Ok(crate::types::ChatResponse {
+                    content: "ok".into(),
+                    tool_calls: vec![],
+                })
+            }
+        }
+        providers.register("mock".into(), Arc::new(ImmediateDone));
+        let runner = TurnRunner::new(
+            ctx.clone(),
+            Arc::new(MockPipeline),
+            "sys".into(),
+            sender,
+            "tool_spy".into(),
+        );
+        let sid = runner.create_session().unwrap();
+        let (tx1, rx1) = tokio::sync::mpsc::channel(64);
+        runner
+            .spawn_turn(sid.clone(), "hi1".into(), None, tx1)
+            .unwrap();
+        let id1 = collect_done_run_id(rx1).await.expect("done 1");
+        assert!(is_uuid_v4(&id1));
+        let (tx2, rx2) = tokio::sync::mpsc::channel(64);
+        runner
+            .spawn_turn(sid.clone(), "hi2".into(), None, tx2)
+            .unwrap();
+        let id2 = collect_done_run_id(rx2).await.expect("done 2");
+        assert!(is_uuid_v4(&id2));
+        assert_ne!(id1, id2);
+        // revision reset per run is covered in todo_revision_per_run
+        kernel.sender().send(KernelMessage::Shutdown).unwrap();
+    }
+
+    #[tokio::test]
+    async fn todo_revision_per_run() {
+        let snap_a = todo_snapshot("a");
+        let snap_b = todo_snapshot("b");
+        // First run emits two todos — revisions 1,2 within same run
+        let (kernel, sender) = spy_kernel_with(ArtifactSpy {
+            artifacts: vec![
+                TurnArtifact::Todo(snap_a.clone()),
+                TurnArtifact::Todo(snap_b.clone()),
+            ],
+        });
+        let ctx = loop_test_ctx();
+        ctx.providers.register(
+            "mock".into(),
+            Arc::new(ScriptedProvider {
+                calls: Arc::new(AtomicUsize::new(0)),
+                tool: tc(),
+            }),
+        );
+        let runner = TurnRunner::new(
+            ctx.clone(),
+            Arc::new(MockPipeline),
+            "sys".into(),
+            sender,
+            "tool_spy".into(),
+        );
+        let sid = runner.create_session().unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+        runner
+            .spawn_turn(sid.clone(), "hi".into(), None, tx)
+            .unwrap();
+        let mut revs = vec![];
+        let mut run_ids = vec![];
+        while let Some(ev) = rx.recv().await {
+            match ev {
+                AgentEvent::Todo {
+                    revision, run_id, ..
+                } => {
+                    revs.push(revision);
+                    run_ids.push(run_id);
+                }
+                AgentEvent::Done { .. } => break,
+                AgentEvent::Error(e) => panic!("{e}"),
+                _ => {}
+            }
+        }
+        assert_eq!(revs, vec![1, 2]);
+        assert!(run_ids.iter().all(|id| id.is_some()));
+        assert_eq!(run_ids[0], run_ids[1], "same run must share run_id");
+        let first_run_id = run_ids[0].clone().unwrap();
+        // Second run on same runner/session must reset revision to 1 and have distinct run_id
+        let (tx2, mut rx2) = tokio::sync::mpsc::channel(64);
+        runner
+            .spawn_turn(sid.clone(), "hi2".into(), None, tx2)
+            .unwrap();
+        let mut revs2 = vec![];
+        let mut run_ids2 = vec![];
+        while let Some(ev) = rx2.recv().await {
+            match ev {
+                AgentEvent::Todo {
+                    revision, run_id, ..
+                } => {
+                    revs2.push(revision);
+                    run_ids2.push(run_id);
+                }
+                AgentEvent::Done { .. } => break,
+                AgentEvent::Error(e) => panic!("{e}"),
+                _ => {}
+            }
+        }
+        assert!(!revs2.is_empty());
+        assert_eq!(revs2[0], 1, "revision must reset to 1 on next run");
+        assert_ne!(run_ids2[0].as_deref(), Some(first_run_id.as_str()));
+        kernel.sender().send(KernelMessage::Shutdown).unwrap();
+    }
+
+    #[tokio::test]
+    async fn file_change_seq_per_run() {
+        let c1 = write_change("a.txt", None, "x", Some("c1"));
+        let c2 = write_change("b.txt", None, "y", Some("c1"));
+        let c3 = write_change("a.txt", None, "z", Some("c1"));
+        // Three file changes inside one run — seq 1,2,3
+        // ArtifactSpy will return all three for the single tool call
+        let (kernel, sender) = spy_kernel_with(ArtifactSpy {
+            artifacts: vec![
+                TurnArtifact::FileChange(c1),
+                TurnArtifact::FileChange(c2),
+                TurnArtifact::FileChange(c3),
+            ],
+        });
+        let ctx = loop_test_ctx();
+        ctx.providers.register(
+            "mock".into(),
+            Arc::new(ScriptedProvider {
+                calls: Arc::new(AtomicUsize::new(0)),
+                tool: tc(),
+            }),
+        );
+        let runner = TurnRunner::new(
+            ctx.clone(),
+            Arc::new(MockPipeline),
+            "sys".into(),
+            sender,
+            "tool_spy".into(),
+        );
+        let sid = runner.create_session().unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+        runner
+            .spawn_turn(sid.clone(), "hi".into(), None, tx)
+            .unwrap();
+        let mut seqs = vec![];
+        let mut run_ids = vec![];
+        while let Some(ev) = rx.recv().await {
+            match ev {
+                AgentEvent::FileChange(fc) => {
+                    seqs.push(fc.seq);
+                    run_ids.push(fc.run_id.clone());
+                }
+                AgentEvent::Done { .. } => break,
+                AgentEvent::Error(e) => panic!("{e}"),
+                _ => {}
+            }
+        }
+        assert_eq!(seqs, vec![Some(1), Some(2), Some(3)]);
+        assert!(run_ids.iter().all(|id| id.is_some()));
+        assert!(run_ids.iter().all(|id| id == &run_ids[0]));
+        // Next run must reset seq to 1
+        let (tx2, mut rx2) = tokio::sync::mpsc::channel(64);
+        runner
+            .spawn_turn(sid.clone(), "hi2".into(), None, tx2)
+            .unwrap();
+        let mut seqs2 = vec![];
+        while let Some(ev) = rx2.recv().await {
+            match ev {
+                AgentEvent::FileChange(fc) => seqs2.push(fc.seq),
+                AgentEvent::Done { .. } => break,
+                AgentEvent::Error(e) => panic!("{e}"),
+                _ => {}
+            }
+        }
+        if !seqs2.is_empty() {
+            assert_eq!(seqs2[0], Some(1), "seq must reset to 1 on next run");
+        }
         kernel.sender().send(KernelMessage::Shutdown).unwrap();
     }
 }

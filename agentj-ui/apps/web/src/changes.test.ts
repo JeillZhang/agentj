@@ -71,3 +71,40 @@ test("history upserts by path and skips malformed or unknown events", () => {
   expect(rows.length).toBe(1);
   expect(rows[0]).toEqual({ path: "a.ts", op: "modify", additions: 4, deletions: 2, diff: null, toolCallId: null });
 });
+const UUID_A = "11111111-1111-4111-8111-111111111111";
+const UUID_B = "22222222-2222-4222-8222-222222222222";
+
+test("inner run_id wins over outer in applyFileChange", () => {
+  const frameWithConflict: ProgressFrame = {
+    kind: "file_change",
+    session_id: "s1",
+    runId: UUID_A,
+    change: {
+      path: "a.ts",
+      op: "modify",
+      additions: 1,
+      deletions: 0,
+      tool_call_id: null,
+      diff: null,
+      run_id: UUID_B,
+      seq: 1,
+      source: "write",
+    },
+  };
+  const rows = applyFileChange([], frameWithConflict as unknown as ProgressFrame);
+  expect(rows.length).toBe(1);
+  expect(rows[0].runId).toBe(UUID_B);
+});
+
+test("inner run_id wins over outer in changesFromHistory", () => {
+  const events: RawEvent[] = [
+    event(1, {
+      kind: "file_change",
+      run_id: UUID_A,
+      change: { path: "a.ts", op: "modify", additions: 1, deletions: 0, run_id: UUID_B, seq: 1, source: "write" },
+    }),
+  ];
+  const rows = changesFromHistory(events);
+  expect(rows.length).toBe(1);
+  expect(rows[0].runId).toBe(UUID_B);
+});

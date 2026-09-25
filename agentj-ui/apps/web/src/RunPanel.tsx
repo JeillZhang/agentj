@@ -144,6 +144,7 @@ type Props = {
   modules?: { id: string; state: string }[];
   status?: string;
   unreachable?: boolean;
+  onRunId?: (runId: string | null) => void;
 };
 
 export function toolGlyph(entry: Extract<RunEntry, { kind: "tool" }>, pending: boolean) {
@@ -300,6 +301,7 @@ export default function RunPanel({
   initialEntries = [],
   pendingTool,
   model,
+  onRunId,
 }: Props) {
   const [entries, setEntries] = useState<RunEntry[]>(initialEntries);
   const [elapsedMs, setElapsedMs] = useState<number | undefined>(undefined);
@@ -543,13 +545,16 @@ export default function RunPanel({
     setElapsedMs(undefined);
     const startedAt = performance.now();
     setEntries((prev) => [...prev, { kind: "user", text }]);
-    let usage: { usage?: { prompt_tokens?: number; completion_tokens?: number } } | null = null;
+    let usage: { usage?: { prompt_tokens?: number; completion_tokens?: number }; run_id?: string | null } | null = null;
     try {
       try {
         usage = (await client.request(METHODS.sessionRun, {
           session_id: activeSessionId,
           content: text,
-        })) as { usage?: { prompt_tokens?: number; completion_tokens?: number } } | null;
+        })) as { usage?: { prompt_tokens?: number; completion_tokens?: number }; run_id?: string | null } | null;
+        if (usage && typeof usage.run_id === "string" && usage.run_id.length > 0) {
+          onRunId?.(usage.run_id);
+        }
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         setEntries((prev) => failRun(prev, message));

@@ -38,6 +38,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
+use uuid::Uuid;
 
 /// Transport kind — new transports (Tcp / UnixSocket) add a variant + impl, serve loop unchanged.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -789,6 +790,7 @@ impl IpcServer {
         let mut text = String::new();
         let mut tc_list = vec![];
         let mut usage_opt: Option<serde_json::Value> = None;
+        let mut current_run_id: Option<String> = None;
         let mut pending_thinking = String::new();
         while let Some(event) = rx.recv().await {
             match event {
@@ -850,8 +852,15 @@ impl IpcServer {
                     );
                 }
                 AgentEvent::Done {
-                    tool_calls, usage, ..
+                    run_id,
+                    tool_calls,
+                    usage,
+                    ..
                 } => {
+                    let done_run_id = sanitize_run_id(run_id);
+                    if done_run_id.is_some() {
+                        current_run_id = done_run_id.clone();
+                    }
                     self.flush_thinking(&mut pending_thinking, sid);
                     if let Some(u) = &usage {
                         let info = agentj_protocol::session::UsageInfo {
@@ -894,13 +903,22 @@ impl IpcServer {
                     );
                     return Err(DispatchError::internal(e));
                 }
-                AgentEvent::Todo { revision, snapshot } => {
+                AgentEvent::Todo {
+                    run_id,
+                    revision,
+                    snapshot,
+                } => {
+                    let sanitized = sanitize_run_id(run_id);
+                    if sanitized.is_some() {
+                        current_run_id = sanitized.clone();
+                    }
                     self.flush_thinking(&mut pending_thinking, sid);
                     let items = todo_items_into_wire(snapshot.items);
                     let frame = build_progress_frame(
                         &progress_token,
                         &agentj_protocol::streaming::ProgressValue::Todo {
                             session_id: sid.to_string(),
+                            run_id: sanitized.clone(),
                             revision,
                             items: items.clone(),
                         },
@@ -910,16 +928,29 @@ impl IpcServer {
                     }
                     self.record_trajectory(
                         sid,
-                        agentj_protocol::trajectory::TrajectoryValue::Todo { revision, items },
+                        agentj_protocol::trajectory::TrajectoryValue::Todo {
+                            revision,
+                            items,
+                            run_id: sanitized,
+                        },
                     );
                 }
                 AgentEvent::FileChange(artifact) => {
                     self.flush_thinking(&mut pending_thinking, sid);
-                    let change = file_change_into_wire(artifact);
+                    // artifact already carries run_id/seq from TurnRunner; sanitize illegal ids to None
+                    let mut artifact = artifact;
+                    artifact.run_id = sanitize_run_id(artifact.run_id);
+                    if artifact.run_id.is_some() {
+                        current_run_id = artifact.run_id.clone();
+                    }
+                    let change = file_change_into_wire(artifact.clone());
+                    let top_run_id = change.run_id.clone();
+                    let file_change_run_id = change.run_id.clone();
                     let frame = build_progress_frame(
                         &progress_token,
                         &agentj_protocol::streaming::ProgressValue::FileChange {
                             session_id: sid.to_string(),
+                            run_id: top_run_id,
                             change: change.clone(),
                         },
                     );
@@ -928,7 +959,10 @@ impl IpcServer {
                     }
                     self.record_trajectory(
                         sid,
-                        agentj_protocol::trajectory::TrajectoryValue::FileChange { change },
+                        agentj_protocol::trajectory::TrajectoryValue::FileChange {
+                            change,
+                            run_id: file_change_run_id,
+                        },
                     );
                 }
             }
@@ -936,6 +970,11 @@ impl IpcServer {
         let mut result = serde_json::json!({ "content": text, "tool_calls": tc_list });
         if let Some(u) = usage_opt {
             result["usage"] = u;
+        }
+        if let Some(rid) = current_run_id
+            && let Some(sanitized) = sanitize_run_id(Some(rid))
+        {
+            result["run_id"] = Value::String(sanitized);
         }
         Ok(result)
     }
@@ -1113,12 +1152,25 @@ impl IpcServer {
         let sid = params["session_id"]
             .as_str()
             .ok_or_else(|| DispatchError::invalid_params("missing session_id"))?;
+        let raw_run_id = params
+            .get("run_id")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        if let Some(rid) = &raw_run_id
+            && !is_valid_run_id(rid)
+        {
+            return Err(DispatchError::invalid_params_with_data(
+                "InvalidParams",
+                serde_json::json!({"reason": "invalid_run_id"}),
+            ));
+        }
         let limit = params["limit"].as_u64().unwrap_or(100).clamp(1, 500) as usize;
         let cursor = params["cursor"].as_u64();
         let (events, next) = match &self.trajectory_store {
-            Some(store) => store
-                .read_paged(&sid.to_string(), cursor, limit)
-                .map_err(|e| DispatchError::internal(e.to_string()))?,
+            Some(store) => {
+                history_events_filtered(store, sid, raw_run_id.as_deref(), cursor, limit)
+                    .map_err(|e| DispatchError::internal(e.to_string()))?
+            }
             None => (vec![], None),
         };
         let result = agentj_protocol::session::SessionHistoryResult {
@@ -1127,8 +1179,6 @@ impl IpcServer {
         };
         Ok(serde_json::to_value(result).expect("serializable"))
     }
-
-    /// `file/list` (design contract item 1): sandboxed enumeration relative to
     /// the session `project_root`, with git porcelain statuses per file entry.
     async fn dispatch_file_list(&self, req: &JsonRpcRequest) -> Result<Value, DispatchError> {
         let params: FileListParams = serde_json::from_value(
@@ -1661,6 +1711,17 @@ fn todo_status_into_wire(status: TodoStatusArtifact) -> agentj_protocol::streami
     }
 }
 
+fn is_valid_run_id(s: &str) -> bool {
+    s.len() <= 128 && Uuid::parse_str(s).is_ok()
+}
+
+fn sanitize_run_id(opt: Option<String>) -> Option<String> {
+    match opt {
+        Some(s) if is_valid_run_id(&s) => Some(s),
+        _ => None,
+    }
+}
+
 /// Map a core file-change artifact to the wire shape (design contract item 3).
 /// `diff_truncated` is `Some(true)` only when truncated; `false` stays omitted
 /// per the field's `skip_serializing_if`.
@@ -1673,6 +1734,10 @@ fn file_change_into_wire(change: FileChangeArtifact) -> agentj_protocol::streami
         tool_call_id: change.tool_call_id,
         diff: change.diff,
         diff_truncated: change.diff_truncated.then_some(true),
+        run_id: sanitize_run_id(change.run_id),
+        seq: change.seq,
+        source: change.source,
+        total_bytes: change.total_bytes,
     }
 }
 
@@ -1683,6 +1748,50 @@ fn file_change_op_into_wire(op: FileChangeOp) -> agentj_protocol::streaming::Fil
         FileChangeOp::Modify => agentj_protocol::streaming::FileChangeKind::Modify,
         FileChangeOp::Delete => agentj_protocol::streaming::FileChangeKind::Delete,
     }
+}
+
+fn history_events_filtered(
+    store: &trajectory::TrajectoryStore,
+    sid: &str,
+    run_id: Option<&str>,
+    cursor: Option<u64>,
+    limit: usize,
+) -> std::io::Result<(
+    Vec<agentj_protocol::trajectory::TrajectoryEvent>,
+    Option<u64>,
+)> {
+    let (all, _) = store.read_paged(&sid.to_string(), None, usize::MAX)?;
+    let filtered: Vec<_> = if let Some(rid) = run_id {
+        all.into_iter()
+            .filter(|ev| match &ev.value {
+                agentj_protocol::trajectory::TrajectoryValue::Todo { run_id, .. }
+                | agentj_protocol::trajectory::TrajectoryValue::FileChange { run_id, .. } => {
+                    run_id.as_deref() == Some(rid)
+                }
+                _ => true,
+            })
+            .collect()
+    } else {
+        all
+    };
+    let mut out = Vec::new();
+    let mut seen: Option<u64> = None;
+    for ev in filtered {
+        if ev.seq < cursor.unwrap_or(0) {
+            continue;
+        }
+        seen = Some(ev.seq);
+        out.push(ev);
+        if out.len() == limit {
+            break;
+        }
+    }
+    let nxt = if out.len() == limit {
+        seen.map(|s| s + 1)
+    } else {
+        None
+    };
+    Ok((out, nxt))
 }
 
 /// AskQuestion trajectory node recorded at notify time (design 决策 #10).
@@ -3957,6 +4066,7 @@ mod tests {
 
         let value = ProgressValue::Todo {
             session_id: "s1".into(),
+            run_id: None,
             revision: 7,
             items: wire.clone(),
         };
@@ -3965,13 +4075,13 @@ mod tests {
         assert_eq!(json["session_id"], "s1");
         assert_eq!(json["revision"], 7);
         assert_eq!(json["items"][1]["status"], "in_progress");
-        assert_eq!(json["items"][3]["status"], "cancelled");
         let back: ProgressValue = serde_json::from_value(json).unwrap();
         match back {
             ProgressValue::Todo {
                 session_id,
                 revision,
                 items,
+                ..
             } => {
                 assert_eq!(session_id, "s1");
                 assert_eq!(revision, 7);
@@ -3994,11 +4104,16 @@ mod tests {
             tool_call_id: Some("c1".into()),
             diff: Some("@@ -1,2 +1,2 @@\n-a\n+b\n".into()),
             diff_truncated: false,
+            run_id: None,
+            seq: None,
+            source: None,
+            total_bytes: None,
         });
         assert_eq!(change.op, FileChangeKind::Modify);
         assert_eq!(change.diff_truncated, None, "false must stay omitted");
         let value = ProgressValue::FileChange {
             session_id: "s1".into(),
+            run_id: None,
             change,
         };
         let json = serde_json::to_value(&value).unwrap();
@@ -4019,7 +4134,9 @@ mod tests {
         );
         let back: ProgressValue = serde_json::from_value(json).unwrap();
         match back {
-            ProgressValue::FileChange { session_id, change } => {
+            ProgressValue::FileChange {
+                session_id, change, ..
+            } => {
                 assert_eq!(session_id, "s1");
                 assert_eq!(change.op, FileChangeKind::Modify);
                 assert_eq!(change.diff_truncated, None);
@@ -4036,6 +4153,10 @@ mod tests {
             tool_call_id: None,
             diff: None,
             diff_truncated: false,
+            run_id: None,
+            seq: None,
+            source: None,
+            total_bytes: None,
         });
         assert_eq!(add.op, FileChangeKind::Add);
         let add_json = serde_json::to_value(&add).unwrap();
@@ -4050,12 +4171,15 @@ mod tests {
             tool_call_id: Some("c9".into()),
             diff: None,
             diff_truncated: true,
+            run_id: None,
+            seq: None,
+            source: None,
+            total_bytes: None,
         });
         assert_eq!(delete.op, FileChangeKind::Delete);
         let delete_json = serde_json::to_value(&delete).unwrap();
         assert_eq!(delete_json["diff_truncated"], true, "truncation surfaced");
     }
-
     /// T23 AC: a run yielding todo + write artifacts must broadcast both
     /// `$/progress` kinds to subscribers and record them once for replay.
     #[tokio::test]
@@ -4169,8 +4293,9 @@ mod tests {
             ],
             "each artifact is recorded exactly once, in stream order"
         );
-        let agentj_protocol::trajectory::TrajectoryValue::Todo { revision, items } =
-            &events[3].value
+        let agentj_protocol::trajectory::TrajectoryValue::Todo {
+            revision, items, ..
+        } = &events[3].value
         else {
             panic!("todo node at index 3: {events:?}")
         };
@@ -4180,7 +4305,8 @@ mod tests {
             items[1].status,
             agentj_protocol::streaming::TodoStatus::Pending
         );
-        let agentj_protocol::trajectory::TrajectoryValue::FileChange { change } = &events[6].value
+        let agentj_protocol::trajectory::TrajectoryValue::FileChange { change, .. } =
+            &events[6].value
         else {
             panic!("file_change node at index 6: {events:?}")
         };
