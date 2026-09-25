@@ -78,7 +78,7 @@ fn registry_extension_method_shapes() {
     assert_eq!(respond["result"], "QuestionRespondResult");
 
     assert_eq!(find("session/new")["params"], "SessionNewParams");
-    assert_eq!(reg["protocol_version"], "0.14.0");
+    assert_eq!(reg["protocol_version"], "0.15.0");
 }
 
 #[test]

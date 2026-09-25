@@ -1,7 +1,9 @@
 import { useEffect, useState, useRef } from "react";
 import { METHODS } from "@agentj/sdk";
 import type { RpcClient } from "@agentj/sdk";
-import type { ProgressFrame, TodoFrame, TodoItemFrame } from "@agentj/sdk";
+import type { ProgressFrame, TodoItemFrame } from "@agentj/sdk";
+import type { TodoState as TodoStateFromHelper } from "./todo.ts";
+import { applyTodoFrame as applyTodoFrameHelper, EMPTY_TODO_STATE as EMPTY_TODO_STATE_HELPER } from "./todo.ts";
 import type { ScrollBoxRenderable } from "@opentui/core";
 import { useTheme, type ThemePalette } from "./theme.tsx";
 
@@ -170,6 +172,12 @@ export function rowsFromFrame(rows: TranscriptRow[], frame: ProgressFrame): Tran
             : JSON.stringify(frame.raw).slice(0, 200),
       });
       break;
+    case "todo":
+    case "file_change":
+      // TUI has no file_change view; todo is handled via applyTodoFrame — no transcript row.
+      break;
+    default:
+      break;
   }
   return next;
 }
@@ -199,16 +207,16 @@ function rowColor(row: TranscriptRow, palette: ThemePalette): string {
   }
 }
 
-export type TodoState = { revision: number; items: TodoItemFrame[] };
+export type TodoState = TodoStateFromHelper;
 
 /** Sentinel revision for "no snapshot yet": any non-negative revision supersedes it. */
-export const EMPTY_TODOS: TodoState = { revision: -1, items: [] };
+export const EMPTY_TODO_STATE: TodoState = EMPTY_TODO_STATE_HELPER;
+/** Legacy alias — prefer EMPTY_TODO_STATE. */
+export const EMPTY_TODOS: TodoState = EMPTY_TODO_STATE_HELPER;
 
-/** Revision-gated fold for `$/progress` todo frames. A revision <= the current one is stale
- * and returns the SAME state reference so callers can skip re-rendering. */
-export function applyTodoFrame(state: TodoState, frame: TodoFrame): TodoState {
-  if (frame.revision <= state.revision) return state;
-  return { revision: frame.revision, items: frame.items };
+/** Revision-gated fold for `$/progress` todo frames. Delegates to `./todo.ts` (per-run when `runId` present, legacy otherwise). */
+export function applyTodoFrame(state: TodoState, frame: ProgressFrame): TodoState {
+  return applyTodoFrameHelper(state, frame);
 }
 
 const TODO_MARKERS: Record<string, string> = {

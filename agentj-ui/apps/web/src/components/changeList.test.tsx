@@ -2,10 +2,11 @@ import "@testing-library/jest-dom/vitest";
 import { beforeEach, expect, test } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import ChangeList from "./ChangeList";
+import type { FileChangeRow } from "../changes";
 beforeEach(() => localStorage.clear());
-const rows = [
-  { path: "SplitPane.tsx", op: "add" as const, additions: 86, deletions: null, diff: null, toolCallId: null },
-  { path: "App.tsx", op: "modify" as const, additions: 24, deletions: 6, diff: "+ <SplitPane>\n- <div className=\"layout\">", toolCallId: null },
+const rows: FileChangeRow[] = [
+  { path: "SplitPane.tsx", op: "add", additions: 86, deletions: null, diff: null, toolCallId: null },
+  { path: "App.tsx", op: "modify", additions: 24, deletions: 6, diff: "+ <SplitPane>\n- <div className=\"layout\">", toolCallId: null },
 ];
 test("rows and badges", () => {
   const { container } = render(<ChangeList changes={rows} />);
@@ -67,4 +68,32 @@ test("collapse state persists across unmount/remount", () => {
   fireEvent.click(again);
   expect(again).toHaveAttribute("aria-expanded", "true");
   expect(container.querySelector(".file-changes")).not.toBeNull();
+});
+test("legacy without source but with diff degrades to write badge", () => {
+  const legacyWithDiff: FileChangeRow[] = [
+    { path: "legacy.ts", op: "modify", additions: 1, deletions: 1, diff: "@@ -1 +1 @@", toolCallId: null },
+  ];
+  const { container } = render(<ChangeList changes={legacyWithDiff} />);
+  expect(screen.getByText("write")).toBeInTheDocument();
+  expect(container.querySelectorAll(".file-changes button").length).toBe(1);
+  expect(container.querySelector(".src-write")).not.toBeNull();
+});
+test("legacy without source and without diff shows no badge and not expandable", () => {
+  const legacyNoDiff: FileChangeRow[] = [
+    { path: "legacy2.ts", op: "modify", additions: 2, deletions: 0, diff: null, toolCallId: null },
+  ];
+  const { container } = render(<ChangeList changes={legacyNoDiff} />);
+  expect(screen.queryByText("write")).toBeNull();
+  expect(screen.queryByText("bash")).toBeNull();
+  expect(container.querySelector(".src-write")).toBeNull();
+  expect(container.querySelector(".src-bash")).toBeNull();
+  expect(container.querySelectorAll(".file-changes button").length).toBe(0);
+});
+test("write row with source=write still shows write badge", () => {
+  const writeRow: FileChangeRow[] = [
+    { path: "a.ts", op: "add", additions: 3, deletions: 0, diff: "@@ -0,0 +1,3 @@", toolCallId: null, source: "write" },
+  ];
+  const { container } = render(<ChangeList changes={writeRow} />);
+  expect(screen.getByText("write")).toBeInTheDocument();
+  expect(container.querySelector(".src-write")).not.toBeNull();
 });

@@ -115,11 +115,13 @@ pub enum AgentEvent {
         result: String,
     },
     Todo {
+        run_id: Option<String>,
         revision: u64,
         snapshot: TodoSnapshot,
     },
     FileChange(FileChangeArtifact),
     Done {
+        run_id: Option<String>,
         final_response: String,
         tool_calls: Vec<ToolCall>,
         usage: Option<TokenUsage>,
@@ -239,6 +241,7 @@ mod tests {
     fn todo_and_file_change_events_are_constructible() {
         let snapshot = TodoSnapshot { items: vec![] };
         let todo = AgentEvent::Todo {
+            run_id: Some("550e8400-e29b-41d4-a716-446655440000".into()),
             revision: 3,
             snapshot: snapshot.clone(),
         };
@@ -247,11 +250,32 @@ mod tests {
             AgentEvent::Todo {
                 revision: 3,
                 snapshot: s,
+                ..
             } if s == snapshot
         ));
+        // legacy None still constructible
+        let legacy = AgentEvent::Todo {
+            run_id: None,
+            revision: 1,
+            snapshot: snapshot.clone(),
+        };
+        assert!(matches!(legacy, AgentEvent::Todo { revision: 1, .. }));
         let change = crate::artifacts::write_change("f.txt", None, "x", Some("c1"));
         let event = AgentEvent::FileChange(change.clone());
         assert!(matches!(event, AgentEvent::FileChange(c) if c == change));
+        let done = AgentEvent::Done {
+            run_id: Some("550e8400-e29b-41d4-a716-446655440000".into()),
+            final_response: "ok".into(),
+            tool_calls: vec![],
+            usage: None,
+        };
+        assert!(matches!(
+            done,
+            AgentEvent::Done {
+                run_id: Some(_),
+                ..
+            }
+        ));
     }
 
     // ---- T5: SessionSnapshot.project_root (design decision #3) ----

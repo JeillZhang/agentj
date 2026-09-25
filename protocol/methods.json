@@ -1,5 +1,5 @@
 {
-  "protocol_version": "0.14.0",
+  "protocol_version": "0.15.0",
   "methods": [
     { "method": "initialize", "kind": "request", "direction": "client_to_server", "params": "InitializeParams", "result": "InitializeResult" },
     { "method": "initialized", "kind": "notification", "direction": "client_to_server", "params": null, "result": null },

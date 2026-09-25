@@ -3,10 +3,11 @@ import { PROTOCOL_VERSION, VERSION, resolveWsUrl } from "../config.js";
 import { METHODS } from "../methods.js";
 
 describe("config", () => {
-  it("version bumped to 0.22.0", () => {
-    expect(VERSION).toBe("0.22.0");
-    expect(PROTOCOL_VERSION).toBe("0.14.0");
+  it("version bumped to 0.23.0", () => {
+    expect(VERSION).toBe("0.23.0");
+    expect(PROTOCOL_VERSION).toBe("0.15.0");
   });
+
 
   it("resolveWsUrl appends token query", () => {
     expect(resolveWsUrl({ port: 5000, token: "s3cret" })).toBe(

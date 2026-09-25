@@ -46,6 +46,9 @@ pub struct SessionRunResult {
     pub tool_calls: Option<Vec<ToolCall>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage: Option<UsageInfo>,
+    /// Run id that scopes this turn's todo/file_change events. @since 0.15.0
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -98,6 +101,9 @@ pub struct SessionHistoryParams {
     pub cursor: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub limit: Option<u64>,
+    /// Filter to a single run's Todo/FileChange events. @since 0.15.0
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
 }
 
 /// @since 0.12.0
@@ -107,7 +113,6 @@ pub struct SessionHistoryResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<u64>,
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -146,6 +151,7 @@ mod tests {
             session_id: "s1".into(),
             cursor: None,
             limit: None,
+            run_id: None,
         };
         let json = serde_json::to_value(&p).unwrap();
         assert!(json.get("cursor").is_none() && json.get("limit").is_none());
@@ -155,6 +161,7 @@ mod tests {
             session_id: "s1".into(),
             cursor: Some(4),
             limit: Some(50),
+            run_id: None,
         };
         let json = serde_json::to_value(&with).unwrap();
         assert_eq!(json["cursor"], 4);
