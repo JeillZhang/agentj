@@ -3739,6 +3739,15 @@ mod tests {
             .unwrap_or_default()
     }
 
+    /// Parsed `$/progress` frames a fake connection received (stream order).
+    fn progress_frames(server: &Arc<IpcServer>, id: &str) -> Vec<serde_json::Value> {
+        drain_sent(server, id)
+            .iter()
+            .filter_map(|m| serde_json::from_str::<serde_json::Value>(m).ok())
+            .filter(|v| v["method"] == "$/progress")
+            .collect()
+    }
+
     fn extract_sid(resp: &str) -> String {
         let v: serde_json::Value = serde_json::from_str(resp).unwrap();
         v["result"]["session_id"].as_str().unwrap().to_string()
@@ -4180,6 +4189,23 @@ mod tests {
         let delete_json = serde_json::to_value(&delete).unwrap();
         assert_eq!(delete_json["diff_truncated"], true, "truncation surfaced");
     }
+
+    /// T5: `is_valid_run_id` requires a parseable UUID within the 128-char cap;
+    /// `sanitize_run_id` maps every reject (including `None`) to `None`.
+    #[test]
+    fn run_id_validators_accept_uuids_and_reject_malformed() {
+        let valid = Uuid::new_v4().to_string();
+        assert!(is_valid_run_id(&valid), "a real UUID is valid: {valid}");
+        assert!(!is_valid_run_id("not-a-uuid"));
+        assert!(
+            !is_valid_run_id(&"x".repeat(129)),
+            "over the 128-char cap is invalid"
+        );
+        assert_eq!(sanitize_run_id(None), None);
+        assert_eq!(sanitize_run_id(Some("not-a-uuid".into())), None);
+        assert_eq!(sanitize_run_id(Some(valid.clone())), Some(valid));
+    }
+
     /// T23 AC: a run yielding todo + write artifacts must broadcast both
     /// `$/progress` kinds to subscribers and record them once for replay.
     #[tokio::test]
@@ -4312,6 +4338,119 @@ mod tests {
         };
         assert_eq!(change.op, agentj_protocol::streaming::FileChangeKind::Add);
         assert_eq!(change.path, path);
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_file(&target).ok();
+    }
+
+    /// T5 AC: a live run broadcasts Todo/FileChange frames tagged with the same
+    /// `run_id` as `SessionRunResult`, plus per-run `seq`/`source`.
+    #[tokio::test]
+    async fn broadcast_includes_run_id() {
+        let dir = temp_dir_traj("run-id-broadcast");
+        let target = std::env::temp_dir().join(format!("aj-ipc-runid-{}.txt", std::process::id()));
+        std::fs::remove_file(&target).ok();
+        let path = target.to_string_lossy().into_owned();
+        let mut server = scripted_run_server_with_tools(
+            vec![
+                Ok(agentj_core::types::ModelEvent::ToolCall(
+                    agentj_core::types::ToolCall {
+                        id: "call_todo".into(),
+                        name: "todo".into(),
+                        arguments: serde_json::json!({"items": [
+                            {"content": "write tests", "status": "in_progress"}
+                        ]}),
+                    },
+                )),
+                Ok(agentj_core::types::ModelEvent::ToolCall(
+                    agentj_core::types::ToolCall {
+                        id: "call_write".into(),
+                        name: "write".into(),
+                        arguments: serde_json::json!({"path": path, "content": "a\nb\n"}),
+                    },
+                )),
+                Ok(agentj_core::types::ModelEvent::Done),
+            ],
+            |tools| {
+                tools.register(Arc::new(TodoMock));
+                tools.register(Arc::new(WriteMock));
+            },
+        );
+        server.trajectory_store = Some(wired_store(&dir));
+        let server = Arc::new(server);
+        let a = register_fake_conn(&server);
+        let b = register_fake_conn(&server);
+        let new_resp = server
+            .handle_request_from(r#"{"jsonrpc":"2.0","id":1,"method":"session/new"}"#, &a)
+            .await
+            .unwrap();
+        let sid = extract_sid(&new_resp);
+        server
+            .handle_request_from(
+                &format!(
+                    r#"{{"jsonrpc":"2.0","id":2,"method":"session/subscribe","params":{{"session_id":"{sid}"}}}}"#
+                ),
+                &b,
+            )
+            .await
+            .unwrap();
+        let run_raw = format!(
+            r#"{{"jsonrpc":"2.0","id":3,"method":"session/run","params":{{"session_id":"{sid}","content":"hi"}}}}"#
+        );
+        let run_resp = server.handle_request_from(&run_raw, &a).await.unwrap();
+        let run_v: serde_json::Value = serde_json::from_str(&run_resp).unwrap();
+        let run_id = run_v["result"]["run_id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("SessionRunResult must carry run_id: {run_resp}"))
+            .to_string();
+        assert!(Uuid::parse_str(&run_id).is_ok(), "real UUID: {run_id}");
+
+        let frames = progress_frames(&server, &b);
+        let todos: Vec<_> = frames
+            .iter()
+            .filter(|f| f["params"]["value"]["kind"] == "todo")
+            .collect();
+        assert!(!todos.is_empty(), "todo frame expected: {frames:?}");
+        assert!(
+            todos
+                .iter()
+                .all(|f| f["params"]["value"]["run_id"].as_str() == Some(run_id.as_str())),
+            "every todo frame carries the run id: {todos:?}"
+        );
+        let changes: Vec<_> = frames
+            .iter()
+            .filter(|f| f["params"]["value"]["kind"] == "file_change")
+            .collect();
+        assert!(
+            !changes.is_empty(),
+            "file_change frame expected: {frames:?}"
+        );
+        for c in &changes {
+            let change = &c["params"]["value"]["change"];
+            assert_eq!(
+                c["params"]["value"]["run_id"].as_str(),
+                Some(run_id.as_str()),
+                "outer frame run_id: {c}"
+            );
+            assert_eq!(
+                change["run_id"].as_str(),
+                Some(run_id.as_str()),
+                "wire change run_id: {c}"
+            );
+            assert_eq!(change["seq"], 1, "first change of the run: {c}");
+            assert_eq!(change["source"], "write", "write-sourced change: {c}");
+        }
+        let recorded = read_traj_events(&dir, &sid);
+        let todo_run = recorded.iter().find_map(|e| match &e.value {
+            agentj_protocol::trajectory::TrajectoryValue::Todo { run_id, .. } => {
+                Some(run_id.clone())
+            }
+            _ => None,
+        });
+        assert_eq!(
+            todo_run.flatten().as_deref(),
+            Some(run_id.as_str()),
+            "replay node shares the broadcast run id"
+        );
         std::fs::remove_dir_all(&dir).ok();
         std::fs::remove_file(&target).ok();
     }
@@ -4685,16 +4824,71 @@ mod tests {
             .collect()
     }
 
+    /// T5 fixture: serves `script` on the first `chat_stream` of each run and a
+    /// bare `Done` afterwards, keyed by the run's user content, so two
+    /// sequential runs on one session each replay one tool batch.
+    struct TwoRunMockProvider {
+        script: Vec<ModelEvent>,
+        first_run_calls: std::sync::atomic::AtomicUsize,
+        second_run_calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl TwoRunMockProvider {
+        fn new(script: Vec<ModelEvent>) -> Self {
+            Self {
+                script,
+                first_run_calls: std::sync::atomic::AtomicUsize::new(0),
+                second_run_calls: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl agentj_core::module::ModelProvider for TwoRunMockProvider {
+        async fn chat_stream(
+            &self,
+            messages: Vec<ChatMessage>,
+            _t: Vec<ToolDefinition>,
+            _o: ModelOptions,
+        ) -> Result<
+            futures::stream::BoxStream<'static, Result<ModelEvent, agentj_core::error::ModelError>>,
+            agentj_core::error::ModelError,
+        > {
+            let run_calls = if messages.iter().any(|m| m.content.contains("second-turn")) {
+                &self.second_run_calls
+            } else {
+                &self.first_run_calls
+            };
+            let n = run_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let events: Vec<Result<ModelEvent, agentj_core::error::ModelError>> = if n == 0 {
+                self.script.iter().cloned().map(Ok).collect()
+            } else {
+                vec![Ok(ModelEvent::Done)]
+            };
+            Ok(Box::pin(futures::stream::iter(events)))
+        }
+
+        async fn chat(
+            &self,
+            _m: Vec<ChatMessage>,
+            _o: ModelOptions,
+        ) -> Result<ChatResponse, agentj_core::error::ModelError> {
+            Ok(ChatResponse {
+                content: String::new(),
+                tool_calls: vec![],
+            })
+        }
+    }
+
     fn scripted_run_server(
         script: Vec<Result<agentj_core::types::ModelEvent, agentj_core::error::ModelError>>,
     ) -> IpcServer {
         scripted_run_server_with_tools(script, |_| {})
     }
 
-    /// T23: like `scripted_run_server`, but lets the caller register test tools so
-    /// tool artifacts (todo / write) flow as real `AgentEvent`s through the bus.
-    fn scripted_run_server_with_tools(
-        script: Vec<Result<agentj_core::types::ModelEvent, agentj_core::error::ModelError>>,
+    /// Common test-kernel wiring: ToolExecutor + AgentLoop over `provider`.
+    fn run_server_with_provider(
+        provider: Arc<dyn agentj_core::module::ModelProvider>,
         register_tools: impl FnOnce(&ToolRegistry),
     ) -> IpcServer {
         let store: Arc<InMemoryStore> = Arc::new(InMemoryStore::new());
@@ -4702,7 +4896,7 @@ mod tests {
         let tools = Arc::new(ToolRegistry::new());
         register_tools(&tools);
         let providers = Arc::new(ProviderRegistry::new());
-        providers.register("mock".into(), Arc::new(MockModelProvider::new(script)));
+        providers.register("mock".into(), provider);
         let ctx = KernelContext {
             session: session_dyn.clone(),
             tools: tools.clone(),
@@ -4730,6 +4924,22 @@ mod tests {
             .register_module(Box::new(AgentLoopModule::new(runner)), &ctx, &mut register)
             .unwrap();
         IpcServer::new(kernel, session_dyn)
+    }
+
+    /// T23: like `scripted_run_server`, but lets the caller register test tools so
+    /// tool artifacts (todo / write) flow as real `AgentEvent`s through the bus.
+    fn scripted_run_server_with_tools(
+        script: Vec<Result<agentj_core::types::ModelEvent, agentj_core::error::ModelError>>,
+        register_tools: impl FnOnce(&ToolRegistry),
+    ) -> IpcServer {
+        run_server_with_provider(Arc::new(MockModelProvider::new(script)), register_tools)
+    }
+
+    fn two_run_server(
+        script: Vec<agentj_core::types::ModelEvent>,
+        register_tools: impl FnOnce(&ToolRegistry),
+    ) -> IpcServer {
+        run_server_with_provider(Arc::new(TwoRunMockProvider::new(script)), register_tools)
     }
 
     #[tokio::test]
@@ -5332,6 +5542,164 @@ mod tests {
         assert_eq!(v2["result"]["events"][0]["value"]["kind"], "usage");
         assert!(v2["result"].get("next_cursor").is_none(), "no next page");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Dispatch one `session/run` and return its `SessionRunResult.run_id`.
+    async fn run_and_run_id(server: &IpcServer, sid: &str, content: &str, id: u64) -> String {
+        let raw = format!(
+            r#"{{"jsonrpc":"2.0","id":{id},"method":"session/run","params":{{"session_id":"{sid}","content":"{content}"}}}}"#
+        );
+        let resp = server.handle_request(&raw).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        v["result"]["run_id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("run must report a run_id: {resp}"))
+            .to_string()
+    }
+
+    /// Mirror of the T5 run filter: Todo/FileChange keep only `run_id`, all
+    /// other trajectory kinds pass.
+    fn event_kept_for_run(
+        value: &agentj_protocol::trajectory::TrajectoryValue,
+        run_id: &str,
+    ) -> bool {
+        match value {
+            agentj_protocol::trajectory::TrajectoryValue::Todo { run_id: r, .. }
+            | agentj_protocol::trajectory::TrajectoryValue::FileChange { run_id: r, .. } => {
+                r.as_deref() == Some(run_id)
+            }
+            _ => true,
+        }
+    }
+
+    /// T5 AC: `session/history {run_id}` keeps that run's Todo/FileChange, lets
+    /// every other kind through, and filters before paginating.
+    #[tokio::test]
+    async fn history_filters_by_run_id() {
+        let dir = temp_dir_traj("history-run-filter");
+        let target =
+            std::env::temp_dir().join(format!("aj-ipc-runfilter-{}.txt", std::process::id()));
+        std::fs::remove_file(&target).ok();
+        let path = target.to_string_lossy().into_owned();
+        let script = vec![
+            agentj_core::types::ModelEvent::ToolCall(agentj_core::types::ToolCall {
+                id: "call_todo".into(),
+                name: "todo".into(),
+                arguments: serde_json::json!({"items": [
+                    {"content": "step", "status": "in_progress"}
+                ]}),
+            }),
+            agentj_core::types::ModelEvent::ToolCall(agentj_core::types::ToolCall {
+                id: "call_write".into(),
+                name: "write".into(),
+                arguments: serde_json::json!({"path": path, "content": "a\nb\n"}),
+            }),
+            agentj_core::types::ModelEvent::Done,
+        ];
+        let mut server = two_run_server(script, |tools| {
+            tools.register(Arc::new(TodoMock));
+            tools.register(Arc::new(WriteMock));
+        });
+        server.trajectory_store = Some(wired_store(&dir));
+        let new_resp = server
+            .handle_request(r#"{"jsonrpc":"2.0","id":1,"method":"session/new"}"#)
+            .await
+            .unwrap();
+        let sid = extract_sid(&new_resp);
+        let run1 = run_and_run_id(&server, &sid, "first-turn", 2).await;
+        std::fs::remove_file(&target).ok();
+        let run2 = run_and_run_id(&server, &sid, "second-turn", 3).await;
+        assert_ne!(run1, run2, "each run gets a fresh UUID");
+
+        let raw = format!(
+            r#"{{"jsonrpc":"2.0","id":10,"method":"session/history","params":{{"session_id":"{sid}","run_id":"{run1}","limit":500}}}}"#
+        );
+        let resp = server.handle_request(&raw).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert!(v["error"].is_null(), "r1 filter accepted: {resp}");
+        let events = v["result"]["events"].as_array().unwrap();
+        let kinds: Vec<&str> = events
+            .iter()
+            .filter_map(|e| e["value"]["kind"].as_str())
+            .collect();
+        for e in events {
+            let kind = e["value"]["kind"].as_str().unwrap();
+            if kind == "todo" || kind == "file_change" {
+                assert_eq!(
+                    e["value"]["run_id"].as_str(),
+                    Some(run1.as_str()),
+                    "artifacts stay r1-scoped: {e}"
+                );
+            }
+        }
+        assert_eq!(kinds.iter().filter(|k| **k == "todo").count(), 1);
+        assert_eq!(kinds.iter().filter(|k| **k == "file_change").count(), 1);
+        assert_eq!(
+            kinds.iter().filter(|k| **k == "user").count(),
+            2,
+            "non-artifact kinds from both runs pass through"
+        );
+        assert!(kinds.contains(&"tool_call"));
+        assert!(v["result"].get("next_cursor").is_none(), "single page");
+
+        // Filter first, then paginate: a cursor at r2's Todo must skip that
+        // node instead of returning it as the first page item.
+        let all = read_traj_events(&dir, &sid);
+        let r2_todo_seq = all
+            .iter()
+            .find(|e| {
+                matches!(
+                    &e.value,
+                    agentj_protocol::trajectory::TrajectoryValue::Todo { run_id, .. }
+                        if run_id.as_deref() == Some(run2.as_str())
+                )
+            })
+            .expect("r2 todo recorded")
+            .seq;
+        let expected = all
+            .iter()
+            .find(|e| e.seq >= r2_todo_seq && event_kept_for_run(&e.value, &run1))
+            .expect("a later kept event exists");
+        assert_ne!(expected.seq, r2_todo_seq, "the r2 todo is filtered out");
+        let raw = format!(
+            r#"{{"jsonrpc":"2.0","id":11,"method":"session/history","params":{{"session_id":"{sid}","run_id":"{run1}","cursor":{r2_todo_seq},"limit":1}}}}"#
+        );
+        let resp = server.handle_request(&raw).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        let page = v["result"]["events"].as_array().unwrap();
+        assert_eq!(page.len(), 1);
+        assert_eq!(page[0]["seq"], expected.seq);
+        assert_eq!(v["result"]["next_cursor"], expected.seq + 1);
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_file(&target).ok();
+    }
+
+    /// T5 AC: `session/history` rejects a malformed `run_id` as `-32602` with
+    /// `data.reason == "invalid_run_id"`; a valid UUID is accepted.
+    #[tokio::test]
+    async fn history_invalid_run_id_rejects() {
+        let server = IpcServer::new(Kernel::new(), stub_session());
+        let long = "a".repeat(129);
+        for bad in ["not-a-uuid", long.as_str()] {
+            let raw = format!(
+                r#"{{"jsonrpc":"2.0","id":20,"method":"session/history","params":{{"session_id":"s1","run_id":"{bad}"}}}}"#
+            );
+            let resp = server.handle_request(&raw).await.unwrap();
+            let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+            assert_eq!(v["error"]["code"], -32602, "rejected: {resp}");
+            assert_eq!(
+                v["error"]["data"]["reason"], "invalid_run_id",
+                "reason tag: {resp}"
+            );
+        }
+        let valid = Uuid::new_v4().to_string();
+        let raw = format!(
+            r#"{{"jsonrpc":"2.0","id":21,"method":"session/history","params":{{"session_id":"s1","run_id":"{valid}"}}}}"#
+        );
+        let resp = server.handle_request(&raw).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert!(v["error"].is_null(), "valid UUID accepted: {resp}");
+        assert_eq!(v["result"]["events"], serde_json::json!([]));
     }
 
     #[tokio::test]
