@@ -7,6 +7,8 @@
 
 use std::collections::HashMap;
 
+pub use agentj_protocol::streaming::FileChangeSource;
+
 use serde_json::Value;
 
 /// Maximum size in bytes of an embedded unified diff.
@@ -43,6 +45,14 @@ pub struct FileChangeArtifact {
     pub diff: Option<String>,
     /// True when the diff was dropped because inputs exceeded a cap.
     pub diff_truncated: bool,
+    /// Run this change belongs to. @since 0.15.0
+    pub run_id: Option<String>,
+    /// Per-run monotonic sequence for ordering inside a run. @since 0.15.0
+    pub seq: Option<u64>,
+    /// Source of the change: write (LCS diff) or bash (numstat only). @since 0.15.0
+    pub source: Option<FileChangeSource>,
+    /// Original diff byte length when truncated. @since 0.15.0
+    pub total_bytes: Option<u64>,
 }
 
 /// Kind of file change.
@@ -130,23 +140,83 @@ pub fn write_change(
     tool_call_id: Option<&str>,
 ) -> FileChangeArtifact {
     let outcome = diff_outcome(before.unwrap_or(""), after);
-    let diff = match outcome.text {
-        Some(text) if text.len() <= DIFF_MAX_BYTES => Some(text),
-        _ => None,
+    let op = if before.is_some() {
+        FileChangeOp::Modify
+    } else {
+        FileChangeOp::Add
     };
-    FileChangeArtifact {
-        path: path.to_string(),
-        op: if before.is_some() {
-            FileChangeOp::Modify
-        } else {
-            FileChangeOp::Add
-        },
-        additions: outcome.additions,
-        deletions: outcome.deletions,
-        tool_call_id: tool_call_id.map(str::to_string),
-        diff_truncated: outcome.truncated || diff.is_none(),
-        diff,
+    let tid = tool_call_id.map(str::to_string);
+    if outcome.truncated {
+        return FileChangeArtifact {
+            path: path.to_string(),
+            op,
+            additions: outcome.additions,
+            deletions: outcome.deletions,
+            tool_call_id: tid,
+            diff: None,
+            diff_truncated: true,
+            run_id: None,
+            seq: None,
+            source: Some(FileChangeSource::Write),
+            total_bytes: None,
+        };
     }
+    let text = outcome.text.unwrap_or_default();
+    if text.len() > DIFF_MAX_BYTES {
+        let total = text.len() as u64;
+        FileChangeArtifact {
+            path: path.to_string(),
+            op,
+            additions: outcome.additions,
+            deletions: outcome.deletions,
+            tool_call_id: tid,
+            diff: Some(text[..DIFF_MAX_BYTES].to_string()),
+            diff_truncated: true,
+            run_id: None,
+            seq: None,
+            source: Some(FileChangeSource::Write),
+            total_bytes: Some(total),
+        }
+    } else {
+        FileChangeArtifact {
+            path: path.to_string(),
+            op,
+            additions: outcome.additions,
+            deletions: outcome.deletions,
+            tool_call_id: tid,
+            diff: Some(text),
+            diff_truncated: false,
+            run_id: None,
+            seq: None,
+            source: Some(FileChangeSource::Write),
+            total_bytes: None,
+        }
+    }
+}
+
+/// Build bash-sourced file changes from `(path, additions, deletions)` entries.
+///
+/// Each artifact has `source=Bash`, `diff=None`, `diff_truncated=false`.
+pub fn bash_file_changes(
+    entries: Vec<(&str, u64, u64)>,
+    tool_call_id: Option<&str>,
+) -> Vec<FileChangeArtifact> {
+    entries
+        .into_iter()
+        .map(|(path, additions, deletions)| FileChangeArtifact {
+            path: path.to_string(),
+            op: FileChangeOp::Modify,
+            additions,
+            deletions,
+            tool_call_id: tool_call_id.map(str::to_string),
+            diff: None,
+            diff_truncated: false,
+            run_id: None,
+            seq: None,
+            source: Some(FileChangeSource::Bash),
+            total_bytes: None,
+        })
+        .collect()
 }
 
 /// Parse and validate a `todo` tool call's arguments into a snapshot.
@@ -376,8 +446,13 @@ mod tests {
         assert_eq!(change.op, FileChangeOp::Add);
         assert_eq!(change.additions, 4096);
         assert_eq!(change.deletions, 0);
-        assert!(change.diff.is_none(), "over-cap diff must be dropped");
-        assert!(change.diff_truncated);
+        assert!(change.diff_truncated, "over-cap must be flagged truncated");
+        assert_eq!(change.source, Some(FileChangeSource::Write));
+        // New semantics (0.15.0): over-cap keeps a 64 KiB prefix + total_bytes disclosure,
+        // rather than dropping the diff entirely.
+        let diff = change.diff.expect("over-cap must keep truncated prefix");
+        assert!(diff.len() <= DIFF_MAX_BYTES, "prefix must fit cap");
+        assert!(change.total_bytes.unwrap() > DIFF_MAX_BYTES as u64);
     }
 
     #[test]
@@ -484,5 +559,29 @@ mod tests {
             }
             _ => panic!("unexpected TurnArtifact variants"),
         }
+    }
+
+    #[test]
+    fn write_change_truncation_sets_total_bytes() {
+        let big_after = "a\n".repeat(70 * 1024);
+        let art = write_change("big.txt", None, &big_after, Some("call1"));
+        assert_eq!(art.source, Some(FileChangeSource::Write));
+        assert!(art.diff_truncated);
+        assert!(art.total_bytes.unwrap() > 64 * 1024);
+        assert!(art.diff.as_ref().unwrap().len() <= 64 * 1024);
+    }
+
+    #[test]
+    fn bash_changes_tagged_bash() {
+        let changes = bash_file_changes(vec![("a.txt", 5, 1), ("b.txt", 2, 0)], Some("call2"));
+        assert_eq!(changes.len(), 2);
+        for c in &changes {
+            assert_eq!(c.source, Some(FileChangeSource::Bash));
+            assert!(c.diff.is_none());
+            assert!(!c.diff_truncated);
+            assert!(c.total_bytes.is_none());
+        }
+        assert_eq!(changes[0].additions, 5);
+        assert_eq!(changes[0].deletions, 1);
     }
 }

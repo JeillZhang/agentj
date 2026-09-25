@@ -1,0 +1,10 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "FileChangeSource",
+  "description": "Source of a FileChange: write produces LCS diff, bash produces counts only. @since 0.15.0",
+  "type": "string",
+  "enum": [
+    "write",
+    "bash"
+  ]
+}

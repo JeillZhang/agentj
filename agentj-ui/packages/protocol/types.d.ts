@@ -99,6 +99,10 @@ export interface ErrorObject {
  * (serde(other)); schema lists only the known values. @since 0.13.0
  */
 export type FileChangeKind = "add" | "modify" | "delete";
+/**
+ * Source of a FileChange: write produces LCS diff, bash produces counts only. @since 0.15.0
+ */
+export type FileChangeSource = "write" | "bash";
 
 /**
  * A workspace file change. @since 0.13.0
@@ -120,15 +124,35 @@ export interface FileChange {
    */
   path: string;
   /**
+   * Run this change belongs to. @since 0.15.0
+   */
+  run_id?: string | null;
+  /**
+   * Per-run monotonic sequence for ordering inside a run. @since 0.15.0
+   */
+  seq?: number | null;
+  /**
+   * Source of the change: write (LCS diff) or bash (numstat only). @since 0.15.0
+   */
+  source?: FileChangeSource | null;
+  /**
    * Tool call card this change belongs to; omitted when unavailable.
    */
   tool_call_id?: string | null;
+  /**
+   * Original diff byte length when truncated. @since 0.15.0
+   */
+  total_bytes?: number | null;
   [k: string]: unknown;
 }
 
 /**
  * Change operation of a `FileChange`. `Unknown` tolerates forward values
  * (serde(other)); schema lists only the known values. @since 0.13.0
+ */
+
+/**
+ * Source of a FileChange: write produces LCS diff, bash produces counts only. @since 0.15.0
  */
 
 /**
@@ -403,12 +427,14 @@ export type ProgressValue =
       items: TodoItem[];
       kind: "todo";
       revision: number;
+      run_id?: string | null;
       session_id: string;
       [k: string]: unknown;
     }
   | {
       change: FileChange;
       kind: "file_change";
+      run_id?: string | null;
       session_id: string;
       [k: string]: unknown;
     };
@@ -424,6 +450,9 @@ export type TodoStatus = "pending" | "in_progress" | "completed" | "cancelled";
 /**
  * Change operation of a `FileChange`. `Unknown` tolerates forward values
  * (serde(other)); schema lists only the known values. @since 0.13.0
+ */
+/**
+ * Source of a FileChange: write produces LCS diff, bash produces counts only. @since 0.15.0
  */
 
 export interface ProgressParams {
@@ -472,6 +501,9 @@ export interface TodoItem {
 /**
  * Change operation of a `FileChange`. `Unknown` tolerates forward values
  * (serde(other)); schema lists only the known values. @since 0.13.0
+ */
+/**
+ * Source of a FileChange: write produces LCS diff, bash produces counts only. @since 0.15.0
  */
 
 /**
@@ -547,6 +579,10 @@ export type ResponseMessage =
 export interface SessionHistoryParams {
   cursor?: number | null;
   limit?: number | null;
+  /**
+   * Filter to a single run's Todo/FileChange events. @since 0.15.0
+   */
+  run_id?: string | null;
   session_id: string;
   [k: string]: unknown;
 }
@@ -600,11 +636,13 @@ export type TrajectoryValue =
       items: TodoItem[];
       kind: "todo";
       revision: number;
+      run_id?: string | null;
       [k: string]: unknown;
     }
   | {
       change: FileChange;
       kind: "file_change";
+      run_id?: string | null;
       [k: string]: unknown;
     }
   | {
@@ -635,6 +673,9 @@ export type TrajectoryValue =
 /**
  * Change operation of a `FileChange`. `Unknown` tolerates forward values
  * (serde(other)); schema lists only the known values. @since 0.13.0
+ */
+/**
+ * Source of a FileChange: write produces LCS diff, bash produces counts only. @since 0.15.0
  */
 
 /**
@@ -732,6 +773,10 @@ export interface SessionRunParams {
 
 export interface SessionRunResult {
   content: string;
+  /**
+   * Run id that scopes this turn's todo/file_change events. @since 0.15.0
+   */
+  run_id?: string | null;
   tool_calls?: ToolCall[] | null;
   usage?: UsageInfo | null;
   [k: string]: unknown;

@@ -19,8 +19,8 @@ use crate::session::{
     SessionStatusResult, SessionSubscribeParams, SessionSummary, UsageInfo,
 };
 use crate::streaming::{
-    CancelParams, FileChange, FileChangeKind, KernelStatusResult, ModuleInfo, ProgressParams,
-    ProgressValue, TodoItem, TodoStatus,
+    CancelParams, FileChange, FileChangeKind, FileChangeSource, KernelStatusResult, ModuleInfo,
+    ProgressParams, ProgressValue, TodoItem, TodoStatus,
 };
 use crate::types::{
     Attachment, ChatMessage, ModuleState, Role, SessionStatus, ToolCall, ToolDefinition,
@@ -110,6 +110,7 @@ pub fn generate_schemas() -> BTreeMap<String, Schema> {
     m.insert("TodoStatus".into(), schema_for!(TodoStatus));
     m.insert("FileChange".into(), schema_for!(FileChange));
     m.insert("FileChangeKind".into(), schema_for!(FileChangeKind));
+    m.insert("FileChangeSource".into(), schema_for!(FileChangeSource));
     m
 }
 

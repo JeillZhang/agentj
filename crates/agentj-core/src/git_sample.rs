@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use tokio::process::Command;
 
-use crate::artifacts::{DIFF_MAX_BYTES, FileChangeArtifact, FileChangeOp};
+use crate::artifacts::{DIFF_MAX_BYTES, FileChangeArtifact, FileChangeOp, FileChangeSource};
 
 /// Maximum number of file-change artifacts emitted for one bash call.
 pub const MAX_CHANGES: usize = 64;
@@ -139,6 +139,10 @@ async fn change_for(
         tool_call_id: Some(call_id.to_string()),
         diff,
         diff_truncated,
+        run_id: None,
+        seq: None,
+        source: Some(FileChangeSource::Bash),
+        total_bytes: None,
     })
 }
 

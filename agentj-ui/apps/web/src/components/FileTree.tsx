@@ -14,6 +14,7 @@ export type FileTreeProps = {
   client: RpcClient | null;
   sessionId: string | null;
   demo: boolean;
+  onFileSelect?: (path: string) => void;
 };
 
 /** Imperative surface consumed by the sidebar shortcut scope (`r` refresh, `j/k` move). */
@@ -121,6 +122,7 @@ type NodeListProps = {
   onToggle: (path: string) => void;
   onRetry: (path: string) => void;
   onSelect: (path: string) => void;
+  onFileSelect?: (path: string) => void;
   registerRow: (path: string, el: HTMLElement | null) => void;
 };
 
@@ -142,6 +144,7 @@ function NodeList({
   onToggle,
   onRetry,
   onSelect,
+  onFileSelect,
   registerRow,
 }: NodeListProps) {
   return (
@@ -183,6 +186,7 @@ function NodeList({
                   onToggle={onToggle}
                   onRetry={onRetry}
                   onSelect={onSelect}
+                  onFileSelect={onFileSelect}
                   registerRow={registerRow}
                 />
               );
@@ -222,6 +226,10 @@ function NodeList({
           );
         }
         const { Icon, category } = fileIconFor(node.name);
+        const handleFileClick = () => {
+          onSelect(node.path);
+          onFileSelect?.(node.path);
+        };
         return (
           <div
             className="trow"
@@ -231,10 +239,12 @@ function NodeList({
             aria-selected={isSelected}
             tabIndex={tabIndex}
             data-selected={isSelected ? "true" : undefined}
+            data-path={node.path}
             ref={(el) => {
               registerRow(node.path, el);
             }}
             onFocus={() => onSelect(node.path)}
+            onClick={handleFileClick}
           >
             <span className="chev" aria-hidden="true" />
             <Icon className={`file-icon file-icon--${category}`} size={13} aria-hidden="true" />
@@ -254,7 +264,7 @@ function NodeList({
  * parent dir. Demo mode uses fixtures with zero requests.
  */
 const FileTree = forwardRef<FileTreeHandle, FileTreeProps>(function FileTree(
-  { client, sessionId, demo }: FileTreeProps,
+  { client, sessionId, demo, onFileSelect }: FileTreeProps,
   ref,
 ) {
   const [fetched, setFetched] = useState<Map<string, ViewEntry[]>>(new Map());
@@ -429,6 +439,7 @@ const FileTree = forwardRef<FileTreeHandle, FileTreeProps>(function FileTree(
         onToggle={toggle}
         onRetry={(p) => void loadDir(p)}
         onSelect={setSelectedPath}
+        onFileSelect={onFileSelect}
         registerRow={registerRow}
       />
     </div>

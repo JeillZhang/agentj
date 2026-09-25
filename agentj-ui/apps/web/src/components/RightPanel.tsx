@@ -7,19 +7,80 @@ import type {
 } from "react";
 import { loadRightSectionSplit, saveRightSectionSplit } from "../layoutStore";
 import { useRightSection } from "../rightSections";
+import type { FileChangeRow } from "../changes";
+import type { TodoView } from "../todoState";
+import TodoPanel from "./TodoPanel";
+import ChangeList from "./ChangeList";
 
 const RESIZER_H = 6;
 const SPLIT_MIN = 0.15;
 const SPLIT_MAX = 0.85;
 
+export type RunGroup = {
+  runId: string | null;
+  changes: FileChangeRow[];
+  todos: TodoView[];
+};
+
 export type RightPanelProps = {
   collapsed: boolean;
   onToggle: () => void;
-  children: ReactNode;
+  children?: ReactNode;
+  currentRunId?: string | null;
+  groups?: RunGroup[];
+  changes?: FileChangeRow[];
+  todos?: TodoView[];
+  todosByRun?: Map<string | null, TodoView[]>;
+  changesByRun?: Map<string | null, FileChangeRow[]>;
 };
 
 function clamp(n: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, n));
+}
+
+function shortId(id: string): string {
+  return id.slice(0, 8);
+}
+
+function runLabel(runId: string | null, currentRunId?: string | null): string {
+  if (runId === null) return "未分组（历史）";
+  if (currentRunId != null && runId === currentRunId) return `本次运行 ${shortId(runId)}`;
+  return `运行 ${shortId(runId)}`;
+}
+
+export function groupByRunId(
+  changes: FileChangeRow[],
+  todosByRun?: Map<string | null, TodoView[]>,
+  fallbackTodos?: TodoView[],
+): RunGroup[] {
+  const map = new Map<string | null, RunGroup>();
+  const ensure = (runId: string | null): RunGroup => {
+    const existing = map.get(runId);
+    if (existing) return existing;
+    const g: RunGroup = { runId, changes: [], todos: [] };
+    map.set(runId, g);
+    return g;
+  };
+  for (const row of changes) ensure((row.runId ?? null) as string | null).changes.push(row);
+  if (todosByRun) {
+    for (const [runId, items] of todosByRun) ensure(runId).todos = items;
+  } else if (fallbackTodos && fallbackTodos.length > 0) {
+    ensure(null).todos = fallbackTodos;
+  }
+  return [...map.values()];
+}
+
+function sortGroups(groups: RunGroup[], currentRunId?: string | null): RunGroup[] {
+  return [...groups].sort((a, b) => {
+    const aIsCurrent = currentRunId != null && a.runId === currentRunId;
+    const bIsCurrent = currentRunId != null && b.runId === currentRunId;
+    if (aIsCurrent && !bIsCurrent) return -1;
+    if (!aIsCurrent && bIsCurrent) return 1;
+    if (a.runId === null && b.runId !== null) return 1;
+    if (a.runId !== null && b.runId === null) return -1;
+    if (a.runId === null && b.runId === null) return 0;
+    return 0;
+  });
 }
 
 /**
@@ -28,8 +89,22 @@ function clamp(n: number, min: number, max: number): number {
  * Section/todo/file-change styles live in rightpanel.css (T10), shared with
  * TodoPanel (T8) and ChangeList (T9). When both sections are open it also
  * renders the draggable pane resizer.
+ *
+ * T7 grouping: when `groups` or `changes`/`todos` props are supplied, renders
+ * per-run sections with headers ("本次运行", short id, "未分组（历史）") and
+ * per-run empty placeholders. Otherwise falls back to children passthrough
+ * (backward compat for existing callers/tests).
  */
-export default function RightPanel({ collapsed, onToggle, children }: RightPanelProps) {
+export default function RightPanel({
+  collapsed,
+  onToggle,
+  children,
+  currentRunId,
+  groups,
+  changes,
+  todos,
+  todosByRun,
+}: RightPanelProps) {
   const [todoOpen] = useRightSection("todo");
   const [changesOpen] = useRightSection("changes");
   const [split, setSplit] = useState<number | null>(() => loadRightSectionSplit());
@@ -45,6 +120,23 @@ export default function RightPanel({ collapsed, onToggle, children }: RightPanel
       }
     };
   }, []);
+
+  const hasGrouping = groups !== undefined || changes !== undefined || todos !== undefined || todosByRun !== undefined;
+
+  const derivedGroups: RunGroup[] | null = (() => {
+    if (!hasGrouping) return null;
+    if (groups) return sortGroups(groups, currentRunId ?? null);
+    const ch = changes ?? [];
+    // include legacy todos split by run if map provided, else flat
+    if (todosByRun) return sortGroups(groupByRunId(ch, todosByRun), currentRunId ?? null);
+    if (todos && todos.length > 0 && ch.length === 0) {
+      // todos only
+      const m = new Map<string | null, TodoView[]>();
+      m.set(currentRunId ?? null, todos);
+      return sortGroups(groupByRunId(ch, m), currentRunId ?? null);
+    }
+    return sortGroups(groupByRunId(ch, undefined, todos), currentRunId ?? null);
+  })();
 
   const items = Children.toArray(children);
   const bothOpen = todoOpen && changesOpen && items.length >= 2;
@@ -120,6 +212,77 @@ export default function RightPanel({ collapsed, onToggle, children }: RightPanel
   const bodyStyle = custom ? ({ "--aj-split": String(split) } as CSSProperties) : undefined;
   const valuenow = custom ? Math.round(split * 100) : 50;
 
+  const bodyContent = (() => {
+    if (derivedGroups) {
+      if (derivedGroups.length === 0) {
+        // no groups: still render empty placeholders per AC (at least one legacy group)
+        const label = runLabel(null, currentRunId ?? null);
+        return (
+          <div className="run-group" data-run-id="__legacy__">
+            <div className="run-group__head">{label}</div>
+            <p className="aj-empty">暂无任务</p>
+            <p className="aj-empty">暂无变更</p>
+          </div>
+        );
+      }
+      return derivedGroups.map((group) => {
+        const key = group.runId ?? "__legacy__";
+        const label = runLabel(group.runId, currentRunId ?? null);
+        const emptyGroup = group.changes.length === 0 && group.todos.length === 0;
+        return (
+          <div key={key} className="run-group" data-run-id={key}>
+            <div className="run-group__head">{label}</div>
+            {emptyGroup ? (
+              <>
+                <p className="aj-empty">暂无任务</p>
+                <p className="aj-empty">暂无变更</p>
+              </>
+            ) : (
+              <>
+                {group.todos.length === 0 ? (
+                  <p className="aj-empty">暂无任务</p>
+                ) : (
+                  <TodoPanel items={group.todos} />
+                )}
+                {group.changes.length === 0 ? (
+                  <p className="aj-empty">暂无变更</p>
+                ) : (
+                  <ChangeList changes={group.changes} emptyText="暂无变更" />
+                )}
+              </>
+            )}
+          </div>
+        );
+      });
+    }
+    if (bothOpen) {
+      return (
+        <>
+          {items[0]}
+          <div
+            className="right-resizer"
+            role="separator"
+            aria-orientation="horizontal"
+            aria-label="调整任务与文件变更高度"
+            aria-valuemin={15}
+            aria-valuemax={85}
+            aria-valuenow={valuenow}
+            tabIndex={0}
+            data-dragging={dragging ? "true" : undefined}
+            onPointerDown={handlePointerDown}
+            onPointerMove={handlePointerMove}
+            onPointerUp={handlePointerUp}
+            onPointerCancel={handlePointerCancel}
+            onDoubleClick={resetSplit}
+            onKeyDown={handleKeyDown}
+          />
+          {items.slice(1)}
+        </>
+      );
+    }
+    return items;
+  })();
+
   return (
     <aside
       className={`aj-right${collapsed ? " aj-right--collapsed" : ""}`}
@@ -145,31 +308,7 @@ export default function RightPanel({ collapsed, onToggle, children }: RightPanel
         data-split={custom ? "custom" : undefined}
         style={bodyStyle}
       >
-        {bothOpen ? (
-          <>
-            {items[0]}
-            <div
-              className="right-resizer"
-              role="separator"
-              aria-orientation="horizontal"
-              aria-label="调整任务与文件变更高度"
-              aria-valuemin={15}
-              aria-valuemax={85}
-              aria-valuenow={valuenow}
-              tabIndex={0}
-              data-dragging={dragging ? "true" : undefined}
-              onPointerDown={handlePointerDown}
-              onPointerMove={handlePointerMove}
-              onPointerUp={handlePointerUp}
-              onPointerCancel={handlePointerCancel}
-              onDoubleClick={resetSplit}
-              onKeyDown={handleKeyDown}
-            />
-            {items.slice(1)}
-          </>
-        ) : (
-          items
-        )}
+        {bodyContent}
       </div>
     </aside>
   );

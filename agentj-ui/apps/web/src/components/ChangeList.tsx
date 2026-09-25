@@ -1,9 +1,15 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { FileChangeRow } from "../changes";
+import { sortBySeq } from "../changes";
 import { useRightSection } from "../rightSections";
 
 export type ChangeListProps = {
-  changes: FileChangeRow[];
+  changes?: FileChangeRow[];
+  rows?: FileChangeRow[];
+  emptyText?: string;
+  highlightedPath?: string | null;
+  activeRunId?: string | null;
+  onSelectRun?: (runId: string | null) => void;
 };
 
 const OP_BADGE: Record<FileChangeRow["op"], { label: string; className: string }> = {
@@ -26,6 +32,30 @@ function lineClass(line: string): "add" | "del" | "ctx" {
   return "ctx";
 }
 
+function keyOf(row: FileChangeRow): string {
+  return `${row.runId ?? "__legacy__"}\0${row.path}`;
+}
+
+function dedup(rows: FileChangeRow[]): FileChangeRow[] {
+  const map = new Map<string, FileChangeRow>();
+  for (const row of rows) map.set(keyOf(row), row);
+  return [...map.values()];
+}
+
+function SourceBadge({ row }: { row: FileChangeRow }) {
+  if (row.source === "bash") {
+    return (
+      <span className="src-badge src-bash" title="bash 变更无 diff，仅计数">
+        bash
+      </span>
+    );
+  }
+  if (row.source === "write") {
+    return <span className="src-badge src-write">write</span>;
+  }
+  return null;
+}
+
 function RowMeta({ row }: { row: FileChangeRow }) {
   const badge = OP_BADGE[row.op];
   return (
@@ -37,11 +67,16 @@ function RowMeta({ row }: { row: FileChangeRow }) {
         {row.deletions !== null && <span className="del">-{row.deletions}</span>}
       </span>
       <span className={`badge ${badge.className}`}>{badge.label}</span>
+      <SourceBadge row={row} />
     </>
   );
 }
 
 function DiffPanel({ row }: { row: FileChangeRow }) {
+  const trunc =
+    row.diffTruncated && typeof row.totalBytes === "number" ? (
+      <div className="trunc-hint">已截断（原始 {Math.ceil(row.totalBytes / 1024)} KiB）</div>
+    ) : null;
   return (
     <div className="diff-wrap">
       <div className="diff-head">
@@ -50,6 +85,7 @@ function DiffPanel({ row }: { row: FileChangeRow }) {
         <span className="add">+{row.additions}</span>
         {row.deletions !== null && <span className="del">-{row.deletions}</span>}
       </div>
+      {trunc}
       <div className="diff">
         {row.diff?.split("\n").map((line, index) => (
           <div key={index} className={`diff-line ${lineClass(line)}`}>
@@ -61,9 +97,67 @@ function DiffPanel({ row }: { row: FileChangeRow }) {
   );
 }
 
-export default function ChangeList({ changes }: ChangeListProps) {
+function HistoryDrawer({ row, allRows }: { row: FileChangeRow; allRows: FileChangeRow[] }) {
+  const entries = allRows.filter((r) => (r.runId ?? null) === (row.runId ?? null) && r.path === row.path);
+  if (entries.length <= 1) return null;
+  const sorted = sortBySeq(entries);
+  return (
+    <details className="history-drawer">
+      <summary>历史记录 ({sorted.length})</summary>
+      <div className="history-list">
+        {sorted.map((entry, idx) => (
+          <div
+            key={`${entry.toolCallId ?? "no-id"}-${entry.seq ?? entry.eventSeq ?? idx}-${idx}`}
+            className="history-entry"
+          >
+            <span className="hist-seq">seq {entry.seq ?? entry.eventSeq ?? "-"}</span>
+            {entry.toolCallId && <span className="hist-tool">{entry.toolCallId}</span>}
+            <span className="hist-counts">
+              +{entry.additions}
+              {entry.deletions !== null ? ` -${entry.deletions}` : ""}
+            </span>
+            {entry.source && <span className="hist-src">{entry.source}</span>}
+          </div>
+        ))}
+      </div>
+    </details>
+  );
+}
+
+export default function ChangeList({ changes, rows, emptyText, highlightedPath, activeRunId, onSelectRun: _onSelectRun }: ChangeListProps) {
   const [open, toggle] = useRightSection("changes");
-  const [expandedPath, setExpandedPath] = useState<string | null>(null);
+  const [expandedKey, setExpandedKey] = useState<string | null>(null);
+  const allRows = rows ?? changes ?? [];
+  const displayRows = dedup(allRows);
+  const emptyLabel = emptyText ?? "待协议支持";
+  const rowRefs = useRef<Map<string, HTMLElement>>(new Map());
+
+  useEffect(() => {
+    if (!highlightedPath) return;
+    const keys = [
+      `${activeRunId ?? "__legacy__"}\0${highlightedPath}`,
+      `__legacy__\0${highlightedPath}`,
+    ];
+    for (const k of keys) {
+      const el = rowRefs.current.get(k);
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "nearest" });
+        el.setAttribute("data-highlight", "true");
+        const timer = setTimeout(() => el.removeAttribute("data-highlight"), 1500);
+        return () => clearTimeout(timer);
+      }
+    }
+    // fallback: any row with path suffix
+    for (const [key, el] of rowRefs.current.entries()) {
+      if (key.endsWith("\0" + highlightedPath)) {
+        el.scrollIntoView({ behavior: "smooth", block: "nearest" });
+        el.setAttribute("data-highlight", "true");
+        const timer = setTimeout(() => el.removeAttribute("data-highlight"), 1500);
+        return () => clearTimeout(timer);
+      }
+    }
+  }, [highlightedPath, activeRunId, displayRows]);
+  void _onSelectRun;
 
   return (
     <div className="right-section" data-section="changes" data-open={open ? "true" : undefined}>
@@ -75,39 +169,67 @@ export default function ChangeList({ changes }: ChangeListProps) {
         onClick={toggle}
       >
         <span>文件变更</span>
-        <span className="count">{changes.length}</span>
-        <span className="sec-chev" aria-hidden="true">{open ? "▾" : "▸"}</span>
+        <span className="count">{displayRows.length}</span>
+        <span className="sec-chev" aria-hidden="true">
+          {open ? "▾" : "▸"}
+        </span>
       </button>
       <div id="change-section-body" className="sec-body">
-        {open && (changes.length === 0 ? (
-          <p className="aj-empty">待协议支持</p>
-        ) : (
-          <div className="file-changes">
-            {changes.map((row) => {
-              if (row.diff === null) {
+        {open &&
+          (displayRows.length === 0 ? (
+            <p className="aj-empty">{emptyLabel}</p>
+          ) : (
+            <div className="file-changes">
+              {displayRows.map((row) => {
+                const compositeKey = keyOf(row);
+                const isBash = row.source === "bash";
+                const isExpandable = row.diff !== null && !isBash;
+                const isOpen = expandedKey === compositeKey;
+                if (!isExpandable) {
+                  const title = isBash ? "bash 变更无 diff，仅计数" : undefined;
+                  const isHighlighted = highlightedPath ? row.path === highlightedPath && (activeRunId == null || row.runId === activeRunId || row.runId == null) : false;
+                  return (
+                    <div
+                      key={compositeKey}
+                      ref={(el) => {
+                        if (el) rowRefs.current.set(compositeKey, el);
+                        else rowRefs.current.delete(compositeKey);
+                      }}
+                      data-path={row.path}
+                      data-highlight={isHighlighted ? "true" : undefined}
+                    >
+                      <div className="fc" title={title}>
+                        <RowMeta row={row} />
+                      </div>
+                      <HistoryDrawer row={row} allRows={allRows} />
+                    </div>
+                  );
+                }
                 return (
-                  <div className="fc" key={row.path}>
-                    <RowMeta row={row} />
+                  <div
+                    key={compositeKey}
+                    ref={(el) => {
+                      if (el) rowRefs.current.set(compositeKey, el);
+                      else rowRefs.current.delete(compositeKey);
+                    }}
+                    data-path={row.path}
+                    data-highlight={highlightedPath === row.path && (activeRunId == null || row.runId === activeRunId || row.runId == null) ? "true" : undefined}
+                  >
+                    <button
+                      type="button"
+                      className="fc"
+                      aria-expanded={isOpen}
+                      onClick={() => setExpandedKey(isOpen ? null : compositeKey)}
+                    >
+                      <RowMeta row={row} />
+                    </button>
+                    {isOpen && <DiffPanel row={row} />}
+                    <HistoryDrawer row={row} allRows={allRows} />
                   </div>
                 );
-              }
-              const isOpen = expandedPath === row.path;
-              return (
-                <div key={row.path}>
-                  <button
-                    type="button"
-                    className="fc"
-                    aria-expanded={isOpen}
-                    onClick={() => setExpandedPath(isOpen ? null : row.path)}
-                  >
-                    <RowMeta row={row} />
-                  </button>
-                  {isOpen && <DiffPanel row={row} />}
-                </div>
-              );
-            })}
-          </div>
-        ))}
+              })}
+            </div>
+          ))}
       </div>
     </div>
   );

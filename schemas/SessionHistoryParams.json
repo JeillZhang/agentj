@@ -20,6 +20,13 @@
       "format": "uint64",
       "minimum": 0
     },
+    "run_id": {
+      "description": "Filter to a single run's Todo/FileChange events. @since 0.15.0",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "session_id": {
       "type": "string"
     }

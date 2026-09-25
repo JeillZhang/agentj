@@ -141,6 +141,7 @@ type Props = {
   activeSessionId: string | null;
   onActiveChange: (id: string) => void;
   onSessionRemoved?: (id: string) => void;
+  onFileSelect?: (path: string) => void;
   unreachable?: boolean;
 };
 
@@ -150,6 +151,7 @@ export default function UnifiedSidebar({
   activeSessionId,
   onActiveChange,
   onSessionRemoved,
+  onFileSelect,
   unreachable = false,
 }: Props) {
   const [projects, setProjects] = useState<Project[]>(() => loadProjects());
@@ -574,6 +576,7 @@ export default function UnifiedSidebar({
             ref={fileTreeRef}
             client={client as RpcClient | null}
             sessionId={activeSessionId}
+            onFileSelect={onFileSelect}
             demo={demo}
           />
         </div>

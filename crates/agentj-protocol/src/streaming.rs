@@ -47,12 +47,16 @@ pub enum ProgressValue {
     /// clients discard snapshots older than the highest seen. @since 0.13.0
     Todo {
         session_id: SessionId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        run_id: Option<String>, // @since 0.15.0
         revision: u64,
         items: Vec<TodoItem>,
     },
     /// Workspace file change produced by write/bash artifacts (design 决策 #3). @since 0.13.0
     FileChange {
         session_id: SessionId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        run_id: Option<String>, // @since 0.15.0
         change: FileChange,
     },
 }
@@ -97,6 +101,18 @@ pub struct FileChange {
     /// True only when the diff was truncated; omitted otherwise.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub diff_truncated: Option<bool>,
+    /// Run this change belongs to. @since 0.15.0
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    /// Per-run monotonic sequence for ordering inside a run. @since 0.15.0
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seq: Option<u64>,
+    /// Source of the change: write (LCS diff) or bash (numstat only). @since 0.15.0
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<FileChangeSource>,
+    /// Original diff byte length when truncated. @since 0.15.0
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_bytes: Option<u64>,
 }
 
 /// Change operation of a `FileChange`. `Unknown` tolerates forward values
@@ -107,6 +123,17 @@ pub enum FileChangeKind {
     Add,
     Modify,
     Delete,
+    #[serde(other)]
+    #[schemars(skip)]
+    Unknown,
+}
+
+/// Source of a FileChange: write produces LCS diff, bash produces counts only. @since 0.15.0
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum FileChangeSource {
+    Write,
+    Bash,
     #[serde(other)]
     #[schemars(skip)]
     Unknown,
@@ -299,6 +326,7 @@ mod tests {
     fn progress_todo_kind_wire_shape() {
         let v = ProgressValue::Todo {
             session_id: "s1".into(),
+            run_id: None,
             revision: 3,
             items: vec![TodoItem {
                 id: "t1".into(),
@@ -332,6 +360,7 @@ mod tests {
     fn file_change_omits_none_diff_fields() {
         let v = ProgressValue::FileChange {
             session_id: "s1".into(),
+            run_id: None,
             change: FileChange {
                 path: "src/lib.rs".into(),
                 op: FileChangeKind::Modify,
@@ -340,6 +369,10 @@ mod tests {
                 tool_call_id: None,
                 diff: None,
                 diff_truncated: None,
+                run_id: None,
+                seq: None,
+                source: None,
+                total_bytes: None,
             },
         };
         let j = serde_json::to_value(&v).unwrap();

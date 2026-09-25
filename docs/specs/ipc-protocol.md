@@ -2,7 +2,7 @@
 
 > 本文档是 AgentJ 内核对外暴露的统一 UI 接口协议（IPC）的**人类可读权威规范**。
 > 机器可读工件（`schemas/*.json` 与 `protocol/methods.json`）是本规范的机器事实来源，见 [机器可读模型](#10-机器可读模型)。
-> 协议当前版本：`0.14.0`。
+> 协议当前版本：`0.15.0`。
 
 ## 1. 范围与一致性
 
@@ -346,10 +346,10 @@ initialize（请求）→ initialized（通知）→ 会话阶段 → shutdown�
 | `tool_result` | `tool_call_id`, `content` | 工具执行结果回流；`tool_call_id` 关联对应 `tool_call` |
 | `usage` | `usage` | 每轮 run 在 Done 时下发一次的 token 用量结算（`@since 0.12.0`）；`usage` 为 `{ prompt_tokens, completion_tokens }` |
 | `permission` | `request_id`, `tool`, `decision` | 待审批 `$/permissionRequest` 的裁决结算（`@since 0.12.0`）；`decision` 为 `PermissionDecision`，可选字段 `session_id`（多会话客户端据此归类） |
-| `todo` | `session_id`, `revision`, `items` | 全量 TODO 快照（`@since 0.13.0`，见 决策 #2）；`revision` 按会话单调递增，客户端丢弃比已见更旧的快照；`items` 为 `TodoItem[]` |
-| `file_change` | `session_id`, `change` | 工作区文件变更（`@since 0.13.0`）；`change` 为 `FileChange`（`path` / `op` / `additions` / `deletions` + 可选 `tool_call_id` / `diff` / `diff_truncated`） |
+| `todo` | `session_id`, `revision`, `items` | 全量 TODO 快照（`@since 0.13.0`，见 决策 #2）；`revision` 按会话单调递增，客户端丢弃比已见更旧的快照；`items` 为 `TodoItem[]`；可选 `run_id`（`@since 0.15.0`，按 run 单调） |
+| `file_change` | `session_id`, `change` | 工作区文件变更（`@since 0.13.0`）；`change` 为 `FileChange`（`path` / `op` / `additions` / `deletions` + 可选 `tool_call_id` / `diff` / `diff_truncated` / `@since 0.15.0` 加性 `run_id` / `seq` / `source` / `total_bytes`）；外层可选 `run_id`（路由提示，与 `change.run_id` 一致时以 `change.run_id` 为准） |
 
-七种已知值的完整结构见 `schemas/ProgressValue.json`（嵌套类型 `UsageInfo` / `TodoItem` / `FileChange` 亦各有独立 schema）。**未知 `kind` 可忽略**：依据 `$/` 前缀约定，消费方对不认识的 `kind` MUST 忽略该通知而不失败，服务端未来新增 `kind` 属加性变更（`@since` 注解）。
+七种已知值的完整结构见 `schemas/ProgressValue.json`（嵌套类型 `UsageInfo` / `TodoItem` / `FileChange` / `FileChangeSource` 亦各有独立 schema）。**未知 `kind` 可忽略**：依据 `$/` 前缀约定，消费方对不认识的 `kind` MUST 忽略该通知而不失败，服务端未来新增 `kind` 属加性变更（`@since` 注解）。
 
 ### 7.4 流式数据流
 
@@ -491,7 +491,8 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 ```json
 { "jsonrpc": "2.0", "id": 3, "result": {
   "content": "这段代码的主要职责是……",
-  "tool_calls": [ { "id": "tc-1", "name": "read_file", "arguments": { "path": "src/main.rs" } } ]
+  "tool_calls": [ { "id": "tc-1", "name": "read_file", "arguments": { "path": "src/main.rs" } } ],
+  "run_id": "550e8400-e29b-41d4-a716-446655440000"
 } }
 ```
 
@@ -499,6 +500,7 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 |------|------|------|------|
 | `content` | string | 是 | 本轮完整结果文本 |
 | `tool_calls` | ToolCall[] | 否 | 本轮模型请求的工具调用列表；`ToolCall = { id, name, arguments }` |
+| `run_id` | string | 否 | 本轮 `run_id`（UUID v4，`@since 0.15.0`）；用于关联同 run 的 `todo` / `file_change` 脉冲与回放过滤 |
 
 - **部分结果**：增量数据通过 `$/progress` 通知带外下发（见 §7），最终仍返回一个完整响应。
 - **error.data**：会话不存在 → `-32802`，MAY 携带 `{ "session_id": "s-1" }`；会话已 archived / deleted → `-32803`，MAY 携带 `{ "session_id": "s-1", "status": "archived" }`；被取消 → `-32800 RequestCancelled`，MAY 携带已产生的部分结果。
@@ -674,8 +676,6 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 
 - **SessionSummary**：`session_id`（string）、`updated_at`（integer，epoch **秒**）、`state`（SessionStatus，见 §9）、`preview`（string，可选，末条消息摘要，内核截断至 120 字符）。
 - **部分结果**：无。
-- **error.data**：`-32603` 时 MAY 携带内部上下文（如存储读取失败）。
-
 ### 8.19 session/history（请求，`@since 0.12.0`）
 
 - **能力声明**：无（只读轨迹回放）。
@@ -686,6 +686,7 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 | `session_id` | string | 是 | 目标会话 id |
 | `cursor` | integer | 否 | 分页游标（起始 `seq`，含）；缺省从头开始 |
 | `limit` | integer | 否 | 单页事件数，服务端 clamp 至 `1..=500`，缺省 100 |
+| `run_id` | string | 否 | 按 run 过滤回放（`@since 0.15.0`；UUID v4，>128 字符或非法 → `-32602` + `data{reason:"invalid_run_id"}`；缺省全量） |
 
 - **响应**：`SessionHistoryResult`。
 
@@ -703,11 +704,12 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 | `events` | TrajectoryEvent[] | 是 | 本页轨迹事件；`TrajectoryEvent = { session_id, seq, ts, value }` |
 | `next_cursor` | integer | 否 | 下一页游标（= 本页最后 `seq` + 1）；无更多页时省略 |
 
+- **run_id 过滤语义（`@since 0.15.0`）**：当 `run_id` 存在时，仅返回该 `run_id` 的 `Todo` / `FileChange` 事件（其余 `TrajectoryValue` kind 保持全量以不破坏时间线）；先过滤再按 `cursor` / `limit` 分页；`run_id` 无匹配时 `events:[]`（不报错）；缺省 `run_id` 时全量分页与旧语义一致。
 - **TrajectoryEvent**：`seq`（integer，会话内单调递增，页游标基准）、`ts`（integer，epoch **毫秒**）、`value: TrajectoryValue`（按 `value.kind` 判别的联合类型，见下）。轨迹是**追加式**事件日志，存储文件与 `session/history` payload 逐字节同构。
 - **TrajectoryValue kind**：`user`、`thinking`、`tool_call`、`tool_result`、`permission`、`usage`、`error`（`session/history` 引入时既有）；`todo`、`file_change`、`ask_question`、`question_answer`（`@since 0.13.0`）。未知 `kind` 按 §7.3 的 `$` 前缀约定忽略。
 - **未知 session**：返回空 `events`（`next_cursor` 省略），**不报错**、不泄露会话信息。
 - **部分结果**：无（分页以 `next_cursor` 表达，非流式）。
-- **error.data**：`-32603` 时 MAY 携带内部上下文（如轨迹存储读取失败）。
+- **error.data**：`-32603` 时 MAY 携带内部上下文（如轨迹存储读取失败）；`run_id` 非法 → `-32602` + `data{reason:"invalid_run_id"}`。
 
 ### 8.20 file/list（请求，`@since 0.13.0`）
 
@@ -821,9 +823,6 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 - **结算**：respond / 超时 / run 取消 / 会话归档删除 / owner 连接断开 → 统一结算一次（`answers` 或 `skipped`），settle hook 保证轨迹只记录一次（`question_answer`）。
 - **部分结果**：无。
 - **error.data**：非 owner → `-32806`；未知 option id → `-32602` + `{ "unknown_options": ["<id>", …] }`；单选传多答 → `-32602` + `{ "reason": "too_many_answers" }`。
-
-## 9. 枚举与向前兼容
-
 ### 9.1 值枚举
 
 当前定义以下字符串值枚举（`Role` / `ModuleState` / `SessionStatus` / `PermissionDecision` 为 v0.2 既有）：
@@ -837,10 +836,9 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 | `FileKind` | `file` \| `dir` | `file/list` 条目类型（`@since 0.13.0`，见 8.20） |
 | `TodoStatus` | `pending` \| `in_progress` \| `completed` \| `cancelled` | TODO 条目状态（`@since 0.13.0`，见 7.3） |
 | `FileChangeKind` | `add` \| `modify` \| `delete` | 文件变更操作（`@since 0.13.0`，见 7.3） |
+| `FileChangeSource` | `write` \| `bash` | 文件变更来源（`@since 0.15.0`，见 7.3；`write`=LCS diff 口径，`bash`=numstat 计数口径） |
 
-上述枚举均带 `Unknown` 变体容忍前向值（`FileKind` / `TodoStatus` / `FileChangeKind` 由 `serde(other)` + `schemars(skip)` 实现，schema 只列已知值；`git_status` 的 `M`/`A`/`U`/`D` 为 `FileEntry` 内联的固定字母集合，见 8.20）。
-
-### 9.2 未知值处理
+上述枚举均带 `Unknown` 变体容忍前向值（`FileKind` / `TodoStatus` / `FileChangeKind` / `FileChangeSource` 由 `serde(other)` + `schemars(skip)` 实现，schema 只列已知值；`git_status` 的 `M`/`A`/`U`/`D` 为 `FileEntry` 内联的固定字母集合，见 8.20）。
 
 - 客户端 / 服务端收到**未知枚举值**时，MUST 将其归入对应的 **Unknown 变体**（保留原始字符串以便透传），MUST NOT 因此失败或断开连接。
 - 例如：`ModuleState` 出现 `"suspended"` 时，消费方将其视为 Unknown 状态继续运行；`SessionStatus` 出现未知值时，可视为「非 active」处理但不崩溃。
@@ -850,21 +848,10 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 
 - `schemas/*.json` 中的枚举 MUST 只列出**已知值**（见各枚举 schema），未知值由实现按 9.2 处理，不写入 schema。
 - Schema 校验通过不代表消息语义合法（例如未知枚举值校验不通过但运行时允许），实现 MUST 在运行时层应用 9.2 的宽容规则。
-
-### 9.4 加性纪律与 @since
-
-- 协议演进严格「只加不改」：新方法、新字段、新枚举值均为加性，MUST NOT 修改或删除已发布字段的语义。
-- 新增的字段 / 方法 / 枚举值 SHOULD 以 `@since` 注解标注引入版本（如 `@since 0.2.0`）。
 - 协议扩展（0.13.0）新增的 `-32807 PathNotAllowed`、`$/progress` 的 `todo` / `file_change` kind、`file/list`、`$/askQuestion` / `question/respond`、`session/new` 的 `project_root`，以及 `FileKind` / `TodoStatus` / `FileChangeKind` 三个值枚举，均遵循该加性纪律并标注 `@since 0.13.0`；`session/list` / `session/history` 与 `usage` / `permission` kind 为 0.12.0 引入，本规范补录其小节（§8.18 / §8.19、§7.3）。
 - 协议扩展（0.14.0）新增的 `file/list` 参数 `query` 与结果 `total`、`SessionNewResult.project_root`、`SessionStatusResult.project_root` 同为**加性字段**（标注 `@since 0.14.0`；不新增方法、不新增 schema、不改既有字段语义）。
-- 破坏性变更只能通过 major 版本引入，且 MUST 在变更日志（§11）中说明迁移路径。
-
-## 10. 机器可读模型
-
-本规范是叙述性人类规范；机器事实来源为以下两个工件，两者由 CI 门禁保证与实现一致：
-
-- **`schemas/*.json`**：51 个 JSON Schema（JSON Schema Draft 2020-12），由 Rust `agentj-protocol` 的 serde 类型经 `schemars` 生成并提交。它们是所有消息 payload 结构的唯一事实来源，任意语言可从中生成绑定或做运行时校验。
-- **`protocol/methods.json`**：方法注册表，捕获 JSON Schema 表达不了的方法语义（method 字符串 ↔ params/result schema 引用、方向、类型）。当前收录 21 个方法，`protocol_version` 为 `0.14.0`。
+- 协议扩展（0.15.0）新增的 `FileChangeSource` 值枚举与 `FileChange` / `ProgressValue::Todo` / `ProgressValue::FileChange` / `TrajectoryValue::Todo` / `TrajectoryValue::FileChange` / `SessionRunResult` / `SessionHistoryParams` 的 `run_id` / `seq` / `source` / `total_bytes` 四加性字段同为**加性字段**（标注 `@since 0.15.0`；不新增方法、不改既有字段语义；新增 `FileChangeSource.json` 一个 schema，去重键由全局 `path` 升为 `(run_id, path)`）。
+- **`protocol/methods.json`**：方法注册表，捕获 JSON Schema 表达不了的方法语义（method 字符串 ↔ params/result schema 引用、方向、类型）。当前收录 21 个方法，`protocol_version` 为 `0.15.0`。
 
 对应关系：
 
@@ -892,15 +879,14 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 | `$/askQuestion` | `AskQuestionParams.json` | — |
 | `question/respond` | `QuestionRespondParams.json` | `QuestionRespondResult.json` |
 
-信封与公共类型见 `RequestMessage.json`、`NotificationMessage.json`、`ResponseMessage.json`、`ErrorObject.json`、`Id.json`、`ProgressToken.json`、`ProgressValue.json`、`Role.json`、`PermissionDecision.json` 等；协议扩展（0.13.0）新增 / 更新的公共类型见 `SessionNewParams.json`、`SessionSummary.json`、`FileListParams.json`、`FileListResult.json`、`FileEntry.json`、`FileKind.json`、`AskQuestionParams.json`、`AskOption.json`、`QuestionRespondParams.json`、`QuestionRespondResult.json`、`TodoItem.json`、`TodoStatus.json`、`FileChange.json`、`FileChangeKind.json`、`UsageInfo.json`。协议扩展（0.14.0）不新增 schema，仅向既有 schema 追加字段：`FileListParams.json`（`query`）、`FileListResult.json`（`total`）、`SessionNewResult.json` 与 `SessionStatusResult.json`（`project_root`）；schema 总数仍为 51。
+信封与公共类型见 `RequestMessage.json`、`NotificationMessage.json`、`ResponseMessage.json`、`ErrorObject.json`、`Id.json`、`ProgressToken.json`、`ProgressValue.json`、`Role.json`、`PermissionDecision.json` 等；协议扩展（0.13.0）新增 / 更新的公共类型见 `SessionNewParams.json`、`SessionSummary.json`、`FileListParams.json`、`FileListResult.json`、`FileEntry.json`、`FileKind.json`、`AskQuestionParams.json`、`AskOption.json`、`QuestionRespondParams.json`、`QuestionRespondResult.json`、`TodoItem.json`、`TodoStatus.json`、`FileChange.json`、`FileChangeKind.json`、`UsageInfo.json`。协议扩展（0.14.0）不新增 schema，仅向既有 schema 追加字段：`FileListParams.json`（`query`）、`FileListResult.json`（`total`）、`SessionNewResult.json` 与 `SessionStatusResult.json`（`project_root`）；协议扩展（0.15.0）新增 `FileChangeSource.json` 一个 schema（`FileChange`/`ProgressValue`/`TrajectoryValue`/`SessionHistoryParams`/`SessionRunResult` 的 `run_id`/`seq`/`source`/`total_bytes` 为加性字段）；schema 总数 51 → **52**。
 
 一致性锚点：Rust 侧 `schemars` 生成 `schemas/*.json` 并提交，契约测试断言实际 wire 输出与 Schema 一致，CI 漂移门禁在生成结果与提交版本不一致时失败。
-
 ## 11. 版本化与变更日志
 
 ### 11.1 版本策略
 
-协议版本遵循语义化版本（semver），规则见 §4.3：major 破坏 / minor 加方法或加性字段 / patch 修 bug。当前版本 `0.14.0`（`protocol/methods.json` 中 `protocol_version` 字段为准）。
+协议版本遵循语义化版本（semver），规则见 §4.3：major 破坏 / minor 加方法或加性字段 / patch 修 bug。当前版本 `0.15.0`（`protocol/methods.json` 中 `protocol_version` 字段为准）。
 
 ### 11.2 命名归一化决策（v0.1.0 记录）
 
@@ -991,8 +977,12 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 - **纯前端（无 wire 变化）**：TUI Files 搜索改防抖服务端查询 + 旧内核降级、展开态键改为会话有效 `project_root`；Web 共享 roving 收口（TopbarMenu / SessionListMenu / SidebarTabs / SettingsDialog）+ 侧栏底部快捷键提示行。
 - 协议版本 minor 递增 `0.13.0 → 0.14.0`；工作区 `0.21.1 → 0.22.0`；此前客户端零破坏。
 
-#### 后续版本
+#### 0.15.0（右边栏运行详情：`run_id` 维度 + `FileChangeSource` + `total_bytes`）
 
-- **0.10.x（patch）**：修复歧义、澄清文档；不改变任何 wire 结构或错误码语义。
-- **0.11.0（minor）**：预期加入 hooks / sub-agent / skills / stats 等方法的完整 Schema（预留路线图占位），以及 `session/expire` 或 TTL 配置等会话过期语义；枚举与能力对象加性扩展并标注 `@since 0.11.0`。
-- **major**：任何破坏性变更，必须在此记录迁移路径。
+- **方法面不变**：仍为 21 方法、**52 schemas**（新增 `FileChangeSource.json` 一个）；本版本为**七处加性 wire 变更**，无新方法、无新错误码。
+- **Protocol 加性字段**：`FileChange { run_id?, seq?, source?, total_bytes? }`（`FileChangeSource = write|bash`，`Unknown` 容忍前向值；`total_bytes` 为截断前原始 diff 字节数，仅 `diff_truncated:true` 时携带；`seq` 为 per-run 单调 `u64` 用于抽屉排序）与外层 `ProgressValue::Todo/FileChange { run_id? }`（路由提示，与 `change.run_id` 一致性以 `change.run_id` 为准）与 `TrajectoryValue::Todo/FileChange { run_id? }`（轨迹落盘与回放同源）与 `SessionHistoryParams { run_id? }`（UUID v4，>128 或解析失败 → `-32602` + `data{reason:"invalid_run_id"}`；缺省全量；过滤语义为先按 `run_id` 过滤 Todo/FileChange 再按 `cursor`/`limit` 分页，其余 kind 保持全量）与 `SessionRunResult { run_id? }`（本轮 `run_id` 回显，用于客户端关联订阅与回放过滤）。去重键由全局 `path` 升为 `(run_id, path)`，`revision` 按 run 单调（客户端按 `(run_id, revision)` 丢旧帧，`run_id=null` 时退化为会话级）。
+- **行为细节**：`run_id` 生成 `Uuid::new_v4()`（内核 `TurnRunner` 转入点）；`todo_revisions` 改为 `HashMap<RunId,u64>`（全局唯一 UUID 键）；`DIFF_MAX_BYTES=64 KiB` 不变；bash 变更 `source=bash` 且 `diff=null` 不可展开，write 变更 `source=write` 可展开；截断时 inline 截断前缀 + hint `已截断（原始 N KiB）`，不新增 `file/diff` 懒加载。
+- **纯前端（无 wire 变化）**：Web `todoState` / `changes` 归约改 `(run_id, revision)` / `(run_id, path)` 并分组展示（当前 run 置顶，`__legacy__` → "未分组（历史）"），抽屉按 `seq` / `eventSeq` 排序；`RightPanel` 按 run 分组、抽屉按 `seq`、source 徽标；`App` 捕获 `SessionRunResult.run_id` 并携带 `session/history {run_id}` 与 `FileTree` 跳转联动；TUI `TodoBlock` 兼容 `run_id`（仅只读）。
+- 协议版本 minor 递增 `0.14.0 → 0.15.0`；工作区 `0.22.0 → 0.23.0`；此前客户端零破坏（旧客户端忽略新字段，旧数据 `run_id=null` 兼容为未分组）。
+
+#### 后续版本

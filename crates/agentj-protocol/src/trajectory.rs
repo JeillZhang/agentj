@@ -60,12 +60,15 @@ pub enum TrajectoryValue {
     Todo {
         revision: u64,
         items: Vec<TodoItem>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        run_id: Option<String>, // @since 0.15.0
     },
     /// File change replay, mirroring the live `file_change` progress payload. @since 0.13.0
     FileChange {
         change: FileChange,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        run_id: Option<String>, // @since 0.15.0
     },
-    /// Question replay recorded at notify time, mirroring the live `$/askQuestion` params. @since 0.13.0
     AskQuestion {
         question_id: String,
         question: String,
@@ -131,6 +134,7 @@ mod tests {
                     content: "task".into(),
                     status: TodoStatus::InProgress,
                 }],
+                run_id: None,
             },
             "file_change" => TrajectoryValue::FileChange {
                 change: FileChange {
@@ -141,7 +145,12 @@ mod tests {
                     tool_call_id: Some("c1".into()),
                     diff: None,
                     diff_truncated: None,
+                    run_id: None,
+                    seq: None,
+                    source: None,
+                    total_bytes: None,
                 },
+                run_id: None,
             },
             "ask_question" => TrajectoryValue::AskQuestion {
                 question_id: "q1".into(),
@@ -201,7 +210,9 @@ mod tests {
         assert_eq!(json["value"]["items"][0]["status"], "in_progress");
         let back: TrajectoryEvent = serde_json::from_value(json).unwrap();
         match back.value {
-            TrajectoryValue::Todo { revision, items } => {
+            TrajectoryValue::Todo {
+                revision, items, ..
+            } => {
                 assert_eq!(revision, 3);
                 assert_eq!(items[0].id, "t1");
             }
@@ -213,7 +224,7 @@ mod tests {
         assert_eq!(json["value"]["change"]["op"], "modify");
         let back: TrajectoryEvent = serde_json::from_value(json).unwrap();
         match back.value {
-            TrajectoryValue::FileChange { change } => {
+            TrajectoryValue::FileChange { change, .. } => {
                 assert_eq!(change.path, "src/lib.rs");
                 assert_eq!(change.op, FileChangeKind::Modify);
             }

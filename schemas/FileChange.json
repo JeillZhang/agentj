@@ -35,12 +35,48 @@
       "description": "Path relative to the project root.",
       "type": "string"
     },
+    "run_id": {
+      "description": "Run this change belongs to. @since 0.15.0",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "seq": {
+      "description": "Per-run monotonic sequence for ordering inside a run. @since 0.15.0",
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint64",
+      "minimum": 0
+    },
+    "source": {
+      "description": "Source of the change: write (LCS diff) or bash (numstat only). @since 0.15.0",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/FileChangeSource"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "tool_call_id": {
       "description": "Tool call card this change belongs to; omitted when unavailable.",
       "type": [
         "string",
         "null"
       ]
+    },
+    "total_bytes": {
+      "description": "Original diff byte length when truncated. @since 0.15.0",
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint64",
+      "minimum": 0
     }
   },
   "required": [
@@ -57,6 +93,14 @@
         "add",
         "modify",
         "delete"
+      ]
+    },
+    "FileChangeSource": {
+      "description": "Source of a FileChange: write produces LCS diff, bash produces counts only. @since 0.15.0",
+      "type": "string",
+      "enum": [
+        "write",
+        "bash"
       ]
     }
   }
