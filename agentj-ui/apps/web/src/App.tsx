@@ -18,7 +18,7 @@ import TopbarMenu from "./components/TopbarMenu";
 import ConnectionStatus from "./components/ConnectionStatus";
 import UnifiedSidebar from "./components/UnifiedSidebar";
 import WorkspaceShell from "./components/WorkspaceShell";
-import RightPanel from "./components/RightPanel";
+import RightPanel, { groupByRunId } from "./components/RightPanel";
 import TodoPanel from "./components/TodoPanel";
 import ChangeList from "./components/ChangeList";
 import { Trajectory, historyToConversation } from "./Trajectory";
@@ -30,9 +30,10 @@ import { loadComposerPrefs, loadLayout, saveLayout, subscribeLayout } from "./la
 import { loadDisplayPrefs, subscribeDisplayPrefs } from "./displayPrefsStore";
 import type { DisplayPrefs } from "./displayPrefsStore";
 import { isDemoEnabled, subscribeDemo, DEMO_TODOS, DEMO_CHANGES } from "./demoData";
-import { applyFileChange, changesFromHistory } from "./changes";
-import type { FileChangeRow } from "./changes";
-import { EMPTY_TODO_STATE, applyTodoFrame, todosFromHistory } from "./todoState";
+import { applyFileChange, changesFromHistory, EMPTY_CHANGES } from "./changes";
+import type { ChangesState } from "./changes";
+import { EMPTY_TODO_STATE, applyTodoFrame, focusRun, todosFromHistory } from "./todoState";
+import type { TodoView } from "./todoState";
 
 const rawWsEnv = import.meta.env.VITE_AGENTJ_WS_URL;
 const envWsUrl = typeof rawWsEnv === "string" ? rawWsEnv : undefined;
@@ -297,7 +298,7 @@ export default function App() {
   });
   const [demo, setDemo] = useState(() => isDemoEnabled());
   const [rightCollapsed, setRightCollapsed] = useState(() => loadLayout().rightCollapsed);
-  const [fileChanges, setFileChanges] = useState<FileChangeRow[]>([]);
+  const [fileChanges, setFileChanges] = useState<ChangesState>(EMPTY_CHANGES);
   const [todos, setTodos] = useState(EMPTY_TODO_STATE);
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [highlightedPath, setHighlightedPath] = useState<string | null>(null);
@@ -311,7 +312,7 @@ export default function App() {
   useEffect(() => subscribeLayout((state) => setRightCollapsed(state.rightCollapsed)), []);
 
   useEffect(() => {
-    setFileChanges([]);
+    setFileChanges(EMPTY_CHANGES);
     setTodos(EMPTY_TODO_STATE);
     setActiveRunId(null);
     setHighlightedPath(null);
@@ -351,6 +352,14 @@ export default function App() {
     saveLayout({ rightCollapsed: collapsed });
     setRightCollapsed(collapsed);
   }, []);
+
+  const handleSelectRun = useCallback((runId: string | null) => {
+    if (runId === activeRunId) return;
+    setActiveRunId(runId);
+    if (runId) {
+      setTodos((prev) => focusRun(prev, runId));
+    }
+  }, [activeRunId]);
 
   // stale currentProject fallback + cleanup
   useEffect(() => {
@@ -453,6 +462,20 @@ export default function App() {
 
   const connState = connectionLight(status, unreachable);
 
+  const todosByRunMap = (() => {
+    const byRun = (todos as unknown as {
+      byRun?: Map<string | null, { revision: number; items: TodoView[] }>;
+    })?.byRun;
+    if (!(byRun instanceof Map)) return undefined;
+    const map = new Map<string | null, TodoView[]>();
+    for (const [runId, entry] of byRun) map.set(runId, entry.items);
+    return map;
+  })();
+
+  const runGroups = demo
+    ? groupByRunId(DEMO_CHANGES, new Map<string | null, TodoView[]>([[null, DEMO_TODOS]]))
+    : groupByRunId(fileChanges.summary, todosByRunMap);
+
   const handleConnect = useCallback((host: string, port: string, token: string) => {
     saveConnection({ host, port, token });
     setWsUrl(safeWsUrl(resolveConnection(host, port, token)));
@@ -535,31 +558,27 @@ export default function App() {
       {banner && <p role="alert" className="aj-banner" data-state="mismatch">{banner}</p>}
       <WorkspaceShell
         right={
-          <RightPanel collapsed={rightCollapsed} onToggle={() => handleRightCollapsedChange(!rightCollapsed)}>
+          <RightPanel
+            collapsed={rightCollapsed}
+            onToggle={() => handleRightCollapsedChange(!rightCollapsed)}
+            currentRunId={activeRunId}
+            groups={runGroups}
+            history={demo ? [] : fileChanges.history}
+            highlightedPath={demo ? null : highlightedPath}
+            onSelectRun={handleSelectRun}
+          >
             <TodoPanel
               items={demo ? DEMO_TODOS : todos.items}
               state={demo ? null : todos}
               activeRunId={demo ? null : activeRunId}
-              onSelectRun={(runId) => {
-                if (runId === activeRunId) return;
-                setActiveRunId(runId);
-                if (runId) {
-                  setTodos((prev) => {
-                    const map = (prev as unknown as { byRun?: Map<string | null, { revision: number; items: ReturnType<typeof todosFromHistory>["items"] }> })?.byRun;
-                    if (map instanceof Map && map.has(runId)) {
-                      const entry = map.get(runId);
-                      if (entry) return { ...prev, items: entry.items, revision: entry.revision } as typeof prev;
-                    }
-                    return prev;
-                  });
-                }
-              }}
+              onSelectRun={handleSelectRun}
             />
             <ChangeList
-              changes={demo ? DEMO_CHANGES : fileChanges}
+              changes={demo ? DEMO_CHANGES : fileChanges.summary}
+              history={demo ? [] : fileChanges.history}
               highlightedPath={demo ? null : highlightedPath}
               activeRunId={demo ? null : activeRunId}
-              onSelectRun={setActiveRunId}
+              onSelectRun={handleSelectRun}
             />
           </RightPanel>
         }

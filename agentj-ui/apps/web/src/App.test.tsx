@@ -18,6 +18,7 @@ const shared = vi.hoisted(() => ({
   notificationHandler: { value: null as ((m: string, p: unknown) => void) | null },
   lastRunParams: { value: null as Record<string, unknown> | null },
   lastPermissionParams: { value: null as Record<string, unknown> | null },
+  runId: { value: null as string | null },
   permShouldFail: { value: false },
   permError: { value: "stale" },
   sessionListResult: { value: { sessions: [] as Array<Record<string, unknown>> } },
@@ -70,7 +71,11 @@ vi.mock("@agentj/sdk", () => {
         shared.lastRunParams.value = params ?? null;
         if (shared.shouldFail.value) throw new Error("unreachable");
         await new Promise((r) => setTimeout(r, 20));
-        return { content: "done", usage: { prompt_tokens: 10, completion_tokens: 5 } };
+        return {
+          content: "done",
+          usage: { prompt_tokens: 10, completion_tokens: 5 },
+          ...(shared.runId.value ? { run_id: shared.runId.value } : {}),
+        };
       }
       if (method === "permission/respond") {
         shared.lastPermissionParams.value = params ?? null;
@@ -254,6 +259,7 @@ describe("App with mocked SDK transport", () => {
     shared.notificationHandler.value = null;
     shared.lastRunParams.value = null;
     shared.lastPermissionParams.value = null;
+    shared.runId.value = null;
     shared.permShouldFail.value = false;
     shared.permError.value = "stale";
     shared.sessionListResult.value = { sessions: [] as Array<Record<string, unknown>> };
@@ -854,7 +860,9 @@ describe("T12 workspace shell + right panel", () => {
     expect(document.querySelector(".aj-right")).not.toBeNull();
     expect(screen.getByText("运行详情")).toBeInTheDocument();
     expect(screen.getByText("文件变更")).toBeInTheDocument();
-    expect(screen.getAllByText("待协议支持").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText("暂无任务")).toBeInTheDocument();
+    expect(screen.getByText("暂无变更")).toBeInTheDocument();
+    expect(screen.queryByText("待协议支持")).toBeNull();
   });
 
   it("demo fixtures light up the right panel", () => {
@@ -1060,5 +1068,45 @@ describe("reduced motion preference", () => {
   it("leaves no data-reduced-motion attribute for default prefs", () => {
     render(<App />);
     expect(document.documentElement.dataset.reducedMotion).toBeUndefined();
+  });
+});
+
+describe("run_id capture and history filtering", () => {
+  const RUN_UUID = "33333333-3333-4333-8333-333333333333";
+
+  beforeEach(() => {
+    shared.initVersion.value = "0.12.1";
+    shared.shouldFail.value = false;
+    shared.newSessionId.value = "s1";
+    shared.runId.value = null;
+    shared.requests.value = [];
+    shared.lastHistoryParams.value = null;
+    shared.historyResult.value = { events: [], next_cursor: null };
+    shared.sessionListResult.value = {
+      sessions: [{ session_id: "s1", state: "active", preview: "hi" }],
+    };
+    shared.notificationHandler.value = null;
+    localStorage.clear();
+    document.documentElement.removeAttribute("data-theme");
+  });
+
+  it("omits run_id from the initial session/history request", async () => {
+    render(<App />);
+    const list = await screen.findByRole("list", { name: "最近会话" });
+    fireEvent.click(await within(list).findByText(/hi/));
+    await waitFor(() => expect(shared.lastHistoryParams.value).not.toBeNull());
+    expect(shared.lastHistoryParams.value?.session_id).toBe("s1");
+    expect(shared.lastHistoryParams.value?.run_id).toBeUndefined();
+  });
+
+  it("captures run_id from the session/run result and refetches history with it", async () => {
+    shared.runId.value = RUN_UUID;
+    render(<App />);
+    await createActiveSession();
+    await waitFor(() => expect(shared.lastHistoryParams.value).not.toBeNull());
+    const prompt = screen.getByLabelText(/prompt/i);
+    fireEvent.change(prompt, { target: { value: "hi" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+    await waitFor(() => expect(shared.lastHistoryParams.value?.run_id).toBe(RUN_UUID));
   });
 });
