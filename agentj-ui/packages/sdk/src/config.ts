@@ -1,4 +1,4 @@
-export const VERSION = "0.23.0";
+export const VERSION = "0.23.1";
 export const PROTOCOL_VERSION = "0.15.0";
 
 /** Page-origin inputs used to derive a default WS URL in browsers. */
