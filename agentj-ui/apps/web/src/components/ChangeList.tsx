@@ -6,6 +6,7 @@ import { useRightSection } from "../rightSections";
 export type ChangeListProps = {
   changes?: FileChangeRow[];
   rows?: FileChangeRow[];
+  history?: FileChangeRow[];
   emptyText?: string;
   highlightedPath?: string | null;
   activeRunId?: string | null;
@@ -98,26 +99,46 @@ function DiffPanel({ row }: { row: FileChangeRow }) {
   );
 }
 
+const NULL_TOOL = "\0null";
+
+function toolGroups(entries: FileChangeRow[]): { toolId: string | null; rows: FileChangeRow[] }[] {
+  const order: (string | null)[] = [];
+  const buckets = new Map<string, FileChangeRow[]>();
+  for (const entry of entries) {
+    const key = entry.toolCallId ?? NULL_TOOL;
+    let bucket = buckets.get(key);
+    if (!bucket) {
+      bucket = [];
+      buckets.set(key, bucket);
+      order.push(entry.toolCallId ?? null);
+    }
+    bucket.push(entry);
+  }
+  return order.map((toolId) => ({ toolId, rows: buckets.get(toolId ?? NULL_TOOL) ?? [] }));
+}
+
 function HistoryDrawer({ row, allRows }: { row: FileChangeRow; allRows: FileChangeRow[] }) {
   const entries = allRows.filter((r) => (r.runId ?? null) === (row.runId ?? null) && r.path === row.path);
   if (entries.length <= 1) return null;
-  const sorted = sortBySeq(entries);
+  const groups = toolGroups(sortBySeq(entries));
+  const count = entries.length;
   return (
     <details className="history-drawer">
-      <summary>历史记录 ({sorted.length})</summary>
+      <summary>历史记录 ({count})</summary>
       <div className="history-list">
-        {sorted.map((entry, idx) => (
-          <div
-            key={`${entry.toolCallId ?? "no-id"}-${entry.seq ?? entry.eventSeq ?? idx}-${idx}`}
-            className="history-entry"
-          >
-            <span className="hist-seq">seq {entry.seq ?? entry.eventSeq ?? "-"}</span>
-            {entry.toolCallId && <span className="hist-tool">{entry.toolCallId}</span>}
-            <span className="hist-counts">
-              +{entry.additions}
-              {entry.deletions !== null ? ` -${entry.deletions}` : ""}
-            </span>
-            {entry.source && <span className="hist-src">{entry.source}</span>}
+        {groups.map((group, gi) => (
+          <div className="hist-toolgroup" key={`${group.toolId ?? "no-id"}-${gi}`}>
+            {group.toolId !== null && <div className="hist-tool">{group.toolId}</div>}
+            {group.rows.map((entry, idx) => (
+              <div className="history-entry" key={`${entry.seq ?? entry.eventSeq ?? idx}-${idx}`}>
+                <span className="hist-seq">seq {entry.seq ?? entry.eventSeq ?? "-"}</span>
+                <span className="hist-counts">
+                  +{entry.additions}
+                  {entry.deletions !== null ? ` -${entry.deletions}` : ""}
+                </span>
+                {entry.source && <span className="hist-src">{entry.source}</span>}
+              </div>
+            ))}
           </div>
         ))}
       </div>
@@ -125,12 +146,13 @@ function HistoryDrawer({ row, allRows }: { row: FileChangeRow; allRows: FileChan
   );
 }
 
-export default function ChangeList({ changes, rows, emptyText, highlightedPath, activeRunId, onSelectRun: _onSelectRun }: ChangeListProps) {
+export default function ChangeList({ changes, rows, history, emptyText, highlightedPath, activeRunId, onSelectRun: _onSelectRun }: ChangeListProps) {
   const [open, toggle] = useRightSection("changes");
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
-  const allRows = rows ?? changes ?? [];
-  const displayRows = dedup(allRows);
-  const emptyLabel = emptyText ?? "待协议支持";
+  const summaryRows = changes ?? rows ?? [];
+  const displayRows = dedup(summaryRows);
+  const allRows = history ?? changes ?? rows ?? [];
+  const emptyLabel = emptyText ?? "暂无变更";
   const rowRefs = useRef<Map<string, HTMLElement>>(new Map());
 
   useEffect(() => {
@@ -142,7 +164,7 @@ export default function ChangeList({ changes, rows, emptyText, highlightedPath, 
     for (const k of keys) {
       const el = rowRefs.current.get(k);
       if (el) {
-        el.scrollIntoView({ behavior: "smooth", block: "nearest" });
+        el.scrollIntoView?.({ behavior: "smooth", block: "nearest" });
         el.setAttribute("data-highlight", "true");
         const timer = setTimeout(() => el.removeAttribute("data-highlight"), 1500);
         return () => clearTimeout(timer);
@@ -151,7 +173,7 @@ export default function ChangeList({ changes, rows, emptyText, highlightedPath, 
     // fallback: any row with path suffix
     for (const [key, el] of rowRefs.current.entries()) {
       if (key.endsWith("\0" + highlightedPath)) {
-        el.scrollIntoView({ behavior: "smooth", block: "nearest" });
+        el.scrollIntoView?.({ behavior: "smooth", block: "nearest" });
         el.setAttribute("data-highlight", "true");
         const timer = setTimeout(() => el.removeAttribute("data-highlight"), 1500);
         return () => clearTimeout(timer);

@@ -184,31 +184,6 @@ pub fn write_change(
     }
 }
 
-/// Build bash-sourced file changes from `(path, additions, deletions)` entries.
-///
-/// Each artifact has `source=Bash`, `diff=None`, `diff_truncated=false`.
-pub fn bash_file_changes(
-    entries: Vec<(&str, u64, u64)>,
-    tool_call_id: Option<&str>,
-) -> Vec<FileChangeArtifact> {
-    entries
-        .into_iter()
-        .map(|(path, additions, deletions)| FileChangeArtifact {
-            path: path.to_string(),
-            op: FileChangeOp::Modify,
-            additions,
-            deletions,
-            tool_call_id: tool_call_id.map(str::to_string),
-            diff: None,
-            diff_truncated: false,
-            run_id: None,
-            seq: None,
-            source: Some(FileChangeSource::Bash),
-            total_bytes: None,
-        })
-        .collect()
-}
-
 /// Parse and validate a `todo` tool call's arguments into a snapshot.
 ///
 /// `args.items` must be an array of objects with non-empty string `content` and
@@ -579,18 +554,5 @@ mod tests {
         // must be > cap, not necessarily equal to s.len().
         assert!(d.is_char_boundary(d.len()));
         assert_eq!(c.source, Some(FileChangeSource::Write));
-    }
-    #[test]
-    fn bash_changes_tagged_bash() {
-        let changes = bash_file_changes(vec![("a.txt", 5, 1), ("b.txt", 2, 0)], Some("call2"));
-        assert_eq!(changes.len(), 2);
-        for c in &changes {
-            assert_eq!(c.source, Some(FileChangeSource::Bash));
-            assert!(c.diff.is_none());
-            assert!(!c.diff_truncated);
-            assert!(c.total_bytes.is_none());
-        }
-        assert_eq!(changes[0].additions, 5);
-        assert_eq!(changes[0].deletions, 1);
     }
 }

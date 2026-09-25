@@ -1,6 +1,6 @@
 # AGENTS.md
 
-> Updated 2026-09-25 — v0.23.0 右边栏运行详情（run_id 维度 + FileChangeSource + total_bytes / PROTOCOL 0.15.0）+ v0.15.1 协议扩展（三栏工作台真实数据源）+ v0.15.2 session/status dispatch 修复 + v0.16.0 Web 工作台体验修复 + v0.16.1 跟随修复 + v0.16.2 远程访问修复 + v0.16.3 Web 工作台修复（项目菜单 + 文件树）+ v0.16.4 Web 工作台体验修复（状态灯 hover 面板 + 右栏手风琴 + 滚动条）+ v0.16.5 Web 工作台四项修复（右栏右→左展开动画 + 任务/文件变更高度可调 + 顶栏菜单重构/设置弹窗 + 文件树图标）+ v0.17.0 Web 工作台六项增强（代码卡片 + 显示设置 + 文件树图标 + 会话列表菜单 + 项目编辑 + 设置项目面板）+ v0.17.1 验收修复（BUG-008 窄视口菜单/飞出层夹取）+ v0.17.2 界面修复（显示设置字号 px 滑杆/数字输入 + 弹窗边框/四角缩放）+ v0.18.0 Web 三项增强（composer 75% 居中浮动 + 权限选择自动允许 + 会话 token 总量）+ v0.18.1 token 统计修复（读出移至 header 模型 chip 右侧 + 输入/输出 拆分）+ v0.19.0 内核托管 Web UI + 文件树状态补强（同端口静态托管 + 混合鉴权登录门 + WS cookie 通道 + 文件树目录聚合状态）+ v0.20.0 Web 加固 + TUI Files 视图（四项，无 wire 变更）+ v0.20.1 验收修复（BUG-009 焦点模型 + BUG-010 提示词）+ v0.21.0 限流可观测 + 资产完整性 + TUI 搜索 + Web 焦点作用域（四项，无 wire 变更）+ v0.21.1 验收修复（BUG-011 视图切换焦点 + BUG-012 树刷新焦点）+ v0.22.0 限流指标导出 + 资产清单扩展/抽检 + TUI 服务端搜索 + Web 键位收口（四项，三处加性 wire，PROTOCOL_VERSION 0.13.0 → 0.14.0）
+> Updated 2026-09-25 — v0.23.1 补齐 v0.23.0 计划遗漏（Web changes 状态拆分 + 右栏分组接线 + 缺失测试补齐 + 死代码清理，bugfix，无协议变更）+ v0.23.0 右边栏运行详情（run_id 维度 + FileChangeSource + total_bytes / PROTOCOL 0.15.0）+ v0.15.1 协议扩展（三栏工作台真实数据源）+ v0.15.2 session/status dispatch 修复 + v0.16.0 Web 工作台体验修复 + v0.16.1 跟随修复 + v0.16.2 远程访问修复 + v0.16.3 Web 工作台修复（项目菜单 + 文件树）+ v0.16.4 Web 工作台体验修复（状态灯 hover 面板 + 右栏手风琴 + 滚动条）+ v0.16.5 Web 工作台四项修复（右栏右→左展开动画 + 任务/文件变更高度可调 + 顶栏菜单重构/设置弹窗 + 文件树图标）+ v0.17.0 Web 工作台六项增强（代码卡片 + 显示设置 + 文件树图标 + 会话列表菜单 + 项目编辑 + 设置项目面板）+ v0.17.1 验收修复（BUG-008 窄视口菜单/飞出层夹取）+ v0.17.2 界面修复（显示设置字号 px 滑杆/数字输入 + 弹窗边框/四角缩放）+ v0.18.0 Web 三项增强（composer 75% 居中浮动 + 权限选择自动允许 + 会话 token 总量）+ v0.18.1 token 统计修复（读出移至 header 模型 chip 右侧 + 输入/输出 拆分）+ v0.19.0 内核托管 Web UI + 文件树状态补强（同端口静态托管 + 混合鉴权登录门 + WS cookie 通道 + 文件树目录聚合状态）+ v0.20.0 Web 加固 + TUI Files 视图（四项，无 wire 变更）+ v0.20.1 验收修复（BUG-009 焦点模型 + BUG-010 提示词）+ v0.21.0 限流可观测 + 资产完整性 + TUI 搜索 + Web 焦点作用域（四项，无 wire 变更）+ v0.21.1 验收修复（BUG-011 视图切换焦点 + BUG-012 树刷新焦点）+ v0.22.0 限流指标导出 + 资产清单扩展/抽检 + TUI 服务端搜索 + Web 键位收口（四项，三处加性 wire，PROTOCOL_VERSION 0.13.0 → 0.14.0）
 > `file/list` 沙箱化目录懒加载 + git 状态点；`$/progress` 新增 `kind:"todo"`
 > （全量快照 + 会话内单调 `revision`）与 `kind:"file_change"`（write 自研行级
 > diff / bash git 前后采样，unified diff ≤64 KiB）；`$/askQuestion` +
@@ -292,6 +292,7 @@
 > drift 2 passed / sdk 47 / **web 552 tests（51 files）** / **tui 142 tests（19 files）** /
 > web build / check-version **0.22.0** / desktop-ui；PROTOCOL_VERSION 0.15.0；
 > v0.23.0 右边栏运行详情 — run_id 维度 + FileChangeSource + total_bytes（七处加性 wire，PROTOCOL_VERSION 0.15.0 → 0.15.0）：① 协议：FileChange {run_id/seq/source/total_bytes}（FileChangeSource=write|bash+Unknown，total_bytes 仅 diff_truncated:true 时）+ 外层 ProgressValue::Todo/FileChange {run_id}（路由提示）+ TrajectoryValue::Todo/FileChange {run_id} + SessionHistoryParams {run_id?}（非法 → -32602 + data{reason:"invalid_run_id"}；先过滤 Todo/FileChange 再 cursor/limit 分页，其余 kind 全量）+ SessionRunResult {run_id?}（去重键 path → (run_id,path)，revision 按 run 单调）；② 内核：TurnRunner per-run UUID（Uuid::new_v4）+ todo_revisions/file_change_seqs: HashMap<String,u64>（UUID 键全局唯一）+ Done {run_id} + FileChangeArtifact {run_id/seq/source/total_bytes}（write_change 截断 64 KiB 前缀 + total_bytes，bash via git_sample source=bash）；③ IPC：broadcast sanitize_run_id（非法 → None 不报错）+ file_change_into_wire 透传 run_id/seq/source/total_bytes + trajectory 落盘 run_id + dispatch_session_history run_id 过滤 + SessionRunResult.run_id 回显；④ SDK：parseProgress 容忍非法 run_id/未知 source/旧数据缺字段，config VERSION 0.23.0/PROTOCOL 0.15.0；⑤ Web：todoState 按 (run_id,revision) 丢旧帧 + byRun Map + changes 按 (run_id,path) upsert + sortBySeq + RightPanel 按 run 分组（当前置顶 / 8-char short id / 未分组（历史））+ ChangeList source 徽标 + 截断 hint 已截断（原始 N KiB）+ 历史抽屉按 seq；App 捕获 SessionRunResult.run_id + session/history {run_id} 过滤 + FileTree 跳转高亮；⑥ TUI：TodoBlock 兼容 run_id（新建 todo.ts 委托，per-run when runId else legacy）；⑦ 文档：docs/specs/ipc-protocol.md 同步 0.15.0 + 52 schemas + §7.3/8.7/8.19/9.1 更新。cargo fmt / 121 agentj-core / 85 protocol / 167 ipc / sdk 47 / web 552 / tui 142 / drift 52 schemas / check-version 0.23.0/0.15.0 / web build / desktop-ui 全绿；工作区 0.22.0 → 0.23.0。
+> v0.23.1 补齐 v0.23.0 计划遗漏（bugfix，无协议变更，PROTOCOL_VERSION 保持 0.15.0）：(a) Web `changes.ts` 归约状态拆分为 `ChangesState {summary, history}`——summary 按 `(run_id, path)` upsert、history 按设计决策 #3/#15 append-only（按 seq 排序 + 按 `tool_call_id` 分组），历史抽屉可达；(b) `ChangeList.tsx` 消费 `history` prop、`RightPanel.tsx` run 分组经 `App.tsx` 传入 `groups`/`history`/`highlightedPath`/`onSelectRun` 真正接线（run 组头可点击、每组独立空态，无分组时保留 children/手风琴回退）；(c) `rightpanel.css` 补齐 `run-group*`/`history-drawer`/`hist-*`/`trunc-hint`/`src-badge*` token 化样式（此前裸节点无样式）；(d) 补齐计划缺失测试：protocol T0（+5）/ SDK T2（+7）/ IPC T5（+4）/ TUI T9（+4）/ web（+21）；(e) 删除 `agentj-core` 死代码 `bash_file_changes` helper 及单测（−1），`git_sample` 测试改断言生产路径 `source == Some(Bash)`；(f) 用户直报修复：右栏空态文案 `待协议支持` → `暂无任务`/`暂无变更`（TodoPanel/ChangeList），`handleSelectRun` 改用 `todoState.focusRun` 保留非枚举 `byRun`（修复点击 run 组头后分组丢失回退旧空态）；web +2 回归测。门禁全绿：cargo fmt / **660 Rust tests** / clippy 零警告 / drift 2 passed / sdk **54** / web **580 tests（51 files）** / tui **146 tests（19 files）** / web build（dist/version.json 0.23.1 / 0.15.0）/ check-version **0.23.1** / desktop-ui；PROTOCOL_VERSION 保持 0.15.0；工作区 0.23.0 → 0.23.1。
 > (17 crates + agentj-ui monorepo：Web / TUI / Desktop + SDK + tokens，
 > npm workspaces `apps/*`+`packages/*`，共享 SDK + protocol + tokens，
 > WebSocket 网关同端口复用，后端零改造，frontend stays in-repo)
@@ -299,6 +300,8 @@
 ## Project Status
 
 AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + 可插拔模块」架构。
+v0.23.1 已落地：**补齐 v0.23.0 计划遗漏（Web changes 状态拆分 + 右栏分组接线 + 缺失测试补齐 + 死代码清理，bugfix，无协议变更，PROTOCOL_VERSION 保持 0.15.0）**
+（(a) Web `changes.ts` 归约状态拆分 `ChangesState {summary, history}`——summary 按 `(run_id, path)` upsert、history 按设计决策 #3/#15 append-only（按 seq 排序 + 按 `tool_call_id` 分组），`ChangeList` 历史抽屉可达；(b) `ChangeList.tsx` 消费 `history` prop、`RightPanel.tsx` run 分组经 `App.tsx` 传入 `groups`/`history`/`highlightedPath`/`onSelectRun` 真正接线（run 组头可点击、每组独立空态，无分组时保留 children/手风琴回退）；(c) `rightpanel.css` 补齐 `run-group*`/`history-drawer`/`hist-*`/`trunc-hint`/`src-badge*` token 化样式；(d) 补齐计划缺失测试 protocol T0（+5）/ SDK T2（+7）/ IPC T5（+4）/ TUI T9（+4）/ web（+21）；(e) 删除 `agentj-core` 死代码 `bash_file_changes` 及单测（−1），`git_sample` 测试改断言生产路径 `source == Some(Bash)`；(f) 用户直报修复：右栏空态文案 `待协议支持` → `暂无任务`/`暂无变更`（TodoPanel/ChangeList），`handleSelectRun` 改用 `todoState.focusRun` 保留非枚举 `byRun`（修复点击 run 组头后分组丢失回退旧空态）；web +2 回归测。门禁全绿：cargo fmt / **660 Rust tests** / clippy 零警告 / drift 2 passed / sdk **54** / web **580 tests（51 files）** / tui **146 tests（19 files）** / web build / check-version **0.23.1** / desktop-ui；PROTOCOL_VERSION 保持 0.15.0；工作区 0.23.0 → 0.23.1）。
 v0.23.0 已落地：**右边栏运行详情 — run_id 维度 + FileChangeSource + total_bytes（七处加性 wire，PROTOCOL_VERSION 0.15.0 → 0.15.0）**
 （① 协议：FileChange {run_id/seq/source/total_bytes}（FileChangeSource=write|bash+Unknown）+ ProgressValue::Todo/FileChange {run_id} + TrajectoryValue::Todo/FileChange {run_id} + SessionHistoryParams {run_id?}（非法→-32602）+ SessionRunResult {run_id?}；② 内核 TurnRunner per-run UUID + HashMap<RunId,u64> + artifact source/total_bytes；③ IPC sanitize + broadcast + history 过滤；④ SDK parseProgress 容忍 + 0.23.0/0.15.0；⑤ Web reducers (run_id,revision)/(run_id,path) + RightPanel 分组 + ChangeList 徽标/截断/抽屉 + App run_id 捕获与跳转；⑥ TUI todo.ts 兼容；⑦ docs/specs/ipc-protocol.md 0.15.0 + 52 schemas。门禁全绿见下表；工作区 0.22.0 → 0.23.0）。
 v0.22.0 已落地：**限流指标导出 + 资产清单扩展/抽检 + TUI 服务端搜索 + Web 键位收口（四项，三处加性 wire）**
@@ -531,7 +534,7 @@ Desktop：Tauri v2 壳套 `apps/web` 产物，四件套 deb/AppImage/dmg/msi，
 ## Commands
 
 - `cargo test --workspace` — 全量测试
-  （646 passed / 0 failed；含 bus 密封 + FileBackedStore/Config/CLI 单测
+  （660 passed / 0 failed；含 bus 密封 + FileBackedStore/Config/CLI 单测
   + e2e_cli/e2e_permission/e2e_serve/e2e_ws/e2e_http_static 密封测试）
 - `cargo clippy --workspace --all-targets -- -D warnings` — lint 门禁（零警告）
 - `cargo bench -p agentj-model` — 模型流式基准（criterion）
@@ -541,20 +544,20 @@ Desktop：Tauri v2 壳套 `apps/web` 产物，四件套 deb/AppImage/dmg/msi，
   （`schemas/*.json` → `agentj-ui/packages/protocol/types.d.ts`）
 - `npm --prefix agentj-ui run build --workspace=@agentj/protocol` — `tsc --noEmit` 校验
 - `npm --prefix agentj-ui test --workspace=@agentj/sdk` — SDK 单测（client/router/transports/config，
-  47 tests）
+  54 tests）
 - `npm --prefix agentj-ui run generate --workspace=@agentj/sdk` — 生成 `METHODS` 常量
   （`protocol/methods.json` → `agentj-ui/packages/sdk/src/methods.ts`）
-- `npm --prefix agentj-ui test --workspace=@agentj/web` — Web 单测（vitest，552 tests / 51 files）
+- `npm --prefix agentj-ui test --workspace=@agentj/web` — Web 单测（vitest，580 tests / 51 files）
 - `npm --prefix agentj-ui run build --workspace=@agentj/web` — Web 构建（`tsc -b && vite build`）
   > 注意：Vite dev server 不监听 root 之外的 `packages/sdk` 源（alias 直连源码）；
   > 改动 SDK 后须重启 dev server，否则运行陈旧的 `METHODS`（v0.16.3「加载中」根因）。
   > Web 新依赖 `rehype-highlight`（hljs common 语言集，随 `npm --prefix agentj-ui install`
   > + lockfile 落地，v0.17.0）。
-- `bun --cwd agentj-ui/apps/tui test` — TUI 单测（含 mock WS e2e，142 tests / 19 files）
+- `bun --cwd agentj-ui/apps/tui test` — TUI 单测（含 mock WS e2e，146 tests / 19 files）
 - `./agentj-ui/apps/desktop/check-artifacts.sh linux` — Desktop 产物校验
 - `node agentj-ui/apps/desktop/check-desktop-ui.mjs` — Desktop 前端产物/配置一致性校验
-- `./scripts/check-version.sh` — 版本一致性（Cargo + sdk VERSION + desktop 均为 0.22.0，
-  PROTOCOL_VERSION 0.15.0 + `protocol/methods.json` 版本 0.14.0）
+- `./scripts/check-version.sh` — 版本一致性（Cargo + sdk VERSION + desktop 均为 0.23.1，
+  PROTOCOL_VERSION 0.15.0 + `protocol/methods.json` 版本 0.15.0）
 
 ### CI Pipelines (GitHub Actions)
 
@@ -629,15 +632,15 @@ Desktop：Tauri v2 壳套 `apps/web` 产物，四件套 deb/AppImage/dmg/msi，
   新增 `--web-dist <PATH>` 四级发现 + 启动打印 `http://<host>:<port>/` + 缺失告警；
   v0.20.0 经 `web_config().startup_warnings()` 启动打印 dist 版本警告，不阻断服务）。
 - `agentj-plugin-fixture`（dev-only）：插件 cdylib 测试夹具。
-- `schemas/*.json`：51 JSON Schema（schemars 生成，提交件 + drift 门禁）。
-- `protocol/methods.json`：方法注册表（method ↔ schema/方向/类型；21 方法，protocol_version 0.14.0）。
+- `schemas/*.json`：52 JSON Schema（schemars 生成，提交件 + drift 门禁）。
+- `protocol/methods.json`：方法注册表（method ↔ schema/方向/类型；21 方法，protocol_version 0.15.0）。
 - `docs/specs/ipc-protocol.md`：人类可读协议规范（11 节）。
 - `agentj-ui/packages/protocol`：协议包（原 `bindings` 迁入，
   `schemas/*.json` → `types.d.ts`，`json-schema-to-typescript` + `tsc --noEmit`，
   为 drift 门禁后第一门）。
 - `agentj-ui/packages/sdk`：共享 SDK（`src/client.ts` RpcClient +
   `src/router.ts` ResponseRouter/RpcTransport + `src/config.ts`
-   `VERSION="0.22.0"` + `PROTOCOL_VERSION="0.14.0"` + `resolveWsUrl` + `src/methods.ts` METHODS
+   `VERSION="0.23.1"` + `PROTOCOL_VERSION="0.15.0"` + `resolveWsUrl` + `src/methods.ts` METHODS
   + `transports/websocket.ts` WebSocketTransport
   + `transports/tcp.ts` TcpTransport；`RpcClient.request` 拦截空/未定义 method（v0.16.3）；
   v0.20.0 `index.ts` barrel 导出 `VERSION`（Web `ConnectionStatus` 消费），
@@ -697,9 +700,9 @@ Desktop：Tauri v2 壳套 `apps/web` 产物，四件套 deb/AppImage/dmg/msi，
   旧内核无 `total` → 自动降级 depth-8 本地过滤）+ 展开态键 = 会话有效 `project_root`
   （`session/new`/`session/status` 捕获，未知回退 `__default__`））。
 - `agentj-ui/apps/desktop`：Desktop 壳（Tauri v2，`frontendDist` →
-    `../../web/dist`，与 workspace 版本同源 `0.22.0`，四件套打包）。
+    `../../web/dist`，与 workspace 版本同源 `0.23.1`，四件套打包）。
 - `agentj-ui/` 根：`package.json` workspaces `["apps/*","packages/*"]`
-  （frontend stays in-repo，前端不拆独立仓，与 Rust 共享 0.22.0）。
+  （frontend stays in-repo，前端不拆独立仓，与 Rust 共享 0.23.1）。
 - **守护内核（v0.4 已实现）**：统一 Connection 抽象 + `serve --port`
   常驻多客户端 + `run --attach` + `dashboard`（见 daemon-kernel 设计文档）。
 

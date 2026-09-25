@@ -2,7 +2,7 @@ import { beforeEach, expect, test, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, within } from "@testing-library/react";
 import RightPanel from "./RightPanel";
 import TodoPanel from "./TodoPanel";
 import ChangeList from "./ChangeList";
@@ -130,4 +130,106 @@ test("a stored split is restored across unmount/remount", () => {
   const second = renderBoth();
   expect(second.container.querySelector(".aj-right__body")).toHaveAttribute("data-split", "custom");
   expect(screen.getByRole("separator", { name: RESIZER })).toHaveAttribute("aria-valuenow", "30");
+});
+
+const UUID_A = "11111111-1111-4111-8111-111111111111";
+const UUID_B = "22222222-2222-4222-8222-222222222222";
+const shortA = UUID_A.slice(0, 8);
+const shortB = UUID_B.slice(0, 8);
+
+const groupRow = (path: string, runId: string | null) => ({
+  path,
+  op: "modify" as const,
+  additions: 1,
+  deletions: 0,
+  diff: "@@",
+  toolCallId: null,
+  runId,
+});
+
+test("grouped mode renders run headers and pins the current run first", () => {
+  const groups = [
+    { runId: UUID_A, changes: [groupRow("a.txt", UUID_A)], todos: [] },
+    { runId: UUID_B, changes: [groupRow("b.txt", UUID_B)], todos: [] },
+    { runId: null, changes: [groupRow("c.txt", null)], todos: [] },
+  ];
+  const { container } = render(
+    <RightPanel collapsed={false} onToggle={() => {}} currentRunId={UUID_B} groups={groups} />,
+  );
+  expect(screen.getByText(`本次运行 ${shortB}`)).toBeInTheDocument();
+  expect(screen.getByText(`运行 ${shortA}`)).toBeInTheDocument();
+  expect(screen.getByText("未分组（历史）")).toBeInTheDocument();
+  const rendered = container.querySelectorAll(".run-group");
+  expect(rendered[0]).toHaveAttribute("data-run-id", UUID_B);
+  expect(rendered[0]).toHaveAttribute("data-current", "true");
+});
+
+test("a group with no todos and no changes shows both empty placeholders", () => {
+  const groups = [{ runId: UUID_A, changes: [], todos: [] }];
+  const { container } = render(
+    <RightPanel collapsed={false} onToggle={() => {}} currentRunId={null} groups={groups} />,
+  );
+  const group = container.querySelector(`[data-run-id="${UUID_A}"]`) as HTMLElement;
+  expect(within(group).getByText("暂无任务")).toBeInTheDocument();
+  expect(within(group).getByText("暂无变更")).toBeInTheDocument();
+});
+
+test("clicking a run-group head calls onSelectRun", () => {
+  const onSelectRun = vi.fn();
+  const groups = [{ runId: UUID_A, changes: [groupRow("a.txt", UUID_A)], todos: [] }];
+  render(
+    <RightPanel
+      collapsed={false}
+      onToggle={() => {}}
+      currentRunId={UUID_A}
+      groups={groups}
+      onSelectRun={onSelectRun}
+    />,
+  );
+  fireEvent.click(screen.getByRole("button", { name: `本次运行 ${shortA}` }));
+  expect(onSelectRun).toHaveBeenCalledWith(UUID_A);
+});
+
+test("per-group history is filtered before reaching the ChangeList drawer", () => {
+  const groups = [{ runId: UUID_A, changes: [groupRow("a.txt", UUID_A)], todos: [] }];
+  const history = [
+    { path: "a.txt", op: "add" as const, additions: 1, deletions: 0, diff: "@@", toolCallId: "c1", seq: 1, runId: UUID_A },
+    { path: "a.txt", op: "modify" as const, additions: 2, deletions: 0, diff: "@@", toolCallId: "c1", seq: 2, runId: UUID_A },
+    { path: "b.txt", op: "add" as const, additions: 3, deletions: 0, diff: "@@", toolCallId: "c2", seq: 1, runId: UUID_B },
+  ];
+  const { container } = render(
+    <RightPanel
+      collapsed={false}
+      onToggle={() => {}}
+      currentRunId={UUID_A}
+      groups={groups}
+      history={history}
+    />,
+  );
+  expect(screen.getByText("历史记录 (2)")).toBeInTheDocument();
+  expect(container.querySelectorAll(".history-entry").length).toBe(2);
+});
+
+test("css contract — run groups and history drawer are token-styled", () => {
+  const css = readCss("rightpanel.css");
+  for (const cls of [
+    ".run-group",
+    ".run-group__head",
+    ".history-drawer",
+    ".history-list",
+    ".history-entry",
+    ".hist-seq",
+    ".hist-tool",
+    ".hist-toolgroup",
+    ".hist-counts",
+    ".hist-src",
+    ".trunc-hint",
+    ".src-badge",
+    ".src-badge.src-write",
+    ".src-badge.src-bash",
+  ]) {
+    expect(css).toContain(cls);
+  }
+  expect(css).toContain('.run-group[data-current="true"] button.run-group__head');
+  expect(css).toContain('.run-group[data-run-id="__legacy__"] .run-group__head');
 });

@@ -169,6 +169,30 @@ mod tests {
     }
 
     #[test]
+    fn session_history_params_run_id_optional() {
+        let p: SessionHistoryParams = serde_json::from_str(r#"{"session_id":"s1"}"#).unwrap();
+        assert!(p.run_id.is_none());
+
+        let with = SessionHistoryParams {
+            session_id: "s1".into(),
+            cursor: None,
+            limit: None,
+            run_id: Some("550e8400-e29b-41d4-a716-446655440000".into()),
+        };
+        let json = serde_json::to_value(&with).unwrap();
+        assert_eq!(json["run_id"], "550e8400-e29b-41d4-a716-446655440000");
+
+        let none = SessionHistoryParams {
+            session_id: "s1".into(),
+            cursor: None,
+            limit: None,
+            run_id: None,
+        };
+        let json = serde_json::to_value(&none).unwrap();
+        assert!(json.get("run_id").is_none(), "None run_id must be omitted");
+    }
+
+    #[test]
     fn session_history_result_events_and_next_cursor() {
         let ev = TrajectoryEvent {
             session_id: "s1".into(),
@@ -330,5 +354,26 @@ mod tests {
         };
         let json = serde_json::to_value(&p).unwrap();
         assert!(json.get("progress_token").is_none());
+    }
+
+    #[test]
+    fn session_run_result_run_id_omitted_when_none() {
+        let none = SessionRunResult {
+            content: "hi".into(),
+            tool_calls: None,
+            usage: None,
+            run_id: None,
+        };
+        let json = serde_json::to_value(&none).unwrap();
+        assert!(json.get("run_id").is_none(), "None run_id must be omitted");
+
+        let some = SessionRunResult {
+            content: "hi".into(),
+            tool_calls: None,
+            usage: None,
+            run_id: Some("550e8400-e29b-41d4-a716-446655440000".into()),
+        };
+        let json = serde_json::to_value(&some).unwrap();
+        assert_eq!(json["run_id"], "550e8400-e29b-41d4-a716-446655440000");
     }
 }
