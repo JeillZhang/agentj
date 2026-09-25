@@ -1,10 +1,21 @@
 import { describe, expect, test } from "bun:test";
 import { act } from "react";
 import { testRender } from "@opentui/react/test-utils";
-import { rowsFromFrame, nextKey, rowGlyph, RunTranscript, applyTodoFrame, EMPTY_TODOS } from "./runview.tsx";
+import {
+  rowsFromFrame,
+  nextKey,
+  rowGlyph,
+  RunTranscript,
+  applyTodoFrame,
+  EMPTY_TODO_STATE,
+  EMPTY_TODOS,
+} from "./runview.tsx";
 import { ThemeProvider } from "./theme.tsx";
 import { parseProgress } from "@agentj/sdk";
 import type { ProgressFrame } from "@agentj/sdk";
+
+const RUN_A = "11111111-1111-4111-8111-111111111111";
+const RUN_B = "22222222-2222-4222-8222-222222222222";
 
 describe("rowsFromFrame", () => {
   test("appends a text row per parsed text frame with sequential keys", () => {
@@ -43,6 +54,30 @@ describe("rowsFromFrame", () => {
     const rows = rowsFromFrame([], { kind: "unknown", raw: { weird: true } });
     expect(rows[0]).toMatchObject({ kind: "text" });
     expect((rows[0] as { text: string }).text).toContain("weird");
+  });
+  test("ignores a file_change frame without adding rows", () => {
+    const before = rowsFromFrame([], { kind: "text", text: "hello" });
+    const fileChange: ProgressFrame = {
+      kind: "file_change",
+      session_id: "s1",
+      runId: RUN_A,
+      change: {
+        path: "a",
+        op: "modify",
+        additions: 1,
+        deletions: 0,
+        tool_call_id: null,
+        diff: null,
+        source: "bash",
+      },
+    };
+    let after: typeof before = [];
+    expect(() => {
+      after = rowsFromFrame(before, fileChange);
+    }).not.toThrow();
+    expect(after).toHaveLength(1);
+    expect(after.some((row) => (row as { kind: string }).kind === "file_change")).toBe(false);
+    expect(after[0]).toEqual(before[0]);
   });
 });
 
@@ -130,5 +165,76 @@ describe("TodoBlock", () => {
     expect(afterStale).toBe(applied);
     expect(afterStale.items).toEqual(rev2.items);
     expect(afterStale.revision).toBe(2);
+  });
+
+  test("tracks todo run_id per run and ignores stale same-run revisions", () => {
+    const applied = applyTodoFrame(EMPTY_TODO_STATE, {
+      kind: "todo",
+      session_id: "s1",
+      runId: RUN_A,
+      revision: 1,
+      items: [{ id: "a1", content: "run a first", status: "pending" }],
+    });
+    expect(applied.items).toHaveLength(1);
+    expect(applied.runId).toBe(RUN_A);
+
+    const advanced = applyTodoFrame(applied, {
+      kind: "todo",
+      session_id: "s1",
+      runId: RUN_A,
+      revision: 5,
+      items: [{ id: "a2", content: "run a fifth", status: "completed" }],
+    });
+    expect(advanced.revision).toBe(5);
+
+    const stale = applyTodoFrame(advanced, {
+      kind: "todo",
+      session_id: "s1",
+      runId: RUN_A,
+      revision: 4,
+      items: [{ id: "a0", content: "run a stale", status: "pending" }],
+    });
+    expect(stale).toBe(advanced);
+    expect(stale.items).toEqual(advanced.items);
+  });
+
+  test("applies a different run with revision 1 after the first run advanced", () => {
+    let state = applyTodoFrame(EMPTY_TODO_STATE, {
+      kind: "todo",
+      session_id: "s1",
+      runId: RUN_A,
+      revision: 1,
+      items: [{ id: "a1", content: "run a first", status: "pending" }],
+    });
+    state = applyTodoFrame(state, {
+      kind: "todo",
+      session_id: "s1",
+      runId: RUN_A,
+      revision: 9,
+      items: [{ id: "a9", content: "run a ninth", status: "completed" }],
+    });
+    const runB = applyTodoFrame(state, {
+      kind: "todo",
+      session_id: "s1",
+      runId: RUN_B,
+      revision: 1,
+      items: [{ id: "b1", content: "run b first", status: "in_progress" }],
+    });
+    expect(runB).not.toBe(state);
+    expect(runB.runId).toBe(RUN_B);
+    expect(runB.revision).toBe(1);
+    expect(runB.items).toEqual([{ id: "b1", content: "run b first", status: "in_progress" }]);
+  });
+
+  test("treats a non-UUID runId as the legacy null bucket and still renders", () => {
+    const state = applyTodoFrame(EMPTY_TODO_STATE, {
+      kind: "todo",
+      session_id: "s1",
+      runId: "not-a-uuid",
+      revision: 1,
+      items: [{ id: "l1", content: "legacy bucket", status: "in_progress" }],
+    });
+    expect(state.items).toHaveLength(1);
+    expect(state.runId).toBeNull();
   });
 });
