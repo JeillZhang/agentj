@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
-import { Check, ChevronDown, Clock, Folder, Minus, Pencil, X } from "lucide-react";
+import { Check, ChevronDown, ChevronsUp, Clock, Folder, Minus, Pencil, X } from "lucide-react";
 import { METHODS, parseProgress, RpcClient } from "@agentj/sdk";
 import type { ProgressFrame } from "@agentj/sdk";
 import CodeBlockCard from "./components/CodeBlockCard";
@@ -14,7 +14,13 @@ import { loadAskCollapsed, saveAskCollapsed } from "./layoutStore";
 import { createProject, loadCurrentProject, loadProjects, setCurrentProject } from "./projectStore";
 import type { Project } from "./projectStore";
 import { formatUsageSummary, formatUsageTitle } from "./tokenUsage";
-import { COLLAPSE_LOCK_MS, EXPAND_DISTANCE, classifyScroll } from "./composerCollapse";
+import {
+  COLLAPSE_LOCK_MS,
+  EXPAND_DISTANCE,
+  classifyScroll,
+  nextCollapsed,
+  type ComposerCollapseEvent,
+} from "./composerCollapse";
 
 export type RunEntry =
   | { kind: "user"; text: string }
@@ -373,10 +379,17 @@ export default function RunPanel({
   const [draft, setDraft] = useState("");
   const busy = useRef(false);
   const [isBusy, setIsBusy] = useState(false);
+  const [collapsed, setCollapsed] = useState(false);
+  const collapsedRef = useRef(false);
+  collapsedRef.current = collapsed;
+  const hasPendingQuestionRef = useRef(false);
+  const focusPromptRef = useRef(false);
 
   const [demo, setDemo] = useState(isDemoEnabled);
   const [askVisible, setAskVisible] = useState(isDemoEnabled);
   const [pendingQuestion, setPendingQuestion] = useState<AskQuestionView | null>(null);
+  const hasPendingQuestion = pendingQuestion !== null;
+  hasPendingQuestionRef.current = hasPendingQuestion;
   const [askCollapsed, setAskCollapsed] = useState(loadAskCollapsed);
   const [chosenLabel, setChosenLabel] = useState<string | undefined>(undefined);
   const askSubmitted = useRef(false);
@@ -421,6 +434,7 @@ export default function RunPanel({
   const pickerRef = useRef<HTMLDivElement | null>(null);
   const cardRef = useRef<HTMLElement | null>(null);
   const composerRef = useRef<HTMLDivElement | null>(null);
+  const promptRef = useRef<HTMLTextAreaElement | null>(null);
   const atOpen = atFilter !== null;
 
   const filteredFiles = atFilter !== null
@@ -448,6 +462,26 @@ export default function RunPanel({
       window.removeEventListener("agentj:projects-updated", sync);
     };
   }, []);
+
+  // Force-expand whenever a question is waiting (never hide the ask card).
+  useEffect(() => {
+    if (hasPendingQuestion) applyCollapseEvent({ type: "question-appeared" });
+  }, [hasPendingQuestion]);
+
+  // Close every composer popover when collapsing; the composer hides them anyway.
+  useEffect(() => {
+    if (!collapsed) return;
+    setPickerOpen(false);
+    setAtFilter(null);
+    setSlashOpen(false);
+  }, [collapsed]);
+
+  // Focus the prompt only for the explicit click-to-expand path (never on auto-expand).
+  useEffect(() => {
+    if (collapsed || !focusPromptRef.current) return;
+    focusPromptRef.current = false;
+    promptRef.current?.focus({ preventScroll: true });
+  }, [collapsed]);
 
   useEffect(() => {
     if (!client) return;
@@ -491,7 +525,7 @@ export default function RunPanel({
     const composer = composerRef.current;
     if (!card || !composer) return;
     const applyFullBoxHeight = (height: number) => {
-      if (height <= 0) return;
+      if (height <= 0 || collapsedRef.current) return; // frozen while collapsed
       card.style.setProperty("--aj-composer-h", `${Math.round(height)}px`);
     };
     applyFullBoxHeight(composer.getBoundingClientRect().height);
@@ -503,6 +537,16 @@ export default function RunPanel({
     observer.observe(composer);
     return () => observer.disconnect();
   }, []);
+
+  // Re-publish the live measurement once expanded again (frozen while collapsed).
+  useEffect(() => {
+    if (collapsed) return;
+    const card = cardRef.current;
+    const composer = composerRef.current;
+    if (!card || !composer) return;
+    const height = composer.getBoundingClientRect().height;
+    if (height > 0) card.style.setProperty("--aj-composer-h", `${Math.round(height)}px`);
+  }, [collapsed]);
 
   function handleDraftChange(v: string) {
     setDraft(v);
@@ -561,6 +605,25 @@ export default function RunPanel({
 
   function handleAskSkip() {
     setAskVisible(false);
+  }
+
+  function applyCollapseEvent(event: ComposerCollapseEvent) {
+    setCollapsed((current) =>
+      nextCollapsed(current, event, { hasPendingQuestion: hasPendingQuestionRef.current }),
+    );
+  }
+
+  function handleActionClick() {
+    if (collapsed) {
+      focusPromptRef.current = true;
+      applyCollapseEvent({ type: "expand-click" });
+      return;
+    }
+    if (busy.current) return;
+    submit(draft);
+    setDraft("");
+    setAtFilter(null);
+    setSlashOpen(false);
   }
 
   async function settlePendingQuestion(answers: string[], skipped: boolean, answerLabel: string) {
@@ -664,8 +727,11 @@ export default function RunPanel({
         pendingTool={pendingTool}
         model={model}
         elapsedMs={elapsedMs}
+        collapsed={collapsed}
+        onLeaveBottom={() => applyCollapseEvent({ type: "scroll-away" })}
+        onReachBottom={() => applyCollapseEvent({ type: "reach-bottom" })}
       />
-      <div ref={composerRef} className="aj-composer-card">
+      <div ref={composerRef} className="aj-composer-card" data-collapsed={collapsed ? "true" : undefined}>
         <div className="aj-composer__header">
           <div className="aj-composer__picker-wrap" ref={pickerRef}>
             <button
@@ -808,9 +874,10 @@ export default function RunPanel({
           />
         )}
 
-        <div style={{ position: "relative" }}>
+        <div className="aj-composer__body" style={{ position: "relative" }}>
           <label htmlFor="aj-prompt" className="aj-visually-hidden">prompt</label>
           <textarea
+            ref={promptRef}
             id="aj-prompt"
             className="aj-input"
             value={draft}
@@ -918,21 +985,17 @@ export default function RunPanel({
             </ul>
           )}
         </div>
-        <ComposerOptions model={model}>
+        <ComposerOptions model={model} collapsed={collapsed}>
           <button
             type="button"
             className="send aj-button--send"
-            aria-label="发送"
-            disabled={!activeSessionId || isBusy}
-            onClick={() => {
-              if (busy.current) return;
-              submit(draft);
-              setDraft("");
-              setAtFilter(null);
-              setSlashOpen(false);
-            }}
+            aria-label={collapsed ? "展开输入框" : "发送"}
+            aria-expanded={collapsed ? false : undefined}
+            aria-controls={collapsed ? "aj-prompt" : undefined}
+            disabled={collapsed ? false : !activeSessionId || isBusy}
+            onClick={handleActionClick}
           >
-            ↑
+            {collapsed ? <ChevronsUp size={16} aria-hidden="true" /> : "↑"}
           </button>
         </ComposerOptions>
       </div>

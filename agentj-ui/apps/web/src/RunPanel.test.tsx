@@ -653,3 +653,179 @@ describe("ConversationFeed collapse reporting", () => {
     }
   });
 });
+
+describe("RunPanel composer scroll collapse", () => {
+  function setScroll(
+    el: HTMLElement,
+    { top, height, client }: { top: number; height: number; client: number },
+  ) {
+    Object.defineProperty(el, "scrollHeight", { configurable: true, value: height });
+    Object.defineProperty(el, "clientHeight", { configurable: true, value: client });
+    el.scrollTop = top;
+  }
+  function collapseViaScroll(container: HTMLElement) {
+    const conv = container.querySelector(".aj-conv") as HTMLElement;
+    setScroll(conv, { top: 600, height: 1000, client: 400 });
+    fireEvent.scroll(conv);
+    fireEvent.wheel(conv, { deltaY: -120 });
+    setScroll(conv, { top: 100, height: 1000, client: 400 });
+    fireEvent.scroll(conv);
+  }
+  function capturingClient() {
+    let handler: ((method: string, params: unknown) => void) | null = null;
+    const client = {
+      setNotificationHandler: (h: (method: string, params: unknown) => void) => {
+        handler = h;
+      },
+      removeNotificationHandler: () => {},
+    } as unknown as Parameters<typeof RunPanel>[0]["client"];
+    return {
+      client,
+      emit: (method: string, params: unknown) =>
+        act(() => {
+          handler?.(method, params);
+        }),
+    };
+  }
+
+  it("collapses on scroll away and swaps the button into expand mode", () => {
+    const { container } = render(<RunPanel client={noopClient} activeSessionId="s1" />);
+    expect(container.querySelector(".aj-composer-card")).not.toHaveAttribute("data-collapsed");
+    collapseViaScroll(container);
+    const card = container.querySelector(".aj-composer-card") as HTMLElement;
+    expect(card).toHaveAttribute("data-collapsed", "true");
+    const button = screen.getByRole("button", { name: "展开输入框" });
+    expect(button).toHaveAttribute("aria-expanded", "false");
+    expect(button.querySelector("svg")).not.toBeNull();
+  });
+
+  it("expands on click, keeps the draft and focuses the textarea", async () => {
+    const { container } = render(<RunPanel client={noopClient} activeSessionId="s1" />);
+    const textarea = container.querySelector("#aj-prompt") as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: "keep me" } });
+    collapseViaScroll(container);
+    fireEvent.click(screen.getByRole("button", { name: "展开输入框" }));
+    await waitFor(() =>
+      expect(container.querySelector(".aj-composer-card")).not.toHaveAttribute("data-collapsed"),
+    );
+    expect(textarea.value).toBe("keep me");
+    await waitFor(() => expect(document.activeElement).toBe(textarea));
+    expect(screen.getByRole("button", { name: "发送" })).toBeTruthy();
+  });
+
+  it("keeps the composer expanded while a question is pending", () => {
+    const { client, emit } = capturingClient();
+    const { container } = render(<RunPanel client={client} activeSessionId="s1" />);
+    emit(METHODS.askQuestion, {
+      question_id: "q1",
+      session_id: "s1",
+      question: "Continue?",
+      options: [{ id: "yes", label: "Yes" }],
+    });
+    collapseViaScroll(container);
+    expect(container.querySelector(".aj-composer-card")).not.toHaveAttribute("data-collapsed");
+  });
+
+  it("force-expands when a question arrives while collapsed", () => {
+    const { client, emit } = capturingClient();
+    const { container } = render(<RunPanel client={client} activeSessionId="s1" />);
+    collapseViaScroll(container);
+    expect(container.querySelector(".aj-composer-card")).toHaveAttribute("data-collapsed", "true");
+    emit(METHODS.askQuestion, {
+      question_id: "q1",
+      session_id: "s1",
+      question: "Continue?",
+      options: [{ id: "yes", label: "Yes" }],
+    });
+    expect(container.querySelector(".aj-composer-card")).not.toHaveAttribute("data-collapsed");
+  });
+
+  it("collapses in demo mode (demo ask visibility is not a guard)", () => {
+    setDemoEnabled(true);
+    try {
+      const { container } = render(<RunPanel client={noopClient} activeSessionId="s1" />);
+      collapseViaScroll(container);
+      expect(container.querySelector(".aj-composer-card")).toHaveAttribute("data-collapsed", "true");
+    } finally {
+      setDemoEnabled(false);
+    }
+  });
+
+  it("freezes --aj-composer-h while collapsed and resumes after expand", () => {
+    const captured: { cb: ResizeObserverCallback | null } = { cb: null };
+    class FakeResizeObserver {
+      constructor(cb: ResizeObserverCallback) {
+        captured.cb = cb;
+      }
+      observe = vi.fn();
+      unobserve = () => {};
+      disconnect = vi.fn();
+    }
+    vi.stubGlobal("ResizeObserver", FakeResizeObserver);
+    try {
+      const { container } = render(<RunPanel client={noopClient} activeSessionId="s1" />);
+      const composer = container.querySelector(".aj-composer-card") as HTMLElement;
+      const card = container.querySelector(".aj-card") as HTMLElement;
+      const report = (size: number) =>
+        act(() => {
+          captured.cb?.(
+            [{ target: composer, borderBoxSize: [{ blockSize: size, inlineSize: 100 }] } as unknown as ResizeObserverEntry],
+            {} as ResizeObserver,
+          );
+        });
+      report(180);
+      expect(card.style.getPropertyValue("--aj-composer-h")).toBe("180px");
+      collapseViaScroll(container);
+      report(90);
+      expect(card.style.getPropertyValue("--aj-composer-h")).toBe("180px");
+      fireEvent.click(screen.getByRole("button", { name: "展开输入框" }));
+      report(200);
+      expect(card.style.getPropertyValue("--aj-composer-h")).toBe("200px");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("closes composer popovers when collapsing", () => {
+    const { container } = render(<RunPanel client={noopClient} activeSessionId="s1" />);
+    const trigger = container.querySelector("#composer-model-trigger") as HTMLButtonElement;
+    fireEvent.click(trigger);
+    expect(container.querySelector(".pop")).not.toBeNull();
+    collapseViaScroll(container);
+    expect(container.querySelector(".pop")).toBeNull();
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("keeps the collapsed action button enabled without an active session", () => {
+    const { container } = render(<RunPanel client={noopClient} activeSessionId={null} />);
+    expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
+    collapseViaScroll(container);
+    expect(screen.getByRole("button", { name: "展开输入框" })).not.toBeDisabled();
+  });
+
+  it("keeps the collapsed action button enabled while a run is busy", async () => {
+    const busyClient = {
+      request: () => new Promise(() => {}),
+      setNotificationHandler: () => {},
+      removeNotificationHandler: () => {},
+    } as unknown as Parameters<typeof RunPanel>[0]["client"];
+    const { container } = render(<RunPanel client={busyClient} activeSessionId="s1" />);
+    fireEvent.change(container.querySelector("#aj-prompt") as HTMLTextAreaElement, {
+      target: { value: "go" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "发送" })).toBeDisabled());
+    collapseViaScroll(container);
+    expect(screen.getByRole("button", { name: "展开输入框" })).not.toBeDisabled();
+  });
+
+  it("starts expanded after a session remount (key change)", () => {
+    const { container, rerender } = render(
+      <RunPanel key="s1" client={noopClient} activeSessionId="s1" />,
+    );
+    collapseViaScroll(container);
+    expect(container.querySelector(".aj-composer-card")).toHaveAttribute("data-collapsed", "true");
+    rerender(<RunPanel key="s2" client={noopClient} activeSessionId="s2" />);
+    expect(container.querySelector(".aj-composer-card")).not.toHaveAttribute("data-collapsed");
+  });
+});
