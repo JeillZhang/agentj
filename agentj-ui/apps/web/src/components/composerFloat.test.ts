@@ -140,4 +140,21 @@ describe("collapsed composer contracts", () => {
     const card = ruleBody(css, '.aj-composer-card[data-collapsed="true"]');
     expect(card).not.toMatch(/overflow/);
   });
+
+  test("BUG-016 — send button right-anchors itself when the toolbar wraps (zero X drift)", () => {
+    // At 1240–1280px the center column is too narrow for all four selectors +
+    // spacer + send, so .comp-tools (flex-wrap: wrap) pushes the send button
+    // onto its own second line. With default left alignment it then sits at the
+    // line's left edge while the collapsed single-line state (selectors
+    // max-width:0, spacer flex:1) pins it to the right edge → dx≈370–400px.
+    // margin-left:auto on the button keeps it at the same right edge in both
+    // states, preserving the "X/Y zero displacement (±1px)" acceptance promise.
+    const send = ruleBody(readCss("composer.css"), ".aj-button--send");
+    expect(send).toMatch(/margin-left:\s*auto/);
+    // Right-anchoring must stay on the button alone: a global justify-content
+    // change on .comp-tools would right-align every wrapped chip row on narrow
+    // viewports (390px fallback), so selectors must keep their left alignment.
+    const tools = ruleBody(readCss("options.css"), ".comp-tools");
+    expect(tools).not.toMatch(/justify-content:\s*flex-end/);
+  });
 });

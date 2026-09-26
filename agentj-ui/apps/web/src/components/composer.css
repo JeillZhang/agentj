@@ -231,6 +231,11 @@
   font-size: 14px;
   cursor: pointer;
   flex-shrink: 0;
+  /* BUG-016 — right-anchor the send button so a wrapped toolbar line (1240–
+     1280px, four selectors + spacer + send exceed the center column) keeps the
+     button at the same right edge as the collapsed single-line state, holding
+     the "X/Y zero displacement (±1px)" promise. */
+  margin-left: auto;
   padding: 0;
 }
 
