@@ -230,5 +230,6 @@ sequenceDiagram
 - 全部任务 **T0–T7** 已完成（实现计划 `docs/superpowers/plans/2026-09-25-agentj-composer-scroll-collapse-plan.md`，逐任务 `ajteam-task-reviewer` review PASS）。
 - 实现面：`composerCollapse.ts` 纯状态机（48/40 迟滞 + 迁移守卫 + 260ms 锁）；`ConversationFeed` 意图双判 / 程序化排除；`RunPanel` `data-collapsed` / 双职责按钮 / 提问守卫与强制展开 / `--aj-composer-h` 冻结 / 弹层关闭 / 点击聚焦；`ComposerOptions` `collapsed` prop；`composer.css` 分段收拢契约 + reduced-motion 复用。
 - `PROTOCOL_VERSION` 保持 0.15.0；无协议 / SDK / 后端变更；工作区 0.23.1 → 0.24.0。
-- 全量门禁（T7）：cargo fmt（clean）/ cargo test --workspace（660 passed / 0 failed）/ clippy -D warnings（零警告）/ drift（2 passed，52 schemas）/ SDK 54 / Web 606（52 files）/ Web build（dist/version.json 0.24.0 · 0.15.0）/ TUI 146（19 files）/ check-version.sh（0.24.0 · 0.15.0）/ check-desktop-ui.mjs（desktop-ui-ok）全绿。
+- 全量门禁（T7；评审修复波后复跑）：cargo fmt（clean）/ cargo test --workspace（660 passed / 0 failed）/ clippy -D warnings（零警告）/ drift（2 passed，52 schemas）/ SDK 54 / Web 609（52 files）/ Web build（dist/version.json 0.24.0 · 0.15.0）/ TUI 146（19 files）/ check-version.sh（0.24.0 · 0.15.0）/ check-desktop-ui.mjs（desktop-ui-ok）全绿。
 - 实机 Playwright 验收由 `jskill-test-acceptance` 跟进（零位移 / 200ms 动画 / reduced-motion 瞬切 / 窄视口 / 亮暗主题）。
+- 评审复核（Phase 5）：代码评审 + Oracle 对抗复核（headless Chromium 探针：按钮 X/Y 零位移、折叠 ~180ms 单调）→ 修复波（真实浏览器点击展开焦点 / 展开期几何保持 / 锁过期回底重判 / 程序化标记守卫 / header 上限 120px）+ 3 回归测；复跑全量门禁全绿（Web 609）。

@@ -19,11 +19,13 @@
 - ✅ **(d) `composer.css` 分段收拢契约 + reduced-motion**：header / 输入区 / 工具栏选择器逐段收拢为 0 高、选择器淡出且不占位、按钮行高与按钮不参与收拢；过渡使用 `--aj-motion`/`--aj-ease`；reduced-motion 复用既有 `@media (prefers-reduced-motion: reduce)` + `:root[data-reduced-motion="true"]` 双层机制；4 CSS 契约单测。
 - ✅ **(e) 版本 T4–T6**：Cargo workspace + `Cargo.lock`（17 成员）+ `scripts/check-version.sh`（5 断言）+ sdk `VERSION`/config 测试 + desktop 三清单与 lockfile 同步至 0.24.0；`PROTOCOL_VERSION` 保持 0.15.0。
 
+- ✅ **(f) 评审修复波（Phase 5：代码评审 + Oracle 对抗复核）**：① 延迟 visibility 切换（展开瞬时可见 → 点击展开焦点生效；收缩延迟至 200ms 动画结束，header/输入区/ask/选择器四段统一）；② 展开期 `--aj-composer-h` settle 保持 + 窗口后一次性重测（防展开瞬间次冻结高度发布 → scrollTop 钳制/底部漂移）；③ 260ms 锁过期回底重判（锁内 park 在底部补报 reach-bottom）；④ 程序化标记仅 `delta >= 0` 消耗（不吞流式期真实上滚）；⑤ header 展开上限 80 → 120px。3 回归测（park 回底展开 / 点击展开后再上滚收缩 / 标记不吞真实上滚）+ freeze 测试强化（settle 保持断言）；web 606 → 609（52 files）。
+
 ## 验证结果（前端门禁，2026-09-26）
 
 | 门禁 | 结果 |
 |---|---|
-| `npm --prefix agentj-ui test --workspace=@agentj/web` | **606 passed（52 files）**（580 → +26） |
+| `npm --prefix agentj-ui test --workspace=@agentj/web` | **609 passed（52 files）**（580 → +29，含评审修复波 3 测） |
 | `npm --prefix agentj-ui test --workspace=@agentj/sdk` | **54 passed（6 files）**（本侧未改；Rust / protocol 不受本侧影响） |
 | `bun --cwd agentj-ui/apps/tui test` | **146 passed（19 files）**（本侧未改） |
 | `npm --prefix agentj-ui run build --workspace=@agentj/web` | clean（dist/version.json product_version 0.24.0 / protocol 0.15.0） |
@@ -52,5 +54,5 @@
 
 ## 下一步
 
-- **v0.24.0 已开发完成，待 `jskill-test-acceptance` 实机验收 → PASS 后自动创建 PR**（用户负责合并）。
+- **v0.24.0 已开发完成（含 Phase 5 评审修复波，复跑全量门禁全绿：web 609 / Rust 660 / sdk 54 / tui 146 / build / version 0.24.0），待 `jskill-test-acceptance` 实机验收 → PASS 后自动创建 PR**（用户负责合并）。
 - 下一特性从「待实施」表选择（候选 ③ Web 接入服务端搜索；后端候选见 `summary_and_next_se.md`）。
