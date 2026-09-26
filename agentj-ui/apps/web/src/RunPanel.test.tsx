@@ -540,3 +540,116 @@ describe("RunPanel composer height CSS variable", () => {
     }
   });
 });
+
+describe("ConversationFeed collapse reporting", () => {
+  function setScroll(
+    el: HTMLElement,
+    { top, height, client }: { top: number; height: number; client: number },
+  ) {
+    Object.defineProperty(el, "scrollHeight", { configurable: true, value: height });
+    Object.defineProperty(el, "clientHeight", { configurable: true, value: client });
+    el.scrollTop = top;
+  }
+
+  it("reports leaving the bottom on a user upward scroll past 48px", () => {
+    const onLeaveBottom = vi.fn();
+    const onReachBottom = vi.fn();
+    const { container } = render(
+      <ConversationFeed
+        entries={[user("hi")]}
+        onLeaveBottom={onLeaveBottom}
+        onReachBottom={onReachBottom}
+      />,
+    );
+    const conv = container.querySelector(".aj-conv") as HTMLElement;
+    setScroll(conv, { top: 600, height: 1000, client: 400 });
+    fireEvent.scroll(conv); // arriving at the bottom (downward) reports reach-bottom
+    onReachBottom.mockClear(); // isolate the upward-scroll behavior below
+    fireEvent.wheel(conv, { deltaY: -120 });
+    setScroll(conv, { top: 100, height: 1000, client: 400 });
+    fireEvent.scroll(conv);
+    expect(onLeaveBottom).toHaveBeenCalledTimes(1);
+    expect(onReachBottom).not.toHaveBeenCalled();
+  });
+
+  it("reports reaching the bottom on a user downward scroll inside 40px", () => {
+    const onReachBottom = vi.fn();
+    const { container } = render(
+      <ConversationFeed entries={[user("hi")]} onReachBottom={onReachBottom} />,
+    );
+    const conv = container.querySelector(".aj-conv") as HTMLElement;
+    setScroll(conv, { top: 100, height: 1000, client: 400 });
+    fireEvent.scroll(conv);
+    fireEvent.wheel(conv, { deltaY: 120 });
+    setScroll(conv, { top: 580, height: 1000, client: 400 });
+    fireEvent.scroll(conv);
+    expect(onReachBottom).toHaveBeenCalledTimes(1);
+  });
+
+  it("ignores the programmatic auto-follow scroll", () => {
+    const onLeaveBottom = vi.fn();
+    const scrollIntoView = vi.fn();
+    (Element.prototype as unknown as { scrollIntoView?: unknown }).scrollIntoView = scrollIntoView;
+    try {
+      const { container, rerender } = render(
+        <ConversationFeed entries={[user("hi")]} onLeaveBottom={onLeaveBottom} />,
+      );
+      const conv = container.querySelector(".aj-conv") as HTMLElement;
+      setScroll(conv, { top: 100, height: 1000, client: 400 });
+      rerender(
+        <ConversationFeed entries={[user("hi"), user("go")]} onLeaveBottom={onLeaveBottom} />,
+      );
+      expect(scrollIntoView).toHaveBeenCalled();
+      fireEvent.scroll(conv); // consumed as the programmatic follow
+      fireEvent.wheel(conv, { deltaY: -120 });
+      setScroll(conv, { top: 50, height: 1000, client: 400 });
+      fireEvent.scroll(conv);
+      expect(onLeaveBottom).toHaveBeenCalledTimes(1);
+    } finally {
+      delete (Element.prototype as unknown as { scrollIntoView?: unknown }).scrollIntoView;
+    }
+  });
+
+  it("classifies a fresh wheel gesture as intent when the scroll delta is zero", () => {
+    const onLeaveBottom = vi.fn();
+    const { container } = render(
+      <ConversationFeed entries={[user("hi")]} onLeaveBottom={onLeaveBottom} />,
+    );
+    const conv = container.querySelector(".aj-conv") as HTMLElement;
+    setScroll(conv, { top: 100, height: 1000, client: 400 });
+    fireEvent.scroll(conv); // baseline (distance 500 -> no event)
+    expect(onLeaveBottom).not.toHaveBeenCalled();
+    fireEvent.wheel(conv, { deltaY: -120 });
+    fireEvent.scroll(conv); // zero delta -> the fresh gesture decides
+    expect(onLeaveBottom).toHaveBeenCalledTimes(1);
+  });
+
+  it("pauses scroll-derived decisions for 260ms after a collapse toggle", () => {
+    vi.useFakeTimers();
+    try {
+      const onLeaveBottom = vi.fn();
+      const { container, rerender } = render(
+        <ConversationFeed entries={[user("hi")]} collapsed={false} onLeaveBottom={onLeaveBottom} />,
+      );
+      const conv = container.querySelector(".aj-conv") as HTMLElement;
+      rerender(
+        <ConversationFeed entries={[user("hi")]} collapsed={true} onLeaveBottom={onLeaveBottom} />,
+      );
+      setScroll(conv, { top: 600, height: 1000, client: 400 });
+      fireEvent.scroll(conv);
+      fireEvent.wheel(conv, { deltaY: -120 });
+      setScroll(conv, { top: 100, height: 1000, client: 400 });
+      fireEvent.scroll(conv);
+      expect(onLeaveBottom).not.toHaveBeenCalled();
+      act(() => {
+        vi.advanceTimersByTime(300);
+      });
+      fireEvent.wheel(conv, { deltaY: -120 });
+      setScroll(conv, { top: 80, height: 1000, client: 400 });
+      fireEvent.scroll(conv);
+      expect(onLeaveBottom).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

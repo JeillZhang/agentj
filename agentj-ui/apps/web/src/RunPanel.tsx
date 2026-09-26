@@ -14,6 +14,7 @@ import { loadAskCollapsed, saveAskCollapsed } from "./layoutStore";
 import { createProject, loadCurrentProject, loadProjects, setCurrentProject } from "./projectStore";
 import type { Project } from "./projectStore";
 import { formatUsageSummary, formatUsageTitle } from "./tokenUsage";
+import { COLLAPSE_LOCK_MS, EXPAND_DISTANCE, classifyScroll } from "./composerCollapse";
 
 export type RunEntry =
   | { kind: "user"; text: string }
@@ -185,25 +186,89 @@ export function ConversationFeed({
   pendingTool,
   model,
   elapsedMs,
+  collapsed = false,
+  onLeaveBottom,
+  onReachBottom,
 }: {
   entries: RunEntry[];
   pendingTool?: string;
   model?: string;
   elapsedMs?: number;
+  collapsed?: boolean;
+  onLeaveBottom?: () => void;
+  onReachBottom?: () => void;
 }) {
+  const convRef = useRef<HTMLDivElement | null>(null);
   const endRef = useRef<HTMLDivElement | null>(null);
   const [pinned, setPinned] = useState(true);
+  const programmaticRef = useRef(false);
+  const prevTopRef = useRef(0);
+  const gestureRef = useRef<{ direction: "up" | "down"; at: number } | null>(null);
+  const prevTouchYRef = useRef(0);
+  const lockUntilRef = useRef(0);
+  const lockMountedRef = useRef(false);
+
+  // Auto-follow while pinned; mark our own scrollIntoView as programmatic so the
+  // classifier ignores it (streamed content growth must never collapse the composer).
   useEffect(() => {
-    if (pinned) (endRef.current as unknown as { scrollIntoView?: (o?: unknown) => void })?.scrollIntoView?.({ block: "end" });
+    if (!pinned) return;
+    const el = convRef.current;
+    if (!el || el.scrollHeight - el.scrollTop - el.clientHeight <= 0) return;
+    programmaticRef.current = true;
+    (endRef.current as unknown as { scrollIntoView?: (o?: unknown) => void })?.scrollIntoView?.({
+      block: "end",
+    });
+    const timer = window.setTimeout(() => {
+      programmaticRef.current = false;
+    }, 120);
+    return () => window.clearTimeout(timer);
   });
+
+  // Animation lock: pause scroll-derived decisions while collapse/expand settles.
+  // The mount run is skipped so the first user scroll is still classified.
+  useEffect(() => {
+    if (!lockMountedRef.current) {
+      lockMountedRef.current = true;
+      return;
+    }
+    lockUntilRef.current = Date.now() + COLLAPSE_LOCK_MS;
+  }, [collapsed]);
+
   return (
     <div
+      ref={convRef}
       className="aj-conv"
       role="feed"
       aria-label="progress feed"
+      onWheel={(e) => {
+        if (e.deltaY === 0) return;
+        gestureRef.current = { direction: e.deltaY < 0 ? "up" : "down", at: Date.now() };
+      }}
+      // touchmove feeds the same gestureRef pipeline as wheel; jsdom exposes no usable
+      // Touch constructor, so the zero-delta gesture path is contract-tested via wheel.
+      onTouchMove={(e) => {
+        const y = e.touches[0]?.clientY;
+        if (y === undefined) return;
+        gestureRef.current = { direction: y > prevTouchYRef.current ? "up" : "down", at: Date.now() };
+        prevTouchYRef.current = y;
+      }}
       onScroll={(e) => {
         const el = e.currentTarget;
-        setPinned(el.scrollHeight - el.scrollTop - el.clientHeight < 40);
+        const distance = Math.max(0, el.scrollHeight - el.scrollTop - el.clientHeight);
+        const delta = el.scrollTop - prevTopRef.current;
+        prevTopRef.current = el.scrollTop;
+        setPinned(distance < EXPAND_DISTANCE);
+        if (programmaticRef.current) {
+          programmaticRef.current = false;
+          return;
+        }
+        if (Date.now() < lockUntilRef.current) return;
+        const gesture = gestureRef.current;
+        const freshGesture = gesture && Date.now() - gesture.at <= 300 ? gesture.direction : null;
+        const direction = delta < 0 ? "up" : delta > 0 ? "down" : freshGesture;
+        const event = classifyScroll({ distance, direction: direction ?? "none", programmatic: false });
+        if (event?.type === "scroll-away") onLeaveBottom?.();
+        else if (event?.type === "reach-bottom") onReachBottom?.();
       }}
     >
       {entries.map((entry, i) => {
