@@ -652,6 +652,29 @@ describe("ConversationFeed collapse reporting", () => {
       vi.useRealTimers();
     }
   });
+
+      it("does not swallow a real upward scroll while the programmatic mark is pending", () => {
+        const onLeaveBottom = vi.fn();
+        const scrollIntoView = vi.fn();
+        (Element.prototype as unknown as { scrollIntoView?: unknown }).scrollIntoView = scrollIntoView;
+        try {
+          const { container, rerender } = render(
+            <ConversationFeed entries={[user("hi")]} onLeaveBottom={onLeaveBottom} />,
+          );
+          const conv = container.querySelector(".aj-conv") as HTMLElement;
+          setScroll(conv, { top: 100, height: 1000, client: 400 });
+          rerender(
+            <ConversationFeed entries={[user("hi"), user("go")]} onLeaveBottom={onLeaveBottom} />,
+          );
+          expect(scrollIntoView).toHaveBeenCalled(); // programmatic mark pending
+          fireEvent.wheel(conv, { deltaY: -120 });
+          setScroll(conv, { top: 50, height: 1000, client: 400 });
+          fireEvent.scroll(conv); // delta < 0 -> real user intent, must classify
+          expect(onLeaveBottom).toHaveBeenCalledTimes(1);
+        } finally {
+          delete (Element.prototype as unknown as { scrollIntoView?: unknown }).scrollIntoView;
+        }
+      });
 });
 
 describe("RunPanel composer scroll collapse", () => {
@@ -751,40 +774,47 @@ describe("RunPanel composer scroll collapse", () => {
     }
   });
 
-  it("freezes --aj-composer-h while collapsed and resumes after expand", () => {
-    const captured: { cb: ResizeObserverCallback | null } = { cb: null };
-    class FakeResizeObserver {
-      constructor(cb: ResizeObserverCallback) {
-        captured.cb = cb;
-      }
-      observe = vi.fn();
-      unobserve = () => {};
-      disconnect = vi.fn();
-    }
-    vi.stubGlobal("ResizeObserver", FakeResizeObserver);
-    try {
-      const { container } = render(<RunPanel client={noopClient} activeSessionId="s1" />);
-      const composer = container.querySelector(".aj-composer-card") as HTMLElement;
-      const card = container.querySelector(".aj-card") as HTMLElement;
-      const report = (size: number) =>
-        act(() => {
-          captured.cb?.(
-            [{ target: composer, borderBoxSize: [{ blockSize: size, inlineSize: 100 }] } as unknown as ResizeObserverEntry],
-            {} as ResizeObserver,
-          );
-        });
-      report(180);
-      expect(card.style.getPropertyValue("--aj-composer-h")).toBe("180px");
-      collapseViaScroll(container);
-      report(90);
-      expect(card.style.getPropertyValue("--aj-composer-h")).toBe("180px");
-      fireEvent.click(screen.getByRole("button", { name: "展开输入框" }));
-      report(200);
-      expect(card.style.getPropertyValue("--aj-composer-h")).toBe("200px");
-    } finally {
-      vi.unstubAllGlobals();
-    }
-  });
+      it("freezes --aj-composer-h while collapsed and resumes after expand", () => {
+        vi.useFakeTimers();
+        const captured: { cb: ResizeObserverCallback | null } = { cb: null };
+        class FakeResizeObserver {
+          constructor(cb: ResizeObserverCallback) {
+            captured.cb = cb;
+          }
+          observe = vi.fn();
+          unobserve = () => {};
+          disconnect = vi.fn();
+        }
+        vi.stubGlobal("ResizeObserver", FakeResizeObserver);
+        try {
+          const { container } = render(<RunPanel client={noopClient} activeSessionId="s1" />);
+          const composer = container.querySelector(".aj-composer-card") as HTMLElement;
+          const card = container.querySelector(".aj-card") as HTMLElement;
+          const report = (size: number) =>
+            act(() => {
+              captured.cb?.(
+                [{ target: composer, borderBoxSize: [{ blockSize: size, inlineSize: 100 }] } as unknown as ResizeObserverEntry],
+                {} as ResizeObserver,
+              );
+            });
+          report(180);
+          expect(card.style.getPropertyValue("--aj-composer-h")).toBe("180px");
+          collapseViaScroll(container);
+          report(90);
+          expect(card.style.getPropertyValue("--aj-composer-h")).toBe("180px");
+          fireEvent.click(screen.getByRole("button", { name: "展开输入框" }));
+          report(200);
+          expect(card.style.getPropertyValue("--aj-composer-h")).toBe("180px"); // held while expanding
+          act(() => {
+            vi.advanceTimersByTime(300);
+          });
+          report(200);
+          expect(card.style.getPropertyValue("--aj-composer-h")).toBe("200px");
+        } finally {
+          vi.unstubAllGlobals();
+          vi.useRealTimers();
+        }
+      });
 
   it("closes composer popovers when collapsing", () => {
     const { container } = render(<RunPanel client={noopClient} activeSessionId="s1" />);
@@ -828,4 +858,43 @@ describe("RunPanel composer scroll collapse", () => {
     rerender(<RunPanel key="s2" client={noopClient} activeSessionId="s2" />);
     expect(container.querySelector(".aj-composer-card")).not.toHaveAttribute("data-collapsed");
   });
+
+      it("expands when the user parks at the bottom inside the animation lock", () => {
+        vi.useFakeTimers();
+        try {
+          const { container } = render(<RunPanel client={noopClient} activeSessionId="s1" />);
+          const conv = container.querySelector(".aj-conv") as HTMLElement;
+          collapseViaScroll(container);
+          expect(container.querySelector(".aj-composer-card")).toHaveAttribute("data-collapsed", "true");
+          setScroll(conv, { top: 600, height: 1000, client: 400 });
+          fireEvent.scroll(conv); // locked out: pinned updates, no reach-bottom
+          expect(container.querySelector(".aj-composer-card")).toHaveAttribute("data-collapsed", "true");
+          act(() => {
+            vi.advanceTimersByTime(300);
+          });
+          expect(container.querySelector(".aj-composer-card")).not.toHaveAttribute("data-collapsed");
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+
+      it("re-collapses when the user scrolls up again after a click-expand", () => {
+        vi.useFakeTimers();
+        try {
+          const { container } = render(<RunPanel client={noopClient} activeSessionId="s1" />);
+          collapseViaScroll(container);
+          fireEvent.click(screen.getByRole("button", { name: "展开输入框" }));
+          expect(container.querySelector(".aj-composer-card")).not.toHaveAttribute("data-collapsed");
+          act(() => {
+            vi.advanceTimersByTime(300);
+          });
+          const conv = container.querySelector(".aj-conv") as HTMLElement;
+          fireEvent.wheel(conv, { deltaY: -120 });
+          setScroll(conv, { top: 50, height: 1000, client: 400 });
+          fireEvent.scroll(conv);
+          expect(container.querySelector(".aj-composer-card")).toHaveAttribute("data-collapsed", "true");
+        } finally {
+          vi.useRealTimers();
+        }
+      });
 });

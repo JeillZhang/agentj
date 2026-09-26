@@ -221,6 +221,9 @@ export function ConversationFeed({
     const el = convRef.current;
     if (!el || el.scrollHeight - el.scrollTop - el.clientHeight <= 0) return;
     programmaticRef.current = true;
+    // Track the pre-follow position so a real upward scroll stays delta-negative
+    // even when the environment emits no scroll event for the programmatic move.
+    prevTopRef.current = el.scrollTop;
     (endRef.current as unknown as { scrollIntoView?: (o?: unknown) => void })?.scrollIntoView?.({
       block: "end",
     });
@@ -238,6 +241,15 @@ export function ConversationFeed({
       return;
     }
     lockUntilRef.current = Date.now() + COLLAPSE_LOCK_MS;
+    // If the user parks at the bottom inside the animation window, the locked
+    // scroll events never reported it; re-evaluate once the lock expires.
+    const timer = window.setTimeout(() => {
+      const el = convRef.current;
+      if (!el) return;
+      const distance = Math.max(0, el.scrollHeight - el.scrollTop - el.clientHeight);
+      if (distance < EXPAND_DISTANCE) onReachBottom?.();
+    }, COLLAPSE_LOCK_MS);
+    return () => window.clearTimeout(timer);
   }, [collapsed]);
 
   return (
@@ -264,7 +276,9 @@ export function ConversationFeed({
         const delta = el.scrollTop - prevTopRef.current;
         prevTopRef.current = el.scrollTop;
         setPinned(distance < EXPAND_DISTANCE);
-        if (programmaticRef.current) {
+        // Our own scrollIntoView only ever moves toward the bottom; a genuine
+        // upward scroll while the mark is pending is still classified.
+        if (programmaticRef.current && delta >= 0) {
           programmaticRef.current = false;
           return;
         }
@@ -384,6 +398,8 @@ export default function RunPanel({
   collapsedRef.current = collapsed;
   const hasPendingQuestionRef = useRef(false);
   const focusPromptRef = useRef(false);
+  const expandSettleUntilRef = useRef(0);
+  const settleMountedRef = useRef(false);
 
   const [demo, setDemo] = useState(isDemoEnabled);
   const [askVisible, setAskVisible] = useState(isDemoEnabled);
@@ -526,6 +542,7 @@ export default function RunPanel({
     if (!card || !composer) return;
     const applyFullBoxHeight = (height: number) => {
       if (height <= 0 || collapsedRef.current) return; // frozen while collapsed
+      if (Date.now() < expandSettleUntilRef.current) return; // hold while the expand settles
       card.style.setProperty("--aj-composer-h", `${Math.round(height)}px`);
     };
     applyFullBoxHeight(composer.getBoundingClientRect().height);
@@ -538,14 +555,23 @@ export default function RunPanel({
     return () => observer.disconnect();
   }, []);
 
-  // Re-publish the live measurement once expanded again (frozen while collapsed).
+  // Re-publish after the expand settle window: covers a genuine resize that
+  // happened while collapsed without shrinking .aj-conv geometry mid-transition.
   useEffect(() => {
+    if (!settleMountedRef.current) {
+      settleMountedRef.current = true;
+      return;
+    }
     if (collapsed) return;
+    expandSettleUntilRef.current = Date.now() + COLLAPSE_LOCK_MS;
     const card = cardRef.current;
     const composer = composerRef.current;
     if (!card || !composer) return;
-    const height = composer.getBoundingClientRect().height;
-    if (height > 0) card.style.setProperty("--aj-composer-h", `${Math.round(height)}px`);
+    const timer = window.setTimeout(() => {
+      const height = composer.getBoundingClientRect().height;
+      if (height > 0) card.style.setProperty("--aj-composer-h", `${Math.round(height)}px`);
+    }, COLLAPSE_LOCK_MS);
+    return () => window.clearTimeout(timer);
   }, [collapsed]);
 
   function handleDraftChange(v: string) {

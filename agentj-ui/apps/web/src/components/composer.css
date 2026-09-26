@@ -31,10 +31,11 @@
   min-height: 0;
   overflow-y: auto;
   max-height: 60vh;
+  visibility: visible;
   transition:
     max-height var(--aj-motion) var(--aj-ease),
     opacity var(--aj-motion) var(--aj-ease),
-    visibility var(--aj-motion) var(--aj-ease);
+    visibility 0s;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -78,12 +79,13 @@
   justify-content: space-between;
   padding-bottom: 8px;
   border-bottom: 0.5px solid var(--aj-border);
-  max-height: 80px;
+  max-height: 120px;
+  visibility: visible;
   transition:
     max-height var(--aj-motion) var(--aj-ease),
     opacity var(--aj-motion) var(--aj-ease),
-    visibility var(--aj-motion) var(--aj-ease),
-    padding var(--aj-motion) var(--aj-ease);
+    padding var(--aj-motion) var(--aj-ease),
+    visibility 0s;
 }
 
 .aj-composer__header-meta {
@@ -239,17 +241,20 @@
 
 .aj-composer__body {
   max-height: 120px;
+  visibility: visible;
   transition:
     max-height var(--aj-motion) var(--aj-ease),
     opacity var(--aj-motion) var(--aj-ease),
-    visibility var(--aj-motion) var(--aj-ease);
+    visibility 0s;
 }
 
 .aj-composer-card .comp-tools .sel-wrap {
   max-width: 240px;
+  visibility: visible;
   transition:
     max-width var(--aj-motion) var(--aj-ease),
-    opacity var(--aj-motion) var(--aj-ease);
+    opacity var(--aj-motion) var(--aj-ease),
+    visibility 0s;
 }
 
 .aj-composer-card[data-collapsed="true"] {
@@ -271,6 +276,11 @@
   opacity: 0;
   visibility: hidden;
   pointer-events: none;
+  transition:
+    max-height var(--aj-motion) var(--aj-ease),
+    opacity var(--aj-motion) var(--aj-ease),
+    padding var(--aj-motion) var(--aj-ease),
+    visibility 0s linear var(--aj-motion);
 }
 
 .aj-composer-card[data-collapsed="true"] .aj-composer__body {
@@ -278,6 +288,10 @@
   opacity: 0;
   visibility: hidden;
   pointer-events: none;
+  transition:
+    max-height var(--aj-motion) var(--aj-ease),
+    opacity var(--aj-motion) var(--aj-ease),
+    visibility 0s linear var(--aj-motion);
 }
 
 .aj-composer-card[data-collapsed="true"] > .ask {
@@ -285,6 +299,10 @@
   opacity: 0;
   visibility: hidden;
   pointer-events: none;
+  transition:
+    max-height var(--aj-motion) var(--aj-ease),
+    opacity var(--aj-motion) var(--aj-ease),
+    visibility 0s linear var(--aj-motion);
 }
 
 .aj-composer-card[data-collapsed="true"] .comp-tools .sel-wrap {
@@ -293,4 +311,8 @@
   visibility: hidden;
   pointer-events: none;
   overflow: hidden;
+  transition:
+    max-width var(--aj-motion) var(--aj-ease),
+    opacity var(--aj-motion) var(--aj-ease),
+    visibility 0s linear var(--aj-motion);
 }
