@@ -17,6 +17,12 @@
   padding: 12px 16px;
   min-height: 120px;
   z-index: 2;
+  transition:
+    padding var(--aj-motion) var(--aj-ease),
+    gap var(--aj-motion) var(--aj-ease),
+    min-height var(--aj-motion) var(--aj-ease),
+    background-color var(--aj-motion) var(--aj-ease),
+    box-shadow var(--aj-motion) var(--aj-ease);
 }
 
 /* BUG-003 — short viewports: let the expanded ask card shrink & scroll inside
@@ -24,6 +30,11 @@
 .aj-composer-card > .ask {
   min-height: 0;
   overflow-y: auto;
+  max-height: 60vh;
+  transition:
+    max-height var(--aj-motion) var(--aj-ease),
+    opacity var(--aj-motion) var(--aj-ease),
+    visibility var(--aj-motion) var(--aj-ease);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -67,6 +78,12 @@
   justify-content: space-between;
   padding-bottom: 8px;
   border-bottom: 0.5px solid var(--aj-border);
+  max-height: 80px;
+  transition:
+    max-height var(--aj-motion) var(--aj-ease),
+    opacity var(--aj-motion) var(--aj-ease),
+    visibility var(--aj-motion) var(--aj-ease),
+    padding var(--aj-motion) var(--aj-ease);
 }
 
 .aj-composer__header-meta {
@@ -218,4 +235,62 @@
 .aj-button--send:disabled {
   opacity: .4;
   cursor: default;
+}
+
+.aj-composer__body {
+  max-height: 120px;
+  transition:
+    max-height var(--aj-motion) var(--aj-ease),
+    opacity var(--aj-motion) var(--aj-ease),
+    visibility var(--aj-motion) var(--aj-ease);
+}
+
+.aj-composer-card .comp-tools .sel-wrap {
+  max-width: 240px;
+  transition:
+    max-width var(--aj-motion) var(--aj-ease),
+    opacity var(--aj-motion) var(--aj-ease);
+}
+
+.aj-composer-card[data-collapsed="true"] {
+  min-height: 0;
+  gap: 0;
+  padding: 0 16px 12px;
+  background-color: transparent;
+  box-shadow: 0 0 0 0 transparent;
+  pointer-events: none;
+}
+
+.aj-composer-card[data-collapsed="true"] .send {
+  pointer-events: auto;
+}
+
+.aj-composer-card[data-collapsed="true"] .aj-composer__header {
+  max-height: 0;
+  padding: 0;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.aj-composer-card[data-collapsed="true"] .aj-composer__body {
+  max-height: 0;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.aj-composer-card[data-collapsed="true"] > .ask {
+  max-height: 0;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.aj-composer-card[data-collapsed="true"] .comp-tools .sel-wrap {
+  max-width: 0;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  overflow: hidden;
 }

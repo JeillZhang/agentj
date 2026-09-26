@@ -87,3 +87,57 @@ describe("floating composer layout", () => {
     expect(card).toMatch(/overflow:\s*hidden/);
   });
 });
+
+describe("collapsed composer contracts", () => {
+  test("collapsed card keeps only the anchored action button", () => {
+    const css = readCss("composer.css");
+    const card = ruleBody(css, '.aj-composer-card[data-collapsed="true"]');
+    expect(card).toMatch(/padding:\s*0 16px 12px/);
+    expect(card).toMatch(/background-color:\s*transparent/);
+    expect(card).toMatch(/box-shadow:\s*0 0 0 0 transparent/);
+    expect(card).toMatch(/min-height:\s*0/);
+    expect(card).toMatch(/pointer-events:\s*none/);
+    const send = ruleBody(css, '.aj-composer-card[data-collapsed="true"] .send');
+    expect(send).toMatch(/pointer-events:\s*auto/);
+  });
+
+  test("collapsed segments collapse and leave the tab order", () => {
+    const css = readCss("composer.css");
+    for (const selector of [
+      '.aj-composer-card[data-collapsed="true"] .aj-composer__header',
+      '.aj-composer-card[data-collapsed="true"] .aj-composer__body',
+      '.aj-composer-card[data-collapsed="true"] > .ask',
+    ]) {
+      const body = ruleBody(css, selector);
+      expect(body, selector).toMatch(/max-height:\s*0/);
+      expect(body, selector).toMatch(/opacity:\s*0/);
+      expect(body, selector).toMatch(/visibility:\s*hidden/);
+    }
+    const wrap = ruleBody(css, '.aj-composer-card[data-collapsed="true"] .comp-tools .sel-wrap');
+    expect(wrap).toMatch(/max-width:\s*0/);
+    expect(wrap).toMatch(/visibility:\s*hidden/);
+  });
+
+  test("collapse transitions reuse the shared motion tokens", () => {
+    const css = readCss("composer.css");
+    expect(ruleBody(css, ".aj-composer-card")).toMatch(
+      /transition:[\s\S]*var\(--aj-motion\)[\s\S]*var\(--aj-ease\)/,
+    );
+    expect(ruleBody(css, ".aj-composer__header")).toMatch(
+      /transition:[\s\S]*var\(--aj-motion\)[\s\S]*var\(--aj-ease\)/,
+    );
+    expect(ruleBody(css, ".aj-composer-card > .ask")).toMatch(
+      /transition:[\s\S]*var\(--aj-motion\)/,
+    );
+    const reducedStart = css.indexOf("@media (prefers-reduced-motion: reduce)");
+    expect(reducedStart).toBeGreaterThanOrEqual(0);
+    const reducedBlock = css.slice(reducedStart);
+    expect(reducedBlock).toMatch(/\.aj-composer-card[^{]*\{[^}]*transition:\s*none\s*!important/);
+  });
+
+  test("collapsed rules never clip popovers (no overflow hidden on the card)", () => {
+    const css = readCss("composer.css");
+    const card = ruleBody(css, '.aj-composer-card[data-collapsed="true"]');
+    expect(card).not.toMatch(/overflow/);
+  });
+});
