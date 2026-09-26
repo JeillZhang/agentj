@@ -222,3 +222,13 @@ sequenceDiagram
   - 测试扩展：`RunPanel.test.tsx` / `composerFloat.test.ts`（或新增专用测试文件）。
 - **版本与文档**：工作区 0.23.1 → 0.24.0（Cargo workspace + `sdk/config.ts` VERSION + desktop 同源，`check-version.sh` 通过）；`PROTOCOL_VERSION` 0.15.0 不变；AGENTS.md / README.md / summary（fe）按惯例在实施阶段同步。
 - **外部依赖 / 阻塞**：无新增第三方依赖；无协议/后端阻塞。主要实施风险 = 分段收拢结构调整触碰既有 CSS 契约测试，须保持既有断言全绿（已在测试策略中锁定）。
+
+## 实施状态
+
+> 落地版本：**v0.24.0**（协议 0.15.0）｜ 2026-09-26 ｜ 分支 `feature/composer-scroll-collapse`
+
+- 全部任务 **T0–T7** 已完成（实现计划 `docs/superpowers/plans/2026-09-25-agentj-composer-scroll-collapse-plan.md`，逐任务 `ajteam-task-reviewer` review PASS）。
+- 实现面：`composerCollapse.ts` 纯状态机（48/40 迟滞 + 迁移守卫 + 260ms 锁）；`ConversationFeed` 意图双判 / 程序化排除；`RunPanel` `data-collapsed` / 双职责按钮 / 提问守卫与强制展开 / `--aj-composer-h` 冻结 / 弹层关闭 / 点击聚焦；`ComposerOptions` `collapsed` prop；`composer.css` 分段收拢契约 + reduced-motion 复用。
+- `PROTOCOL_VERSION` 保持 0.15.0；无协议 / SDK / 后端变更；工作区 0.23.1 → 0.24.0。
+- 全量门禁（T7）：cargo fmt（clean）/ cargo test --workspace（660 passed / 0 failed）/ clippy -D warnings（零警告）/ drift（2 passed，52 schemas）/ SDK 54 / Web 606（52 files）/ Web build（dist/version.json 0.24.0 · 0.15.0）/ TUI 146（19 files）/ check-version.sh（0.24.0 · 0.15.0）/ check-desktop-ui.mjs（desktop-ui-ok）全绿。
+- 实机 Playwright 验收由 `jskill-test-acceptance` 跟进（零位移 / 200ms 动画 / reduced-motion 瞬切 / 窄视口 / 亮暗主题）。
