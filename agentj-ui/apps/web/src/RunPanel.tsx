@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
-import { Check, ChevronDown, Clock, Folder, Minus, Pencil, X } from "lucide-react";
+import { Check, ChevronDown, ChevronsUp, Clock, Folder, Minus, Pencil, X } from "lucide-react";
 import { METHODS, parseProgress, RpcClient } from "@agentj/sdk";
 import type { ProgressFrame } from "@agentj/sdk";
 import CodeBlockCard from "./components/CodeBlockCard";
@@ -14,6 +14,13 @@ import { loadAskCollapsed, saveAskCollapsed } from "./layoutStore";
 import { createProject, loadCurrentProject, loadProjects, setCurrentProject } from "./projectStore";
 import type { Project } from "./projectStore";
 import { formatUsageSummary, formatUsageTitle } from "./tokenUsage";
+import {
+  COLLAPSE_LOCK_MS,
+  EXPAND_DISTANCE,
+  classifyScroll,
+  nextCollapsed,
+  type ComposerCollapseEvent,
+} from "./composerCollapse";
 
 export type RunEntry =
   | { kind: "user"; text: string }
@@ -185,25 +192,103 @@ export function ConversationFeed({
   pendingTool,
   model,
   elapsedMs,
+  collapsed = false,
+  onLeaveBottom,
+  onReachBottom,
 }: {
   entries: RunEntry[];
   pendingTool?: string;
   model?: string;
   elapsedMs?: number;
+  collapsed?: boolean;
+  onLeaveBottom?: () => void;
+  onReachBottom?: () => void;
 }) {
+  const convRef = useRef<HTMLDivElement | null>(null);
   const endRef = useRef<HTMLDivElement | null>(null);
   const [pinned, setPinned] = useState(true);
+  const programmaticRef = useRef(false);
+  const prevTopRef = useRef(0);
+  const gestureRef = useRef<{ direction: "up" | "down"; at: number } | null>(null);
+  const prevTouchYRef = useRef(0);
+  const lockUntilRef = useRef(0);
+  const lockMountedRef = useRef(false);
+
+  // Auto-follow while pinned; mark our own scrollIntoView as programmatic so the
+  // classifier ignores it (streamed content growth must never collapse the composer).
   useEffect(() => {
-    if (pinned) (endRef.current as unknown as { scrollIntoView?: (o?: unknown) => void })?.scrollIntoView?.({ block: "end" });
+    if (!pinned) return;
+    const el = convRef.current;
+    if (!el || el.scrollHeight - el.scrollTop - el.clientHeight <= 0) return;
+    programmaticRef.current = true;
+    // Track the pre-follow position so a real upward scroll stays delta-negative
+    // even when the environment emits no scroll event for the programmatic move.
+    prevTopRef.current = el.scrollTop;
+    (endRef.current as unknown as { scrollIntoView?: (o?: unknown) => void })?.scrollIntoView?.({
+      block: "end",
+    });
+    const timer = window.setTimeout(() => {
+      programmaticRef.current = false;
+    }, 120);
+    return () => window.clearTimeout(timer);
   });
+
+  // Animation lock: pause scroll-derived decisions while collapse/expand settles.
+  // The mount run is skipped so the first user scroll is still classified.
+  useEffect(() => {
+    if (!lockMountedRef.current) {
+      lockMountedRef.current = true;
+      return;
+    }
+    lockUntilRef.current = Date.now() + COLLAPSE_LOCK_MS;
+    // If the user parks at the bottom inside the animation window, the locked
+    // scroll events never reported it; re-evaluate once the lock expires.
+    const timer = window.setTimeout(() => {
+      const el = convRef.current;
+      if (!el) return;
+      const distance = Math.max(0, el.scrollHeight - el.scrollTop - el.clientHeight);
+      if (distance < EXPAND_DISTANCE) onReachBottom?.();
+    }, COLLAPSE_LOCK_MS);
+    return () => window.clearTimeout(timer);
+  }, [collapsed]);
+
   return (
     <div
+      ref={convRef}
       className="aj-conv"
       role="feed"
       aria-label="progress feed"
+      onWheel={(e) => {
+        if (e.deltaY === 0) return;
+        gestureRef.current = { direction: e.deltaY < 0 ? "up" : "down", at: Date.now() };
+      }}
+      // touchmove feeds the same gestureRef pipeline as wheel; jsdom exposes no usable
+      // Touch constructor, so the zero-delta gesture path is contract-tested via wheel.
+      onTouchMove={(e) => {
+        const y = e.touches[0]?.clientY;
+        if (y === undefined) return;
+        gestureRef.current = { direction: y > prevTouchYRef.current ? "up" : "down", at: Date.now() };
+        prevTouchYRef.current = y;
+      }}
       onScroll={(e) => {
         const el = e.currentTarget;
-        setPinned(el.scrollHeight - el.scrollTop - el.clientHeight < 40);
+        const distance = Math.max(0, el.scrollHeight - el.scrollTop - el.clientHeight);
+        const delta = el.scrollTop - prevTopRef.current;
+        prevTopRef.current = el.scrollTop;
+        setPinned(distance < EXPAND_DISTANCE);
+        // Our own scrollIntoView only ever moves toward the bottom; a genuine
+        // upward scroll while the mark is pending is still classified.
+        if (programmaticRef.current && delta >= 0) {
+          programmaticRef.current = false;
+          return;
+        }
+        if (Date.now() < lockUntilRef.current) return;
+        const gesture = gestureRef.current;
+        const freshGesture = gesture && Date.now() - gesture.at <= 300 ? gesture.direction : null;
+        const direction = delta < 0 ? "up" : delta > 0 ? "down" : freshGesture;
+        const event = classifyScroll({ distance, direction: direction ?? "none", programmatic: false });
+        if (event?.type === "scroll-away") onLeaveBottom?.();
+        else if (event?.type === "reach-bottom") onReachBottom?.();
       }}
     >
       {entries.map((entry, i) => {
@@ -308,10 +393,19 @@ export default function RunPanel({
   const [draft, setDraft] = useState("");
   const busy = useRef(false);
   const [isBusy, setIsBusy] = useState(false);
+  const [collapsed, setCollapsed] = useState(false);
+  const collapsedRef = useRef(false);
+  collapsedRef.current = collapsed;
+  const hasPendingQuestionRef = useRef(false);
+  const focusPromptRef = useRef(false);
+  const expandSettleUntilRef = useRef(0);
+  const settleMountedRef = useRef(false);
 
   const [demo, setDemo] = useState(isDemoEnabled);
   const [askVisible, setAskVisible] = useState(isDemoEnabled);
   const [pendingQuestion, setPendingQuestion] = useState<AskQuestionView | null>(null);
+  const hasPendingQuestion = pendingQuestion !== null;
+  hasPendingQuestionRef.current = hasPendingQuestion;
   const [askCollapsed, setAskCollapsed] = useState(loadAskCollapsed);
   const [chosenLabel, setChosenLabel] = useState<string | undefined>(undefined);
   const askSubmitted = useRef(false);
@@ -356,6 +450,7 @@ export default function RunPanel({
   const pickerRef = useRef<HTMLDivElement | null>(null);
   const cardRef = useRef<HTMLElement | null>(null);
   const composerRef = useRef<HTMLDivElement | null>(null);
+  const promptRef = useRef<HTMLTextAreaElement | null>(null);
   const atOpen = atFilter !== null;
 
   const filteredFiles = atFilter !== null
@@ -383,6 +478,26 @@ export default function RunPanel({
       window.removeEventListener("agentj:projects-updated", sync);
     };
   }, []);
+
+  // Force-expand whenever a question is waiting (never hide the ask card).
+  useEffect(() => {
+    if (hasPendingQuestion) applyCollapseEvent({ type: "question-appeared" });
+  }, [hasPendingQuestion]);
+
+  // Close every composer popover when collapsing; the composer hides them anyway.
+  useEffect(() => {
+    if (!collapsed) return;
+    setPickerOpen(false);
+    setAtFilter(null);
+    setSlashOpen(false);
+  }, [collapsed]);
+
+  // Focus the prompt only for the explicit click-to-expand path (never on auto-expand).
+  useEffect(() => {
+    if (collapsed || !focusPromptRef.current) return;
+    focusPromptRef.current = false;
+    promptRef.current?.focus({ preventScroll: true });
+  }, [collapsed]);
 
   useEffect(() => {
     if (!client) return;
@@ -426,7 +541,8 @@ export default function RunPanel({
     const composer = composerRef.current;
     if (!card || !composer) return;
     const applyFullBoxHeight = (height: number) => {
-      if (height <= 0) return;
+      if (height <= 0 || collapsedRef.current) return; // frozen while collapsed
+      if (Date.now() < expandSettleUntilRef.current) return; // hold while the expand settles
       card.style.setProperty("--aj-composer-h", `${Math.round(height)}px`);
     };
     applyFullBoxHeight(composer.getBoundingClientRect().height);
@@ -438,6 +554,25 @@ export default function RunPanel({
     observer.observe(composer);
     return () => observer.disconnect();
   }, []);
+
+  // Re-publish after the expand settle window: covers a genuine resize that
+  // happened while collapsed without shrinking .aj-conv geometry mid-transition.
+  useEffect(() => {
+    if (!settleMountedRef.current) {
+      settleMountedRef.current = true;
+      return;
+    }
+    if (collapsed) return;
+    expandSettleUntilRef.current = Date.now() + COLLAPSE_LOCK_MS;
+    const card = cardRef.current;
+    const composer = composerRef.current;
+    if (!card || !composer) return;
+    const timer = window.setTimeout(() => {
+      const height = composer.getBoundingClientRect().height;
+      if (height > 0) card.style.setProperty("--aj-composer-h", `${Math.round(height)}px`);
+    }, COLLAPSE_LOCK_MS);
+    return () => window.clearTimeout(timer);
+  }, [collapsed]);
 
   function handleDraftChange(v: string) {
     setDraft(v);
@@ -496,6 +631,25 @@ export default function RunPanel({
 
   function handleAskSkip() {
     setAskVisible(false);
+  }
+
+  function applyCollapseEvent(event: ComposerCollapseEvent) {
+    setCollapsed((current) =>
+      nextCollapsed(current, event, { hasPendingQuestion: hasPendingQuestionRef.current }),
+    );
+  }
+
+  function handleActionClick() {
+    if (collapsed) {
+      focusPromptRef.current = true;
+      applyCollapseEvent({ type: "expand-click" });
+      return;
+    }
+    if (busy.current) return;
+    submit(draft);
+    setDraft("");
+    setAtFilter(null);
+    setSlashOpen(false);
   }
 
   async function settlePendingQuestion(answers: string[], skipped: boolean, answerLabel: string) {
@@ -599,8 +753,11 @@ export default function RunPanel({
         pendingTool={pendingTool}
         model={model}
         elapsedMs={elapsedMs}
+        collapsed={collapsed}
+        onLeaveBottom={() => applyCollapseEvent({ type: "scroll-away" })}
+        onReachBottom={() => applyCollapseEvent({ type: "reach-bottom" })}
       />
-      <div ref={composerRef} className="aj-composer-card">
+      <div ref={composerRef} className="aj-composer-card" data-collapsed={collapsed ? "true" : undefined}>
         <div className="aj-composer__header">
           <div className="aj-composer__picker-wrap" ref={pickerRef}>
             <button
@@ -743,9 +900,10 @@ export default function RunPanel({
           />
         )}
 
-        <div style={{ position: "relative" }}>
+        <div className="aj-composer__body" style={{ position: "relative" }}>
           <label htmlFor="aj-prompt" className="aj-visually-hidden">prompt</label>
           <textarea
+            ref={promptRef}
             id="aj-prompt"
             className="aj-input"
             value={draft}
@@ -853,21 +1011,17 @@ export default function RunPanel({
             </ul>
           )}
         </div>
-        <ComposerOptions model={model}>
+        <ComposerOptions model={model} collapsed={collapsed}>
           <button
             type="button"
             className="send aj-button--send"
-            aria-label="发送"
-            disabled={!activeSessionId || isBusy}
-            onClick={() => {
-              if (busy.current) return;
-              submit(draft);
-              setDraft("");
-              setAtFilter(null);
-              setSlashOpen(false);
-            }}
+            aria-label={collapsed ? "展开输入框" : "发送"}
+            aria-expanded={collapsed ? false : undefined}
+            aria-controls={collapsed ? "aj-prompt" : undefined}
+            disabled={collapsed ? false : !activeSessionId || isBusy}
+            onClick={handleActionClick}
           >
-            ↑
+            {collapsed ? <ChevronsUp size={16} aria-hidden="true" /> : "↑"}
           </button>
         </ComposerOptions>
       </div>

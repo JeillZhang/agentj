@@ -540,3 +540,361 @@ describe("RunPanel composer height CSS variable", () => {
     }
   });
 });
+
+describe("ConversationFeed collapse reporting", () => {
+  function setScroll(
+    el: HTMLElement,
+    { top, height, client }: { top: number; height: number; client: number },
+  ) {
+    Object.defineProperty(el, "scrollHeight", { configurable: true, value: height });
+    Object.defineProperty(el, "clientHeight", { configurable: true, value: client });
+    el.scrollTop = top;
+  }
+
+  it("reports leaving the bottom on a user upward scroll past 48px", () => {
+    const onLeaveBottom = vi.fn();
+    const onReachBottom = vi.fn();
+    const { container } = render(
+      <ConversationFeed
+        entries={[user("hi")]}
+        onLeaveBottom={onLeaveBottom}
+        onReachBottom={onReachBottom}
+      />,
+    );
+    const conv = container.querySelector(".aj-conv") as HTMLElement;
+    setScroll(conv, { top: 600, height: 1000, client: 400 });
+    fireEvent.scroll(conv); // arriving at the bottom (downward) reports reach-bottom
+    onReachBottom.mockClear(); // isolate the upward-scroll behavior below
+    fireEvent.wheel(conv, { deltaY: -120 });
+    setScroll(conv, { top: 100, height: 1000, client: 400 });
+    fireEvent.scroll(conv);
+    expect(onLeaveBottom).toHaveBeenCalledTimes(1);
+    expect(onReachBottom).not.toHaveBeenCalled();
+  });
+
+  it("reports reaching the bottom on a user downward scroll inside 40px", () => {
+    const onReachBottom = vi.fn();
+    const { container } = render(
+      <ConversationFeed entries={[user("hi")]} onReachBottom={onReachBottom} />,
+    );
+    const conv = container.querySelector(".aj-conv") as HTMLElement;
+    setScroll(conv, { top: 100, height: 1000, client: 400 });
+    fireEvent.scroll(conv);
+    fireEvent.wheel(conv, { deltaY: 120 });
+    setScroll(conv, { top: 580, height: 1000, client: 400 });
+    fireEvent.scroll(conv);
+    expect(onReachBottom).toHaveBeenCalledTimes(1);
+  });
+
+  it("ignores the programmatic auto-follow scroll", () => {
+    const onLeaveBottom = vi.fn();
+    const scrollIntoView = vi.fn();
+    (Element.prototype as unknown as { scrollIntoView?: unknown }).scrollIntoView = scrollIntoView;
+    try {
+      const { container, rerender } = render(
+        <ConversationFeed entries={[user("hi")]} onLeaveBottom={onLeaveBottom} />,
+      );
+      const conv = container.querySelector(".aj-conv") as HTMLElement;
+      setScroll(conv, { top: 100, height: 1000, client: 400 });
+      rerender(
+        <ConversationFeed entries={[user("hi"), user("go")]} onLeaveBottom={onLeaveBottom} />,
+      );
+      expect(scrollIntoView).toHaveBeenCalled();
+      fireEvent.scroll(conv); // consumed as the programmatic follow
+      fireEvent.wheel(conv, { deltaY: -120 });
+      setScroll(conv, { top: 50, height: 1000, client: 400 });
+      fireEvent.scroll(conv);
+      expect(onLeaveBottom).toHaveBeenCalledTimes(1);
+    } finally {
+      delete (Element.prototype as unknown as { scrollIntoView?: unknown }).scrollIntoView;
+    }
+  });
+
+  it("classifies a fresh wheel gesture as intent when the scroll delta is zero", () => {
+    const onLeaveBottom = vi.fn();
+    const { container } = render(
+      <ConversationFeed entries={[user("hi")]} onLeaveBottom={onLeaveBottom} />,
+    );
+    const conv = container.querySelector(".aj-conv") as HTMLElement;
+    setScroll(conv, { top: 100, height: 1000, client: 400 });
+    fireEvent.scroll(conv); // baseline (distance 500 -> no event)
+    expect(onLeaveBottom).not.toHaveBeenCalled();
+    fireEvent.wheel(conv, { deltaY: -120 });
+    fireEvent.scroll(conv); // zero delta -> the fresh gesture decides
+    expect(onLeaveBottom).toHaveBeenCalledTimes(1);
+  });
+
+  it("pauses scroll-derived decisions for 260ms after a collapse toggle", () => {
+    vi.useFakeTimers();
+    try {
+      const onLeaveBottom = vi.fn();
+      const { container, rerender } = render(
+        <ConversationFeed entries={[user("hi")]} collapsed={false} onLeaveBottom={onLeaveBottom} />,
+      );
+      const conv = container.querySelector(".aj-conv") as HTMLElement;
+      rerender(
+        <ConversationFeed entries={[user("hi")]} collapsed={true} onLeaveBottom={onLeaveBottom} />,
+      );
+      setScroll(conv, { top: 600, height: 1000, client: 400 });
+      fireEvent.scroll(conv);
+      fireEvent.wheel(conv, { deltaY: -120 });
+      setScroll(conv, { top: 100, height: 1000, client: 400 });
+      fireEvent.scroll(conv);
+      expect(onLeaveBottom).not.toHaveBeenCalled();
+      act(() => {
+        vi.advanceTimersByTime(300);
+      });
+      fireEvent.wheel(conv, { deltaY: -120 });
+      setScroll(conv, { top: 80, height: 1000, client: 400 });
+      fireEvent.scroll(conv);
+      expect(onLeaveBottom).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+      it("does not swallow a real upward scroll while the programmatic mark is pending", () => {
+        const onLeaveBottom = vi.fn();
+        const scrollIntoView = vi.fn();
+        (Element.prototype as unknown as { scrollIntoView?: unknown }).scrollIntoView = scrollIntoView;
+        try {
+          const { container, rerender } = render(
+            <ConversationFeed entries={[user("hi")]} onLeaveBottom={onLeaveBottom} />,
+          );
+          const conv = container.querySelector(".aj-conv") as HTMLElement;
+          setScroll(conv, { top: 100, height: 1000, client: 400 });
+          rerender(
+            <ConversationFeed entries={[user("hi"), user("go")]} onLeaveBottom={onLeaveBottom} />,
+          );
+          expect(scrollIntoView).toHaveBeenCalled(); // programmatic mark pending
+          fireEvent.wheel(conv, { deltaY: -120 });
+          setScroll(conv, { top: 50, height: 1000, client: 400 });
+          fireEvent.scroll(conv); // delta < 0 -> real user intent, must classify
+          expect(onLeaveBottom).toHaveBeenCalledTimes(1);
+        } finally {
+          delete (Element.prototype as unknown as { scrollIntoView?: unknown }).scrollIntoView;
+        }
+      });
+});
+
+describe("RunPanel composer scroll collapse", () => {
+  function setScroll(
+    el: HTMLElement,
+    { top, height, client }: { top: number; height: number; client: number },
+  ) {
+    Object.defineProperty(el, "scrollHeight", { configurable: true, value: height });
+    Object.defineProperty(el, "clientHeight", { configurable: true, value: client });
+    el.scrollTop = top;
+  }
+  function collapseViaScroll(container: HTMLElement) {
+    const conv = container.querySelector(".aj-conv") as HTMLElement;
+    setScroll(conv, { top: 600, height: 1000, client: 400 });
+    fireEvent.scroll(conv);
+    fireEvent.wheel(conv, { deltaY: -120 });
+    setScroll(conv, { top: 100, height: 1000, client: 400 });
+    fireEvent.scroll(conv);
+  }
+  function capturingClient() {
+    let handler: ((method: string, params: unknown) => void) | null = null;
+    const client = {
+      setNotificationHandler: (h: (method: string, params: unknown) => void) => {
+        handler = h;
+      },
+      removeNotificationHandler: () => {},
+    } as unknown as Parameters<typeof RunPanel>[0]["client"];
+    return {
+      client,
+      emit: (method: string, params: unknown) =>
+        act(() => {
+          handler?.(method, params);
+        }),
+    };
+  }
+
+  it("collapses on scroll away and swaps the button into expand mode", () => {
+    const { container } = render(<RunPanel client={noopClient} activeSessionId="s1" />);
+    expect(container.querySelector(".aj-composer-card")).not.toHaveAttribute("data-collapsed");
+    collapseViaScroll(container);
+    const card = container.querySelector(".aj-composer-card") as HTMLElement;
+    expect(card).toHaveAttribute("data-collapsed", "true");
+    const button = screen.getByRole("button", { name: "展开输入框" });
+    expect(button).toHaveAttribute("aria-expanded", "false");
+    expect(button.querySelector("svg")).not.toBeNull();
+  });
+
+  it("expands on click, keeps the draft and focuses the textarea", async () => {
+    const { container } = render(<RunPanel client={noopClient} activeSessionId="s1" />);
+    const textarea = container.querySelector("#aj-prompt") as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: "keep me" } });
+    collapseViaScroll(container);
+    fireEvent.click(screen.getByRole("button", { name: "展开输入框" }));
+    await waitFor(() =>
+      expect(container.querySelector(".aj-composer-card")).not.toHaveAttribute("data-collapsed"),
+    );
+    expect(textarea.value).toBe("keep me");
+    await waitFor(() => expect(document.activeElement).toBe(textarea));
+    expect(screen.getByRole("button", { name: "发送" })).toBeTruthy();
+  });
+
+  it("keeps the composer expanded while a question is pending", () => {
+    const { client, emit } = capturingClient();
+    const { container } = render(<RunPanel client={client} activeSessionId="s1" />);
+    emit(METHODS.askQuestion, {
+      question_id: "q1",
+      session_id: "s1",
+      question: "Continue?",
+      options: [{ id: "yes", label: "Yes" }],
+    });
+    collapseViaScroll(container);
+    expect(container.querySelector(".aj-composer-card")).not.toHaveAttribute("data-collapsed");
+  });
+
+  it("force-expands when a question arrives while collapsed", () => {
+    const { client, emit } = capturingClient();
+    const { container } = render(<RunPanel client={client} activeSessionId="s1" />);
+    collapseViaScroll(container);
+    expect(container.querySelector(".aj-composer-card")).toHaveAttribute("data-collapsed", "true");
+    emit(METHODS.askQuestion, {
+      question_id: "q1",
+      session_id: "s1",
+      question: "Continue?",
+      options: [{ id: "yes", label: "Yes" }],
+    });
+    expect(container.querySelector(".aj-composer-card")).not.toHaveAttribute("data-collapsed");
+  });
+
+  it("collapses in demo mode (demo ask visibility is not a guard)", () => {
+    setDemoEnabled(true);
+    try {
+      const { container } = render(<RunPanel client={noopClient} activeSessionId="s1" />);
+      collapseViaScroll(container);
+      expect(container.querySelector(".aj-composer-card")).toHaveAttribute("data-collapsed", "true");
+    } finally {
+      setDemoEnabled(false);
+    }
+  });
+
+      it("freezes --aj-composer-h while collapsed and resumes after expand", () => {
+        vi.useFakeTimers();
+        const captured: { cb: ResizeObserverCallback | null } = { cb: null };
+        class FakeResizeObserver {
+          constructor(cb: ResizeObserverCallback) {
+            captured.cb = cb;
+          }
+          observe = vi.fn();
+          unobserve = () => {};
+          disconnect = vi.fn();
+        }
+        vi.stubGlobal("ResizeObserver", FakeResizeObserver);
+        try {
+          const { container } = render(<RunPanel client={noopClient} activeSessionId="s1" />);
+          const composer = container.querySelector(".aj-composer-card") as HTMLElement;
+          const card = container.querySelector(".aj-card") as HTMLElement;
+          const report = (size: number) =>
+            act(() => {
+              captured.cb?.(
+                [{ target: composer, borderBoxSize: [{ blockSize: size, inlineSize: 100 }] } as unknown as ResizeObserverEntry],
+                {} as ResizeObserver,
+              );
+            });
+          report(180);
+          expect(card.style.getPropertyValue("--aj-composer-h")).toBe("180px");
+          collapseViaScroll(container);
+          report(90);
+          expect(card.style.getPropertyValue("--aj-composer-h")).toBe("180px");
+          fireEvent.click(screen.getByRole("button", { name: "展开输入框" }));
+          report(200);
+          expect(card.style.getPropertyValue("--aj-composer-h")).toBe("180px"); // held while expanding
+          act(() => {
+            vi.advanceTimersByTime(300);
+          });
+          report(200);
+          expect(card.style.getPropertyValue("--aj-composer-h")).toBe("200px");
+        } finally {
+          vi.unstubAllGlobals();
+          vi.useRealTimers();
+        }
+      });
+
+  it("closes composer popovers when collapsing", () => {
+    const { container } = render(<RunPanel client={noopClient} activeSessionId="s1" />);
+    const trigger = container.querySelector("#composer-model-trigger") as HTMLButtonElement;
+    fireEvent.click(trigger);
+    expect(container.querySelector(".pop")).not.toBeNull();
+    collapseViaScroll(container);
+    expect(container.querySelector(".pop")).toBeNull();
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("keeps the collapsed action button enabled without an active session", () => {
+    const { container } = render(<RunPanel client={noopClient} activeSessionId={null} />);
+    expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
+    collapseViaScroll(container);
+    expect(screen.getByRole("button", { name: "展开输入框" })).not.toBeDisabled();
+  });
+
+  it("keeps the collapsed action button enabled while a run is busy", async () => {
+    const busyClient = {
+      request: () => new Promise(() => {}),
+      setNotificationHandler: () => {},
+      removeNotificationHandler: () => {},
+    } as unknown as Parameters<typeof RunPanel>[0]["client"];
+    const { container } = render(<RunPanel client={busyClient} activeSessionId="s1" />);
+    fireEvent.change(container.querySelector("#aj-prompt") as HTMLTextAreaElement, {
+      target: { value: "go" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "发送" })).toBeDisabled());
+    collapseViaScroll(container);
+    expect(screen.getByRole("button", { name: "展开输入框" })).not.toBeDisabled();
+  });
+
+  it("starts expanded after a session remount (key change)", () => {
+    const { container, rerender } = render(
+      <RunPanel key="s1" client={noopClient} activeSessionId="s1" />,
+    );
+    collapseViaScroll(container);
+    expect(container.querySelector(".aj-composer-card")).toHaveAttribute("data-collapsed", "true");
+    rerender(<RunPanel key="s2" client={noopClient} activeSessionId="s2" />);
+    expect(container.querySelector(".aj-composer-card")).not.toHaveAttribute("data-collapsed");
+  });
+
+      it("expands when the user parks at the bottom inside the animation lock", () => {
+        vi.useFakeTimers();
+        try {
+          const { container } = render(<RunPanel client={noopClient} activeSessionId="s1" />);
+          const conv = container.querySelector(".aj-conv") as HTMLElement;
+          collapseViaScroll(container);
+          expect(container.querySelector(".aj-composer-card")).toHaveAttribute("data-collapsed", "true");
+          setScroll(conv, { top: 600, height: 1000, client: 400 });
+          fireEvent.scroll(conv); // locked out: pinned updates, no reach-bottom
+          expect(container.querySelector(".aj-composer-card")).toHaveAttribute("data-collapsed", "true");
+          act(() => {
+            vi.advanceTimersByTime(300);
+          });
+          expect(container.querySelector(".aj-composer-card")).not.toHaveAttribute("data-collapsed");
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+
+      it("re-collapses when the user scrolls up again after a click-expand", () => {
+        vi.useFakeTimers();
+        try {
+          const { container } = render(<RunPanel client={noopClient} activeSessionId="s1" />);
+          collapseViaScroll(container);
+          fireEvent.click(screen.getByRole("button", { name: "展开输入框" }));
+          expect(container.querySelector(".aj-composer-card")).not.toHaveAttribute("data-collapsed");
+          act(() => {
+            vi.advanceTimersByTime(300);
+          });
+          const conv = container.querySelector(".aj-conv") as HTMLElement;
+          fireEvent.wheel(conv, { deltaY: -120 });
+          setScroll(conv, { top: 50, height: 1000, client: 400 });
+          fireEvent.scroll(conv);
+          expect(container.querySelector(".aj-composer-card")).toHaveAttribute("data-collapsed", "true");
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+});
