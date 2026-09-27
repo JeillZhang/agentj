@@ -34,6 +34,7 @@ export const PERMISSION_MODES: PermissionEntry[] = [
 
 export type ComposerOptionsProps = {
   model?: string | null;
+  collapsed?: boolean;
   children?: ReactNode;
 };
 
@@ -67,7 +68,7 @@ function permissionIndex(mode: ComposerPermission): number {
  * updates immediately. `children` is the right-aligned slot (RunPanel sends the
  * circular send button in T19).
  */
-export default function ComposerOptions({ model = null, children }: ComposerOptionsProps) {
+export default function ComposerOptions({ model = null, collapsed = false, children }: ComposerOptionsProps) {
   const [prefs, setPrefs] = useState<ComposerPrefs>(() => loadComposerPrefs());
   const [openId, setOpenId] = useState<OpenId>(null);
   const [highlight, setHighlight] = useState(0);
@@ -113,6 +114,12 @@ export default function ComposerOptions({ model = null, children }: ComposerOpti
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);
   }, []);
+
+  // Collapsing hides the whole card chrome: close any open popover so it cannot
+  // survive invisibly and reappear on expand.
+  useEffect(() => {
+    if (collapsed) setOpenId(null);
+  }, [collapsed]);
 
   const modelName = model ?? prefs.model;
   const triggerRefs = {
