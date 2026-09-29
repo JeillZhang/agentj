@@ -219,7 +219,12 @@
 }
 
 .aj-shell__center {
-  flex: 1 1 auto;
+  /* Basis 0: the middle column is elastic and takes exactly the free space.
+     A content-driven basis (auto) let a wide code block / tool card inflate it
+     past its share, overflow the row and squeeze the right column below
+     --aj-right-w — the fixed-width .aj-right then spilled left out of its
+     container and was painted under this column. */
+  flex: 1 1 0;
   min-width: 480px;
   min-height: 0;
   display: flex;
@@ -249,7 +254,9 @@
    right-to-left while the inner .aj-right stays pinned to the end edge
    (rightpanel.css align-self) so content never reflows mid-animation. */
 .aj-shell__right {
-  flex: 0 1 auto;
+  /* No shrink: the width the user dragged to is authoritative, so the inner
+     .aj-right (fixed --aj-right-w, end-anchored) can never exceed its box. */
+  flex: 0 0 auto;
   width: var(--aj-right-w, var(--aj-rightWidth, 320px));
   min-width: 0;
   max-width: none;
