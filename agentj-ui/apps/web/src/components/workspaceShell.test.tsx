@@ -77,10 +77,19 @@ test("collapsed right panel drops the shell to the 40px rail on wide layouts", (
 
 test("right column animates width from the base rule with no CSS clamp", () => {
   const base = /\.aj-shell__right\s*\{([^}]*)\}/.exec(layoutCss)?.[1] ?? "";
-  expect(base).toMatch(/flex:\s*0 1 auto/);
+  expect(base).toMatch(/flex:\s*0 0 auto/);
   expect(base).toMatch(/width:\s*var\(--aj-right-w/);
   expect(base).toMatch(/min-width:\s*0/);
   expect(base).toMatch(/max-width:\s*none/);
+});
+
+test("right column never shrinks and the center basis is 0, so middle content cannot eat the dragged width", () => {
+  const right = /\.aj-shell__right\s*\{([^}]*)\}/.exec(layoutCss)?.[1] ?? "";
+  expect(right).toMatch(/flex:\s*0 0 auto/);
+  expect(right).not.toMatch(/flex:\s*0 1 auto/);
+  const center = /\.aj-shell__center\s*\{([^}]*)\}/.exec(layoutCss)?.[1] ?? "";
+  expect(center).toMatch(/flex:\s*1 1 0/);
+  expect(center).not.toMatch(/flex:\s*1 1 auto/);
 });
 
 test("right panel width transition lives in the ≥1024 media and is disabled while dragging", () => {

@@ -1,6 +1,6 @@
 # AGENTS.md
 
-> Updated 2026-09-27 — v0.24.1 验收修复（BUG-016，bugfix，无协议变更）：1240–1280px 视口下收缩态发送按钮 X 位移 370–400px → 修复为「工具栏折行时按钮保持右缘锚定」（`.aj-button--send` `margin-left: auto` + CSS 契约守卫）；实机 Playwright 回归 dx/dy=0 @1240/1260/1280/1290 + 390px 窄视口无溢出；web 609 → 610 tests（52 files）；工作区 0.24.0 → 0.24.1（db7833a）。 v0.24.0 中栏 Composer 滚动自动收缩（纯前端，无协议变更，PROTOCOL_VERSION 保持 0.15.0）：上滚离开底部（距底 >48px）自动平滑收缩为发送按钮原位「展开输入框」按钮（`data-collapsed` + `ChevronsUp` 图标 + `aria-label`/`aria-expanded`/`aria-controls` 同步；按钮 X/Y 零位移），下滚回底（<40px）或点击按钮平滑展开（点击路径聚焦 textarea，`preventScroll`；自动展开不抢焦点）；草稿全程保留；待答提问不收缩且强制展开；收缩期冻结 `--aj-composer-h`（滚动几何稳定，无 scrollTop 钳制/振荡）；程序化流式跟随（`scrollIntoView` 自标记）不触发收缩；260ms 动画锁 + 8px 迟滞带（48/40）；收缩同时关闭 composer 弹层；reduced-motion 复用既有双层机制。实现四件套：`composerCollapse.ts` 纯状态机（7 测）+ `ConversationFeed` 用户意图双判（wheel/touchmove + 非程序化 scroll 方向）与程序化排除（5 测）+ `RunPanel` 状态接线（10 测）+ `composer.css` 分段收拢契约（4 测）+ 评审修复波 3 测（真实浏览器点击展开焦点 / 展开期 --aj-composer-h 保持 / 锁过期回底重判）。门禁全绿：cargo fmt / 660 Rust tests / clippy 零警告 / drift 2 passed / sdk 54 / web 609 tests（52 files）/ tui 146 tests（19 files）/ web build / check-version 0.24.0 / desktop-ui；工作区 0.23.1 → 0.24.0。 v0.23.1 补齐 v0.23.0 计划遗漏（Web changes 状态拆分 + 右栏分组接线 + 缺失测试补齐 + 死代码清理，bugfix，无协议变更）+ v0.23.0 右边栏运行详情（run_id 维度 + FileChangeSource + total_bytes / PROTOCOL 0.15.0）+ v0.15.1 协议扩展（三栏工作台真实数据源）+ v0.15.2 session/status dispatch 修复 + v0.16.0 Web 工作台体验修复 + v0.16.1 跟随修复 + v0.16.2 远程访问修复 + v0.16.3 Web 工作台修复（项目菜单 + 文件树）+ v0.16.4 Web 工作台体验修复（状态灯 hover 面板 + 右栏手风琴 + 滚动条）+ v0.16.5 Web 工作台四项修复（右栏右→左展开动画 + 任务/文件变更高度可调 + 顶栏菜单重构/设置弹窗 + 文件树图标）+ v0.17.0 Web 工作台六项增强（代码卡片 + 显示设置 + 文件树图标 + 会话列表菜单 + 项目编辑 + 设置项目面板）+ v0.17.1 验收修复（BUG-008 窄视口菜单/飞出层夹取）+ v0.17.2 界面修复（显示设置字号 px 滑杆/数字输入 + 弹窗边框/四角缩放）+ v0.18.0 Web 三项增强（composer 75% 居中浮动 + 权限选择自动允许 + 会话 token 总量）+ v0.18.1 token 统计修复（读出移至 header 模型 chip 右侧 + 输入/输出 拆分）+ v0.19.0 内核托管 Web UI + 文件树状态补强（同端口静态托管 + 混合鉴权登录门 + WS cookie 通道 + 文件树目录聚合状态）+ v0.20.0 Web 加固 + TUI Files 视图（四项，无 wire 变更）+ v0.20.1 验收修复（BUG-009 焦点模型 + BUG-010 提示词）+ v0.21.0 限流可观测 + 资产完整性 + TUI 搜索 + Web 焦点作用域（四项，无 wire 变更）+ v0.21.1 验收修复（BUG-011 视图切换焦点 + BUG-012 树刷新焦点）+ v0.22.0 限流指标导出 + 资产清单扩展/抽检 + TUI 服务端搜索 + Web 键位收口（四项，三处加性 wire，PROTOCOL_VERSION 0.13.0 → 0.14.0）
+> Updated 2026-09-29 — v0.24.2 右栏遮挡修复（bugfix，无协议变更，PROTOCOL_VERSION 保持 0.15.0）：用户直报「拖拽右边栏运行详情展宽时，文字逐渐被中间栏右侧遮挡」→ 三层根因：① `.aj-shell__center { flex: 1 1 auto }` 基准取内容宽度，中栏长代码块/宽工具卡把 flex 行撑破；② 行溢出时 `.aj-shell__right { flex: 0 1 auto }` 被压缩到 `--aj-right-w` 以下；③ 内层 `.aj-right` 宽度固定 `--aj-right-w` + `align-self: flex-end` 右缘锚定，左侧溢出被 `overflow: hidden` 裁剪、又因中栏 `position: relative` 绘制在其上 → 文字被中栏盖住（遮挡量随拖拽宽度线性增长）。修复：中栏 `flex: 1 1 0`（基准 0，只取剩余空间）+ 右栏 `flex: 0 0 auto`（拖拽宽度不可压缩，flex-basis 仍 `auto`，v0.16.5 折叠揭示动画零回流不变）+ CSS 契约守卫 1 测；实机 Chromium 1024/1100/1280/1440 × 中栏 1600px 超宽内容拖拽 8 帧，遮挡帧 6 → 0；折叠/展开 16 帧内层宽度恒定；web 610 → 611 tests（52 files）；工作区 0.24.1 → 0.24.2。 v0.24.1 验收修复（BUG-016，bugfix，无协议变更）：1240–1280px 视口下收缩态发送按钮 X 位移 370–400px → 修复为「工具栏折行时按钮保持右缘锚定」（`.aj-button--send` `margin-left: auto` + CSS 契约守卫）；实机 Playwright 回归 dx/dy=0 @1240/1260/1280/1290 + 390px 窄视口无溢出；web 609 → 610 tests（52 files）；工作区 0.24.0 → 0.24.1（db7833a）。 v0.24.0 中栏 Composer 滚动自动收缩（纯前端，无协议变更，PROTOCOL_VERSION 保持 0.15.0）：上滚离开底部（距底 >48px）自动平滑收缩为发送按钮原位「展开输入框」按钮（`data-collapsed` + `ChevronsUp` 图标 + `aria-label`/`aria-expanded`/`aria-controls` 同步；按钮 X/Y 零位移），下滚回底（<40px）或点击按钮平滑展开（点击路径聚焦 textarea，`preventScroll`；自动展开不抢焦点）；草稿全程保留；待答提问不收缩且强制展开；收缩期冻结 `--aj-composer-h`（滚动几何稳定，无 scrollTop 钳制/振荡）；程序化流式跟随（`scrollIntoView` 自标记）不触发收缩；260ms 动画锁 + 8px 迟滞带（48/40）；收缩同时关闭 composer 弹层；reduced-motion 复用既有双层机制。实现四件套：`composerCollapse.ts` 纯状态机（7 测）+ `ConversationFeed` 用户意图双判（wheel/touchmove + 非程序化 scroll 方向）与程序化排除（5 测）+ `RunPanel` 状态接线（10 测）+ `composer.css` 分段收拢契约（4 测）+ 评审修复波 3 测（真实浏览器点击展开焦点 / 展开期 --aj-composer-h 保持 / 锁过期回底重判）。门禁全绿：cargo fmt / 660 Rust tests / clippy 零警告 / drift 2 passed / sdk 54 / web 609 tests（52 files）/ tui 146 tests（19 files）/ web build / check-version 0.24.0 / desktop-ui；工作区 0.23.1 → 0.24.0。 v0.23.1 补齐 v0.23.0 计划遗漏（Web changes 状态拆分 + 右栏分组接线 + 缺失测试补齐 + 死代码清理，bugfix，无协议变更）+ v0.23.0 右边栏运行详情（run_id 维度 + FileChangeSource + total_bytes / PROTOCOL 0.15.0）+ v0.15.1 协议扩展（三栏工作台真实数据源）+ v0.15.2 session/status dispatch 修复 + v0.16.0 Web 工作台体验修复 + v0.16.1 跟随修复 + v0.16.2 远程访问修复 + v0.16.3 Web 工作台修复（项目菜单 + 文件树）+ v0.16.4 Web 工作台体验修复（状态灯 hover 面板 + 右栏手风琴 + 滚动条）+ v0.16.5 Web 工作台四项修复（右栏右→左展开动画 + 任务/文件变更高度可调 + 顶栏菜单重构/设置弹窗 + 文件树图标）+ v0.17.0 Web 六项增强（代码卡片 + 显示设置 + 文件树图标 + 会话列表菜单 + 项目编辑 + 设置项目面板）+ v0.17.1 验收修复（BUG-008 窄视口菜单/飞出层夹取）+ v0.17.2 界面修复（显示设置字号 px 滑杆/数字输入 + 弹窗边框/四角缩放）+ v0.18.0 Web 三项增强（composer 75% 居中浮动 + 权限选择自动允许 + 会话 token 总量）+ v0.18.1 token 统计修复（读出移至 header 模型 chip 右侧 + 输入/输出 拆分）+ v0.19.0 内核托管 Web UI + 文件树状态补强（同端口静态托管 + 混合鉴权登录门 + WS cookie 通道 + 文件树目录聚合状态）+ v0.20.0 Web 加固 + TUI Files 视图（四项，无 wire 变更）+ v0.20.1 验收修复（BUG-009 焦点模型 + BUG-010 提示词）+ v0.21.0 限流可观测 + 资产完整性 + TUI 搜索 + Web 焦点作用域（四项，无 wire 变更）+ v0.21.1 验收修复（BUG-011 视图切换焦点 + BUG-012 树刷新焦点）+ v0.22.0 限流指标导出 + 资产清单扩展/抽检 + TUI 服务端搜索 + Web 键位收口（四项，三处加性 wire，PROTOCOL_VERSION 0.13.0 → 0.14.0）
 > `file/list` 沙箱化目录懒加载 + git 状态点；`$/progress` 新增 `kind:"todo"`
 > （全量快照 + 会话内单调 `revision`）与 `kind:"file_change"`（write 自研行级
 > diff / bash git 前后采样，unified diff ≤64 KiB）；`$/askQuestion` +
@@ -300,6 +300,7 @@
 ## Project Status
 
 AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + 可插拔模块」架构。
+v0.24.2 已落地：**右栏遮挡修复（bugfix，无协议变更，PROTOCOL_VERSION 保持 0.15.0）**（用户直报「拖拽右边栏运行详情展宽时文字逐渐被中栏右侧遮挡」→ 三层根因：`.aj-shell__center { flex: 1 1 auto }` 基准取内容宽度，长代码块/宽工具卡撑破 flex 行；行溢出时 `.aj-shell__right { flex: 0 1 auto }` 被压缩到 `--aj-right-w` 以下；内层 `.aj-right` 宽度固定 `--aj-right-w` + `align-self: flex-end` 右缘锚定，左侧溢出被 `overflow: hidden` 裁剪且因中栏 `position: relative` 绘制其上 → 文字被中栏盖住，遮挡量随拖拽宽度线性增长。修复：中栏 `flex: 1 1 0`（基准 0，只取剩余空间）+ 右栏 `flex: 0 0 auto`（拖拽宽度权威，flex-basis 仍 `auto`，v0.16.5 折叠揭示动画零回流不变）+ CSS 契约守卫 1 测；实机 Chromium 1024/1100/1280/1440 × 中栏 1600px 超宽内容拖拽 8 帧：遮挡帧 6 → 0；折叠/展开 16 帧内层宽度恒定；web 610 → 611 tests（52 files）；工作区 0.24.1 → 0.24.2）。
 v0.24.1 已落地：**验收修复（BUG-016，bugfix，无协议变更）**（1240–1280px 视口收缩态发送按钮 X 位移修复：`.aj-button--send` `margin-left: auto` 右缘锚定；实机 Playwright 回归 dx/dy=0；web 610 tests（52 files）；工作区 0.24.0 → 0.24.1）。
 v0.24.0 已落地：**中栏 Composer 滚动自动收缩（纯前端，无协议变更，PROTOCOL_VERSION 保持 0.15.0）**（上滚离开底部（>48px）自动平滑收缩为发送按钮原位「展开输入框」按钮（X/Y 零位移 + aria 同步），下滚回底（<40px）或点击平滑展开（点击聚焦 textarea、自动展开不抢焦点）；草稿保留、待答提问强制展开、收缩期冻结 `--aj-composer-h`、程序化跟随不收缩、260ms 锁 + 8px 迟滞；`composerCollapse.ts` 纯状态机 + `ConversationFeed` 意图双判 + `RunPanel` 接线 + `composer.css` 分段收拢；web 580 → 609 tests（52 files）（含评审修复波 3 测：真实浏览器点击展开焦点 / 展开期 --aj-composer-h 保持 / 锁过期回底重判）。门禁全绿：cargo fmt / 660 Rust tests / clippy 零警告 / drift 2 passed / sdk 54 / web 609 tests（52 files）/ tui 146 tests（19 files）/ web build / check-version 0.24.0 / desktop-ui；工作区 0.23.1 → 0.24.0）。
 v0.23.1 已落地：**补齐 v0.23.0 计划遗漏（Web changes 状态拆分 + 右栏分组接线 + 缺失测试补齐 + 死代码清理，bugfix，无协议变更，PROTOCOL_VERSION 保持 0.15.0）**
@@ -558,7 +559,7 @@ Desktop：Tauri v2 壳套 `apps/web` 产物，四件套 deb/AppImage/dmg/msi，
 - `bun --cwd agentj-ui/apps/tui test` — TUI 单测（含 mock WS e2e，146 tests / 19 files）
 - `./agentj-ui/apps/desktop/check-artifacts.sh linux` — Desktop 产物校验
 - `node agentj-ui/apps/desktop/check-desktop-ui.mjs` — Desktop 前端产物/配置一致性校验
-- `./scripts/check-version.sh` — 版本一致性（Cargo + sdk VERSION + desktop 均为 0.24.1，
+- `./scripts/check-version.sh` — 版本一致性（Cargo + sdk VERSION + desktop 均为 0.24.2，
   PROTOCOL_VERSION 0.15.0 + `protocol/methods.json` 版本 0.15.0）
 
 ### CI Pipelines (GitHub Actions)
@@ -642,7 +643,7 @@ Desktop：Tauri v2 壳套 `apps/web` 产物，四件套 deb/AppImage/dmg/msi，
   为 drift 门禁后第一门）。
 - `agentj-ui/packages/sdk`：共享 SDK（`src/client.ts` RpcClient +
   `src/router.ts` ResponseRouter/RpcTransport + `src/config.ts`
-   `VERSION="0.24.1"` + `PROTOCOL_VERSION="0.15.0"` + `resolveWsUrl` + `src/methods.ts` METHODS
+  `VERSION="0.24.2"` + `PROTOCOL_VERSION="0.15.0"` + `resolveWsUrl` + `src/methods.ts` METHODS
   + `transports/websocket.ts` WebSocketTransport
   + `transports/tcp.ts` TcpTransport；`RpcClient.request` 拦截空/未定义 method（v0.16.3）；
   v0.20.0 `index.ts` barrel 导出 `VERSION`（Web `ConnectionStatus` 消费），
@@ -704,9 +705,9 @@ Desktop：Tauri v2 壳套 `apps/web` 产物，四件套 deb/AppImage/dmg/msi，
   旧内核无 `total` → 自动降级 depth-8 本地过滤）+ 展开态键 = 会话有效 `project_root`
   （`session/new`/`session/status` 捕获，未知回退 `__default__`））。
 - `agentj-ui/apps/desktop`：Desktop 壳（Tauri v2，`frontendDist` →
-    `../../web/dist`，与 workspace 版本同源 `0.24.1`，四件套打包）。
+    `../../web/dist`，与 workspace 版本同源 `0.24.2`，四件套打包）。
 - `agentj-ui/` 根：`package.json` workspaces `["apps/*","packages/*"]`
-  （frontend stays in-repo，前端不拆独立仓，与 Rust 共享 0.24.1）。
+  （frontend stays in-repo，前端不拆独立仓，与 Rust 共享 0.24.2）。
 - **守护内核（v0.4 已实现）**：统一 Connection 抽象 + `serve --port`
   常驻多客户端 + `run --attach` + `dashboard`（见 daemon-kernel 设计文档）。
 
