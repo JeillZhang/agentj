@@ -727,6 +727,13 @@ Desktop：Tauri v2 壳套 `apps/web` 产物，四件套 deb/AppImage/dmg/msi，
 
 - Commit messages in English. `docs/superpowers/specs/` docs in Chinese.
 - Docs under `docs/` are tracked deliverables — commit them.
+- **Doc placement** — `README.md` 只保留项目简介、高层特性概览、结构、快速上手、协议摘要与
+  开发命令；**不记录详细版本变更与逐版本特性**。
+  - 版本变更记录 → `docs/changelog/`（每个次版本一个文件 `v0.<minor>.md`，补丁号作为同文件
+    小节；Keep a Changelog 风格 `Added`/`Changed`/`Fixed`/`Removed`；新次版本另建文件并更新
+    `docs/changelog/README.md` 索引）。
+  - 用户可见特性 → `docs/guide/`（按主题，去版本号叙事）。
+  - `README.md` 的版本行只同步「当前版本 + 指向 `docs/changelog/` 的链接」。
 - Bump version on every feature (`0.1.0` → `0.2.0`) and bugfix (`0.1.0` → `0.1.1`).
 - Before planning/developing, read both summaries — `.agents/summary/summary_and_next_se.md`
   (backend) and `.agents/summary/summary_and_next_fe.md` (frontend) — and `docs/superpowers/` first.
@@ -741,7 +748,9 @@ Desktop：Tauri v2 壳套 `apps/web` 产物，四件套 deb/AppImage/dmg/msi，
 - After each plan completes, update the summary file(s) for the touched side(s) with the
   current feature's progress, remaining issues, next plan/next steps.
 - After each feature phase completes AND `cargo test` + `clippy` pass, auto:
-  - Update `AGENTS.md` / `README.md` / `.agents/summary/summary_and_next_se.md` /
+  - Append the phase's change record to the matching `docs/changelog/v0.<minor>.md`
+    （新建次版本文件时更新 `docs/changelog/README.md` 索引）；用户特性写入 `docs/guide/`。
+  - Update `AGENTS.md` / `README.md`（仅当前版本行）/ `.agents/summary/summary_and_next_se.md` /
     `.agents/summary/summary_and_next_fe.md`（按阶段触及侧更新，可两文件同更）
   - Commit as `docs: auto-sync AGENTS.md, README.md, summary (fe/se) after {phase}`.
   - Do NOT wait for user — mandatory post-phase step.
