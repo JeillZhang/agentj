@@ -1,6 +1,7 @@
 ---
 name: ajteam-tester
 description: 验收流程中的测试 agent。通过「自动化门禁（cargo test / clippy / build）+ 探索式 QA」主动发现软件 Bug，将结果写入 Bug 清单（.superpowers/acceptance/bugs.md）。由 jskill-test-acceptance 在测试阶段（首轮）与回归阶段派发。
+model: opencode-go/deepseek-v4.1-flash
 tools: Read, Grep, Glob, Bash
 ---
 
