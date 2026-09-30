@@ -756,5 +756,41 @@ Desktop：Tauri v2 壳套 `apps/web` 产物，四件套 deb/AppImage/dmg/msi，
   - Do NOT wait for user — mandatory post-phase step.
 - Clean up temp files, Docker containers after each phase.
 - When a command hangs >120s, cancel and retry.
-- PR creation: create PR and share link — user handles merge.
+- PR creation: create PR on `origin` only and share link — user handles merge.
+  **Never open a GitCode MR for the same branch**（见下方 Remote & Merge Policy）。
 - Rust function ≤50 lines, ≤120 chars per line.
+
+## Remote & Merge Policy
+
+> 起因：2026-09-30 发现 `origin/main`(870) 与 `gitcode/main`(872) 提交数不一致。
+> 根因是**同一条 feature 分支在两个远端各被合并一次**，每个远端各自生成一个 merge
+> commit，导致两条 `main` 历史累积的 merge commit 数量不同——而两侧 tree 完全相同
+> （`5b5126b`，`git diff --stat origin/main gitcode/main` 为空）。**纯记账差异，非内容问题。**
+> 已 double-merge 的分支：`fix/right-panel-occlusion`（GitHub #66 / GitCode !44）、
+> `chore/agent-model-deepseek-v4-1-flash`（#67 / !45）、
+> `docs/readme-changelog-guide-split`（#68 / !46）。
+
+- **单一权威远端**：`origin`（GitHub `JeillZhang/agentj`）是 `main` 的**唯一真源**；
+  `gitcode`（GitCode `jeill/agentj`）是**只读镜像**，不接受 MR。
+- **只合并一次**：PR 只在 `origin` 创建与合并。合并后**不得**再在 `gitcode` 建同名 MR。
+- **镜像用快进推送同步，禁止再次合并**：
+
+  ```bash
+  git pull --ff-only origin main
+  git push gitcode main:main        # 复制 commit，不新增 merge commit
+  ```
+
+  若 `gitcode/main` 落后，这是快进；若已分叉，`push` 会被拒绝——**不要用 `--force`**。
+- **feature 分支可推两个远端**（同一 SHA，无害）；**合并只能在一个远端进行**。
+- **健康检查看 tree，不看提交数**：
+
+  ```bash
+  git fetch origin gitcode
+  git diff --stat origin/main gitcode/main              # 期望为空
+  git rev-parse origin/main^{tree} gitcode/main^{tree}   # 期望相等
+  ```
+
+  提交数不同但 tree 相同 = 旧的双合并遗留记账差异，**不是内容问题**；
+  tree 不同才是真分歧，需立即排查。
+- **分叉后不要自动 force-push 收敛**（改写已发布 `main` 属高风险操作）——
+  报告给用户，由用户决定是否重置镜像。
