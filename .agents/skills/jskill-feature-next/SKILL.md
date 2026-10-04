@@ -144,7 +144,7 @@ Feed this complete context into the design phase so it doesn't miss constraints 
 - Plan tasks: TDD-first (test code before implementation), exact file paths, no placeholders, per the Task Template Specification.
 - Verification gates: project test + lint commands must pass.
 - Version bump: patch for fixes, minor for features.
-- Doc auto-sync: after each completed phase, sync AGENTS.md / README.md / summary (fe+se, touched side(s)) and commit together.
+- Doc auto-sync: after each completed phase, always update `.agents/summary/*` (touched side(s)), `docs/changelog/`, and `docs/guide/`; update AGENTS.md / README.md **only** for structural or baseline changes (never version narratives, never test counts). Commit together.
 
 ## Quick Reference
 

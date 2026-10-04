@@ -238,11 +238,11 @@ Run ONLY the verification layers the project actually has — nothing more. Dete
 
 Run this **before** presenting any finish options. The doc sync commits must be included in the branch so a PR captures them.
 
-1. Update `AGENTS.md` — sync version, migrations count, new API routes, architecture notes, config vars, crate/module boundaries — any structural change introduced in the phase.
+1. Update `AGENTS.md` — **only when the phase changed structural facts**: current version / `PROTOCOL_VERSION` baseline, architecture boundaries, commands, or rules. Do NOT append per-version narratives, feature histories, or test counts — those belong to `docs/changelog/` and `.agents/summary/`.
 2. Update `README.md` — sync version tagline, features checklist, project structure tree, API endpoint tables, migrations count, config var table — any user-facing change.
 3. Update the project summary files (per AGENTS.md): `.agents/summary/summary_and_next_se.md` (backend) and `.agents/summary/summary_and_next_fe.md` (frontend). Update ONLY the file(s) for the side(s) this phase touched; a full-stack phase updates both, each with its own side's content — never cross-write. In each updated file: **REPLACE, don't append** — rewrite it to retain ONLY that side's currently-developing feature content: write a "## {phase}: {title} ✅ (本次完成)" section documenting what was built and verification results, list remaining issues and next steps. **Retention exception (MANDATORY):** the "## 待实施" (pending) table is NOT wiped on replace — carry over every entry not implemented in this phase unchanged with status 待实施 (including former 下一步 candidates), remove an entry only when this phase actually implemented it, and add new candidates as 待实施 rows. Remove any other content belonging to previously completed or non-current features. Do NOT accumulate old feature sections.
 4. Update the target spec doc in `docs/superpowers/specs/` — refresh its TODO list to reflect this phase's completion (per AGENTS.md: "Update docs/superpowers/specs target spec doc TODO list after each phase").
-5. Commit the synced files together: `docs: auto-sync AGENTS.md, README.md, summary (fe/se), spec TODO after {phase} completion`.
+5. Commit the synced files together (name only the files actually touched): `docs: auto-sync AGENTS.md, README.md, summary (fe/se), spec TODO after {phase} completion`.
 6. Do NOT skip this step — it is mandatory before proceeding to finish options.
 
 ### Phase 9: Branch Finishing (auto-continue，全自动)

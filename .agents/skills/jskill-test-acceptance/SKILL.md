@@ -72,7 +72,7 @@ flowchart TB
 ### Phase 4: 版本 bump + 收尾
 
 - 验收全部通过后，统一 bump **产品**版本 patch（如 `Cargo.toml`，遵循 AGENTS.md「bugfix → patch」）；无版本清单则跳过
-- 遵循 AGENTS.md 执行文档自动同步（AGENTS.md / README.md / summary_and_next_se.md + summary_and_next_fe.md，按触及侧）
+- 遵循 AGENTS.md 执行文档自动同步（`.agents/summary/*.md` 必更，按触及侧；`docs/changelog/` + `docs/guide/` 同步变更记录与用户特性；`AGENTS.md` / `README.md` **仅在**架构边界/命令/规则/版本基线变化时更新，**禁止**追加版本叙事）
 
 ### Phase 5: 判定与报告
 
