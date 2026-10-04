@@ -676,6 +676,7 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 
 - **SessionSummary**：`session_id`（string）、`updated_at`（integer，epoch **秒**）、`state`（SessionStatus，见 §9）、`preview`（string，可选，末条消息摘要，内核截断至 120 字符）。
 - **部分结果**：无。
+
 ### 8.19 session/history（请求，`@since 0.12.0`）
 
 - **能力声明**：无（只读轨迹回放）。
@@ -823,6 +824,9 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 - **结算**：respond / 超时 / run 取消 / 会话归档删除 / owner 连接断开 → 统一结算一次（`answers` 或 `skipped`），settle hook 保证轨迹只记录一次（`question_answer`）。
 - **部分结果**：无。
 - **error.data**：非 owner → `-32806`；未知 option id → `-32602` + `{ "unknown_options": ["<id>", …] }`；单选传多答 → `-32602` + `{ "reason": "too_many_answers" }`。
+
+## 9. 值枚举与未知值宽容
+
 ### 9.1 值枚举
 
 当前定义以下字符串值枚举（`Role` / `ModuleState` / `SessionStatus` / `PermissionDecision` 为 v0.2 既有）：
@@ -840,6 +844,8 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 
 上述枚举均带 `Unknown` 变体容忍前向值（`FileKind` / `TodoStatus` / `FileChangeKind` / `FileChangeSource` 由 `serde(other)` + `schemars(skip)` 实现，schema 只列已知值；`git_status` 的 `M`/`A`/`U`/`D` 为 `FileEntry` 内联的固定字母集合，见 8.20）。
 
+### 9.2 未知值宽容规则
+
 - 客户端 / 服务端收到**未知枚举值**时，MUST 将其归入对应的 **Unknown 变体**（保留原始字符串以便透传），MUST NOT 因此失败或断开连接。
 - 例如：`ModuleState` 出现 `"suspended"` 时，消费方将其视为 Unknown 状态继续运行；`SessionStatus` 出现未知值时，可视为「非 active」处理但不崩溃。
 - 枚举扩展属**加性变更**（新值不改变既有值语义），只随 minor 版本增加。
@@ -851,6 +857,9 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 - 协议扩展（0.13.0）新增的 `-32807 PathNotAllowed`、`$/progress` 的 `todo` / `file_change` kind、`file/list`、`$/askQuestion` / `question/respond`、`session/new` 的 `project_root`，以及 `FileKind` / `TodoStatus` / `FileChangeKind` 三个值枚举，均遵循该加性纪律并标注 `@since 0.13.0`；`session/list` / `session/history` 与 `usage` / `permission` kind 为 0.12.0 引入，本规范补录其小节（§8.18 / §8.19、§7.3）。
 - 协议扩展（0.14.0）新增的 `file/list` 参数 `query` 与结果 `total`、`SessionNewResult.project_root`、`SessionStatusResult.project_root` 同为**加性字段**（标注 `@since 0.14.0`；不新增方法、不新增 schema、不改既有字段语义）。
 - 协议扩展（0.15.0）新增的 `FileChangeSource` 值枚举与 `FileChange` / `ProgressValue::Todo` / `ProgressValue::FileChange` / `TrajectoryValue::Todo` / `TrajectoryValue::FileChange` / `SessionRunResult` / `SessionHistoryParams` 的 `run_id` / `seq` / `source` / `total_bytes` 四加性字段同为**加性字段**（标注 `@since 0.15.0`；不新增方法、不改既有字段语义；新增 `FileChangeSource.json` 一个 schema，去重键由全局 `path` 升为 `(run_id, path)`）。
+
+## 10. 机器可读模型
+
 - **`protocol/methods.json`**：方法注册表，捕获 JSON Schema 表达不了的方法语义（method 字符串 ↔ params/result schema 引用、方向、类型）。当前收录 21 个方法，`protocol_version` 为 `0.15.0`。
 
 对应关系：
@@ -882,6 +891,7 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 信封与公共类型见 `RequestMessage.json`、`NotificationMessage.json`、`ResponseMessage.json`、`ErrorObject.json`、`Id.json`、`ProgressToken.json`、`ProgressValue.json`、`Role.json`、`PermissionDecision.json` 等；协议扩展（0.13.0）新增 / 更新的公共类型见 `SessionNewParams.json`、`SessionSummary.json`、`FileListParams.json`、`FileListResult.json`、`FileEntry.json`、`FileKind.json`、`AskQuestionParams.json`、`AskOption.json`、`QuestionRespondParams.json`、`QuestionRespondResult.json`、`TodoItem.json`、`TodoStatus.json`、`FileChange.json`、`FileChangeKind.json`、`UsageInfo.json`。协议扩展（0.14.0）不新增 schema，仅向既有 schema 追加字段：`FileListParams.json`（`query`）、`FileListResult.json`（`total`）、`SessionNewResult.json` 与 `SessionStatusResult.json`（`project_root`）；协议扩展（0.15.0）新增 `FileChangeSource.json` 一个 schema（`FileChange`/`ProgressValue`/`TrajectoryValue`/`SessionHistoryParams`/`SessionRunResult` 的 `run_id`/`seq`/`source`/`total_bytes` 为加性字段）；schema 总数 51 → **52**。
 
 一致性锚点：Rust 侧 `schemars` 生成 `schemas/*.json` 并提交，契约测试断言实际 wire 输出与 Schema 一致，CI 漂移门禁在生成结果与提交版本不一致时失败。
+
 ## 11. 版本化与变更日志
 
 ### 11.1 版本策略

@@ -4,6 +4,30 @@
 `@agentj/tokens` + `lucide-react`。既可作为开发 server，也可由内核同端口托管
 （见 [HTTP 面与鉴权](http-and-auth.md)）。
 
+## 连接与地址派生
+
+首次打开或需要切换内核时，进 **设置 → 连接**：字段为 `Host` / `Port` / `Token`
+（占位值 `127.0.0.1` / `4096` / 空）。`Host` 必填；`Port` 留空按 `4096`；`Token`
+留空表示内核未配 token。点 `Connect` 立即重连，设置同时写入浏览器本地。
+
+WebSocket 地址按以下优先级解析（前者生效则不再看后者）：
+
+1. **手动设置**——对话框输入的值，或上次保存的值；只要填了 `Host` 或 `Port` 即生效。
+2. **构建期环境变量** `VITE_AGENTJ_WS_URL`（仅在未手动指定时使用）。
+3. **页面地址派生**——当前页面的 `hostname` + 端口 `4096`；https 页面自动用 `wss`。
+4. **回环兜底** `ws://127.0.0.1:4096/ws`。
+
+因此：内核跑在 `4096` 时，浏览器直接打开即连上（`npm run dev` 的 5173 dev server
+同样适用，因为派生取的是页面 `hostname` 而非端口）。内核换端口、或跑在另一台机器时，
+用「设置 → 连接」填 `Host` / `Port`，或构建时传入
+`VITE_AGENTJ_WS_URL=ws://<host>:<port>/ws`。
+
+- `tauri.localhost`（Desktop 壳）始终派生成明文回环 `ws://`，不受页面协议影响。
+- 畸形地址（例如 `Host` 里误带端口）会被回退到派生地址，避免 `new WebSocket` 抛错。
+- 连接设置**不会**跨标签页同步，其他偏好会（见[本地持久化](#本地持久化)）。
+- 服务端侧的 token / 登录门 / 会话 cookie / WS 三通道鉴权见
+  [HTTP 面与鉴权](http-and-auth.md)。
+
 ## 布局
 
 三栏：**左栏**（会话 / 文件）· **中栏**（对话）· **右栏**（运行详情）。
@@ -54,7 +78,7 @@
 
 顶栏「设置…」对话框（可缩放）：
 
-- **连接**：WebSocket 地址 / token（持久化，刷新自动恢复重连）。
+- **连接**：`Host` / `Port` / `Token`，手动指定内核地址（见[连接与地址派生](#连接与地址派生)）。
 - **显示**：对话 / 左栏 / 右栏 / 代码四区字号（px 滑杆 + 数字）、行高、密度、
   减弱动画。
 - **项目**：全局默认项目、新项目工作目录预填、项目列表（默认徽标 / 编辑 / 删除，
@@ -65,6 +89,37 @@
 
 `agentj` + 连接状态灯（hover/focus 面板显示 ws / 模型 / 模块状态 / UI 与内核版本）+
 「...」菜单（项目 / 继续会话… / 收藏会话 / 设置… / 帮助）。
+
+## 本地持久化
+
+Web 端不用账号系统，偏好全部保存在浏览器 `localStorage`（同源）。清空浏览器数据
+或换浏览器即回到默认值；`localStorage` 不可用时静默降级为「不持久化」而非报错。
+
+| 键 | 内容 |
+| --- | --- |
+| `agentj.connection` | 手动连接设置（`host` / `port` / `token`） |
+| `agentj.theme-mode` | 主题：`dark` / `light` / `system` |
+| `agentj.layout.leftWidth` / `rightWidth` | 左 / 右栏宽度 |
+| `agentj.layout.leftTab` | 左栏当前 tab（`sessions` / `files`） |
+| `agentj.layout.rightCollapsed` | 右栏折叠态 |
+| `agentj.layout.rightSections` | 右栏「任务」「文件变更」两面板的展开态 |
+| `agentj.layout.rightSectionSplit` | 右栏双开时的上下分隔比例 |
+| `agentj.composer.model` / `agent` / `entropy` | composer 的模型 / Agent / 熵变 |
+| `agentj.composer.permissionMode` | 权限模式（`ask` / `bypass`） |
+| `agentj.favorites` | 收藏（星标）的会话 id 列表 |
+| `agentj.ask.collapsed` | 提问卡片的折叠态 |
+| `agentj.sidebarPrefs` | 会话列表排序（`updated` / `created`）与过滤（`all` / `favorites`） |
+| `agentj.displayPrefs` | 显示设置：四区字号（px）、行高、密度、减弱动画 |
+| `agentj.projects` / `projectMap` / `projectDefaults` / `projectCollapsed` / `currentProject` | 项目列表、当前项目与项目默认值 |
+| `agentj.demo` | 演示数据开关 |
+
+默认值：左栏 `256px` / 右栏 `320px`（左限 200–420、右限 260–480）；字号对话 `15px`
+（12–24）、左右栏 `13px`（10–20）、代码 `12px`（10–20）；行高与密度默认、减弱动画
+关闭；排序按更新时间、过滤全部；权限模式「逐次确认」。
+
+**跨标签同步**：布局与右栏面板、侧栏排序/过滤、显示设置、composer 选项与权限模式、
+收藏与项目、演示数据开关会通过 `storage` 事件在其他标签页实时同步；
+`agentj.connection` 与 `agentj.theme-mode` **不**同步（各标签页各自持有）。
 
 ## 主题与无障碍
 

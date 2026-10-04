@@ -21,5 +21,7 @@ node agentj-ui/apps/desktop/check-desktop-ui.mjs    # 前端产物/配置一致�
 
 ## 远程连接
 
-桌面壳默认连接本机内核（明文回环）。连接设置与 Web 相同（持久化到本地，刷新恢复），
-可通过「连接设置」指向局域网/远程 `ws://`（https → wss）。
+桌面壳默认连接本机内核（明文回环）。连接设置与 Web 相同：**设置 → 连接** 填
+`Host` / `Port` / `Token`（持久化到本地，刷新恢复），可指向局域网/远程内核。
+Desktop 壳的页面来源是 `tauri.localhost`，地址始终派生为明文回环 `ws://`；
+完整解析顺序见 [Web 工作台](web.md)。

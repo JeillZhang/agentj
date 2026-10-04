@@ -17,7 +17,7 @@ Web、Desktop 均作为**协议消费者**接入，任意语言都可开发前�
 | --- | --- |
 | [快速上手](getting-started.md) | 环境要求、构建、启动内核、打开各端 |
 | [命令行（CLI）](cli.md) | `run` / `serve` / `dashboard` 与参数 |
-| [Web 工作台](web.md) | 三栏工作台、composer、右栏运行详情、设置 |
+| [Web 工作台](web.md) | 三栏工作台、composer、右栏运行详情、连接与地址派生、本地持久化、设置 |
 | [终端界面（TUI）](tui.md) | 会话视图、文件视图与搜索、键位 |
 | [桌面应用（Desktop）](desktop.md) | Tauri 壳与安装包 |
 | [配置](configuration.md) | `config.toml`（模型 / 权限 / 会话 / license / MCP） |
