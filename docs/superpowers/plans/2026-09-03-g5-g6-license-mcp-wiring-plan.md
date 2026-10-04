@@ -1099,7 +1099,7 @@ git commit -m "docs: auto-sync AGENTS.md, README.md, summary after G5/G6 complet
 **Regression Guard:** none (doc only).
 
 - [ ] **Step 1: Update the gap table**
-  - Row G5 (L21): status → `✅ 已实现（v0.9.0，见 [2026-09-03-g5-g6-license-mcp-wiring-design.md](2026-09-03-g5-g6-license-mcp-wiring-design.md)）`.
+  - Row G5 (L21): status → `✅ 已实现（v0.9.0，见 [2026-09-03-g5-g6-license-mcp-wiring-design.md](../specs/2026-09-03-g5-g6-license-mcp-wiring-design.md)）`.
   - Row G6 (L22): status → same pattern.
 - [ ] **Step 2: Update the "G2-G8 待设计提示" section (L39-40)**
   - G5/G6 entries: replace the remediation direction text with a link to the new design doc + note the key decisions (D1 free mode, D3 McpServerSpec).
