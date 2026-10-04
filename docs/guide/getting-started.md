@@ -39,6 +39,9 @@ agentj serve --port 4096 --host 0.0.0.0 --token SECRET
 浏览器打开 `http://<host>:4096/` → 内嵌登录页输入 token → 会话 cookie 生效，UI 与
 WebSocket 同源可用。详见 [HTTP 面与鉴权](http-and-auth.md)。
 
+用 dev server（`localhost:5173`）连远程内核时，在 **设置 → 连接** 填 `Host` / `Port`
+与 `Token`；地址派生规则见 [Web 工作台](web.md)。
+
 ## 运行一次任务
 
 ```bash
@@ -49,7 +52,7 @@ agentj run --attach tcp://127.0.0.1:4096 "hi"  # 附着到常驻内核
 ## 打开各端（开发）
 
 ```bash
-# Web
+# Web（dev server 按页面地址派生内核地址 <hostname>:4096；内核在 4096 时无需配置）
 npm --prefix agentj-ui install
 npm --prefix agentj-ui run dev --workspace=@agentj/web
 
