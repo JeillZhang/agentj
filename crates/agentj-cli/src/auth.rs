@@ -278,6 +278,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn login_with_default_model_creates_missing_config_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = AuthStore::with_path(dir.path().join("auth.json"));
+        let cfg = dir.path().join("config.toml");
+        run_login_with(
+            &store,
+            &LoginArgs {
+                provider: "opencode-go".into(),
+                api_key: Some("sk-1".into()),
+                default_model: Some("opencode-go/kimi-k3".into()),
+                offline: true,
+            },
+            &|_k: &str| Ok(None),
+            &cfg,
+        )
+        .await
+        .unwrap();
+        let text = std::fs::read_to_string(&cfg).unwrap();
+        assert!(text.contains("provider = \"opencode-go\""), "{text}");
+        assert!(
+            text.contains("default_model = \"opencode-go/kimi-k3\""),
+            "{text}"
+        );
+        assert!(store.get("opencode-go").unwrap().is_some());
+    }
+
+    #[tokio::test]
     async fn unknown_default_model_is_rejected_and_lists_available_ids() {
         let dir = tempfile::tempdir().unwrap();
         let store = AuthStore::with_path(dir.path().join("auth.json"));
