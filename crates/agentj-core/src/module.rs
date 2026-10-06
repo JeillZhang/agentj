@@ -52,6 +52,12 @@ pub trait ModelProvider: Send + Sync {
         messages: Vec<ChatMessage>,
         options: ModelOptions,
     ) -> Result<ChatResponse, ModelError>;
+
+    /// Model ids this provider serves. Default empty keeps legacy providers
+    /// unchanged and lets `kernel/status` report real lists. @since 0.25.0
+    fn models(&self) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 /// Assembles the request context and folds tool results back into history.
@@ -478,6 +484,18 @@ impl ProviderRegistry {
 
     pub fn list(&self) -> Vec<String> {
         self.providers.read().keys().cloned().collect()
+    }
+
+    /// (name, models) pairs sorted by name, for the `kernel/status` filler.
+    /// @since 0.25.0
+    pub fn list_with_models(&self) -> Vec<(String, Vec<String>)> {
+        let providers = self.providers.read();
+        let mut out: Vec<(String, Vec<String>)> = providers
+            .iter()
+            .map(|(name, p)| (name.clone(), p.models()))
+            .collect();
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out
     }
 }
 
@@ -1182,5 +1200,76 @@ mod tests {
         assert_eq!(out["path"], "/ws/src/lib.rs");
         assert_eq!(out["session_id"], "s42");
         assert_eq!(out["workspace_root"], "/ws");
+    }
+
+    struct StubProvider(Option<Vec<String>>);
+
+    fn stub_chat_response() -> Result<ChatResponse, ModelError> {
+        unimplemented!()
+    }
+
+    struct NoModelsProvider;
+
+    #[async_trait]
+    impl ModelProvider for NoModelsProvider {
+        async fn chat_stream(
+            &self,
+            _m: Vec<ChatMessage>,
+            _t: Vec<ToolDefinition>,
+            _o: ModelOptions,
+        ) -> Result<BoxStream<'static, Result<ModelEvent, ModelError>>, ModelError> {
+            unimplemented!()
+        }
+        async fn chat(
+            &self,
+            _m: Vec<ChatMessage>,
+            _o: ModelOptions,
+        ) -> Result<ChatResponse, ModelError> {
+            stub_chat_response()
+        }
+    }
+
+    #[async_trait]
+    impl ModelProvider for StubProvider {
+        async fn chat_stream(
+            &self,
+            _m: Vec<ChatMessage>,
+            _t: Vec<ToolDefinition>,
+            _o: ModelOptions,
+        ) -> Result<BoxStream<'static, Result<ModelEvent, ModelError>>, ModelError> {
+            unimplemented!()
+        }
+        async fn chat(
+            &self,
+            _m: Vec<ChatMessage>,
+            _o: ModelOptions,
+        ) -> Result<ChatResponse, ModelError> {
+            stub_chat_response()
+        }
+        fn models(&self) -> Vec<String> {
+            self.0.clone().unwrap_or_default()
+        }
+    }
+
+    #[test]
+    fn provider_models_default_is_empty() {
+        assert!(NoModelsProvider.models().is_empty());
+    }
+
+    #[test]
+    fn list_with_models_is_sorted_and_carries_reported_models() {
+        let reg = ProviderRegistry::new();
+        reg.register(
+            "b".into(),
+            Arc::new(StubProvider(Some(vec!["m2".into(), "m1".into()]))),
+        );
+        reg.register("a".into(), Arc::new(NoModelsProvider));
+        assert_eq!(
+            reg.list_with_models(),
+            vec![
+                ("a".to_string(), vec![]),
+                ("b".to_string(), vec!["m2".into(), "m1".into()])
+            ]
+        );
     }
 }
