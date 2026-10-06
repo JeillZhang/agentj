@@ -4,7 +4,7 @@ AI 编码代理工具（Rust）——Linux 内核式「内核调度 + 可插拔�
 内核通过统一的 JSON-RPC 2.0 协议（stdio / TCP / WebSocket）对外暴露能力；
 CLI、TUI、Web、Desktop 均作为协议消费者接入，任意语言可开发前端。
 
-> 当前版本：**v0.24.2**
+> 当前版本：**v0.25.0**
 > · 变更记录：[`docs/changelog/`](docs/changelog/)
 > · 用户指南：[`docs/guide/`](docs/guide/)
 > · 协议规范：[`docs/specs/ipc-protocol.md`](docs/specs/ipc-protocol.md)
@@ -33,6 +33,9 @@ CLI、TUI、Web、Desktop 均作为协议消费者接入，任意语言可开发
 - [x] **内置工具**：bash / glob / grep / read / write + todo
 - [x] **MCP 桥**：子进程 MCP 客户端 + `McpConnectionManager` 长驻连接
 - [x] **模型提供方**：DeepSeek + opencode-go + Ollama + Mock（三线 wire-format）
+- [x] **opencode-go 订阅**：`agentj auth` 凭据落盘 + live/overlay 动态目录 +
+  合规请求头（`agentj/<ver>` UA、`x-opencode-session`）+ 模型可见性
+  （见 [订阅指南](docs/guide/subscription.md)）
 - [x] **权限审批系统**：`$/permissionRequest` + `permission/respond` + 60s 超时自动
   Deny + `allow_always` 会话级
 - [x] **提问通道**：`$/askQuestion` + `question/respond` owner 定向往返
@@ -61,10 +64,11 @@ CLI、TUI、Web、Desktop 均作为协议消费者接入，任意语言可开发
 ## Project Structure
 
 ```
-crates/                    # 17 个 workspace crate（统一目录）
+crates/                    # 18 个 workspace crate（统一目录）
   agentj-protocol/         # IPC 协议契约（wire 类型 + schema 生成）
   agentj-core/             # 内核调度 + 事件总线（重入防护）+ TurnRunner + TurnArtifact（diff）
   agentj-config/           # TOML 配置（[model]/[permission]/[session]/[license]/[[mcp.servers]]）
+  agentj-auth/             # 订阅凭据（auth.json 0600 原子写 + flag>env>file 优先级）
   agentj-session/          # 会话生命周期（FileBackedStore + 过期清理 + project_root）
   agentj-question/         # 提问通道（QuestionModule + AskTool）
   agentj-model/            # 模型提供方（DeepSeek/opencode-go/Ollama/Mock）
@@ -77,7 +81,7 @@ crates/                    # 17 个 workspace crate（统一目录）
   agentj-skills/           # skills 加载器
   agentj-plugin/           # 插件系统 + libloading
   agentj-ipc/              # JSON-RPC IPC（stdio/TCP/WS + 连接分类器 + file/list + web 静态托管/登录门/指标）
-  agentj-cli/              # agentj 二进制（run/serve/dashboard）
+  agentj-cli/              # agentj 二进制（run/serve/dashboard/auth）
   agentj-plugin-fixture/   # 插件 cdylib 测试夹具（dev-only）
 agentj-ui/                 # 前端 monorepo（npm workspaces，frontend stays in-repo）
   packages/
