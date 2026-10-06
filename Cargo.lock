@@ -3,6 +3,16 @@
 version = 4
 
 [[package]]
+name = "agentj-auth"
+version = "0.24.2"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "agentj-cli"
 version = "0.24.2"
 dependencies = [
@@ -43,6 +53,7 @@ dependencies = [
  "serde",
  "tempfile",
  "toml",
+ "toml_edit",
 ]
 
 [[package]]
