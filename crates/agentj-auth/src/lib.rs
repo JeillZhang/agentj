@@ -4,7 +4,9 @@
 //! `OAuth` variant reserved for phase 2.
 
 pub mod credential;
+pub mod resolve;
 pub mod store;
 
 pub use credential::{AuthError, AuthFile, Credential, redact};
+pub use resolve::{KeySource, ResolvedKey, resolve_credential};
 pub use store::AuthStore;
