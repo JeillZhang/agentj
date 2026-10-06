@@ -22,6 +22,9 @@ pub fn client() -> reqwest::Client {
 /// Rule: the header is emitted iff the caller configured a header name AND the
 /// options carry a `session_id`.
 pub fn session_header<'a>(name: &'a str, options: &'a ModelOptions) -> Option<(&'a str, &'a str)> {
+    if name.is_empty() {
+        return None;
+    }
     options.session_id.as_deref().map(|sid| (name, sid))
 }
 
@@ -44,6 +47,7 @@ mod tests {
             session_header("x-opencode-session", &ModelOptions::default()),
             None
         );
+        assert_eq!(session_header("", &opts), None);
     }
 
     #[test]
