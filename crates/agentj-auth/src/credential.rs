@@ -86,8 +86,11 @@ pub fn parse_auth_file(text: &str, path: &str) -> Result<AuthFile, AuthError> {
         .collect()
 }
 
-/// Render a key as `…<last 4>`; never reveals more than the tail.
+/// Render a key as `…<last 4>`; never reveals the full key (short keys collapse to `…`).
 pub fn redact(key: &str) -> String {
+    if key.chars().count() <= 4 {
+        return "…".to_string();
+    }
     let tail: String = key
         .chars()
         .rev()
@@ -126,12 +129,18 @@ mod tests {
     fn missing_type_is_malformed() {
         assert!(matches!(
             Credential::try_from_value(&serde_json::json!({"key":"sk-x"})),
-            Err(AuthError::Malformed { .. })
+            Err(AuthError::Malformed { ref reason, .. }) if reason.contains("missing credential type")
         ));
     }
 
     #[test]
     fn redact_keeps_last_four_only() {
         assert_eq!(redact("sk-1234567890"), "…7890");
+    }
+
+    #[test]
+    fn redact_never_reveals_a_short_key_in_full() {
+        assert_eq!(redact("sk"), "…");
+        assert_eq!(redact(""), "…");
     }
 }
