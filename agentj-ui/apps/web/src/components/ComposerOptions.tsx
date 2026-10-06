@@ -8,7 +8,7 @@ import "./options.css";
 
 type OpenId = "model" | "agent" | "entropy" | "permission" | null;
 
-export type ModelEntry = { name: string; cap: string };
+export type ModelEntry = { name: string; cap?: string };
 type AgentEntry = { id: ComposerAgent; label: string; cap: string };
 type EntropyPreset = { value: number; label: string; short: string };
 type PermissionEntry = { id: ComposerPermission; label: string; cap: string };
@@ -215,7 +215,10 @@ export default function ComposerOptions({
           className="sel"
           aria-haspopup="listbox"
           aria-expanded={openId === "model"}
-          onClick={() => openPanel("model", modelName ? modelOptions.findIndex((e) => e.name === modelName) : 0)}
+          onClick={() => {
+            const index = modelName ? modelOptions.findIndex((e) => e.name === modelName) : 0;
+            openPanel("model", index < 0 ? 0 : index);
+          }}
         >
           <span className="g">◆</span>
           {modelName ?? "模型"}

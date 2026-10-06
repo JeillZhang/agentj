@@ -196,3 +196,16 @@ test("served list marks the kernel default model selected, not the first row", (
   const selected = rows.find((r) => r.getAttribute("aria-selected") === "true");
   expect(selected?.textContent).toContain("opencode-go/kimi-k3");
 });
+
+test("served list without the current model still selects on Enter", () => {
+  render(
+    <ComposerOptions
+      model="opencode-go/gone"
+      models={[{ name: "opencode-go/a", cap: "—" }]}
+    />,
+  );
+  fireEvent.click(screen.getByRole("button", { name: /opencode-go\/gone/ }));
+  const pop = document.querySelector(".pop") as HTMLElement;
+  fireEvent.keyDown(pop, { key: "Enter" });
+  expect(localStorage.getItem("agentj.composer.model")).toBe("opencode-go/a");
+});
