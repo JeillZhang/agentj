@@ -252,6 +252,9 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
 
 - PR creation: create PR on `origin` only and share link — user handles merge。
   **Never open a GitCode MR for the same branch**（见下方 Remote & Merge Policy）。
+- **Feature 分支必须推送两个远端**：创建分支后 `git push -u origin <branch>` **且**
+  `git push gitcode <branch>:<branch>`（同一 SHA，无害）。漏推 `gitcode` 会让镜像缺分支，
+  下次同步 `main` 前无法核对 tree——**每个 feature 阶段收尾时必做**，不得遗漏。
 
 ## Remote & Merge Policy
 
@@ -272,7 +275,10 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
   ```
 
   若 `gitcode/main` 落后，这是快进；若已分叉，`push` 会被拒绝——**不要用 `--force`**。
-- **feature 分支可推两个远端**（同一 SHA，无害）；**合并只能在一个远端进行**。
+- **feature 分支必须同时推送两个远端**（`origin` 与 `gitcode`，同一 SHA，无害）：
+  创建分支后 `git push -u origin <branch>` **且** `git push gitcode <branch>:<branch>`。
+  漏推 `gitcode` 会让镜像缺少该分支（下次同步 `main` 前无法核对 tree）；
+  这是每个 feature 阶段的强制收尾步骤。**合并仍只能在一个远端（`origin`）进行**。
 - **健康检查看 tree，不看提交数**：
 
   ```bash
