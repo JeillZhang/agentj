@@ -8,7 +8,7 @@ import "./options.css";
 
 type OpenId = "model" | "agent" | "entropy" | "permission" | null;
 
-type ModelEntry = { name: string; cap: string };
+export type ModelEntry = { name: string; cap: string };
 type AgentEntry = { id: ComposerAgent; label: string; cap: string };
 type EntropyPreset = { value: number; label: string; short: string };
 type PermissionEntry = { id: ComposerPermission; label: string; cap: string };
@@ -34,6 +34,8 @@ export const PERMISSION_MODES: PermissionEntry[] = [
 
 export type ComposerOptionsProps = {
   model?: string | null;
+  /** Kernel-served model list; falls back to MODEL_LIST when absent/empty. */
+  models?: ModelEntry[];
   collapsed?: boolean;
   children?: ReactNode;
 };
@@ -68,10 +70,16 @@ function permissionIndex(mode: ComposerPermission): number {
  * updates immediately. `children` is the right-aligned slot (RunPanel sends the
  * circular send button in T19).
  */
-export default function ComposerOptions({ model = null, collapsed = false, children }: ComposerOptionsProps) {
+export default function ComposerOptions({
+  model = null,
+  models,
+  collapsed = false,
+  children,
+}: ComposerOptionsProps) {
   const [prefs, setPrefs] = useState<ComposerPrefs>(() => loadComposerPrefs());
   const [openId, setOpenId] = useState<OpenId>(null);
   const [highlight, setHighlight] = useState(0);
+  const modelOptions = models && models.length > 0 ? models : MODEL_LIST;
 
   const toolsRef = useRef<HTMLDivElement>(null);
   const modelRef = useRef<HTMLButtonElement>(null);
@@ -145,7 +153,7 @@ export default function ComposerOptions({ model = null, collapsed = false, child
 
   const selectOption = (id: Exclude<OpenId, null>, index: number) => {
     if (id === "model") {
-      const entry = MODEL_LIST[index];
+      const entry = modelOptions[index];
       if (!entry) return;
       setPrefs({ ...prefs, model: entry.name });
       saveComposerPrefs({ model: entry.name });
@@ -169,7 +177,7 @@ export default function ComposerOptions({ model = null, collapsed = false, child
   };
 
   const optionCount = (id: Exclude<OpenId, null>): number => {
-    if (id === "model") return MODEL_LIST.length;
+    if (id === "model") return modelOptions.length;
     if (id === "agent") return AGENT_LIST.length;
     if (id === "entropy") return ENTROPY_PRESETS.length;
     return PERMISSION_MODES.length;
@@ -207,7 +215,7 @@ export default function ComposerOptions({ model = null, collapsed = false, child
           className="sel"
           aria-haspopup="listbox"
           aria-expanded={openId === "model"}
-          onClick={() => openPanel("model", modelName ? MODEL_LIST.findIndex((e) => e.name === modelName) : 0)}
+          onClick={() => openPanel("model", modelName ? modelOptions.findIndex((e) => e.name === modelName) : 0)}
         >
           <span className="g">◆</span>
           {modelName ?? "模型"}
@@ -224,7 +232,7 @@ export default function ComposerOptions({ model = null, collapsed = false, child
           onKeyDown={handleKeyDown}
         >
           <div className="pop-title" id="composer-model-title">选择模型</div>
-          {MODEL_LIST.map((entry, index) => {
+          {modelOptions.map((entry, index) => {
             const selected = modelName === entry.name;
             return (
               <div

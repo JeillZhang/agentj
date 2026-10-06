@@ -152,3 +152,47 @@ test("permission popover keyboard navigation selects a mode", () => {
   fireEvent.keyDown(pop, { key: "Enter" });
   expect(localStorage.getItem("agentj.composer.permissionMode")).toBe("bypass");
 });
+
+test("renders the served model list when provided", () => {
+  render(
+    <ComposerOptions
+      model="opencode-go/kimi-k3"
+      models={[{ name: "opencode-go/kimi-k3", cap: "—" }]}
+    />,
+  );
+  fireEvent.click(screen.getByRole("button", { name: /opencode-go\/kimi-k3/ }));
+  expect(screen.getAllByText("opencode-go/kimi-k3").length).toBeGreaterThan(1);
+  expect(screen.queryByText("deepseek-chat")).not.toBeInTheDocument();
+});
+
+test("falls back to MODEL_LIST when no models prop is given", () => {
+  render(<ComposerOptions model="deepseek-chat" />);
+  fireEvent.click(screen.getByRole("button", { name: /deepseek-chat/ }));
+  expect(screen.getAllByText("deepseek-chat").length).toBeGreaterThan(1);
+});
+
+test("served model selection persists and updates the trigger label", () => {
+  render(
+    <ComposerOptions model={null} models={[{ name: "opencode-go/kimi-k3", cap: "—" }]} />,
+  );
+  fireEvent.click(screen.getByRole("button", { name: /模型/ }));
+  fireEvent.click(screen.getByText("opencode-go/kimi-k3"));
+  expect(localStorage.getItem("agentj.composer.model")).toBe("opencode-go/kimi-k3");
+  expect(screen.getByRole("button", { name: /opencode-go\/kimi-k3/ })).toBeInTheDocument();
+});
+
+test("served list marks the kernel default model selected, not the first row", () => {
+  render(
+    <ComposerOptions
+      model="opencode-go/kimi-k3"
+      models={[
+        { name: "opencode-go/other", cap: "—" },
+        { name: "opencode-go/kimi-k3", cap: "—" },
+      ]}
+    />,
+  );
+  fireEvent.click(screen.getByRole("button", { name: /opencode-go\/kimi-k3/ }));
+  const rows = Array.from(document.querySelectorAll(".pop-model .pop-item"));
+  const selected = rows.find((r) => r.getAttribute("aria-selected") === "true");
+  expect(selected?.textContent).toContain("opencode-go/kimi-k3");
+});
