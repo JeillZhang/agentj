@@ -428,25 +428,35 @@ async fn main() -> anyhow::Result<()> {
 
     // design 4.3 + D7: assemble providers with credential resolution; keyless real
     // providers are skipped (never an empty Bearer) and an empty registry is fatal.
-    let auth_store =
-        agentj_auth::AuthStore::with_default_path().map_err(|e| anyhow::anyhow!("{e}"))?;
-    let live_base = agentj_model::catalog::ModelCatalog::builtin().base_url;
-    let assembly = providers::build_providers(config.inner(), None, &auth_store, || {
-        let base = live_base.clone();
-        async move {
-            agentj_model::catalog_source::fetch_live_models(&base, None)
-                .await
-                .map(Some)
-                .map_err(|e| e.to_string())
+    // `run --attach` talks to a remote kernel, so local providers are not required.
+    let attached = matches!(
+        &cli.command,
+        Some(Commands::Run {
+            attach: Some(_),
+            ..
+        })
+    );
+    if !attached {
+        let auth_store =
+            agentj_auth::AuthStore::with_default_path().map_err(|e| anyhow::anyhow!("{e}"))?;
+        let live_base = agentj_model::catalog::ModelCatalog::builtin().base_url;
+        let assembly = providers::build_providers(config.inner(), None, &auth_store, || {
+            let base = live_base.clone();
+            async move {
+                agentj_model::catalog_source::fetch_live_models(&base, None)
+                    .await
+                    .map(Some)
+                    .map_err(|e| e.to_string())
+            }
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+        for warning in &assembly.warnings {
+            tracing::warn!("{warning}");
         }
-    })
-    .await
-    .map_err(|e| anyhow::anyhow!("{e}"))?;
-    for warning in &assembly.warnings {
-        tracing::warn!("{warning}");
-    }
-    for (name, provider) in assembly.providers {
-        providers.register(name, provider);
+        for (name, provider) in assembly.providers {
+            providers.register(name, provider);
+        }
     }
 
     // Extract before `config` is boxed into the KernelContext — its config field

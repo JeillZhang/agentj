@@ -225,6 +225,11 @@ mod tests {
             "{:?}",
             out.warnings
         );
+        assert_eq!(
+            out.providers[0].1.models(),
+            agentj_model::catalog::ModelCatalog::builtin().ids(),
+            "the overlay catalog must be injected when live fails"
+        );
     }
 
     #[tokio::test]

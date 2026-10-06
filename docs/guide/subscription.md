@@ -4,7 +4,7 @@ AgentJ 把 [OpenCode Go](https://opencode.ai/docs/go/) 订阅作为一等 provid
 凭据落盘，内核启动时发现订阅里的真实模型列表，Web / TUI 直接展示并高亮默认模型，
 请求自带厂商要求的客户端标识头。
 
-> 一期（v0.25.0）覆盖：凭据生命周期、动态目录、合规请求头、模型可见性。
+> 一期覆盖：凭据生命周期、动态目录、合规请求头、模型可见性。
 > 二期才提供用量面板与 device-code OAuth（见文末「二期边界」）。
 
 ## 登录与凭据
@@ -81,6 +81,7 @@ kind 不受影响。
 
 - 用量 / 配额面板（`GET /zen/go/v1/usage`）。
 - device-code OAuth 登录（`console.opencode.ai`，`refresh_token` 轮换）；
-  一期凭据文件已预留 `oauth` 类型，读到时会明确报「需 agentj ≥ 二期」。
+  一期凭据文件已预留 `oauth` 类型，读到时会明确报
+  `unsupported credential type 'oauth': requires agentj phase 2 or newer`。
 - 运行期切换模型（需新协议方法）。
 - OS keyring、账号级收敛目录、按量付费 Zen（`/zen/v1`）。
