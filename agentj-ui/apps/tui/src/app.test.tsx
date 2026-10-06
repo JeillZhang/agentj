@@ -378,27 +378,27 @@ describe("App connection screen", () => {
     act(() => setup.renderer.destroy());
   });
 
-  test("kernel provider objects map to ids; absent providers keep the static fallback", () => {
+  test("kernel provider models map to ids; absent models keep the static fallback", () => {
     expect(
       providersFromStatus({
-        default_model: "deepseek-chat",
-        providers: [
-          { id: "deepseek-chat", models: [] },
-          { id: "opencode-go", models: [] },
-        ],
+        default_model: "opencode-go/a",
+        providers: [{ id: "opencode-go", models: ["opencode-go/a", "opencode-go/b"] }],
       }),
-    ).toEqual(["deepseek-chat", "opencode-go"]);
+    ).toEqual(["opencode-go/a", "opencode-go/b"]);
+    expect(
+      providersFromStatus({ providers: [{ id: "opencode-go", models: [] }] }),
+    ).toEqual(MODEL_CONFIG.providers);
     expect(providersFromStatus({ default_model: "deepseek-chat" })).toEqual(
       MODEL_CONFIG.providers,
     );
     expect(providersFromStatus({})).toEqual(MODEL_CONFIG.providers);
     const rendered = renderModelList({
-      default_model: "deepseek-chat",
+      default_model: "opencode-go/a",
       providers: providersFromStatus({
-        providers: [{ id: "opencode-go", models: [] }],
+        providers: [{ id: "opencode-go", models: ["opencode-go/a"] }],
       }),
     });
-    expect(rendered).toContain("  opencode-go");
+    expect(rendered).toContain("▶ opencode-go/a");
     expect(rendered).not.toContain("[object Object]");
   });
 });

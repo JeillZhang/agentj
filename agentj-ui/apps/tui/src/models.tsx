@@ -15,9 +15,11 @@ export const MODEL_CONFIG: ModelListInput = {
 export function providersFromStatus(data: Record<string, unknown>): string[] {
   const prov = data?.["providers"];
   if (!Array.isArray(prov) || prov.length === 0) return MODEL_CONFIG.providers;
-  const ids = (prov as Array<{ id?: unknown }>)
-    .map((p) => (typeof p?.id === "string" ? p.id : null))
-    .filter((x): x is string => x !== null);
+  const ids = (prov as Array<{ models?: unknown }>).flatMap((p) =>
+    Array.isArray(p?.models)
+      ? p.models.filter((m): m is string => typeof m === "string")
+      : [],
+  );
   return ids.length > 0 ? ids : MODEL_CONFIG.providers;
 }
 

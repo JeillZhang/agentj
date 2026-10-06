@@ -3,9 +3,20 @@
 version = 4
 
 [[package]]
-name = "agentj-cli"
-version = "0.24.2"
+name = "agentj-auth"
+version = "0.25.2"
 dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
+name = "agentj-cli"
+version = "0.25.2"
+dependencies = [
+ "agentj-auth",
  "agentj-config",
  "agentj-context",
  "agentj-core",
@@ -28,26 +39,29 @@ dependencies = [
  "libc",
  "serde_json",
  "sha2",
+ "tempfile",
  "tokio",
  "tokio-tungstenite 0.26.2",
  "tracing",
  "tracing-subscriber",
+ "wiremock",
 ]
 
 [[package]]
 name = "agentj-config"
-version = "0.24.2"
+version = "0.25.2"
 dependencies = [
  "agentj-core",
  "agentj-permission",
  "serde",
  "tempfile",
  "toml",
+ "toml_edit",
 ]
 
 [[package]]
 name = "agentj-context"
-version = "0.24.2"
+version = "0.25.2"
 dependencies = [
  "agentj-core",
  "serde_json",
@@ -55,7 +69,7 @@ dependencies = [
 
 [[package]]
 name = "agentj-core"
-version = "0.24.2"
+version = "0.25.2"
 dependencies = [
  "agentj-context",
  "agentj-model",
@@ -76,7 +90,7 @@ dependencies = [
 
 [[package]]
 name = "agentj-ipc"
-version = "0.24.2"
+version = "0.25.2"
 dependencies = [
  "agentj-context",
  "agentj-core",
@@ -105,7 +119,7 @@ dependencies = [
 
 [[package]]
 name = "agentj-license"
-version = "0.24.2"
+version = "0.25.2"
 dependencies = [
  "base64",
  "ed25519-dalek",
@@ -115,7 +129,7 @@ dependencies = [
 
 [[package]]
 name = "agentj-mcp"
-version = "0.24.2"
+version = "0.25.2"
 dependencies = [
  "agentj-core",
  "serde_json",
@@ -125,7 +139,7 @@ dependencies = [
 
 [[package]]
 name = "agentj-model"
-version = "0.24.2"
+version = "0.25.2"
 dependencies = [
  "agentj-core",
  "async-trait",
@@ -142,7 +156,7 @@ dependencies = [
 
 [[package]]
 name = "agentj-permission"
-version = "0.24.2"
+version = "0.25.2"
 dependencies = [
  "agentj-core",
  "agentj-protocol",
@@ -158,7 +172,7 @@ dependencies = [
 
 [[package]]
 name = "agentj-plugin"
-version = "0.24.2"
+version = "0.25.2"
 dependencies = [
  "agentj-core",
  "libloading",
@@ -170,7 +184,7 @@ dependencies = [
 
 [[package]]
 name = "agentj-plugin-fixture"
-version = "0.24.2"
+version = "0.25.2"
 dependencies = [
  "agentj-core",
  "agentj-plugin",
@@ -178,7 +192,7 @@ dependencies = [
 
 [[package]]
 name = "agentj-protocol"
-version = "0.24.2"
+version = "0.25.2"
 dependencies = [
  "schemars",
  "serde",
@@ -187,7 +201,7 @@ dependencies = [
 
 [[package]]
 name = "agentj-question"
-version = "0.24.2"
+version = "0.25.2"
 dependencies = [
  "agentj-core",
  "agentj-protocol",
@@ -198,7 +212,7 @@ dependencies = [
 
 [[package]]
 name = "agentj-session"
-version = "0.24.2"
+version = "0.25.2"
 dependencies = [
  "agentj-core",
  "serde_json",
@@ -210,7 +224,7 @@ dependencies = [
 
 [[package]]
 name = "agentj-skills"
-version = "0.24.2"
+version = "0.25.2"
 dependencies = [
  "tempfile",
  "tracing",
@@ -218,14 +232,14 @@ dependencies = [
 
 [[package]]
 name = "agentj-stats"
-version = "0.24.2"
+version = "0.25.2"
 dependencies = [
  "agentj-core",
 ]
 
 [[package]]
 name = "agentj-tools"
-version = "0.24.2"
+version = "0.25.2"
 dependencies = [
  "agentj-core",
  "libc",

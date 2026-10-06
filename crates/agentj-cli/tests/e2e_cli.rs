@@ -8,7 +8,11 @@ fn e2e_serve_responds_to_jsonrpc_session_new() {
     let dir = std::env::temp_dir().join(format!("agentj-e2e-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let cfg = dir.join("mock_config.toml");
-    std::fs::write(&cfg, "[model]\nprovider = \"mock\"\n").unwrap();
+    std::fs::write(
+        &cfg,
+        "[model]\nprovider = \"mock\"\n\n[[model.providers]]\nname = \"mock\"\nkind = \"mock\"\nbase_url = \"mock://local\"\napi_key_env = \"\"\n",
+    )
+    .unwrap();
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_agentj"))
         .args(["--config", cfg.to_str().unwrap(), "serve"])
@@ -48,7 +52,11 @@ fn e2e_serve_exits_gracefully_on_sigterm() {
     let dir = std::env::temp_dir().join(format!("agentj-e2e-sig-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let cfg = dir.join("mock_config.toml");
-    std::fs::write(&cfg, "[model]\nprovider = \"mock\"\n").unwrap();
+    std::fs::write(
+        &cfg,
+        "[model]\nprovider = \"mock\"\n\n[[model.providers]]\nname = \"mock\"\nkind = \"mock\"\nbase_url = \"mock://local\"\napi_key_env = \"\"\n",
+    )
+    .unwrap();
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_agentj"))
         .args(["--config", cfg.to_str().unwrap(), "serve"])
@@ -58,31 +66,46 @@ fn e2e_serve_exits_gracefully_on_sigterm() {
         .spawn()
         .unwrap();
 
-    // stdin stays OPEN — only the signal should end the process.
     let mut stdin = child.stdin.take().unwrap();
+    let stdout = child.stdout.take().unwrap();
     writeln!(
         stdin,
         r#"{{"jsonrpc":"2.0","id":1,"method":"session/new"}}"#
     )
     .unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(300)); // let serve loop start
+
+    // Wait for the session/new reply before signalling: by then the serve loop — and the
+    // SIGTERM handler spawned just before it — is installed, so the signal cannot race
+    // process startup (a fixed sleep flaked when startup exceeded it).
+    let mut reader = BufReader::new(stdout);
+    let mut first = String::new();
+    reader.read_line(&mut first).unwrap();
+    assert!(
+        first.contains(r#""session_id""#),
+        "expected session_id in output, got: {first}"
+    );
 
     // Send SIGTERM (kill -TERM). unsafe: raw pid syscall — safe here, child is ours.
     unsafe {
         libc::kill(child.id() as i32, libc::SIGTERM);
     }
 
-    let output = child.wait_with_output().unwrap();
+    // Drain the rest of stdout so a full pipe cannot deadlock the child, then reap it.
+    // stdin stays OPEN — only the signal should end the process.
+    let drain = std::thread::spawn(move || {
+        let mut reader = reader;
+        let mut line = String::new();
+        while reader.read_line(&mut line).unwrap_or(0) > 0 {
+            line.clear();
+        }
+    });
+    let status = child.wait().unwrap();
+    let _ = drain.join();
     assert!(
-        output.status.success(),
-        "expected graceful exit 0, got: {:?}",
-        output.status
+        status.success(),
+        "expected graceful exit 0, got: {status:?}"
     );
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains(r#""session_id""#),
-        "expected session_id in output, got: {stdout}"
-    );
+    drop(stdin);
 }
 
 // ---- T25 E2E: file/list over stdio + scripted mock-workbench run ----

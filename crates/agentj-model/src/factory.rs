@@ -201,6 +201,24 @@ impl ProviderFactory {
         base_url: &str,
         api_key: String,
     ) -> Result<Arc<dyn ModelProvider>, ModelError> {
+        Self::create_with_catalog(
+            kind,
+            name,
+            base_url,
+            api_key,
+            crate::catalog::ModelCatalog::builtin(),
+        )
+    }
+
+    /// Like [`Self::create`] but the `opencode-go` arm routes through an injected
+    /// catalog (live/overlay merged); other kinds ignore `catalog`.
+    pub fn create_with_catalog(
+        kind: &str,
+        name: &str,
+        base_url: &str,
+        api_key: String,
+        catalog: crate::catalog::ModelCatalog,
+    ) -> Result<Arc<dyn ModelProvider>, ModelError> {
         let provider: Arc<dyn ModelProvider> = match kind {
             "openai-compat" => Arc::new(OpenAICompatibleProvider::new(
                 base_url.to_string(),
@@ -209,7 +227,7 @@ impl ProviderFactory {
             )),
             "responses" => Arc::new(ResponsesProvider::new(base_url.to_string(), api_key)),
             "anthropic" => Arc::new(AnthropicProvider::new(base_url.to_string(), api_key)),
-            "opencode-go" => Arc::new(OpenCodeGoProvider::new(api_key)),
+            "opencode-go" => Arc::new(OpenCodeGoProvider::with_catalog(api_key, catalog)),
             // "mock" scripts a scripted tool call + reply — used by the E2E
             // permission test (T11). The command falls through to mode=ask: it
             // must not match the fixture's deny rule (deny short-circuits).
@@ -376,5 +394,31 @@ mod tests {
             )
             .await;
         assert!(matches!(result, Err(ModelError::UnknownModel { .. })));
+    }
+
+    #[test]
+    fn factory_create_with_catalog_keeps_legacy_create_working() {
+        use crate::catalog::ModelCatalog;
+        const OVERLAY_X: &str = r#"{"base_url":"https://opencode.ai/zen/go","models":[
+            {"id":"opencode-go/x","format":"anthropic","endpoint":"/v1/messages","verified":true}]}"#;
+        let catalog = ModelCatalog::from_sources(OVERLAY_X, None);
+        let created = ProviderFactory::create_with_catalog(
+            "opencode-go",
+            "opencode-go",
+            "https://opencode.ai/zen/go",
+            "k".into(),
+            catalog,
+        )
+        .unwrap();
+        assert_eq!(created.models(), vec!["opencode-go/x"]);
+        assert!(
+            ProviderFactory::create(
+                "opencode-go",
+                "opencode-go",
+                "https://opencode.ai/zen/go",
+                "k".into()
+            )
+            .is_ok()
+        );
     }
 }

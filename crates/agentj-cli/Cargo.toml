@@ -9,6 +9,7 @@ name = "agentj"
 path = "src/main.rs"
 
 [dependencies]
+agentj-auth = { path = "../agentj-auth" }
 agentj-core = { path = "../agentj-core" }
 agentj-config = { path = "../agentj-config" }
 agentj-context = { path = "../agentj-context" }
@@ -36,5 +37,7 @@ agentj-protocol = { path = "../agentj-protocol" }
 libc = "0.2"
 futures = "0.3"
 sha2 = "0.10"
+tempfile = "3"
+wiremock = "0.6"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util"] }
 tokio-tungstenite = "0.26"

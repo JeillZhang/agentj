@@ -1,6 +1,6 @@
 # AGENTS.md
 
-> **当前版本 0.24.2** · `PROTOCOL_VERSION` **0.15.0**（21 方法 / 52 schemas / 17 crates）
+> **当前版本 0.25.2** · `PROTOCOL_VERSION` **0.15.0**（21 方法 / 52 schemas / 18 crates）
 > 本文件只记录**约束、入口与基线**（Setup / Commands / Architecture / Conventions / Rules）。
 > **逐版本变更与历史决策不写在这里** —— 见 [`docs/changelog/`](docs/changelog/)、
 > [`docs/guide/`](docs/guide/)、[`docs/specs/`](docs/specs/) 与 `.agents/summary/`。
@@ -8,7 +8,7 @@
 ## Project Overview
 
 AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + 可插拔模块」架构。
-后端 17 个 crate 位于 `crates/`；前端 monorepo 位于 `agentj-ui/`（npm workspaces
+后端 18 个 crate 位于 `crates/`；前端 monorepo 位于 `agentj-ui/`（npm workspaces
 `apps/*` + `packages/*`，三端共享 SDK / protocol / tokens）；WebSocket 网关同端口复用。
 
 ## Setup
@@ -63,7 +63,7 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
 
 ## Architecture
 
-> 全部 17 个 crate 位于 `crates/`（`crates/*`），前端 monorepo 位于
+> 全部 18 个 crate 位于 `crates/`（`crates/*`），前端 monorepo 位于
 > `agentj-ui/`（npm workspaces，frontend stays in-repo，不拆独立仓），
 > 下文 `agentj-*` 均为 `crates/agentj-*`，`@agentj/*` 为 `agentj-ui` 包。
 
@@ -75,7 +75,11 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
   + `ToolCallContext`（会话根上下文，工具相对路径重定基）
   + `TurnArtifact`（FileChange/Todo 产出 + 自研 unified diff，per-run `run_id`/`seq`）
   + 事件总线重入防护（EventGuard thread_local + MAX_EVENT_DEPTH=16）。
-- `agentj-config`：TOML 配置（[model]/[permission]/[session]/[license]/[[mcp.servers]]）。
+- `agentj-config`：TOML 配置（[model]/[permission]/[session]/[license]/[[mcp.servers]]；
+  `toml_edit` 定点写回 `[model]` 保留注释）。
+- `agentj-auth`：订阅凭据（`Credential` api_key/oauth 占位 + `AuthStore`
+  XDG 路径 / 目录 0700 / 文件 0600 / 原子写 / 权限与 JSON 校验拒绝降级
+  + `resolve_credential` flag>env>file 优先级 + `redact` 仅末 4 位）。
 - `agentj-session`：会话生命周期（InMemoryStore/FileBackedStore + 过期清理
   + 会话级 `project_root` 持久化，serde default 兼容旧快照）。
 - `agentj-permission`：权限系统（决策引擎 + 60s 超时 + allow_always）。
@@ -116,7 +120,7 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
     与 SRI `integrity` 逐字节一致）→ 启动逐文件校验 + 60s / 8 文件游标轮转运行期抽检
     （`SpotCheckConfig`，结果经 `/version` `integrity.runtime` 与 `/metrics` 双面暴露）。
   - 依赖：`tower-http`（fs/set-header）+ `uuid`（v4）。
-- `agentj-cli`：`agentj` 二进制（run/serve/dashboard，模块注册进 Kernel，
+- `agentj-cli`：`agentj` 二进制（run/serve/dashboard/auth，模块注册进 Kernel，
   agentj-question 的 stdio 与 `serve --port` 两条装配路径）；`serve`/`dashboard`
   支持 `--host`（默认仍是 127.0.0.1 本机信任）、`--token`、`--web-dist <PATH>`
   （显式 flag → cwd `agentj-ui/apps/web/dist` → exe 相对两档四级发现），
@@ -184,7 +188,7 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
 - **守护内核**：统一 Connection 抽象 + `serve --port` 常驻多客户端 + `run --attach`
   + `dashboard`（见 daemon-kernel 设计文档）。
 
-> Crate 边界：Rust 17 crate 保持 `crates/*` 边界纯净，
+> Crate 边界：Rust 18 crate 保持 `crates/*` 边界纯净，
 > 前端（TS/React/Bun/Tauri）全部收敛于 `agentj-ui/` 内，
 > 通过 `protocol/methods.json` + `schemas/*.json` 与后端契约对齐，
 > 不向 Rust workspace 注入前端构建产物。
@@ -248,6 +252,9 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
 
 - PR creation: create PR on `origin` only and share link — user handles merge。
   **Never open a GitCode MR for the same branch**（见下方 Remote & Merge Policy）。
+- **Feature 分支必须推送两个远端**：创建分支后 `git push -u origin <branch>` **且**
+  `git push gitcode <branch>:<branch>`（同一 SHA，无害）。漏推 `gitcode` 会让镜像缺分支，
+  下次同步 `main` 前无法核对 tree——**每个 feature 阶段收尾时必做**，不得遗漏。
 
 ## Remote & Merge Policy
 
@@ -268,7 +275,10 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
   ```
 
   若 `gitcode/main` 落后，这是快进；若已分叉，`push` 会被拒绝——**不要用 `--force`**。
-- **feature 分支可推两个远端**（同一 SHA，无害）；**合并只能在一个远端进行**。
+- **feature 分支必须同时推送两个远端**（`origin` 与 `gitcode`，同一 SHA，无害）：
+  创建分支后 `git push -u origin <branch>` **且** `git push gitcode <branch>:<branch>`。
+  漏推 `gitcode` 会让镜像缺少该分支（下次同步 `main` 前无法核对 tree）；
+  这是每个 feature 阶段的强制收尾步骤。**合并仍只能在一个远端（`origin`）进行**。
 - **健康检查看 tree，不看提交数**：
 
   ```bash

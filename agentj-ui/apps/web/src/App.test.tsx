@@ -24,6 +24,7 @@ const shared = vi.hoisted(() => ({
   sessionListResult: { value: { sessions: [] as Array<Record<string, unknown>> } },
   historyResult: { value: { events: [] as Array<Record<string, unknown>>, next_cursor: null as number | null } },
   lastHistoryParams: { value: null as Record<string, unknown> | null },
+  kernelStatusResult: { value: null as Record<string, unknown> | null },
 }));
 
 vi.mock("@agentj/sdk", () => {
@@ -89,7 +90,12 @@ vi.mock("@agentj/sdk", () => {
         return shared.historyResult.value;
       }
       if (method === "kernel/status") {
-        return { modules: [{ id: "test-mod", state: "running" }], default_model: "deepseek-chat" };
+        return (
+          shared.kernelStatusResult.value ?? {
+            modules: [{ id: "test-mod", state: "running" }],
+            default_model: "deepseek-chat",
+          }
+        );
       }
       if (method === "initialize") {
         return {
@@ -710,6 +716,7 @@ describe("App shell + history rebuild", () => {
     shared.historyResult.value = { events: [] as Array<Record<string, unknown>>, next_cursor: null as number | null };
     shared.sessionListResult.value = { sessions: [] as Array<Record<string, unknown>> };
     shared.lastHistoryParams.value = null;
+    shared.kernelStatusResult.value = null;
     localStorage.clear();
     document.documentElement.removeAttribute("data-theme");
   });
@@ -760,6 +767,26 @@ describe("App shell + history rebuild", () => {
     fireEvent.click(await within(list).findByText(/hi/));
     await screen.findByText("hello world");
     expect(screen.getAllByText("deepseek-chat").length).toBeGreaterThanOrEqual(2);
+  });
+  it("renders served provider models in the composer model list", async () => {
+    shared.kernelStatusResult.value = {
+      modules: [],
+      default_model: "opencode-go/kimi-k3",
+      providers: [{ id: "opencode-go", models: ["opencode-go/kimi-k3"] }],
+    };
+    shared.historyResult.value = { events: WIRE_CORPUS, next_cursor: null };
+    shared.sessionListResult.value = {
+      sessions: [{ session_id: "s1", state: "active", preview: "hi" }],
+    };
+    render(<App />);
+    const list = await screen.findByRole("list", { name: "最近会话" });
+    fireEvent.click(await within(list).findByText(/hi/));
+    await screen.findByText("hello world");
+    fireEvent.click(await screen.findByRole("button", { name: /opencode-go\/kimi-k3/ }));
+    const pop = document.querySelector(".pop-model") as HTMLElement;
+    expect(within(pop).getByText("opencode-go/kimi-k3")).toBeInTheDocument();
+    expect(within(pop).queryByText("deepseek-chat")).toBeNull();
+    shared.kernelStatusResult.value = null;
   });
   it("maps the connection state onto the status light (绿/橙 semantics)", async () => {
     expect(connectionLight("connected", false)).toBe("connected");

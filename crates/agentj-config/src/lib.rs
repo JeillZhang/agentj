@@ -1,8 +1,10 @@
 pub mod merge;
+pub mod write;
 use agentj_core::module::ConfigProvider;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
+pub use write::{set_model_defaults, write_model_defaults};
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ModelProviderConfig {
