@@ -32,6 +32,22 @@ fn persistence_err(reason: String) -> ModuleError {
     ModuleError::Session(SessionError::PersistenceFailed(reason))
 }
 
+/// A `.tmp` older than this is a crash leftover; anything newer may be an in-flight
+/// write from a concurrent kernel and must be left alone.
+const STALE_TMP_AGE: std::time::Duration = std::time::Duration::from_secs(3600);
+
+/// True when `path` exists and its mtime is older than [`STALE_TMP_AGE`]. Any metadata
+/// error (missing file, future mtime from clock skew) is treated as *not* stale, so we
+/// never delete a file we cannot prove is a leftover.
+fn stale_tmp(path: &Path) -> bool {
+    fs::metadata(path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.elapsed().ok())
+        .map(|age| age > STALE_TMP_AGE)
+        .unwrap_or(false)
+}
+
 /// Poisoned-mutex recovery: a panicked holder must not take the store down with it.
 fn lock_guard<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|p| p.into_inner())
@@ -55,7 +71,13 @@ impl FileBackedStore {
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_default();
             if name.ends_with(".tmp") {
-                let _ = fs::remove_file(&path);
+                // Only crash leftovers are cleaned. A *fresh* `.tmp` may belong to a
+                // concurrent writer (another kernel sharing this dir) that is between its
+                // write and rename — deleting it would make that writer's rename fail with
+                // ENOENT and lose the session. See `stale_tmp`.
+                if stale_tmp(&path) {
+                    let _ = fs::remove_file(&path);
+                }
                 continue;
             }
             if !name.ends_with(".json") {
@@ -317,6 +339,18 @@ mod tests {
     }
 
     #[test]
+    fn fresh_tmp_from_concurrent_writer_survives_scan() {
+        let d = dir();
+        let tmp = d.path().join("in-flight-sid.json.tmp");
+        fs::write(&tmp, b"{}").unwrap();
+        let _store = FileBackedStore::new(d.path()).unwrap();
+        assert!(
+            tmp.exists(),
+            "a fresh .tmp may be a concurrent writer's in-flight file and must not be deleted"
+        );
+    }
+
+    #[test]
     fn append_persists_and_restart_recovers() -> Result<(), ModuleError> {
         let d = dir();
         let path = d.path().to_path_buf();
@@ -416,12 +450,20 @@ mod tests {
         let d = dir();
         let sessions = d.path().join("sessions");
         std::fs::create_dir_all(&sessions).unwrap();
-        std::fs::write(sessions.join("stale.json.tmp"), "partial").unwrap();
+        let tmp = sessions.join("stale.json.tmp");
+        std::fs::write(&tmp, "partial").unwrap();
+        // Age the leftover past the stale threshold; a *fresh* tmp is a concurrent
+        // writer's in-flight file and must survive (see the sibling test).
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(7200);
+        let f = std::fs::File::options().write(true).open(&tmp).unwrap();
+        f.set_times(std::fs::FileTimes::new().set_modified(old))
+            .unwrap();
+        drop(f);
         let store = FileBackedStore::new(&sessions).unwrap();
         assert!(store.load_all().unwrap().is_empty());
         assert!(
             !sessions.join("stale.json.tmp").exists(),
-            "crash leftovers must be cleaned up"
+            "stale crash leftovers must be cleaned up"
         );
     }
 
