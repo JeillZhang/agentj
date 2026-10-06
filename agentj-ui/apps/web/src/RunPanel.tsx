@@ -146,6 +146,7 @@ type Props = {
   initialEntries?: RunEntry[];
   pendingTool?: string;
   model?: string;
+  models?: { name: string }[];
   elapsedMs?: number;
   wsUrl?: string;
   modules?: { id: string; state: string }[];
@@ -386,6 +387,7 @@ export default function RunPanel({
   initialEntries = [],
   pendingTool,
   model,
+  models,
   onRunId,
 }: Props) {
   const [entries, setEntries] = useState<RunEntry[]>(initialEntries);
@@ -1011,7 +1013,7 @@ export default function RunPanel({
             </ul>
           )}
         </div>
-        <ComposerOptions model={model} collapsed={collapsed}>
+        <ComposerOptions model={model} models={models} collapsed={collapsed}>
           <button
             type="button"
             className="send aj-button--send"
