@@ -1,5 +1,6 @@
 pub mod anthropic;
 pub mod catalog;
+pub mod catalog_source;
 pub mod factory;
 pub mod gateway_error;
 pub mod http;
