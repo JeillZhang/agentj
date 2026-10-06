@@ -11,7 +11,10 @@ fn e2e_temp_dir(tag: &str) -> PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let dir = std::env::temp_dir().join(format!("agentj-e2e-auth-{tag}-{}-{nanos}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!(
+        "agentj-e2e-auth-{tag}-{}-{nanos}",
+        std::process::id()
+    ));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir
@@ -72,7 +75,10 @@ fn login_status_logout_roundtrip() {
     assert!(status.status.success());
     let out = String::from_utf8_lossy(&status.stdout);
     assert!(out.contains("…1234"), "status must show last 4: {out}");
-    assert!(!out.contains("sk-test-1234"), "status must not leak the key: {out}");
+    assert!(
+        !out.contains("sk-test-1234"),
+        "status must not leak the key: {out}"
+    );
 
     let logout = run(&home, &["--config", cfg_str, "auth", "logout"]);
     assert!(logout.status.success());
