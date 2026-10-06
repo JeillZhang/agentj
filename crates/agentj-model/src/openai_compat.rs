@@ -14,6 +14,7 @@ pub struct OpenAICompatibleProvider {
     api_key: String,
     model: String,
     client: Client,
+    session_header: Option<String>,
 }
 
 impl OpenAICompatibleProvider {
@@ -22,8 +23,52 @@ impl OpenAICompatibleProvider {
             base_url: base_url.trim_end_matches('/').to_string(),
             api_key,
             model,
-            client: Client::new(),
+            client: crate::http::client(),
+            session_header: None,
         }
+    }
+
+    /// Same as [`Self::new`] but emits `header: <session_id>` when the turn carries one
+    /// (opencode-go compliance header; design D4).
+    pub fn with_session_header(
+        base_url: String,
+        api_key: String,
+        model: String,
+        header: String,
+    ) -> Self {
+        Self {
+            base_url: base_url.trim_end_matches('/').to_string(),
+            api_key,
+            model,
+            client: crate::http::client(),
+            session_header: Some(header),
+        }
+    }
+
+    /// Attach the configured session header when both the header name and the turn's
+    /// session id are present.
+    fn with_session<'a>(
+        &'a self,
+        rb: reqwest::RequestBuilder,
+        options: &'a ModelOptions,
+    ) -> reqwest::RequestBuilder {
+        let name = self.session_header.as_deref().unwrap_or("");
+        match crate::http::session_header(name, options) {
+            Some((name, value)) => rb.header(name, value),
+            None => rb,
+        }
+    }
+
+    /// Build a `ModelError::Api` with the upstream error type surfaced and an actionable
+    /// re-login hint for 401/403 (design D8).
+    fn api_error(status: u16, body: String) -> ModelError {
+        let parsed = crate::gateway_error::parse_gateway_error(status, &body);
+        let message = if status == 401 || status == 403 {
+            format!("{parsed}（请运行 agentj auth login 重新获取凭据）")
+        } else {
+            parsed
+        };
+        ModelError::Api { status, message }
     }
 
     fn request_body(
@@ -57,26 +102,31 @@ impl OpenAICompatibleProvider {
         options: &ModelOptions,
     ) -> Result<BoxStream<'static, Result<ModelEvent, ModelError>>, ModelError> {
         let url = format!("{}/v1/chat/completions", self.base_url);
-        let response = self
+        let rb = self
             .client
             .post(&url)
             .header("Authorization", format!("Bearer {}", self.api_key))
             .header("Content-Type", "application/json")
-            .json(&self.request_body(messages, tools, options))
+            .json(&self.request_body(messages, tools, options));
+        let response = self
+            .with_session(rb, options)
             .send()
             .await
             .map_err(|e| ModelError::Network(e.to_string()))?;
 
         let status = response.status().as_u16();
         if status == 429 {
-            return Err(ModelError::RateLimited { retry_after: None });
+            let retry_after = response
+                .headers()
+                .get("retry-after")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.trim().parse::<u64>().ok())
+                .map(Duration::from_secs);
+            return Err(ModelError::RateLimited { retry_after });
         }
         if status != 200 {
-            let msg = response.text().await.unwrap_or_default();
-            return Err(ModelError::Api {
-                status,
-                message: msg,
-            });
+            let body = response.text().await.unwrap_or_default();
+            return Err(Self::api_error(status, body));
         }
 
         let byte_stream = response.bytes_stream();
@@ -288,18 +338,18 @@ impl ModelProvider for OpenAICompatibleProvider {
         options: ModelOptions,
     ) -> Result<ChatResponse, ModelError> {
         let url = format!("{}/v1/chat/completions", self.base_url);
-        let response = self.client.post(&url)
+        let rb = self.client.post(&url)
             .header("Authorization", format!("Bearer {}", self.api_key))
-            .json(&serde_json::json!({ "model": options.model, "messages": map_messages(&messages), "stream": false }))
-            .send().await
+            .json(&serde_json::json!({ "model": options.model, "messages": map_messages(&messages), "stream": false }));
+        let response = self
+            .with_session(rb, &options)
+            .send()
+            .await
             .map_err(|e| ModelError::Network(e.to_string()))?;
         let status = response.status().as_u16();
         if status != 200 {
-            let msg = response.text().await.unwrap_or_default();
-            return Err(ModelError::Api {
-                status,
-                message: msg,
-            });
+            let body = response.text().await.unwrap_or_default();
+            return Err(Self::api_error(status, body));
         }
         let json: Value = response
             .json()
@@ -558,5 +608,101 @@ mod tests {
             },
         );
         assert_eq!(body["stream_options"]["include_usage"], true);
+    }
+
+    #[tokio::test]
+    async fn session_header_is_sent_only_when_configured() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("data: [DONE]\n\n"))
+            .mount(&server)
+            .await;
+        let opts = ModelOptions {
+            model: "m".into(),
+            session_id: Some("s1".into()),
+            ..Default::default()
+        };
+        let with = OpenAICompatibleProvider::with_session_header(
+            server.uri(),
+            "k".into(),
+            String::new(),
+            "x-opencode-session".into(),
+        );
+        let _ = with.chat_stream(vec![], vec![], opts.clone()).await;
+        let reqs = server.received_requests().await.unwrap();
+        assert_eq!(reqs[0].headers.get("x-opencode-session").unwrap(), "s1");
+        assert!(
+            reqs[0]
+                .headers
+                .get("user-agent")
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with("agentj/")
+        );
+
+        let plain = OpenAICompatibleProvider::new(server.uri(), "k".into(), String::new());
+        let _ = plain.chat_stream(vec![], vec![], opts).await;
+        let reqs = server.received_requests().await.unwrap();
+        assert!(reqs[1].headers.get("x-opencode-session").is_none());
+    }
+
+    #[tokio::test]
+    async fn retry_after_header_is_parsed_for_openai_compat() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "7"))
+            .mount(&server)
+            .await;
+        let p = OpenAICompatibleProvider::new(server.uri(), "k".into(), String::new());
+        let err = match p
+            .chat_stream(
+                vec![],
+                vec![],
+                ModelOptions {
+                    model: "m".into(),
+                    ..Default::default()
+                },
+            )
+            .await
+        {
+            Err(e) => e,
+            Ok(_) => panic!("expected a rate-limit error"),
+        };
+        assert!(
+            matches!(err, ModelError::RateLimited { retry_after: Some(d) } if d == Duration::from_secs(7))
+        );
+    }
+
+    #[tokio::test]
+    async fn auth_error_is_parsed_with_relogin_hint() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(401).set_body_string(
+                r#"{"type":"error","error":{"type":"AuthError","message":"missing API key"}}"#,
+            ))
+            .mount(&server)
+            .await;
+        let p = OpenAICompatibleProvider::new(server.uri(), "k".into(), String::new());
+        let err = match p
+            .chat_stream(
+                vec![],
+                vec![],
+                ModelOptions {
+                    model: "m".into(),
+                    ..Default::default()
+                },
+            )
+            .await
+        {
+            Err(e) => e,
+            Ok(_) => panic!("expected an auth error"),
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("AuthError: missing API key"), "{msg}");
+        assert!(msg.contains("agentj auth login"), "{msg}");
     }
 }
