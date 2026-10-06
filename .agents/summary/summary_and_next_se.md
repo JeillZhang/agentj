@@ -6,12 +6,24 @@
 > **强制例外（跨阶段保留）**：「## 待实施」表中**尚未实施**的特性条目必须保留（状态 =
 > 待实施），不得随内容替换而删除；仅当该特性实际实施完成后才能移除（移入功能记录）。
 > 前端总结独立存放于 `summary_and_next_fe.md`；两文件内容隔离，互不写入对方文件。
-> 当前功能：**v0.25.0 opencode-go 订阅接入（一期）——后端部分**
+> 当前功能：**v0.25.1 opencode-go 订阅接入（一期）——后端部分（含验收修复）**
 > ——来源：设计 `docs/superpowers/specs/2026-10-04-agentj-opencode-go-subscription-design.md`
 > + 实现计划 `docs/superpowers/plans/2026-10-04-agentj-opencode-go-subscription-plan.md`（T0–T24）。
 > 后端范围：新增第 18 个 crate `agentj-auth` + `agentj-core`/`agentj-config`/`agentj-model`/`agentj-ipc`/`agentj-cli` 扩展；
-> `PROTOCOL_VERSION` 保持 **0.15.0**（52 schemas / 21 方法不变）；工作区 0.24.2 → **0.25.0**。
+> `PROTOCOL_VERSION` 保持 **0.15.0**（52 schemas / 21 方法不变）；工作区 0.24.2 → **0.25.0** → **0.25.1**。
 > 前端部分见 `summary_and_next_fe.md`。
+
+## v0.25.1（验收修复，后端部分）✅
+
+- ✅ **BUG-001（high）**：live `/zen/go/v1/models` 返回**裸 id**（`kimi-k3`/`minimax-m3`）与 overlay/
+  `overrides()`/`default_model` 的 `opencode-go/<id>` 命名空间不一致 → `from_overlay_and_live`
+  交集恒空、路由全部降级、`dev_format` 恒失配。修复：`catalog_source::fetch_live_models` 在
+  单一上游边界把裸 id 规范化为 `opencode-go/<id>`（幂等，sort/dedup 前），下游自动对齐。
+  提交 `fix: BUG-001 namespace live model ids`。
+- ✅ **BUG-002（medium）**：`auth login --default-model` 在 `config.toml` 缺失时报原始 OS 错误。
+  修复：`write_model_defaults` 遇 `ErrorKind::NotFound` 走「缺表则建表」路径。
+  提交 `fix: BUG-002 create config.toml when writing model defaults`。
+- ✅ 两个 Bug 均独立回归 `verified`；无新 Bug；每 Bug 一提交。
 
 ## v0.25.0（后端部分）✅（本次完成）
 
@@ -29,11 +41,11 @@
 |---|---|
 | `cargo fmt --check` | clean |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 零警告 |
-| `cargo test --workspace` | **全绿**（含 e2e_cli/e2e_serve/e2e_mcp/e2e_ws/e2e_http_static/e2e_permission/e2e_auth；`e2e_serve_exits_gracefully_on_sigterm` 为已知环境性 flaky，本次通过） |
+| `cargo test --workspace` | **全绿**（**718 passed / 0 failed**；含 e2e_cli/e2e_serve/e2e_mcp/e2e_ws/e2e_http_static/e2e_permission/e2e_auth；`e2e_serve_exits_gracefully_on_sigterm` 为已知环境性 flaky，本次通过） |
 | `cargo test -p agentj-protocol -- drift` | 2 passed（52 schemas） |
 | `cargo test -p agentj-auth` | 13 passed（新增） |
 | `cargo test -p agentj-cli --test e2e_auth` | 2 passed |
-| `./scripts/check-version.sh` | version-ok（**0.25.0**；`PROTOCOL_VERSION` **0.15.0**） |
+| `./scripts/check-version.sh` | version-ok（**0.25.1**；`PROTOCOL_VERSION` **0.15.0**） |
 | `node agentj-ui/apps/desktop/check-desktop-ui.mjs` | desktop-ui-ok |
 
 ## 遗留问题 / 已知限制（后端）
@@ -58,6 +70,6 @@
 
 ## 下一步
 
-- **opencode-go 订阅一期（0.25.0）已在开发分支落地**，待 `jskill-test-acceptance` 验收后合并 main。
+- **opencode-go 订阅一期（0.25.1）已在开发分支落地**，验收 PASS（BUG-001/002 verified），待创建 PR 后由用户合并 main。
 - 后端候选：opencode-go 二期（`GET /zen/go/v1/usage` 用量面板 / device-code OAuth / 运行期切模型 / 新协议方法），或上表 ①②④。
 - 前端候选见 `summary_and_next_fe.md`。

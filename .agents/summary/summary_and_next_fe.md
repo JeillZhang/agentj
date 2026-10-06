@@ -7,12 +7,17 @@
 > **强制例外（跨阶段保留）**：「## 待实施」表中**尚未实施**的特性条目必须保留（状态 =
 > 待实施），不得随内容替换而删除；仅当该特性实际实施完成后才能移除（移入功能记录）。
 > 后端总结独立存放于 `summary_and_next_se.md`；两文件内容隔离，互不写入对方文件。
-> 当前功能：**v0.25.0 opencode-go 订阅接入（一期）——前端部分**
+> 当前功能：**v0.25.1 opencode-go 订阅接入（一期）——前端部分（含验收修复）**
 > ——来源：设计 `docs/superpowers/specs/2026-10-04-agentj-opencode-go-subscription-design.md`
 > + 实现计划 `docs/superpowers/plans/2026-10-04-agentj-opencode-go-subscription-plan.md`（T7/T8/T14/T20/T21）。
 > 前端范围：`agentj-ui/apps/web`（ComposerOptions 模型列表）+ `agentj-ui/apps/tui`（models 视图）
-> + `agentj-ui/packages/sdk`（版本）+ `agentj-ui/apps/desktop`（版本）；工作区 0.24.2 → **0.25.0**。
+> + `agentj-ui/packages/sdk`（版本）+ `agentj-ui/apps/desktop`（版本）；工作区 0.24.2 → **0.25.0** → **0.25.1**。
 > 后端部分见 `summary_and_next_se.md`。
+
+## v0.25.1（验收修复，前端部分）✅
+
+- ✅ 验收修复均为后端（BUG-001 live id 命名空间 / BUG-002 config.toml 缺失），前端无代码变更；
+  版本串与 desktop 清单、`scripts/check-version.sh` 同步至 **0.25.1**。
 
 ## v0.25.0（前端部分）✅（本次完成）
 
@@ -29,7 +34,7 @@
 | `npm --prefix agentj-ui test --workspace=@agentj/sdk` | **54 passed（6 files）**（版本串 0.24.2 → 0.25.0） |
 | `bun --cwd agentj-ui/apps/tui test` | **150 passed（20 files）**（+4 models.test.tsx） |
 | `npm --prefix agentj-ui run build --workspace=@agentj/web` | clean（`dist/version.json` product_version **0.25.0** / protocol 0.15.0） |
-| `./scripts/check-version.sh` | version-ok（0.25.0；PROTOCOL_VERSION 0.15.0） |
+| `./scripts/check-version.sh` | version-ok（0.25.1；PROTOCOL_VERSION 0.15.0） |
 | `node agentj-ui/apps/desktop/check-desktop-ui.mjs` | desktop-ui-ok |
 
 ## 遗留问题 / 已知限制（前端）
@@ -51,5 +56,5 @@
 
 ## 下一步
 
-- opencode-go 订阅一期前端部分完成（web 617 / tui 150 / sdk 54）；待 `jskill-test-acceptance` 验收。
+- opencode-go 订阅一期前端部分完成（web 617 / tui 150 / sdk 54）；验收 PASS，待创建 PR 后由用户合并。
 - 下一特性候选：③ Web 接入服务端搜索；后端候选（opencode-go 二期 / 待实施 ①②④）见 `summary_and_next_se.md`。
