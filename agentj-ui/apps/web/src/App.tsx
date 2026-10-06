@@ -168,6 +168,7 @@ function useSharedKernel(wsUrl: string, seq: number) {
   const [banner, setBanner] = useState<string | null>(null);
   const [unreachable, setUnreachable] = useState(false);
   const [modelName, setModelName] = useState<string | null>(null);
+  const [models, setModels] = useState<{ name: string }[]>([]);
   const [serverVersion, setServerVersion] = useState<string | null>(null);
   const [client, setClient] = useState<RpcClient | null>(null);
   const transportRef = useRef<WebSocketTransport | null>(null);
@@ -206,10 +207,18 @@ function useSharedKernel(wsUrl: string, seq: number) {
         cli
           .request(METHODS.kernelStatus)
           .then((r) => {
-            const data = r as { modules?: { id: string; state: string }[]; default_model?: string };
+            const data = r as {
+              modules?: { id: string; state: string }[];
+              default_model?: string;
+              providers?: { id: string; models?: string[] }[];
+            };
             if (cancelled) return;
             setModules(data.modules ?? []);
-            setModelName((data as { default_model?: string }).default_model ?? null);
+            setModelName(data.default_model ?? null);
+            const served = (data.providers ?? [])
+              .flatMap((p) => p.models ?? [])
+              .map((name) => ({ name }));
+            if (served.length > 0) setModels(served);
             setStatus("connected");
           })
           .catch(() => {
@@ -226,7 +235,7 @@ function useSharedKernel(wsUrl: string, seq: number) {
     };
   }, [wsUrl, seq]);
 
-  return { client, modules, status, banner, unreachable, modelName, serverVersion };
+  return { client, modules, status, banner, unreachable, modelName, models, serverVersion };
 }
 
 function useApproval(client: RpcClient | null, activeSessionId: string | null) {
@@ -283,7 +292,7 @@ function useApproval(client: RpcClient | null, activeSessionId: string | null) {
 export default function App() {
   const [wsUrl, setWsUrl] = useState(initialWsUrl);
   const [connectSeq, setConnectSeq] = useState(0);
-  const { client: sharedClient, modules, status, banner, unreachable, modelName, serverVersion } =
+  const { client: sharedClient, modules, status, banner, unreachable, modelName, models, serverVersion } =
     useSharedKernel(wsUrl, connectSeq);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const { pending, approvalError, respond, close } = useApproval(sharedClient, activeSessionId);
@@ -635,7 +644,7 @@ export default function App() {
             ) : (
               <>
                 {(historyEvents === null || historySession !== activeSessionId) && <p className="aj-empty">Loading history…</p>}
-                <RunPanel client={sharedClient} key={activeSessionId} activeSessionId={activeSessionId} initialEntries={historyEvents && historySession === activeSessionId ? historyToConversation(historyEvents) : []} pendingTool={pending?.tool} model={modelName ?? undefined} modules={modules} status={status} unreachable={unreachable} onRunId={(id) => setActiveRunId(id)} />
+                <RunPanel client={sharedClient} key={activeSessionId} activeSessionId={activeSessionId} initialEntries={historyEvents && historySession === activeSessionId ? historyToConversation(historyEvents) : []} pendingTool={pending?.tool} model={modelName ?? undefined} models={models} modules={modules} status={status} unreachable={unreachable} onRunId={(id) => setActiveRunId(id)} />
               </>
             )
           ) : activeSessionId && historySession === activeSessionId && historyEvents ? (

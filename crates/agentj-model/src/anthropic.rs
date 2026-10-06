@@ -14,6 +14,7 @@ pub struct AnthropicProvider {
     base_url: String,
     api_key: String,
     client: Client,
+    session_header: Option<String>,
 }
 
 impl AnthropicProvider {
@@ -21,8 +22,46 @@ impl AnthropicProvider {
         Self {
             base_url: base_url.trim_end_matches('/').to_string(),
             api_key,
-            client: Client::new(),
+            client: crate::http::client(),
+            session_header: None,
         }
+    }
+
+    /// Same as [`Self::new`] but emits `header: <session_id>` when the turn carries one
+    /// (opencode-go compliance header; design D4).
+    pub fn with_session_header(base_url: String, api_key: String, header: String) -> Self {
+        Self {
+            base_url: base_url.trim_end_matches('/').to_string(),
+            api_key,
+            client: crate::http::client(),
+            session_header: Some(header),
+        }
+    }
+
+    /// Attach the configured session header when both the header name and the turn's
+    /// session id are present.
+    fn with_session<'a>(
+        &'a self,
+        rb: reqwest::RequestBuilder,
+        options: &'a ModelOptions,
+    ) -> reqwest::RequestBuilder {
+        let name = self.session_header.as_deref().unwrap_or("");
+        match crate::http::session_header(name, options) {
+            Some((name, value)) => rb.header(name, value),
+            None => rb,
+        }
+    }
+
+    /// Build a `ModelError::Api` with the upstream error type surfaced and an actionable
+    /// re-login hint for 401/403 (design D8).
+    fn api_error(status: u16, body: String) -> ModelError {
+        let parsed = crate::gateway_error::parse_gateway_error(status, &body);
+        let message = if status == 401 || status == 403 {
+            format!("{parsed}（请运行 agentj auth login 重新获取凭据）")
+        } else {
+            parsed
+        };
+        ModelError::Api { status, message }
     }
 
     fn request_body(
@@ -232,22 +271,21 @@ impl ModelProvider for AnthropicProvider {
         options: ModelOptions,
     ) -> Result<ChatResponse, ModelError> {
         let url = format!("{}/v1/messages", self.base_url);
-        let response = self
+        let rb = self
             .client
             .post(&url)
             .header("Authorization", format!("Bearer {}", self.api_key))
             .header("anthropic-version", "2023-06-01")
-            .json(&self.request_body(&messages, &[], &options, false))
+            .json(&self.request_body(&messages, &[], &options, false));
+        let response = self
+            .with_session(rb, &options)
             .send()
             .await
             .map_err(|e| ModelError::Network(e.to_string()))?;
         let status = response.status().as_u16();
         if status != 200 {
-            let msg = response.text().await.unwrap_or_default();
-            return Err(ModelError::Api {
-                status,
-                message: msg,
-            });
+            let body = response.text().await.unwrap_or_default();
+            return Err(Self::api_error(status, body));
         }
         let json: Value = response
             .json()
@@ -274,12 +312,14 @@ impl AnthropicProvider {
         options: &ModelOptions,
     ) -> Result<BoxStream<'static, Result<ModelEvent, ModelError>>, ModelError> {
         let url = format!("{}/v1/messages", self.base_url);
-        let response = self
+        let rb = self
             .client
             .post(&url)
             .header("Authorization", format!("Bearer {}", self.api_key))
             .header("anthropic-version", "2023-06-01")
-            .json(&self.request_body(messages, tools, options, true))
+            .json(&self.request_body(messages, tools, options, true));
+        let response = self
+            .with_session(rb, options)
             .send()
             .await
             .map_err(|e| ModelError::Network(e.to_string()))?;
@@ -294,11 +334,8 @@ impl AnthropicProvider {
             return Err(ModelError::RateLimited { retry_after });
         }
         if status != 200 {
-            let msg = response.text().await.unwrap_or_default();
-            return Err(ModelError::Api {
-                status,
-                message: msg,
-            });
+            let body = response.text().await.unwrap_or_default();
+            return Err(Self::api_error(status, body));
         }
         let byte_stream = response.bytes_stream();
         let mut parser = AnthropicChunkParser::new();

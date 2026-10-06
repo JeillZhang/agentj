@@ -194,6 +194,7 @@ impl TurnRunner {
             .unwrap_or_else(|| "deepseek-chat".into());
         let default_options = ModelOptions {
             model,
+            session_id: Some(session_id.clone()),
             ..Default::default()
         };
         let mut cancelled = false;
@@ -1332,6 +1333,66 @@ mod tests {
         if !seqs2.is_empty() {
             assert_eq!(seqs2[0], Some(1), "seq must reset to 1 on next run");
         }
+        kernel.sender().send(KernelMessage::Shutdown).unwrap();
+    }
+
+    struct RecordingProvider(Arc<Mutex<Option<ModelOptions>>>);
+
+    #[async_trait]
+    impl crate::module::ModelProvider for RecordingProvider {
+        async fn chat_stream(
+            &self,
+            _m: Vec<ChatMessage>,
+            _t: Vec<ToolDefinition>,
+            options: ModelOptions,
+        ) -> Result<BoxStream<'static, Result<ModelEvent, ModelError>>, ModelError> {
+            *self.0.lock().unwrap() = Some(options);
+            Ok(Box::pin(stream::iter(vec![
+                Ok(ModelEvent::Delta("ok".into())),
+                Ok(ModelEvent::Done),
+            ])))
+        }
+        async fn chat(
+            &self,
+            _m: Vec<ChatMessage>,
+            _o: ModelOptions,
+        ) -> Result<crate::types::ChatResponse, ModelError> {
+            unimplemented!()
+        }
+    }
+
+    #[tokio::test]
+    async fn run_turn_injects_session_id_into_model_options() {
+        let (kernel, sender) = spy_kernel_with(ToolSpy);
+        let ctx = loop_test_ctx();
+        let seen: Arc<Mutex<Option<ModelOptions>>> = Arc::new(Mutex::new(None));
+        let runner = TurnRunner::new(
+            ctx.clone(),
+            Arc::new(MockPipeline),
+            "sys".into(),
+            sender,
+            "tool_spy".into(),
+        );
+        ctx.providers
+            .register("mock".into(), Arc::new(RecordingProvider(seen.clone())));
+        let sid = runner.create_session().unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+        runner
+            .spawn_turn(sid.clone(), "hi".into(), None, tx)
+            .unwrap();
+        while let Some(ev) = rx.recv().await {
+            match ev {
+                AgentEvent::Done { .. } => break,
+                AgentEvent::Error(e) => panic!("turn error: {e}"),
+                _ => {}
+            }
+        }
+        let seen = seen
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("chat_stream must be called");
+        assert_eq!(seen.session_id.as_deref(), Some(sid.as_str()));
         kernel.sender().send(KernelMessage::Shutdown).unwrap();
     }
 }

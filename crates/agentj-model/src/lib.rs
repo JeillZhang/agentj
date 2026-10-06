@@ -1,6 +1,10 @@
 pub mod anthropic;
 pub mod catalog;
+pub mod catalog_gen;
+pub mod catalog_source;
 pub mod factory;
+pub mod gateway_error;
+pub mod http;
 pub mod mock;
 pub mod ollama;
 pub mod openai_compat;
