@@ -16,6 +16,7 @@ dependencies = [
 name = "agentj-cli"
 version = "0.24.2"
 dependencies = [
+ "agentj-auth",
  "agentj-config",
  "agentj-context",
  "agentj-core",
@@ -38,6 +39,7 @@ dependencies = [
  "libc",
  "serde_json",
  "sha2",
+ "tempfile",
  "tokio",
  "tokio-tungstenite 0.26.2",
  "tracing",

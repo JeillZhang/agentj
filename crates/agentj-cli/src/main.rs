@@ -26,6 +26,7 @@ use agentj_session::FileBackedStore;
 use agentj_skills::load_skills;
 use agentj_tools::builtins::register_builtins;
 
+mod auth;
 mod license;
 mod logging;
 
@@ -83,6 +84,11 @@ enum Commands {
         /// Directory containing the built Web UI (index.html); overrides auto-discovery.
         #[arg(long)]
         web_dist: Option<std::path::PathBuf>,
+    },
+    /// Manage subscription provider credentials (login/status/logout).
+    Auth {
+        #[command(subcommand)]
+        action: auth::AuthAction,
     },
 }
 
@@ -379,6 +385,10 @@ async fn main() -> anyhow::Result<()> {
     logging::init();
     let cli = Cli::parse();
 
+    if let Some(Commands::Auth { action }) = &cli.command {
+        return auth::run_auth(action, &cli.config).await;
+    }
+
     let config =
         agentj_config::Config::load(Some(cli.config.into())).map_err(|e| anyhow::anyhow!("{e}"))?;
     let gate: Option<(&str, &str)> = match &cli.command {
@@ -388,6 +398,7 @@ async fn main() -> anyhow::Result<()> {
         }) => None,
         Some(Commands::Serve { .. }) => Some(("serve", "serve")),
         Some(Commands::Dashboard { .. }) => Some(("dashboard", "dashboard")),
+        Some(Commands::Auth { .. }) => None,
         None => None,
     };
     if let Some((entitlement, command_name)) = gate {
@@ -543,6 +554,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     match cli.command {
+        Some(Commands::Auth { .. }) => {}
         Some(Commands::Run { prompt, attach }) => {
             if let Some(url) = attach {
                 run_attached(&url, &prompt).await?;
