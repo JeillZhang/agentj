@@ -7,7 +7,11 @@
 use agentj_model::catalog::WireFormat;
 
 const BASE: &str = "https://opencode.ai/zen/go";
-const OVERLAY_PATH: &str = "models/opencode-go.json";
+
+/// Committed overlay path resolved from the crate root, so the bin can run from any cwd.
+fn overlay_path() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../models/opencode-go.json")
+}
 
 #[tokio::main]
 async fn main() {
@@ -26,15 +30,16 @@ async fn main() {
     if check {
         assert_eq!(
             rendered.trim(),
-            std::fs::read_to_string(OVERLAY_PATH)
+            std::fs::read_to_string(overlay_path())
                 .expect("read committed overlay")
                 .trim(),
             "committed overlay is stale; re-run without --check"
         );
         return;
     }
-    std::fs::write(OVERLAY_PATH, format!("{rendered}\n")).expect("write overlay");
-    println!("wrote {OVERLAY_PATH} ({} models)", entries.len());
+    let path = overlay_path();
+    std::fs::write(&path, format!("{rendered}\n")).expect("write overlay");
+    println!("wrote {} ({} models)", path.display(), entries.len());
 }
 
 /// Seeded from the pre-task committed `models/opencode-go.json` — the curated
@@ -92,6 +97,12 @@ mod tests {
 
     #[test]
     fn overrides_seed_covers_every_committed_route() {
-        assert_eq!(overrides().len(), 20, "all committed routes must be seeded");
+        let committed = agentj_model::catalog::ModelCatalog::builtin();
+        for id in committed.ids() {
+            assert!(
+                overrides().contains_key(&id),
+                "{id} is in the committed overlay but not seeded in overrides()"
+            );
+        }
     }
 }
