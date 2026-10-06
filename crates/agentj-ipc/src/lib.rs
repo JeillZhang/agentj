@@ -1915,11 +1915,11 @@ fn kernel_model_info(
     let Some(ctx) = ctx else { return (None, None) };
     let cfg = ctx.config();
     let default_model = cfg.get_str("model.default_model").filter(|s| !s.is_empty());
-    let names: Vec<String> = cfg.providers().into_iter().map(|(id, _)| id).collect();
-    let providers = (!names.is_empty()).then(|| {
-        names
+    let pairs = ctx.providers().list_with_models();
+    let providers = (!pairs.is_empty()).then(|| {
+        pairs
             .into_iter()
-            .map(|id| agentj_protocol::streaming::ProviderInfo { id, models: vec![] })
+            .map(|(id, models)| agentj_protocol::streaming::ProviderInfo { id, models })
             .collect()
     });
     (default_model, providers)
@@ -4764,23 +4764,78 @@ mod tests {
         assert!(ps2.is_none());
     }
 
+    #[derive(Debug)]
+    struct StubModelsProvider(Vec<String>);
+    #[async_trait::async_trait]
+    impl agentj_core::module::ModelProvider for StubModelsProvider {
+        async fn chat_stream(
+            &self,
+            _m: Vec<ChatMessage>,
+            _t: Vec<ToolDefinition>,
+            _o: ModelOptions,
+        ) -> Result<
+            futures::stream::BoxStream<'static, Result<ModelEvent, agentj_core::error::ModelError>>,
+            agentj_core::error::ModelError,
+        > {
+            unimplemented!()
+        }
+        async fn chat(
+            &self,
+            _m: Vec<ChatMessage>,
+            _o: ModelOptions,
+        ) -> Result<agentj_core::types::ChatResponse, agentj_core::error::ModelError> {
+            unimplemented!()
+        }
+        fn models(&self) -> Vec<String> {
+            self.0.clone()
+        }
+    }
+
     #[test]
-    fn kernel_model_info_surfaces_config_values() {
+    fn kernel_model_info_surfaces_registered_provider_models() {
+        let registry = agentj_core::module::ProviderRegistry::new();
+        registry.register(
+            "opencode-go".into(),
+            Arc::new(StubModelsProvider(vec!["m1".into()])),
+        );
         let (default_model, providers) =
             kernel_model_info(Some(&agentj_core::module::KernelContext {
                 session: stub_session(),
                 tools: Arc::new(agentj_core::module::ToolRegistry::new()),
-                providers: Arc::new(agentj_core::module::ProviderRegistry::new()),
+                providers: Arc::new(registry),
                 config: Arc::new(CfgModel),
             }));
         assert_eq!(default_model.as_deref(), Some("deepseek-chat"));
-        let ps = providers.expect("providers present when config lists any");
+        let ps = providers.expect("providers present when a provider is registered");
         assert_eq!(ps.len(), 1);
-        assert_eq!(ps[0].id, "mock");
-        assert!(
-            ps[0].models.is_empty(),
-            "models is reserved and stays empty"
-        );
+        assert_eq!(ps[0].id, "opencode-go");
+        assert_eq!(ps[0].models, vec!["m1".to_string()]);
+    }
+
+    #[test]
+    fn kernel_model_info_reports_empty_models_for_silent_provider() {
+        let registry = agentj_core::module::ProviderRegistry::new();
+        registry.register("silent".into(), Arc::new(StubModelsProvider(vec![])));
+        let (_, providers) = kernel_model_info(Some(&agentj_core::module::KernelContext {
+            session: stub_session(),
+            tools: Arc::new(agentj_core::module::ToolRegistry::new()),
+            providers: Arc::new(registry),
+            config: Arc::new(CfgModel),
+        }));
+        let ps = providers.expect("providers present when a provider is registered");
+        assert!(ps[0].models.is_empty());
+    }
+
+    #[test]
+    fn kernel_model_info_reflects_registered_not_config_listed_providers() {
+        // Config lists a provider but the registry is empty: kernel/status must report none.
+        let (_, providers) = kernel_model_info(Some(&agentj_core::module::KernelContext {
+            session: stub_session(),
+            tools: Arc::new(agentj_core::module::ToolRegistry::new()),
+            providers: Arc::new(agentj_core::module::ProviderRegistry::new()),
+            config: Arc::new(CfgModel),
+        }));
+        assert!(providers.is_none());
     }
 
     fn temp_dir_traj(tag: &str) -> std::path::PathBuf {
