@@ -28,6 +28,8 @@ pub struct CatalogEntry {
     pub id: String,
     pub format: WireFormat,
     pub endpoint: String,
+    /// False for live-discovered ids whose wire format was synthesized (design D3).
+    pub verified: bool,
 }
 
 /// Committed opencode-go model catalog (design 4.1): model id → wire format/endpoint.
@@ -50,6 +52,8 @@ impl ModelCatalog {
             id: String,
             format: String,
             endpoint: String,
+            #[serde(default = "default_true")]
+            verified: bool,
         }
         #[derive(Deserialize)]
         struct RawCatalog {
@@ -69,6 +73,7 @@ impl ModelCatalog {
                             id: m.id,
                             format,
                             endpoint: m.endpoint,
+                            verified: m.verified,
                         },
                     )
                 })
@@ -83,6 +88,60 @@ impl ModelCatalog {
     pub fn lookup(&self, model: &str) -> Option<&CatalogEntry> {
         self.entries.get(model)
     }
+
+    /// All model ids, sorted.
+    pub fn ids(&self) -> Vec<String> {
+        let mut v: Vec<String> = self.entries.keys().cloned().collect();
+        v.sort();
+        v
+    }
+
+    /// Ids whose wire format could not be confirmed (synthesized as openai-compat).
+    pub fn unverified_ids(&self) -> Vec<String> {
+        let mut v: Vec<String> = self
+            .entries
+            .values()
+            .filter(|e| !e.verified)
+            .map(|e| e.id.clone())
+            .collect();
+        v.sort();
+        v
+    }
+
+    /// Merge a committed overlay with live-discovered ids (design D3).
+    pub fn from_sources(overlay_json: &str, live_ids: Option<Vec<String>>) -> Self {
+        Self::from_overlay_and_live(Self::from_json(overlay_json), live_ids)
+    }
+
+    /// Single embed site for callers that already hold a catalog (`ModelCatalog::builtin()`).
+    ///
+    /// A successful-but-empty live result is treated as unavailable and falls back to the
+    /// overlay (never "all models removed").
+    pub fn from_overlay_and_live(overlay: ModelCatalog, live_ids: Option<Vec<String>>) -> Self {
+        let Some(mut live) = live_ids.filter(|ids| !ids.is_empty()) else {
+            return overlay;
+        };
+        live.sort();
+        live.dedup();
+        let mut entries = HashMap::new();
+        for id in live {
+            let entry = overlay.lookup(&id).cloned().unwrap_or(CatalogEntry {
+                id: id.clone(),
+                format: WireFormat::OpenAiCompat,
+                endpoint: "/v1/chat/completions".into(),
+                verified: false,
+            });
+            entries.insert(id, entry);
+        }
+        Self {
+            base_url: overlay.base_url,
+            entries,
+        }
+    }
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[cfg(test)]
@@ -143,5 +202,46 @@ mod tests {
             WireFormat::Anthropic
         );
         assert!(catalog.lookup("opencode-go/no-such-model").is_none());
+    }
+}
+
+#[cfg(test)]
+mod from_sources_tests {
+    use super::*;
+
+    const OVERLAY: &str = r#"{"base_url":"https://opencode.ai/zen/go","models":[
+        {"id":"opencode-go/b","format":"anthropic","endpoint":"/v1/messages","verified":true}]}"#;
+
+    #[test]
+    fn unknown_live_id_is_synthesized_as_unverified_openai_compat() {
+        let cat = ModelCatalog::from_sources(
+            OVERLAY,
+            Some(vec!["opencode-go/b".into(), "opencode-go/a".into()]),
+        );
+        assert_eq!(cat.ids(), vec!["opencode-go/a", "opencode-go/b"]);
+        let a = cat.lookup("opencode-go/a").unwrap();
+        assert_eq!(a.format, WireFormat::OpenAiCompat);
+        assert!(!a.verified);
+        assert_eq!(cat.unverified_ids(), vec!["opencode-go/a"]);
+        assert!(cat.lookup("opencode-go/b").unwrap().verified);
+    }
+
+    #[test]
+    fn live_none_falls_back_to_overlay_only() {
+        let cat = ModelCatalog::from_sources(OVERLAY, None);
+        assert_eq!(cat.ids(), vec!["opencode-go/b"]);
+        assert!(cat.unverified_ids().is_empty());
+    }
+
+    #[test]
+    fn overlay_only_entries_are_dropped_when_live_succeeds() {
+        let cat = ModelCatalog::from_sources(OVERLAY, Some(vec!["opencode-go/c".into()]));
+        assert_eq!(cat.ids(), vec!["opencode-go/c"]);
+    }
+
+    #[test]
+    fn empty_live_result_falls_back_to_overlay() {
+        let cat = ModelCatalog::from_sources(OVERLAY, Some(vec![]));
+        assert_eq!(cat.ids(), vec!["opencode-go/b"]);
     }
 }

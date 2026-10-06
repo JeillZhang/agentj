@@ -146,6 +146,7 @@ mod tests {
                 id: "opencode-go/kimi-k3".into(),
                 format: WireFormat::OpenAiCompat,
                 endpoint: "/v1/chat/completions".into(),
+                verified: true,
             },
         );
         entries.insert(
@@ -154,6 +155,7 @@ mod tests {
                 id: "opencode-go/grok-4.5".into(),
                 format: WireFormat::Responses,
                 endpoint: "/v1/responses".into(),
+                verified: true,
             },
         );
         entries.insert(
@@ -162,6 +164,7 @@ mod tests {
                 id: "opencode-go/minimax-m3".into(),
                 format: WireFormat::Anthropic,
                 endpoint: "/v1/messages".into(),
+                verified: true,
             },
         );
         ModelCatalog {
