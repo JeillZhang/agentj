@@ -20,7 +20,6 @@ use agentj_core::turn_runner::TurnRunner;
 use agentj_core::types::TokenUsage;
 use agentj_ipc::IpcServer;
 use agentj_mcp::McpConnectionManager;
-use agentj_model::factory::ProviderFactory;
 use agentj_question::{AskTool, QuestionModule};
 use agentj_session::FileBackedStore;
 use agentj_skills::load_skills;
@@ -29,6 +28,7 @@ use agentj_tools::builtins::register_builtins;
 mod auth;
 mod license;
 mod logging;
+mod providers;
 
 #[derive(Parser)]
 #[command(name = "agentj", version, about = "AgentJ — AI coding agent")]
@@ -426,17 +426,27 @@ async fn main() -> anyhow::Result<()> {
     let session_store = Arc::new(FileBackedStore::new(&session_dir)?);
     let session: Arc<dyn SessionStore> = session_store.clone() as Arc<dyn SessionStore>;
 
-    // design 4.3: instantiate each configured provider through the factory — kind
-    // decides the wire format (openai-compat / responses / anthropic / opencode-go).
-    // api_key_env is resolved from the environment per provider entry.
-    for pcfg in &config.inner().model.providers {
-        let api_key = pcfg
-            .api_key_env
-            .as_ref()
-            .and_then(|env| std::env::var(env).ok())
-            .unwrap_or_default();
-        let provider = ProviderFactory::create(&pcfg.kind, &pcfg.name, &pcfg.base_url, api_key)?;
-        providers.register(pcfg.name.clone(), provider);
+    // design 4.3 + D7: assemble providers with credential resolution; keyless real
+    // providers are skipped (never an empty Bearer) and an empty registry is fatal.
+    let auth_store =
+        agentj_auth::AuthStore::with_default_path().map_err(|e| anyhow::anyhow!("{e}"))?;
+    let live_base = agentj_model::catalog::ModelCatalog::builtin().base_url;
+    let assembly = providers::build_providers(config.inner(), None, &auth_store, || {
+        let base = live_base.clone();
+        async move {
+            agentj_model::catalog_source::fetch_live_models(&base, None)
+                .await
+                .map(Some)
+                .map_err(|e| e.to_string())
+        }
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("{e}"))?;
+    for warning in &assembly.warnings {
+        tracing::warn!("{warning}");
+    }
+    for (name, provider) in assembly.providers {
+        providers.register(name, provider);
     }
 
     // Extract before `config` is boxed into the KernelContext — its config field

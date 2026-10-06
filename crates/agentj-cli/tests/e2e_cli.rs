@@ -8,7 +8,11 @@ fn e2e_serve_responds_to_jsonrpc_session_new() {
     let dir = std::env::temp_dir().join(format!("agentj-e2e-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let cfg = dir.join("mock_config.toml");
-    std::fs::write(&cfg, "[model]\nprovider = \"mock\"\n").unwrap();
+    std::fs::write(
+        &cfg,
+        "[model]\nprovider = \"mock\"\n\n[[model.providers]]\nname = \"mock\"\nkind = \"mock\"\nbase_url = \"mock://local\"\napi_key_env = \"\"\n",
+    )
+    .unwrap();
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_agentj"))
         .args(["--config", cfg.to_str().unwrap(), "serve"])
@@ -48,7 +52,11 @@ fn e2e_serve_exits_gracefully_on_sigterm() {
     let dir = std::env::temp_dir().join(format!("agentj-e2e-sig-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let cfg = dir.join("mock_config.toml");
-    std::fs::write(&cfg, "[model]\nprovider = \"mock\"\n").unwrap();
+    std::fs::write(
+        &cfg,
+        "[model]\nprovider = \"mock\"\n\n[[model.providers]]\nname = \"mock\"\nkind = \"mock\"\nbase_url = \"mock://local\"\napi_key_env = \"\"\n",
+    )
+    .unwrap();
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_agentj"))
         .args(["--config", cfg.to_str().unwrap(), "serve"])

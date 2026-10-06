@@ -33,8 +33,22 @@ async fn wait_for_listen(port: u16) {
 #[tokio::test]
 async fn serve_port_accepts_ws_clients_and_keeps_tcp_attach() {
     let port = free_port();
+    let dir = std::env::temp_dir().join(format!("agentj-e2e-ws-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let cfg = dir.join("mock_config.toml");
+    std::fs::write(
+        &cfg,
+        "[model]\nprovider = \"mock\"\n\n[[model.providers]]\nname = \"mock\"\nkind = \"mock\"\nbase_url = \"mock://local\"\napi_key_env = \"\"\n",
+    )
+    .unwrap();
     let mut child = Command::new(env!("CARGO_BIN_EXE_agentj"))
-        .args(["serve", "--port", &port.to_string()])
+        .args([
+            "--config",
+            cfg.to_str().unwrap(),
+            "serve",
+            "--port",
+            &port.to_string(),
+        ])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
