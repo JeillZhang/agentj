@@ -232,6 +232,7 @@ mod tests {
         let opts = ModelOptions::default();
         assert_eq!(opts.model, "deepseek-chat");
         assert!(opts.stream);
+        assert!(opts.session_id.is_none());
     }
 
     #[test]
