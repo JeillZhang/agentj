@@ -6,12 +6,23 @@
 > **强制例外（跨阶段保留）**：「## 待实施」表中**尚未实施**的特性条目必须保留（状态 =
 > 待实施），不得随内容替换而删除；仅当该特性实际实施完成后才能移除（移入功能记录）。
 > 前端总结独立存放于 `summary_and_next_fe.md`；两文件内容隔离，互不写入对方文件。
-> 当前功能：**v0.25.1 opencode-go 订阅接入（一期）——后端部分（含验收修复）**
+> 当前功能：**v0.25.2 opencode-go 订阅接入（一期）——后端部分（含验收修复）**
 > ——来源：设计 `docs/superpowers/specs/2026-10-04-agentj-opencode-go-subscription-design.md`
 > + 实现计划 `docs/superpowers/plans/2026-10-04-agentj-opencode-go-subscription-plan.md`（T0–T24）。
 > 后端范围：新增第 18 个 crate `agentj-auth` + `agentj-core`/`agentj-config`/`agentj-model`/`agentj-ipc`/`agentj-cli` 扩展；
-> `PROTOCOL_VERSION` 保持 **0.15.0**（52 schemas / 21 方法不变）；工作区 0.24.2 → **0.25.0** → **0.25.1**。
+> `PROTOCOL_VERSION` 保持 **0.15.0**（52 schemas / 21 方法不变）；工作区 0.24.2 → **0.25.0** → **0.25.1** → **0.25.2**。
 > 前端部分见 `summary_and_next_fe.md`。
+
+## v0.25.2（会话持久化并发修复，后端部分）✅
+
+- ✅ **会话 `.tmp` 竞态**：`FileBackedStore::new` 启动扫描无条件删所有 `<sid>.json.tmp`，多内核
+  共享会话目录时删掉并发写入者的在途临时文件 → `rename` ENOENT → `session/new` -32603。
+  修复：只清理 mtime > 1h 的过期残留，新鲜临时文件保留（新增回归
+  `fresh_tmp_from_concurrent_writer_survives_scan`）；既有 `leftover_tmp_cleaned_on_construction`
+  改为过期文件语义。
+- ✅ **`e2e_serve_exits_gracefully_on_sigterm` 去抖**：改为先读 `session/new` 响应（handler 已装）
+  再发 SIGTERM，连续 4 次稳定通过。
+- 提交见分支；工作区 0.25.1 → **0.25.2**（patch）。
 
 ## v0.25.1（验收修复，后端部分）✅
 
@@ -45,7 +56,7 @@
 | `cargo test -p agentj-protocol -- drift` | 2 passed（52 schemas） |
 | `cargo test -p agentj-auth` | 13 passed（新增） |
 | `cargo test -p agentj-cli --test e2e_auth` | 2 passed |
-| `./scripts/check-version.sh` | version-ok（**0.25.1**；`PROTOCOL_VERSION` **0.15.0**） |
+| `./scripts/check-version.sh` | version-ok（**0.25.2**；`PROTOCOL_VERSION` **0.15.0**） |
 | `node agentj-ui/apps/desktop/check-desktop-ui.mjs` | desktop-ui-ok |
 
 ## 遗留问题 / 已知限制（后端）
@@ -70,6 +81,6 @@
 
 ## 下一步
 
-- **opencode-go 订阅一期（0.25.1）已在开发分支落地**，验收 PASS（BUG-001/002 verified），待创建 PR 后由用户合并 main。
+- **opencode-go 订阅一期（0.25.2）已在开发分支落地**，验收 PASS（BUG-001/002 verified；另修会话持久化并发竞态 + e2e 去抖），PR 已建，由用户合并 main。
 - 后端候选：opencode-go 二期（`GET /zen/go/v1/usage` 用量面板 / device-code OAuth / 运行期切模型 / 新协议方法），或上表 ①②④。
 - 前端候选见 `summary_and_next_fe.md`。

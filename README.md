@@ -4,7 +4,7 @@ AI 编码代理工具（Rust）——Linux 内核式「内核调度 + 可插拔�
 内核通过统一的 JSON-RPC 2.0 协议（stdio / TCP / WebSocket）对外暴露能力；
 CLI、TUI、Web、Desktop 均作为协议消费者接入，任意语言可开发前端。
 
-> 当前版本：**v0.25.1**
+> 当前版本：**v0.25.2**
 > · 变更记录：[`docs/changelog/`](docs/changelog/)
 > · 用户指南：[`docs/guide/`](docs/guide/)
 > · 协议规范：[`docs/specs/ipc-protocol.md`](docs/specs/ipc-protocol.md)
