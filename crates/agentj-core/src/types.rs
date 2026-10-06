@@ -138,6 +138,9 @@ pub struct ModelOptions {
     pub temperature: Option<f32>,
     pub max_tokens: Option<u32>,
     pub stream: bool,
+    /// Stable per-conversation id forwarded by subscription transports. Not on the
+    /// wire. @since 0.25.0
+    pub session_id: Option<String>,
 }
 
 impl Default for ModelOptions {
@@ -147,6 +150,7 @@ impl Default for ModelOptions {
             temperature: None,
             max_tokens: None,
             stream: true,
+            session_id: None,
         }
     }
 }
