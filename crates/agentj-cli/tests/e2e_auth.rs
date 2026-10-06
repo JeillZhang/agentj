@@ -99,5 +99,10 @@ fn keyless_real_provider_fails_startup() {
         "stderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
+    assert!(
+        !String::from_utf8_lossy(&out.stderr).contains("example.invalid"),
+        "failure must happen before any HTTP attempt against base_url: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let _ = std::fs::remove_dir_all(&home);
 }
