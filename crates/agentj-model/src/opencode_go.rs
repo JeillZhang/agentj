@@ -20,24 +20,37 @@ pub struct OpenCodeGoProvider {
 
 impl OpenCodeGoProvider {
     pub fn new(api_key: String) -> Self {
-        let catalog = ModelCatalog::builtin();
+        Self::with_catalog(api_key, ModelCatalog::builtin())
+    }
+
+    /// Build the facade over an injected catalog (live/overlay merged) and wire the
+    /// opencode-go compliance session header into every transport (design D4).
+    pub fn with_catalog(api_key: String, catalog: ModelCatalog) -> Self {
         let base = catalog.base_url.clone();
+        let session = "x-opencode-session".to_string();
         let mut transports: HashMap<WireFormat, Box<dyn ModelProvider>> = HashMap::new();
         transports.insert(
             WireFormat::OpenAiCompat,
-            Box::new(OpenAICompatibleProvider::new(
+            Box::new(OpenAICompatibleProvider::with_session_header(
                 base.clone(),
                 api_key.clone(),
                 String::new(),
+                session.clone(),
             )),
         );
         transports.insert(
             WireFormat::Responses,
-            Box::new(ResponsesProvider::new(base.clone(), api_key.clone())),
+            Box::new(ResponsesProvider::with_session_header(
+                base.clone(),
+                api_key.clone(),
+                session.clone(),
+            )),
         );
         transports.insert(
             WireFormat::Anthropic,
-            Box::new(AnthropicProvider::new(base, api_key)),
+            Box::new(AnthropicProvider::with_session_header(
+                base, api_key, session,
+            )),
         );
         Self {
             catalog,
@@ -91,6 +104,10 @@ impl ModelProvider for OpenCodeGoProvider {
     ) -> Result<ChatResponse, ModelError> {
         let (transport, _) = self.route(&options.model)?;
         transport.chat(messages, options).await
+    }
+
+    fn models(&self) -> Vec<String> {
+        self.catalog.ids()
     }
 }
 
@@ -254,5 +271,15 @@ mod tests {
             result,
             Err(ModelError::UnknownModel { model, .. }) if model == "opencode-go/no-such"
         ));
+    }
+
+    const OVERLAY_X: &str = r#"{"base_url":"https://opencode.ai/zen/go","models":[
+        {"id":"opencode-go/x","format":"anthropic","endpoint":"/v1/messages","verified":true}]}"#;
+
+    #[test]
+    fn with_catalog_exposes_models_and_keeps_routing() {
+        let catalog = ModelCatalog::from_sources(OVERLAY_X, None);
+        let provider = OpenCodeGoProvider::with_catalog("k".into(), catalog);
+        assert_eq!(provider.models(), vec!["opencode-go/x"]);
     }
 }
