@@ -6,39 +6,44 @@
 > **强制例外（跨阶段保留）**：「## 待实施」表中**尚未实施**的特性条目必须保留（状态 =
 > 待实施），不得随内容替换而删除；仅当该特性实际实施完成后才能移除（移入功能记录）。
 > 前端总结独立存放于 `summary_and_next_fe.md`；两文件内容隔离，互不写入对方文件。
-> 当前功能：**v0.23.1 补齐 v0.23.0 计划遗漏（bugfix，无协议变更，PROTOCOL_VERSION 保持 0.15.0）——后端部分**
-> ——来源：v0.23.0 验收 PASS（BUG-013/014/015 verified per `.superpowers/acceptance/bugs.md`）后复核发现协议/IPC 计划测试缺漏与 `agentj-core` 死代码。
-> + 实现计划 `docs/superpowers/plans/2026-09-25-agentj-right-panel-run-details-plan.md`（T0/T5 后端侧补测）。
-> 后端范围：`agentj-protocol`（T0 补测 5）+ `agentj-ipc`（T5 补测 4）+ `agentj-core`（删除死代码 `bash_file_changes` + `git_sample` 生产路径断言）；`PROTOCOL_VERSION` 保持 **0.15.0**（52 schemas / 21 方法不变）；工作区 0.23.0 → **0.23.1**。
+> 当前功能：**v0.25.0 opencode-go 订阅接入（一期）——后端部分**
+> ——来源：设计 `docs/superpowers/specs/2026-10-04-agentj-opencode-go-subscription-design.md`
+> + 实现计划 `docs/superpowers/plans/2026-10-04-agentj-opencode-go-subscription-plan.md`（T0–T24）。
+> 后端范围：新增第 18 个 crate `agentj-auth` + `agentj-core`/`agentj-config`/`agentj-model`/`agentj-ipc`/`agentj-cli` 扩展；
+> `PROTOCOL_VERSION` 保持 **0.15.0**（52 schemas / 21 方法不变）；工作区 0.24.2 → **0.25.0**。
 > 前端部分见 `summary_and_next_fe.md`。
 
-## v0.23.1（后端部分）✅（本次完成）
+## v0.25.0（后端部分）✅（本次完成）
 
-- ✅ **T0 协议补测（5 测）**：`FileChangeSource::Unknown` 容忍、`FileChange` 新字段（`run_id`/`seq`/`source`/`total_bytes`）往返序列化、`ProgressValue::Todo/FileChange` 外层 `run_id` 加性、`SessionHistoryParams {run_id?}` 与 `SessionRunResult {run_id?}` 缺省省略（不破坏旧报文）。
-- ✅ **T5 IPC 补测（4 测）**：broadcast `run_id` 透传（`file_change_into_wire`）、`session/history {run_id}` 过滤（先按 `run_id` 过滤 Todo/FileChange 再 `cursor/limit` 分页，其余 kind 全量）、非法 `run_id` → `-32602` + `data{reason:"invalid_run_id"}`、`sanitize_run_id`/`is_valid_run_id` 校验单元（非法/超长 → None 不抛错）。
-- ✅ **死代码清理**：删除 `agentj-core` 未接线的 `bash_file_changes` helper 及其单测（−1 test）；`git_sample` 测试改为在生产路径断言 `source == Some(FileChangeSource::Bash)`（不再依赖 helper）。
+- ✅ **`agentj-auth`（新 crate）**：`Credential`（`api_key` / `oauth` 二期占位，未知 tag → `Unsupported` 而非 Malformed）+ `AuthStore`（XDG 路径、目录 `0700` / 文件 `0600`、临时文件 + fsync + rename 原子写、权限/JSON 损坏拒绝降级）+ `resolve_credential`（`--api-key` > `api_key_env` 非空 > `auth.json`，绝不返回空串）+ `redact`（仅末 4 位；≤4 字符折叠为 `…`）。
+- ✅ **`agentj-core`**：`ModelProvider::models()` 默认 `vec![]`（加性零破坏）+ `ProviderRegistry::list_with_models()`（按名排序）+ `ModelOptions.session_id`（内部字段，`TurnRunner` 注入本轮 `SessionId`）。
+- ✅ **`agentj-config`**：`toml_edit 0.22` 定点写回 `set_model_defaults` / `write_model_defaults`（保留注释与无关表）。
+- ✅ **`agentj-model`**：`http`（统一 `agentj/<版本>` UA + `session_header` 规则）+ `gateway_error`（`{"type":"error","error":{type,message}}` → `类型: 消息`，raw 兜底）+ `catalog`（`verified` 字段 + `from_sources` live/overlay 合并，空 live 视为不可用）+ `catalog_source`（`fetch_live_models`，5s 超时）+ `catalog_gen`（overlay 生成器纯函数）+ 三 transport（UA、`x-opencode-session`、401/403 重登录提示、openai-compat 补齐 `Retry-After`）+ `OpenCodeGoProvider::with_catalog` / `models()` + `ProviderFactory::create_with_catalog` + `bin/gen_opencode_catalog`（seeded overrides，`--check`）+ Ollama 补统一 UA。
+- ✅ **`agentj-ipc`**：`kernel/status.providers[].models` 改为由 `ProviderRegistry::list_with_models()` 填充（反映**已注册** provider，零协议变更）。
+- ✅ **`agentj-cli`**：`agentj auth login|status|logout`（`--provider`/`--api-key` 或 stdin/`--default-model`/`--offline`；`auth` 在 config 加载与 license 门之前分发）+ `build_providers`（凭据解析 → 目录构建 → 跳过无密钥真实 provider → 空注册表硬错误 `no usable model provider`；provenance 行只打印来源 + 末 4 位）+ `run --attach` 不做本地 provider 装配。
+- ✅ **e2e**：`e2e_auth`（login/status/logout 往返 + 0600 + 不泄漏完整 key + keyless 启动失败且不触网）；e2e_cli/e2e_ws 夹具补 `kind="mock"` provider 以适配新的硬错误行为。
 
-## 验证结果（后端门禁，2026-09-25）
+## 验证结果（后端门禁，2026-10-06）
 
 | 门禁 | 结果 |
 |---|---|
 | `cargo fmt --check` | clean |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 零警告 |
-| `cargo test --workspace` | **660 passed / 0 failed**（v0.23.0 652 基线 +5 protocol +4 ipc −1 core 死测） |
-| `cargo test -p agentj-protocol` | **90 passed**（+5，T0）；`drift` 2 passed（52 schemas） |
+| `cargo test --workspace` | **全绿**（含 e2e_cli/e2e_serve/e2e_mcp/e2e_ws/e2e_http_static/e2e_permission/e2e_auth；`e2e_serve_exits_gracefully_on_sigterm` 为已知环境性 flaky，本次通过） |
 | `cargo test -p agentj-protocol -- drift` | 2 passed（52 schemas） |
-| `cargo test -p agentj-ipc` | **171 passed**（+4，T5） |
-| `./scripts/check-version.sh` | version-ok（**0.23.1**；`PROTOCOL_VERSION` **0.15.0**；`protocol/methods.json` 0.15.0） |
-| `npm --prefix agentj-ui run generate --workspace=@agentj/protocol` | 无漂移（52 schemas） |
-
-> **v0.23.0 验收：PASS**（BUG-013/014/015 verified per `.superpowers/acceptance/bugs.md`；Rust 回归后 646 → 652）。本波 v0.23.1 为计划遗漏补齐，**待 `jskill-test-acceptance` 复验**——后端验收项：`cargo test --workspace` 660 独立复跑、T0/T5 补测覆盖、死代码删除后 `git_sample` 生产路径 `source == Some(Bash)` 断言、`check-version` 0.23.1/0.15.0。
-> 环境预置清理（延续）：`rm -f ~/.local/share/agentj/sessions/s1.{json,trajectory}`（e2e_permission 硬编码 `s1` 会话，前次运行被中断会 hang —— 预存在环境问题，非本特性引入）。
+| `cargo test -p agentj-auth` | 13 passed（新增） |
+| `cargo test -p agentj-cli --test e2e_auth` | 2 passed |
+| `./scripts/check-version.sh` | version-ok（**0.25.0**；`PROTOCOL_VERSION` **0.15.0**） |
+| `node agentj-ui/apps/desktop/check-desktop-ui.mjs` | desktop-ui-ok |
 
 ## 遗留问题 / 已知限制（后端）
 
-- **per-run revision 迁移**：旧 `todo_revisions: HashMap<SessionId,u64>` 存量内存态直接切为 `HashMap<RunId,u64>`（重启即清空，无磁盘迁移；旧数据 `run_id=null` 走 legacy revision 兼容分支，不影响历史回放）。
-- **run_id 校验口径**：live 帧非法 run_id 视为 `None`（静默降级为未分组，不抛错）；`session/history` 入参非法则严格 `-32602`（与前端 `parseProgress` 的 UUID 正则一致）。
-- **TUI 元数据**：后端仅保证 wire 正确；TUI 侧未发 `project_root`（键仍为内核 cwd 回退）与 rank 三处镜像问题仍待实施 ④。
+- **overlay 未按 live 重新生成**：`models/opencode-go.json` 仍为人工 curation 的 20 条（无 `verified` 字段，`from_json` 默认 true）；`gen_opencode_catalog` 的联网生成/`--check` 属手动/CI 刷新，未在本次执行（避免 live 变化破坏已提交路由）。首次刷新后应确认 models.dev `npm` 路径与 live id 前缀。
+- **`KEY_REQUIRED_KINDS` 反向白名单 fail-open**：未来新增真实 transport 若未加入白名单，会被当作免密钥注册（设计 §D7 的写法即如此）；如需硬化可改为显式 `KEYLESS_KINDS` 白名单。
+- **启动期 `Flag` 密钥来源不可达**：`build_providers` 恒以 `flag=None` 调用（`Cli` 无启动期 `--api-key`），来源实际只可能是 `Env` / `File`。
+- **serve e2e 非完全隔离**：启动会读取真实 `$XDG_DATA_HOME/agentj/auth.json`；仅 `e2e_auth` 覆盖 `HOME`/`XDG_DATA_HOME`，本机若存在损坏/权限不符的 `auth.json` 可能影响共享 serve 测试（CI 无此文件）。
+- **`ollama` 未接入 `ProviderFactory`**（既有事实，本期未改）；已补统一 UA。
+- **lockfile 版本元数据漂移**：`agentj-ui/package-lock.json` / `bun.lock` / `src-tauri/Cargo.lock` 中的 desktop 版本仍为旧值，无门禁读取，下次 install 时刷新。
 
 ## 待实施（跨阶段保留：未实施不得删除）
 
@@ -53,5 +58,6 @@
 
 ## 下一步
 
-- **v0.23.1 计划遗漏补齐已在开发分支落地，待 `jskill-test-acceptance` 复验后合并 main**；当前功能完结，下一特性从「待实施」表选择（`jskill-feature-next` 合并本表 + `_fe.md` 表）。
-- 后端候选即上表 ①②④（前端候选见 `summary_and_next_fe.md`）。
+- **opencode-go 订阅一期（0.25.0）已在开发分支落地**，待 `jskill-test-acceptance` 验收后合并 main。
+- 后端候选：opencode-go 二期（`GET /zen/go/v1/usage` 用量面板 / device-code OAuth / 运行期切模型 / 新协议方法），或上表 ①②④。
+- 前端候选见 `summary_and_next_fe.md`。
