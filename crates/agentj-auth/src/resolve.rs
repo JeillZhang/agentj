@@ -33,15 +33,14 @@ pub fn resolve_credential(
             source: KeySource::Flag,
         }));
     }
-    if let Some(name) = api_key_env.filter(|n| !n.is_empty()) {
-        if let Ok(v) = std::env::var(name)
-            && !v.trim().is_empty()
-        {
-            return Ok(Some(ResolvedKey {
-                key: v.trim().to_string(),
-                source: KeySource::Env,
-            }));
-        }
+    if let Some(name) = api_key_env.filter(|n| !n.is_empty())
+        && let Ok(v) = std::env::var(name)
+        && !v.trim().is_empty()
+    {
+        return Ok(Some(ResolvedKey {
+            key: v.trim().to_string(),
+            source: KeySource::Env,
+        }));
     }
     Ok(match store.get(provider)? {
         Some(cred) => Some(ResolvedKey {
