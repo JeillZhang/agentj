@@ -5,7 +5,15 @@
 
 use agentj_core::error::ModelError;
 
-/// Fetch the live model id list, sorted and de-duplicated.
+/// Namespace prefix for every id this catalog source emits.
+///
+/// The upstream `GET <base_url>/v1/models` answers with bare ids (`kimi-k3`), while the
+/// committed overlay, `gen_opencode_catalog::overrides()` and `default_model` all key on
+/// `opencode-go/<id>`. Normalizing here keeps the whole pipeline (`from_overlay_and_live`,
+/// `catalog_gen::build_overlay`, `auth status`, `kernel/status`) on one namespace.
+const NAMESPACE: &str = "opencode-go/";
+
+/// Fetch the live model id list, sorted and de-duplicated, namespaced as `opencode-go/<id>`.
 pub async fn fetch_live_models(
     base_url: &str,
     key: Option<&str>,
@@ -36,11 +44,21 @@ pub async fn fetch_live_models(
         .as_array()
         .into_iter()
         .flatten()
-        .filter_map(|m| m["id"].as_str().map(str::to_string))
+        .filter_map(|m| m["id"].as_str())
+        .map(namespaced)
         .collect();
     ids.sort();
     ids.dedup();
     Ok(ids)
+}
+
+/// Prefix a bare upstream id; ids that already carry the namespace are returned unchanged.
+fn namespaced(id: &str) -> String {
+    if id.starts_with(NAMESPACE) {
+        id.to_string()
+    } else {
+        format!("{NAMESPACE}{id}")
+    }
 }
 
 #[cfg(test)]
@@ -62,6 +80,22 @@ mod tests {
         assert_eq!(
             fetch_live_models(&server.uri(), None).await.unwrap(),
             vec!["opencode-go/a", "opencode-go/b"]
+        );
+    }
+
+    #[tokio::test]
+    async fn bare_upstream_ids_are_namespaced() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/models"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"{"object":"list","data":[{"id":"kimi-k3"},{"id":"opencode-go/grok-4.5"}]}"#,
+            ))
+            .mount(&server)
+            .await;
+        assert_eq!(
+            fetch_live_models(&server.uri(), None).await.unwrap(),
+            vec!["opencode-go/grok-4.5", "opencode-go/kimi-k3"]
         );
     }
 
