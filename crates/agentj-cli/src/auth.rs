@@ -221,6 +221,29 @@ where
     }
 }
 
+/// Print the live catalog size after a successful non-offline login (never the credential).
+async fn print_catalog_summary(store: &AuthStore, provider: &str, offline: bool) {
+    if offline {
+        return;
+    }
+    let key = store
+        .get(provider)
+        .ok()
+        .flatten()
+        .and_then(|c| c.key().ok().map(str::to_string));
+    let live = match key {
+        Some(k) => agentj_model::catalog_source::fetch_live_models(OPENCODE_GO_BASE, Some(&k))
+            .await
+            .ok(),
+        None => None,
+    };
+    let catalog = agentj_model::catalog::ModelCatalog::from_overlay_and_live(
+        agentj_model::catalog::ModelCatalog::builtin(),
+        live,
+    );
+    println!("模型数：{}", catalog.ids().len());
+}
+
 /// Print provider, key source, last 4 digits, credential path and model count.
 pub async fn run_status(store: &AuthStore, provider: &str, offline: bool) -> Result<(), String> {
     match resolve_credential(provider, None, None, store) {
@@ -306,6 +329,7 @@ pub async fn run_auth(action: &AuthAction, config_path: &str) -> anyhow::Result<
                 .await
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
                 println!("凭据文件：{}", store.path().display());
+                print_catalog_summary(&store, provider, *offline).await;
                 println!("提示：access token 将在到期前自动刷新");
             } else {
                 run_login(&store, &args, Path::new(config_path))

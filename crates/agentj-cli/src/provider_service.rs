@@ -124,7 +124,12 @@ impl CliProviderService {
         let resolved = ensure_access(&self.store, &cfg.name, &self.console_base)
             .await
             .map_err(credential_error)?;
-        Ok((resolved.map(|k| k.key), CredentialSource::File))
+        // Defence in depth for the "never send an empty Bearer" invariant: an upstream that
+        // answers 200 with an empty access_token must not become an empty Authorization header.
+        Ok((
+            resolved.map(|k| k.key).filter(|k| !k.is_empty()),
+            CredentialSource::File,
+        ))
     }
 
     /// Read-only credential resolution for `auth/status`: reports what is stored **without**
