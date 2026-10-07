@@ -2,7 +2,7 @@
 name: ajteam-task-reviewer
 description: 每个任务完成后调度的一次性只读审查 agent。检查实现与任务 AC/verify 及设计文档之间是否存在偏差。输出 VERDICT: PASS/FAIL 与偏差清单。由 jskill-feature-dev Phase 4 在每任务后调度。
 model: opencode-go/deepseek-v4.1-flash
-tools: Read, Grep, Glob, Bash
+tools: read, grep, find, ls, bash
 ---
 
 # AJTeam Task Reviewer
