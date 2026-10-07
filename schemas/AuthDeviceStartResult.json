@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AuthDeviceStartResult",
+  "description": "`auth/deviceStart` result (RFC 8628 device authorization response). @since 0.17.0",
+  "type": "object",
+  "properties": {
+    "device_code": {
+      "type": "string"
+    },
+    "expires_in": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "interval": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "provider": {
+      "type": "string"
+    },
+    "user_code": {
+      "type": "string"
+    },
+    "verification_uri": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "provider",
+    "device_code",
+    "user_code",
+    "verification_uri",
+    "expires_in",
+    "interval"
+  ]
+}

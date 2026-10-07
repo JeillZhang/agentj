@@ -1,0 +1,109 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AuthDevicePollResult",
+  "description": "`auth/devicePoll` result — the poll state, never a raw token on failure states.\n@since 0.17.0",
+  "type": "object",
+  "properties": {
+    "credential": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CredentialInfo"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "interval": {
+      "description": "Next poll interval in seconds (present for `slow_down`). @since 0.17.0",
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint64",
+      "minimum": 0
+    },
+    "message": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "state": {
+      "$ref": "#/$defs/DeviceAuthState"
+    }
+  },
+  "required": [
+    "state"
+  ],
+  "$defs": {
+    "CredentialInfo": {
+      "description": "Redacted credential projection. `key_hint` is the api_key's last four characters\n(`…1234`); OAuth credentials are identified by `org_id`/`expires_at` instead.\n@since 0.17.0",
+      "type": "object",
+      "properties": {
+        "expires_at": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        },
+        "expiring_soon": {
+          "type": "boolean"
+        },
+        "key_hint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "$ref": "#/$defs/CredentialKind"
+        },
+        "org_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "$ref": "#/$defs/CredentialSource"
+        }
+      },
+      "required": [
+        "kind",
+        "source",
+        "expiring_soon"
+      ]
+    },
+    "CredentialKind": {
+      "description": "Credential kind. `Unknown` tolerates forward values. @since 0.17.0",
+      "type": "string",
+      "enum": [
+        "api_key",
+        "o_auth"
+      ]
+    },
+    "CredentialSource": {
+      "description": "Where the credential came from. `Unknown` tolerates forward values. @since 0.17.0",
+      "type": "string",
+      "enum": [
+        "flag",
+        "env",
+        "file"
+      ]
+    },
+    "DeviceAuthState": {
+      "description": "Device-flow poll state. `Unknown` tolerates forward values. @since 0.17.0",
+      "type": "string",
+      "enum": [
+        "pending",
+        "slow_down",
+        "authorized",
+        "expired",
+        "denied",
+        "error"
+      ]
+    }
+  }
+}

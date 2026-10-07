@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ProviderUsageResult",
+  "description": "`provider/usage` result. Domain failures travel in `error` (success response).\n@since 0.17.0",
+  "type": "object",
+  "properties": {
+    "error": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ProviderUsageError"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "fetched_at": {
+      "description": "Unix epoch seconds when the snapshot was fetched. @since 0.17.0",
+      "type": "integer",
+      "format": "int64"
+    },
+    "provider": {
+      "type": "string"
+    },
+    "stale": {
+      "description": "`true` when `windows` is a reused earlier snapshot (error path). @since 0.17.0",
+      "type": "boolean"
+    },
+    "warn_percent": {
+      "description": "Client-side warning threshold in percent (1..=100). @since 0.17.0",
+      "type": "integer",
+      "format": "uint8",
+      "maximum": 255,
+      "minimum": 0
+    },
+    "windows": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/UsageWindow"
+      }
+    }
+  },
+  "required": [
+    "provider",
+    "fetched_at",
+    "stale",
+    "warn_percent",
+    "windows"
+  ],
+  "$defs": {
+    "ProviderUsageError": {
+      "description": "Domain failure carried inside a successful `provider/usage` response.\n`kind ∈ {no_credential, expired, unauthorized, entitlement, unavailable, network}`.\n@since 0.17.0",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "message"
+      ]
+    },
+    "UsageWindow": {
+      "description": "One quota window. `percent` is the *used* percentage. @since 0.17.0",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/UsageWindowKind"
+        },
+        "percent": {
+          "description": "`None` when upstream's value was absent or not an integer. @since 0.17.0",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0
+        },
+        "resets_at": {
+          "description": "Omitted when `percent == 0` (upstream placeholder is dropped). @since 0.17.0",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "$ref": "#/$defs/UsageWindowStatus"
+        }
+      },
+      "required": [
+        "kind",
+        "status"
+      ]
+    },
+    "UsageWindowKind": {
+      "description": "Quota window kind. `Unknown` tolerates forward values. @since 0.17.0",
+      "type": "string",
+      "enum": [
+        "rolling",
+        "weekly",
+        "monthly"
+      ]
+    },
+    "UsageWindowStatus": {
+      "description": "Window status. `Unknown` tolerates forward values. @since 0.17.0",
+      "type": "string",
+      "enum": [
+        "ok",
+        "rate-limited"
+      ]
+    }
+  }
+}

@@ -13,8 +13,10 @@ use crate::permission::{
     PermissionDecision, PermissionRequestParams, PermissionRespondParams, PermissionRespondResult,
 };
 use crate::provider::{
-    AuthStatusParams, AuthStatusResult, CredentialInfo, CredentialKind, CredentialSource, ModelEntry,
-    ModelListParams, ModelListResult, ModelSource,
+    AuthDevicePollParams, AuthDevicePollResult, AuthDeviceStartParams, AuthDeviceStartResult,
+    AuthStatusParams, AuthStatusResult, CredentialInfo, CredentialKind, CredentialSource,
+    DeviceAuthState, ModelEntry, ModelListParams, ModelListResult, ModelSource, ProviderUsageError,
+    ProviderUsageParams, ProviderUsageResult, UsageWindow, UsageWindowKind, UsageWindowStatus,
 };
 use crate::question::{AskOption, AskQuestionParams, QuestionRespondParams, QuestionRespondResult};
 use crate::session::{
@@ -105,6 +107,17 @@ pub fn generate_schemas() -> BTreeMap<String, Schema> {
     m.insert("CredentialInfo".into(), schema_for!(CredentialInfo));
     m.insert("CredentialKind".into(), schema_for!(CredentialKind));
     m.insert("CredentialSource".into(), schema_for!(CredentialSource));
+    m.insert("ProviderUsageParams".into(), schema_for!(ProviderUsageParams));
+    m.insert("ProviderUsageResult".into(), schema_for!(ProviderUsageResult));
+    m.insert("UsageWindow".into(), schema_for!(UsageWindow));
+    m.insert("UsageWindowKind".into(), schema_for!(UsageWindowKind));
+    m.insert("UsageWindowStatus".into(), schema_for!(UsageWindowStatus));
+    m.insert("ProviderUsageError".into(), schema_for!(ProviderUsageError));
+    m.insert("AuthDeviceStartParams".into(), schema_for!(AuthDeviceStartParams));
+    m.insert("AuthDeviceStartResult".into(), schema_for!(AuthDeviceStartResult));
+    m.insert("AuthDevicePollParams".into(), schema_for!(AuthDevicePollParams));
+    m.insert("AuthDevicePollResult".into(), schema_for!(AuthDevicePollResult));
+    m.insert("DeviceAuthState".into(), schema_for!(DeviceAuthState));
     m.insert("FileListParams".into(), schema_for!(FileListParams));
     m.insert("FileListResult".into(), schema_for!(FileListResult));
     m.insert("FileEntry".into(), schema_for!(FileEntry));

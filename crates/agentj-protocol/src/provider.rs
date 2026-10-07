@@ -108,6 +108,136 @@ pub enum CredentialSource {
     Unknown,
 }
 
+/// `provider/usage` params. @since 0.17.0
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ProviderUsageParams {
+    /// Provider name; omitted means the configured default provider. @since 0.17.0
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    /// Bypass the 300s in-process cache. @since 0.17.0
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refresh: Option<bool>,
+}
+
+/// `provider/usage` result. Domain failures travel in `error` (success response).
+/// @since 0.17.0
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ProviderUsageResult {
+    pub provider: String,
+    /// Unix epoch seconds when the snapshot was fetched. @since 0.17.0
+    pub fetched_at: i64,
+    /// `true` when `windows` is a reused earlier snapshot (error path). @since 0.17.0
+    pub stale: bool,
+    /// Client-side warning threshold in percent (1..=100). @since 0.17.0
+    pub warn_percent: u8,
+    pub windows: Vec<UsageWindow>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<ProviderUsageError>,
+}
+
+/// One quota window. `percent` is the *used* percentage. @since 0.17.0
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct UsageWindow {
+    pub kind: UsageWindowKind,
+    pub status: UsageWindowStatus,
+    /// `None` when upstream's value was absent or not an integer. @since 0.17.0
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub percent: Option<u8>,
+    /// Omitted when `percent == 0` (upstream placeholder is dropped). @since 0.17.0
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resets_at: Option<String>,
+}
+
+/// Quota window kind. `Unknown` tolerates forward values. @since 0.17.0
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum UsageWindowKind {
+    Rolling,
+    Weekly,
+    Monthly,
+    #[serde(other)]
+    #[schemars(skip)]
+    Unknown,
+}
+
+/// Window status. `Unknown` tolerates forward values. @since 0.17.0
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub enum UsageWindowStatus {
+    #[serde(rename = "ok")]
+    Ok,
+    #[serde(rename = "rate-limited")]
+    RateLimited,
+    #[serde(other)]
+    #[schemars(skip)]
+    Unknown,
+}
+
+/// Domain failure carried inside a successful `provider/usage` response.
+/// `kind ∈ {no_credential, expired, unauthorized, entitlement, unavailable, network}`.
+/// @since 0.17.0
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ProviderUsageError {
+    pub kind: String,
+    pub message: String,
+}
+
+/// `auth/deviceStart` params. @since 0.17.0
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AuthDeviceStartParams {
+    /// Provider name; omitted means the configured default provider. @since 0.17.0
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+}
+
+/// `auth/deviceStart` result (RFC 8628 device authorization response). @since 0.17.0
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AuthDeviceStartResult {
+    pub provider: String,
+    pub device_code: String,
+    pub user_code: String,
+    pub verification_uri: String,
+    pub expires_in: u64,
+    pub interval: u64,
+}
+
+/// `auth/devicePoll` params. @since 0.17.0
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AuthDevicePollParams {
+    /// Provider name; omitted means the configured default provider. @since 0.17.0
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    pub device_code: String,
+}
+
+/// `auth/devicePoll` result — the poll state, never a raw token on failure states.
+/// @since 0.17.0
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AuthDevicePollResult {
+    pub state: DeviceAuthState,
+    /// Next poll interval in seconds (present for `slow_down`). @since 0.17.0
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interval: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential: Option<CredentialInfo>,
+}
+
+/// Device-flow poll state. `Unknown` tolerates forward values. @since 0.17.0
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DeviceAuthState {
+    Pending,
+    SlowDown,
+    Authorized,
+    Expired,
+    Denied,
+    Error,
+    #[serde(other)]
+    #[schemars(skip)]
+    Unknown,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -163,5 +293,49 @@ mod tests {
         assert_eq!(v["credential"]["key_hint"], "…cdef");
         assert_eq!(v["credential"]["kind"], "api_key");
         assert!(!v.to_string().contains("sk-"), "no full key may appear");
+    }
+
+    #[test]
+    fn zero_percent_omits_reset_and_states_use_snake_case() {
+        let r = ProviderUsageResult {
+            provider: "opencode-go".into(),
+            fetched_at: 1,
+            stale: false,
+            warn_percent: 80,
+            windows: vec![
+                UsageWindow {
+                    kind: UsageWindowKind::Rolling,
+                    status: UsageWindowStatus::Ok,
+                    percent: Some(4),
+                    resets_at: Some("2026-08-13T16:27:38.287Z".into()),
+                },
+                UsageWindow {
+                    kind: UsageWindowKind::Monthly,
+                    status: UsageWindowStatus::Ok,
+                    percent: Some(0),
+                    resets_at: None,
+                },
+            ],
+            error: None,
+        };
+        let v = serde_json::to_value(&r).unwrap();
+        assert_eq!(v["windows"][1]["kind"], "monthly");
+        assert!(v["windows"][1].get("resets_at").is_none());
+        let slow = AuthDevicePollResult {
+            state: DeviceAuthState::SlowDown,
+            interval: Some(10),
+            message: None,
+            credential: None,
+        };
+        assert_eq!(serde_json::to_value(&slow).unwrap()["state"], "slow_down");
+    }
+
+    #[test]
+    fn unknown_window_status_is_tolerated() {
+        let v = serde_json::json!({"provider":"p","fetched_at":1,"stale":false,"warn_percent":80,
+            "windows":[{"kind":"rolling","status":"throttled","percent":9}]});
+        let r: ProviderUsageResult = serde_json::from_value(v).unwrap();
+        assert!(matches!(r.windows[0].status, UsageWindowStatus::Unknown));
+        assert_eq!(r.windows[0].percent, Some(9));
     }
 }
