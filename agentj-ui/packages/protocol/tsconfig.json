@@ -6,5 +6,5 @@
     "target": "es2022",
     "noEmit": true
   },
-  "include": ["index.ts", "types.d.ts"]
+  "include": ["index.ts", "types.d.ts", "types.test.ts"]
 }
