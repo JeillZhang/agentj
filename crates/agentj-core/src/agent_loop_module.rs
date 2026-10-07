@@ -60,6 +60,7 @@ impl KernelModule for AgentLoopModule {
         if let KernelMessage::UserRequest {
             session_id,
             content,
+            overrides: _,
             attachments: _,
             reply,
         } = msg
