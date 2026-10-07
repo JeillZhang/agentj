@@ -20,6 +20,12 @@ const ai = (text: string): RunEntry => ({ kind: "ai", text });
 const tool = (id: string, name: string): RunEntry =>
   ({ kind: "tool", id, name, args: null, state: "running" }) as RunEntry;
 
+const propsWithError = (text: string) => ({
+  client: noopClient,
+  activeSessionId: "s1",
+  initialEntries: [{ kind: "error", text }] as RunEntry[],
+});
+
 describe("reduceRunFeed", () => {
   it("appends text then usage in order after a user entry", () => {
     const feed = [user("hi")];
@@ -943,4 +949,23 @@ describe("RunPanel composer scroll collapse", () => {
           vi.useRealTimers();
         }
       });
+});
+
+describe("RunPanel quota hint", () => {
+  it("hints at the subscription panel on a GoUsageLimitError", async () => {
+    render(<RunPanel {...propsWithError("API error (429): GoUsageLimitError: limit reached")} />);
+    expect(await screen.findByText(/设置 · 订阅/)).toBeInTheDocument();
+  });
+
+  it("does not hint on a plain rate-limit error", async () => {
+    render(<RunPanel {...propsWithError("API error (429): RateLimitError: slow down")} />);
+    expect(screen.queryByText(/设置 · 订阅/)).not.toBeInTheDocument();
+  });
+
+  it("shows the hint at most once per session", async () => {
+    const { rerender } = render(<RunPanel {...propsWithError("GoUsageLimitError: a")} />);
+    expect(await screen.findByText(/设置 · 订阅/)).toBeInTheDocument();
+    rerender(<RunPanel {...propsWithError("GoUsageLimitError: b")} />);
+    expect(screen.getAllByText(/设置 · 订阅/)).toHaveLength(1);
+  });
 });
