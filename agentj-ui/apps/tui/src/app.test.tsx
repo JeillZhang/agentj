@@ -384,14 +384,19 @@ describe("App connection screen", () => {
         default_model: "opencode-go/a",
         providers: [{ id: "opencode-go", models: ["opencode-go/a", "opencode-go/b"] }],
       }),
-    ).toEqual(["opencode-go/a", "opencode-go/b"]);
+    ).toEqual([
+      { name: "opencode-go/a", provider: "opencode-go" },
+      { name: "opencode-go/b", provider: "opencode-go" },
+    ]);
     expect(
       providersFromStatus({ providers: [{ id: "opencode-go", models: [] }] }),
-    ).toEqual(MODEL_CONFIG.providers);
+    ).toEqual(MODEL_CONFIG.providers.map(({ name }) => ({ name })));
     expect(providersFromStatus({ default_model: "deepseek-chat" })).toEqual(
-      MODEL_CONFIG.providers,
+      MODEL_CONFIG.providers.map(({ name }) => ({ name })),
     );
-    expect(providersFromStatus({})).toEqual(MODEL_CONFIG.providers);
+    expect(providersFromStatus({})).toEqual(
+      MODEL_CONFIG.providers.map(({ name }) => ({ name })),
+    );
     const rendered = renderModelList({
       default_model: "opencode-go/a",
       providers: providersFromStatus({
