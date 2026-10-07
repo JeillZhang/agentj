@@ -46,7 +46,7 @@
 | `npm --prefix agentj-ui test --workspace=@agentj/sdk` | 54 passed（6 files） |
 | `npm --prefix agentj-ui run build --workspace=@agentj/protocol` | clean |
 | `npm --prefix agentj-ui run build --workspace=@agentj/web` | clean |
-| `bun --cwd agentj-ui/apps/tui test` | 157 passed |
+| `bun --cwd agentj-ui/apps/tui test` | 164 passed |
 | `./scripts/check-version.sh` | version-ok（**0.26.0** / `PROTOCOL_VERSION` **0.16.0**） |
 | `node agentj-ui/apps/desktop/check-desktop-ui.mjs` | desktop-ui-ok |
 
@@ -59,7 +59,24 @@
   已如实描述该可观察行为。二期可做「加载即回灌本地选择」。
 - **预存在的 TUI 工具链问题（非本阶段回归）**：TUI `tsconfig` 的 `types: ["bun-types"]`
   与 oxlint 的 native-binding 在本环境无法直接跑，故 TUI 门禁以
-  `bun --cwd agentj-ui/apps/tui test` 为准（157 passed），未纳入 `tsc` / oxlint。
+  `bun --cwd agentj-ui/apps/tui test` 为准（164 passed），未纳入 `tsc` / oxlint。
+- **Web 选择在 provider 列表变化后不自动清空（Phase 5 评审 LOW）**：重连到另一个内核或
+  切换会话后 `selectedModel` 仍保留；若该条目已不在新列表里，下一轮会以
+  `unknown provider` 硬失败（符合 D6 fail-fast，但 UI 不易解释）。可选后续：条目消失即清空。
+- **无 provider 标签的选择不显示勾选（Phase 5 评审 LOW）**：`ComposerOptions` 的
+  `pickedKey` 需要 provider 才能命中条目，故仅带 `name` 的选择（如静态回退列表）不显示勾选；
+  打开弹层再按 Enter 会把它升级为带 provider 标签的条目。仅观感问题。
+
+## 代码评审（Phase 5，独立评审 agent）
+
+- 结论：**无 CRITICAL / HIGH**；2 项 MEDIUM 已修复，其余 LOW 转遗留（见上）。
+- ✅ MEDIUM（TUI 同名模型可能静默错路）：TUI 选择器原按**模型名**定位行，同名条目跨 provider 时
+  重开弹层会锚到第一个同名行、两行同标 `▶`、Enter 提交错误 provider。已引入
+  `modelKey = provider\0name` + 索引化光标 + `markerIndex`（显式选择按 key 命中；无选择时仅当默认名
+  **唯一**才标 `▶`，否则整表不标），与 Web 侧同标准；新增 7 条测试（TUI 157 → 164）。
+- ✅ LOW（同文件同类风险，一并修复）：`useModelConfig` 原先要求 `default_model` 非空才接受
+  内核 provider 列表，故「有 providers 但无 default_model」的内核会退回**无 provider 标签**的静态
+  列表，选中后静默走默认 provider。现内核模型列表独立生效，`default_model` 仅作为锚点（可为空）。
 - **TUI 选择仅存内存**：退出 TUI 即丢失，下次启动回到内核默认（设计如此，非缺陷）。
 - **`ProjectEditDialog` 仍用静态 `MODEL_LIST`**：项目默认模型下拉只显示 `deepseek-chat`，
   未消费服务端目录（设计「新增/修改文件」未列入，属后续增强）。
@@ -80,7 +97,7 @@
 
 ## 下一步
 
-- v0.26.0 运行期切模型（前端部分）完成：Web 626 / SDK 54 / TUI 157 全绿，
+- v0.26.0 运行期切模型（前端部分）完成：Web 626 / SDK 54 / TUI 164 全绿，
   Web + protocol 构建 clean，check-version / desktop-ui 通过；待 PR 由用户合并 main。
 - 前端候选：③ Web 接入服务端搜索；或在弹层重新打开时从 `agentj.composer.model` 回灌选择；
   或让 `ProjectEditDialog` 消费服务端模型目录。

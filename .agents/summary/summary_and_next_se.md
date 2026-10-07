@@ -52,7 +52,7 @@
 | `cargo fmt --check` | clean |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 0 warnings |
 | `cargo check --workspace --locked --quiet` | OK（lockfile fresh） |
-| `cargo test --workspace -- --skip permission_request_notified_and_timeout_denies` | **740 passed / 0 failed（+1 skipped）** |
+| `cargo test --workspace -- --skip permission_request_notified_and_timeout_denies` | **742 passed / 0 failed（+1 skipped）** |
 | `cargo test -p agentj-protocol -- drift` | 2 passed |
 | `./scripts/check-version.sh` | version-ok（**0.26.0** / `PROTOCOL_VERSION` **0.16.0**） |
 | `node agentj-ui/apps/desktop/check-desktop-ui.mjs` | desktop-ui-ok |
@@ -70,6 +70,22 @@
   「本轮用的哪个模型」（设计如此，非缺陷）；选择只存在于客户端本地。
 - **无 provider 目录新方法**：客户端仍从 `kernel/status.providers[].models` 取目录，
   本阶段未新增方法/schema（保持 21 方法 / 52 schemas）。
+- **`SubAgentService` 恒用默认 overrides（Phase 5 评审 LOW，计划明确如此）**：
+  `crates/agentj-core/src/dispatcher.rs` 传 `RunOverrides::default()`，故子代理服务不会继承
+  父 turn 的模型选择；当前无工具路径可达该服务，属预留行为，后续如需再透传父 overrides。
+- **未知 provider 文案中注册名顺序不确定**：取自 `ProviderRegistry::list()`（`HashMap` 迭代序），
+  文案含全部注册名但不保证字母序；测试只断言包含关系（可选硬化：排序后 join）。
+
+## 代码评审（Phase 5，独立评审 agent）
+
+- 结论：**无 CRITICAL / HIGH**；2 项 MEDIUM 已修复，其余 LOW 转遗留（见上）。
+- ✅ MEDIUM（IPC 测试盲点）：`capturing_run_server` 只注册与默认同名的 `mock`，导致
+  `provider` 透传在 IPC 层不可观测。已新增第二个 provider 并为每个 provider 独立捕获，
+  新增 `session_run_provider_override_selects_that_provider`（非默认 provider 服务、默认 provider 零调用）
+  与 `session_run_unknown_provider_fails_on_the_wire`（-32603 + 文案含 `unknown provider: nope`
+  与全部注册名、两个 provider 均未被调用）。
+- 评审确认成立（无需改动）：零回归极性、未知 provider 结构上不可回落默认、
+  空白/类型非法分流、解析先于 run 互斥锁、`run_turn_stream` 兼容签名。
 
 ## 待实施（跨阶段保留：未实施不得删除）
 
@@ -84,7 +100,7 @@
 
 ## 下一步
 
-- **v0.26.0 运行期切模型（后端部分）已落地**，全量门禁清扫通过（740 passed / 0 failed，
+- **v0.26.0 运行期切模型（后端部分）已落地**，全量门禁清扫通过（742 passed / 0 failed，
   1 skipped 为预存在挂起 e2e）；待 PR 由用户合并 main。
 - 后端候选：上表 ①②④；或 opencode-go 二期（`GET /zen/go/v1/usage` 用量面板 /
   device-code OAuth）；或为 CLI `run` 补 `--provider` / `--model` flag。
