@@ -715,6 +715,23 @@ pub enum KernelResponse {
     Streaming(Vec<String>),
 }
 
+/// Single construction point for `KernelMessage::UserRequest`, so the variant's
+/// shape can grow without touching every call site. @since 0.26.0
+impl KernelMessage {
+    pub fn user_request(
+        session_id: impl Into<String>,
+        content: impl Into<String>,
+        reply: tokio::sync::mpsc::Sender<AgentEvent>,
+    ) -> Self {
+        KernelMessage::UserRequest {
+            session_id: session_id.into(),
+            content: content.into(),
+            attachments: Vec::new(),
+            reply,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1290,5 +1307,23 @@ mod tests {
                 ("b".to_string(), vec!["m2".into(), "m1".into()])
             ]
         );
+    }
+
+    #[test]
+    fn user_request_constructor_builds_the_variant() {
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        match KernelMessage::user_request("s1", "hi", tx) {
+            KernelMessage::UserRequest {
+                session_id,
+                content,
+                attachments,
+                ..
+            } => {
+                assert_eq!(session_id, "s1");
+                assert_eq!(content, "hi");
+                assert!(attachments.is_empty());
+            }
+            _ => unreachable!(),
+        }
     }
 }
