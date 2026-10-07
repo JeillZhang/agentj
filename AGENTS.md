@@ -215,12 +215,14 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
   `docs/changelog/README.md` 索引）。
 - 用户可见特性 → `docs/guide/`（按主题，去版本号叙事）。
 - 当前正在开发功能的进度 / 遗留问题 / 待实施 / 下一步 → `.agents/summary/`（见下）。
-- 协议与设计细节 → `docs/specs/`、`docs/superpowers/specs/`。
-- `docs/` 下文档是跟踪交付物 —— 必须提交。
+- 协议与设计细节 → `docs/specs/`。
+- `docs/superpowers/`（design spec + plan）：**本地工作文档，不入版本控制**——不提交、不随 PR，
+  由 `.gitignore` 忽略；设计与计划意图经 `.agents/summary/`、`docs/changelog/` 与 PR 描述传达。
+- `docs/` 下其余文档（`docs/specs/`、`docs/changelog/`、`docs/guide/` 等）是跟踪交付物 —— 必须提交。
 
 ### 版本与提交
 
-- Commit messages in English. `docs/superpowers/specs/` 文档用中文。
+- Commit messages in English. `docs/superpowers/` 本地文档用中文（不入库）。
 - Bump version on every feature (`0.1.0` → `0.2.0`) and bugfix (`0.1.0` → `0.1.1`)。
 - 涉及协议 wire 的变更必须同步 `PROTOCOL_VERSION` + `protocol/methods.json` + schemas。
 
@@ -243,7 +245,7 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
 4. Commit as `docs: auto-sync AGENTS.md, README.md, summary (fe/se) after {phase}`
    （未触及 `AGENTS.md` / `README.md` 时按实际触及文件命名）。
 5. 不等待用户 —— 这是强制步骤。
-- 更新 `docs/superpowers/specs` 目标 spec 文档的 TODO 列表。
+- 更新**本地** `docs/superpowers/specs` 目标 spec 文档的 TODO 列表（本地文件，不入库、不提交）。
 - `docs/superpowers/specs/` 下所有图表必须使用 UML 或 Mermaid。
 - 每阶段后清理临时文件与 Docker 容器。
 - 命令挂起 >120s 时取消并重试。
