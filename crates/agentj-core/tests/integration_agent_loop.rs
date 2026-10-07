@@ -81,12 +81,7 @@ async fn e2e_streaming_with_real_modules_via_bus() {
     let (tx, mut rx) = tokio::sync::mpsc::channel(64);
     kernel
         .sender()
-        .send(KernelMessage::UserRequest {
-            session_id: sid.clone(),
-            content: "hi".into(),
-            attachments: vec![],
-            reply: tx,
-        })
+        .send(KernelMessage::user_request(sid.clone(), "hi", tx))
         .unwrap();
 
     let mut text = String::new();

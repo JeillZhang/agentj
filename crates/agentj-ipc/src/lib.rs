@@ -422,12 +422,7 @@ impl IpcServer {
         if self
             .kernel
             .sender()
-            .send(KernelMessage::UserRequest {
-                session_id: sid,
-                content,
-                attachments: vec![],
-                reply: tx,
-            })
+            .send(KernelMessage::user_request(sid, content, tx))
             .is_err()
         {
             let (etx, erx) = mpsc::channel(1);
