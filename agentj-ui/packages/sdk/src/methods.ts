@@ -23,6 +23,11 @@ export const METHODS = {
   fileList: "file/list",
   askQuestion: "$/askQuestion",
   questionRespond: "question/respond",
+  modelList: "model/list",
+  authStatus: "auth/status",
+  providerUsage: "provider/usage",
+  authDeviceStart: "auth/deviceStart",
+  authDevicePoll: "auth/devicePoll",
 } as const;
 
 export type MethodName = (typeof METHODS)[keyof typeof METHODS];
