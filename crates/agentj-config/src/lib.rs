@@ -30,10 +30,27 @@ pub struct ModelSection {
     /// ConfigProvider::get_str("model.default_model"); default "deepseek-chat".
     #[serde(default = "default_model")]
     pub default_model: String,
+    /// Usage warning threshold in percent, clamped to 1..=100 by the accessor.
+    /// @since 0.27.0
+    #[serde(default = "default_quota_warn_percent")]
+    pub quota_warn_percent: i64,
+    /// opencode-go Console base URL (device flow + account catalog). @since 0.27.0
+    #[serde(default = "default_console_base_url")]
+    pub console_base_url: String,
 }
 
 fn default_model() -> String {
     "deepseek-chat".into()
+}
+
+/// Default usage warning threshold (percent). @since 0.27.0
+pub fn default_quota_warn_percent() -> i64 {
+    80
+}
+
+/// Default opencode-go Console base URL. @since 0.27.0
+pub fn default_console_base_url() -> String {
+    "https://opencode.ai/console".into()
 }
 
 impl Default for ModelSection {
@@ -42,6 +59,8 @@ impl Default for ModelSection {
             provider: "deepseek".into(),
             providers: vec![],
             default_model: default_model(),
+            quota_warn_percent: default_quota_warn_percent(),
+            console_base_url: default_console_base_url(),
         }
     }
 }
@@ -105,6 +124,8 @@ impl Default for AgentJConfig {
                     kind: default_kind(),
                 }],
                 default_model: default_model(),
+                quota_warn_percent: default_quota_warn_percent(),
+                console_base_url: default_console_base_url(),
             },
             permission: None,
             session: None,
@@ -142,6 +163,7 @@ impl ConfigProvider for Config {
         match key {
             "model.provider" => Some(self.inner.model.provider.clone()),
             "model.default_model" => Some(self.inner.model.default_model.clone()),
+            "model.console_base_url" => Some(self.inner.model.console_base_url.clone()),
             "session.dir" => self
                 .inner
                 .session
@@ -152,8 +174,11 @@ impl ConfigProvider for Config {
             _ => None,
         }
     }
-    fn get_int(&self, _key: &str) -> Option<i64> {
-        None
+    fn get_int(&self, key: &str) -> Option<i64> {
+        match key {
+            "model.quota_warn_percent" => Some(self.inner.model.quota_warn_percent.clamp(1, 100)),
+            _ => None,
+        }
     }
     fn providers(&self) -> Vec<(String, String)> {
         self.inner
@@ -460,5 +485,66 @@ mod tests {
     fn mcp_section_absent_is_none() {
         let cfg: AgentJConfig = toml::from_str("").unwrap();
         assert!(cfg.mcp.is_none());
+    }
+
+    #[test]
+    fn quota_warn_percent_defaults_and_clamps() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("config.toml");
+        std::fs::write(&p, "[model]\nprovider = \"deepseek\"\n").unwrap();
+        assert_eq!(
+            Config::load(Some(p.clone()))
+                .unwrap()
+                .get_int("model.quota_warn_percent"),
+            Some(80)
+        );
+        std::fs::write(
+            &p,
+            "[model]\nprovider = \"deepseek\"\nquota_warn_percent = 0\n",
+        )
+        .unwrap();
+        assert_eq!(
+            Config::load(Some(p.clone()))
+                .unwrap()
+                .get_int("model.quota_warn_percent"),
+            Some(1)
+        );
+        std::fs::write(
+            &p,
+            "[model]\nprovider = \"deepseek\"\nquota_warn_percent = 250\n",
+        )
+        .unwrap();
+        assert_eq!(
+            Config::load(Some(p))
+                .unwrap()
+                .get_int("model.quota_warn_percent"),
+            Some(100)
+        );
+    }
+
+    #[test]
+    fn console_base_url_defaults_and_overrides() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("config.toml");
+        std::fs::write(&p, "[model]\nprovider = \"deepseek\"\n").unwrap();
+        assert_eq!(
+            Config::load(Some(p.clone()))
+                .unwrap()
+                .get_str("model.console_base_url")
+                .as_deref(),
+            Some("https://opencode.ai/console")
+        );
+        std::fs::write(
+            &p,
+            "[model]\nprovider = \"deepseek\"\nconsole_base_url = \"https://console.example\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            Config::load(Some(p))
+                .unwrap()
+                .get_str("model.console_base_url")
+                .as_deref(),
+            Some("https://console.example")
+        );
     }
 }
