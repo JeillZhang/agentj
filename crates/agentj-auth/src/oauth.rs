@@ -37,7 +37,9 @@ pub enum PollOutcome {
     /// Client should keep polling at the current interval.
     Pending,
     /// Client should back off; `interval` is the caller's interval bumped by 5s.
-    SlowDown { interval: u64 },
+    SlowDown {
+        interval: u64,
+    },
     Authorized(Tokens),
     Expired,
     Denied,
@@ -65,9 +67,7 @@ pub(crate) fn token_url(console_base: &str) -> String {
 
 /// `verification_uri_complete` is a path relative to the console origin.
 fn verification_uri(console_base: &str, v: &serde_json::Value) -> String {
-    let raw = v["verification_uri_complete"]
-        .as_str()
-        .unwrap_or_default();
+    let raw = v["verification_uri_complete"].as_str().unwrap_or_default();
     if raw.starts_with("http") {
         raw.to_string()
     } else {
@@ -158,10 +158,7 @@ pub async fn device_poll(
     let resp = client()
         .post(token_url(console_base))
         .form(&[
-            (
-                "grant_type",
-                "urn:ietf:params:oauth:grant-type:device_code",
-            ),
+            ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
             ("device_code", device_code),
             ("client_id", OPENCODE_CLI_CLIENT_ID),
         ])
@@ -215,10 +212,12 @@ mod tests {
         let server = wiremock::MockServer::start().await;
         wiremock::Mock::given(wiremock::matchers::method("POST"))
             .and(wiremock::matchers::path("/auth/device/code"))
-            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "device_code":"dc","user_code":"ABCD-1234",
                 "verification_uri_complete":"/console/device?user_code=ABCD-1234",
-                "expires_in":600,"interval":5 })))
+                "expires_in":600,"interval":5 })),
+            )
             .mount(&server)
             .await;
 
@@ -242,13 +241,15 @@ mod tests {
             reqs[0].headers.get("content-type").unwrap(),
             "application/x-www-form-urlencoded"
         );
-        assert!(reqs[0]
-            .headers
-            .get("user-agent")
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .starts_with("agentj/"));
+        assert!(
+            reqs[0]
+                .headers
+                .get("user-agent")
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with("agentj/")
+        );
     }
 
     #[tokio::test]
@@ -274,7 +275,12 @@ mod tests {
     #[tokio::test]
     async fn poll_maps_every_documented_state() {
         let server = wiremock::MockServer::start().await;
-        mount_token(&server, 400, serde_json::json!({"error":"authorization_pending"})).await;
+        mount_token(
+            &server,
+            400,
+            serde_json::json!({"error":"authorization_pending"}),
+        )
+        .await;
         assert_eq!(
             device_poll(&server.uri(), "dc", 5).await.unwrap(),
             PollOutcome::Pending
@@ -331,7 +337,8 @@ mod tests {
             }
             other => panic!("expected Authorized, got {other:?}"),
         }
-        let body = String::from_utf8(server.received_requests().await.unwrap()[0].body.clone()).unwrap();
+        let body =
+            String::from_utf8(server.received_requests().await.unwrap()[0].body.clone()).unwrap();
         assert!(
             body.contains("grant_type=refresh_token") && body.contains("refresh_token=old-refresh"),
             "{body}"

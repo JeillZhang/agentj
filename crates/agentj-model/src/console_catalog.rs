@@ -105,21 +105,32 @@ mod tests {
         let server = wiremock::MockServer::start().await;
         wiremock::Mock::given(wiremock::matchers::method("GET"))
             .respond_with(
-                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({"providers":{}})),
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"providers":{}})),
             )
             .mount(&server)
             .await;
-        assert!(fetch_account_models(&server.uri(), "k", None).await.is_err());
-        assert!(server.received_requests().await.unwrap()[0]
-            .headers
-            .get("x-org-id")
-            .is_none());
+        assert!(
+            fetch_account_models(&server.uri(), "k", None)
+                .await
+                .is_err()
+        );
+        assert!(
+            server.received_requests().await.unwrap()[0]
+                .headers
+                .get("x-org-id")
+                .is_none()
+        );
 
         let server = wiremock::MockServer::start().await;
         wiremock::Mock::given(wiremock::matchers::method("GET"))
             .respond_with(wiremock::ResponseTemplate::new(401))
             .mount(&server)
             .await;
-        assert!(fetch_account_models(&server.uri(), "k", None).await.is_err());
+        assert!(
+            fetch_account_models(&server.uri(), "k", None)
+                .await
+                .is_err()
+        );
     }
 }

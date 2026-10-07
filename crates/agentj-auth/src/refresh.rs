@@ -198,8 +198,13 @@ mod tests {
             "refresh must be single-flight"
         );
         match store.get("opencode-go").unwrap().unwrap() {
-            Credential::OAuth { access, refresh, .. } => {
-                assert_eq!((access.as_str(), refresh.as_str()), ("new-access", "new-refresh"))
+            Credential::OAuth {
+                access, refresh, ..
+            } => {
+                assert_eq!(
+                    (access.as_str(), refresh.as_str()),
+                    ("new-access", "new-refresh")
+                )
             }
             other => panic!("expected oauth, got {other:?}"),
         }

@@ -47,7 +47,10 @@ pub enum UsageError {
 }
 
 /// Fetch the quota windows for `key`. Never contacts the server without a non-empty key.
-pub async fn fetch_usage(base_url: &str, key: Option<&str>) -> Result<Vec<UsageWindow>, UsageError> {
+pub async fn fetch_usage(
+    base_url: &str,
+    key: Option<&str>,
+) -> Result<Vec<UsageWindow>, UsageError> {
     let Some(key) = key.filter(|k| !k.is_empty()) else {
         return Err(UsageError::NoCredential);
     };
@@ -141,7 +144,10 @@ mod tests {
         .await;
         let w = fetch_usage(&server.uri(), Some("k")).await.unwrap();
         assert_eq!(w.len(), 3);
-        assert_eq!((w[0].kind, w[0].percent), (UsageWindowKind::Rolling, Some(4)));
+        assert_eq!(
+            (w[0].kind, w[0].percent),
+            (UsageWindowKind::Rolling, Some(4))
+        );
         assert_eq!(w[2].percent, Some(0));
         assert!(
             w[2].resets_at.is_none(),
@@ -149,20 +155,24 @@ mod tests {
         );
 
         let reqs = server.received_requests().await.unwrap();
-        assert!(reqs[0]
-            .headers
-            .get("user-agent")
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .starts_with("agentj/"));
-        assert!(reqs[0]
-            .headers
-            .get("authorization")
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .starts_with("Bearer "));
+        assert!(
+            reqs[0]
+                .headers
+                .get("user-agent")
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with("agentj/")
+        );
+        assert!(
+            reqs[0]
+                .headers
+                .get("authorization")
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with("Bearer ")
+        );
         assert!(reqs[0].headers.get("x-opencode-session").is_none());
     }
 
@@ -181,7 +191,10 @@ mod tests {
         let w = fetch_usage(&server.uri(), Some("k")).await.unwrap();
         assert_eq!(w.len(), 2, "unknown window key ignored");
         assert_eq!(w[0].status, UsageStatus::Unknown);
-        assert_eq!(w[0].percent, None, "non-integer percent degrades to unknown");
+        assert_eq!(
+            w[0].percent, None,
+            "non-integer percent degrades to unknown"
+        );
         assert_eq!(
             w[0].resets_at.as_deref(),
             Some("123"),
@@ -204,7 +217,10 @@ mod tests {
                 serde_json::json!({"type":"error","error":{"type":"X","message":"m"}}),
             )
             .await;
-            assert_eq!(fetch_usage(&server.uri(), Some("k")).await.unwrap_err(), want);
+            assert_eq!(
+                fetch_usage(&server.uri(), Some("k")).await.unwrap_err(),
+                want
+            );
         }
         let server = wiremock::MockServer::start().await;
         mount(&server, 200, serde_json::json!({"nope":true})).await;
