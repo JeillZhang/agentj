@@ -408,6 +408,87 @@ describe("App connection screen", () => {
   });
 });
 
+// T14: the picked entry must travel into the next session/run; the kernel/status
+// fixture tags each model with its provider id (design D7 — never list position).
+describe("App model selection", () => {
+  const MODEL_STATUS = {
+    default_model: "deepseek-chat",
+    providers: [
+      { id: "deepseek", models: ["deepseek-chat"] },
+      { id: "opencode-go", models: ["opencode-go/kimi-k3"] },
+    ],
+  };
+
+  async function renderModelApp() {
+    const requests: Array<{ method: string; params: Record<string, unknown> }> = [];
+    type Handle = TransportHandle & { send: (l: string) => Promise<string> };
+    const handle: Handle = {
+      close() {},
+      async send(line: string): Promise<string> {
+        const req = JSON.parse(line) as { id: number; method: string; params: Record<string, unknown> };
+        requests.push({ method: req.method, params: req.params ?? {} });
+        let result: unknown = {};
+        if (req.method === METHODS.sessionNew) result = { session_id: "s1" };
+        if (req.method === METHODS.kernelStatus) result = MODEL_STATUS;
+        return JSON.stringify({ jsonrpc: "2.0", id: req.id, result });
+      },
+    };
+    const createHandle = (_url: string, _router: ResponseRouter): TransportHandle => {
+      queueMicrotask(() => act(() => handle.onStatusChange?.("open")));
+      return handle;
+    };
+    const setup = await testRender(<App createTransport={createHandle} backoffBaseMs={60000} />, {});
+    const input = getInput(setup);
+    await act(async () => {
+      await setup.waitFor(() => setup.captureCharFrame().toLowerCase().includes("connected"));
+    });
+    await act(async () => { input.press("down"); await setup.flush(); });
+    await act(async () => { input.press("enter"); await setup.flush(); });
+    await act(async () => { await setup.waitFor(() => setup.captureCharFrame().includes("s1")); });
+    return { setup, input, requests };
+  }
+
+  // "/models" opens the picker anchored on default_model; j moves to the tagged
+  // opencode-go entry and Enter picks it.
+  async function pickOpenCodeGo(setup: TestRendererSetup, input: AppInput): Promise<void> {
+    await act(async () => { input.press("/"); await setup.flush(); });
+    await act(async () => { await input.type("models"); await setup.flush(); });
+    await act(async () => { input.press("enter"); await setup.flush(); });
+    await act(async () => { input.press("j"); await setup.flush(); });
+    await act(async () => { input.press("enter"); await setup.flush(); });
+  }
+
+  test("sends the picked model on the next run", async () => {
+    const { setup, input, requests } = await renderModelApp();
+    await pickOpenCodeGo(setup, input);
+    await act(async () => { await input.type("x"); await setup.flush(); });
+    await act(async () => { input.press("enter"); await setup.flush(); });
+    await act(async () => {
+      await setup.waitFor(() => requests.some((r) => r.method === METHODS.sessionRun));
+    });
+    const run = requests.filter((r) => r.method === METHODS.sessionRun).at(-1);
+    expect(run?.params).toEqual({
+      session_id: "s1",
+      content: "x",
+      model: "opencode-go/kimi-k3",
+      provider: "opencode-go",
+    });
+    act(() => setup.renderer.destroy());
+  });
+
+  test("sends nothing extra when no model was picked", async () => {
+    const { setup, input, requests } = await renderModelApp();
+    await act(async () => { await input.type("hi"); await setup.flush(); });
+    await act(async () => { input.press("enter"); await setup.flush(); });
+    await act(async () => {
+      await setup.waitFor(() => requests.some((r) => r.method === METHODS.sessionRun));
+    });
+    const run = requests.filter((r) => r.method === METHODS.sessionRun).at(-1);
+    expect(run?.params).toEqual({ session_id: "s1", content: "hi" });
+    act(() => setup.renderer.destroy());
+  });
+});
+
 test("files view lazy-loads the tree and expands directories", async () => {
   const requests: Array<{ method: string; params: Record<string, unknown> }> = [];
   let router: ResponseRouter | null = null;
