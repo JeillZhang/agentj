@@ -2,7 +2,7 @@ use crate::kernel::KernelSender;
 use crate::module::KernelMessage;
 use crate::resolver::AsyncKernelService;
 use crate::turn_runner::TurnRunner;
-use crate::types::{AgentEvent, SessionId};
+use crate::types::{AgentEvent, RunOverrides, SessionId};
 use std::sync::Arc;
 use tokio::task::JoinHandle;
 
@@ -52,7 +52,13 @@ impl AsyncKernelService for SubAgentService {
         let sid = self.runner.create_session().map_err(|e| e.to_string())?;
         let (tx, mut rx) = tokio::sync::mpsc::channel(64);
         self.runner
-            .spawn_turn(sid.clone(), prompt, system_prompt, tx)
+            .spawn_turn(
+                sid.clone(),
+                prompt,
+                system_prompt,
+                RunOverrides::default(),
+                tx,
+            )
             .map_err(|e| e.to_string())?;
         let mut final_response = String::new();
         while let Some(ev) = rx.recv().await {

@@ -7,6 +7,7 @@ import { METHODS, parseProgress, RpcClient } from "@agentj/sdk";
 import type { ProgressFrame } from "@agentj/sdk";
 import CodeBlockCard from "./components/CodeBlockCard";
 import ComposerOptions from "./components/ComposerOptions";
+import type { ModelEntry } from "./components/ComposerOptions";
 import AskQuestionCard, { type AskAnswer, type AskQuestionView } from "./components/AskQuestionCard";
 import ProjectEditDialog from "./components/ProjectEditDialog";
 import { DEMO_QA_RECORD, DEMO_QUESTION, isDemoEnabled, subscribeDemo } from "./demoData";
@@ -146,7 +147,10 @@ type Props = {
   initialEntries?: RunEntry[];
   pendingTool?: string;
   model?: string;
-  models?: { name: string }[];
+  models?: ModelEntry[];
+  /** Explicit user pick; forwarded to ComposerOptions and sent as run overrides when set. */
+  selected?: ModelEntry | null;
+  onSelect?: (entry: ModelEntry) => void;
   elapsedMs?: number;
   wsUrl?: string;
   modules?: { id: string; state: string }[];
@@ -388,6 +392,8 @@ export default function RunPanel({
   pendingTool,
   model,
   models,
+  selected,
+  onSelect,
   onRunId,
 }: Props) {
   const [entries, setEntries] = useState<RunEntry[]>(initialEntries);
@@ -704,10 +710,15 @@ export default function RunPanel({
     let usage: { usage?: { prompt_tokens?: number; completion_tokens?: number }; run_id?: string | null } | null = null;
     try {
       try {
-        usage = (await client.request(METHODS.sessionRun, {
-          session_id: activeSessionId,
-          content: text,
-        })) as { usage?: { prompt_tokens?: number; completion_tokens?: number }; run_id?: string | null } | null;
+        const params: Record<string, unknown> = { session_id: activeSessionId, content: text };
+        if (selected) {
+          params.model = selected.name;
+          if (selected.provider) params.provider = selected.provider;
+        }
+        usage = (await client.request(METHODS.sessionRun, params)) as {
+          usage?: { prompt_tokens?: number; completion_tokens?: number };
+          run_id?: string | null;
+        } | null;
         if (usage && typeof usage.run_id === "string" && usage.run_id.length > 0) {
           onRunId?.(usage.run_id);
         }
@@ -1013,7 +1024,7 @@ export default function RunPanel({
             </ul>
           )}
         </div>
-        <ComposerOptions model={model} models={models} collapsed={collapsed}>
+        <ComposerOptions model={model} models={models} selected={selected} onSelect={onSelect} collapsed={collapsed}>
           <button
             type="button"
             className="send aj-button--send"

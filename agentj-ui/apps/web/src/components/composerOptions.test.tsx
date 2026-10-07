@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { beforeEach, expect, test } from "vitest";
+import { beforeEach, expect, test, vi } from "vitest";
 import { act, render, screen, fireEvent } from "@testing-library/react";
 import ComposerOptions from "./ComposerOptions";
 import { createProject, setCurrentProject, updateProject } from "../projectStore";
@@ -208,4 +208,36 @@ test("served list without the current model still selects on Enter", () => {
   const pop = document.querySelector(".pop") as HTMLElement;
   fireEvent.keyDown(pop, { key: "Enter" });
   expect(localStorage.getItem("agentj.composer.model")).toBe("opencode-go/a");
+});
+
+test("selected entry overrides the kernel default label", () => {
+  render(
+    <ComposerOptions
+      model="deepseek-chat"
+      selected={{ name: "opencode-go/kimi-k3", provider: "opencode-go" }}
+      models={[{ name: "opencode-go/kimi-k3", provider: "opencode-go" }]}
+      onSelect={() => {}}
+    />,
+  );
+  expect(screen.getByRole("button", { name: /opencode-go\/kimi-k3/ })).toBeInTheDocument();
+});
+
+test("reports the provider-qualified entry through onSelect", () => {
+  const onSelect = vi.fn();
+  render(
+    <ComposerOptions
+      model="deepseek-chat"
+      onSelect={onSelect}
+      models={[{ name: "opencode-go/kimi-k3", provider: "opencode-go" }]}
+    />,
+  );
+  fireEvent.click(screen.getByRole("button", { name: /deepseek-chat/ }));
+  fireEvent.click(screen.getByText("opencode-go/kimi-k3"));
+  expect(onSelect).toHaveBeenCalledWith({ name: "opencode-go/kimi-k3", provider: "opencode-go" });
+  expect(localStorage.getItem("agentj.composer.model")).toBe("opencode-go/kimi-k3");
+});
+
+test("falls back to the kernel default when nothing is selected", () => {
+  render(<ComposerOptions model="deepseek-chat" models={[{ name: "opencode-go/kimi-k3" }]} />);
+  expect(screen.getByRole("button", { name: /deepseek-chat/ })).toBeInTheDocument();
 });

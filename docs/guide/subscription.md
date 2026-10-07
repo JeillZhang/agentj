@@ -59,7 +59,8 @@ kind 不受影响。
 - `kernel/status` 的 `providers[].models` 返回真实模型列表（零协议变更，仅填充既有字段）。
 - **Web**：composer 模型下拉消费该列表并高亮 `default_model`；无服务端数据时回退内置单条。
 - **TUI**：模型视图消费该列表并以 `▶` 标注默认模型；无数据时保留原回退。
-- 运行期**不切换模型**（需改协议，属二期）；选模型的方式是
+- 运行期**可切换模型**（逐轮 `session/run` 自带 provider / 模型，无需改协议或重启），
+  见 [运行期切模型](model-switching.md)；改**默认**模型的方式仍是
   `agentj auth login --default-model <id>` 定点写回 `config.toml` 的 `[model] provider` /
   `default_model`（保留注释与格式），重启内核生效。
 
@@ -83,5 +84,6 @@ kind 不受影响。
 - device-code OAuth 登录（`console.opencode.ai`，`refresh_token` 轮换）；
   一期凭据文件已预留 `oauth` 类型，读到时会明确报
   `unsupported credential type 'oauth': requires agentj phase 2 or newer`。
-- 运行期切换模型（需新协议方法）。
+- 运行期切换模型**已实现**（`session/run` 的加性可选字段，未引入新协议方法），
+  见 [运行期切模型](model-switching.md)；本项不再属二期边界。
 - OS keyring、账号级收敛目录、按量付费 Zen（`/zen/v1`）。

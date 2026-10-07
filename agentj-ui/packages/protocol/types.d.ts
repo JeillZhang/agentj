@@ -766,7 +766,17 @@ export interface SessionNewResult {
 export interface SessionRunParams {
   attachments?: Attachment[] | null;
   content: string;
+  /**
+   * Per-run model id override, e.g. "opencode-go/kimi-k3". Absent = config
+   * model.default_model. @since 0.16.0
+   */
+  model?: string | null;
   progress_token?: ProgressToken | null;
+  /**
+   * Per-run provider name override (registered provider name). Absent = default
+   * provider. @since 0.16.0
+   */
+  provider?: string | null;
   session_id: string;
   [k: string]: unknown;
 }

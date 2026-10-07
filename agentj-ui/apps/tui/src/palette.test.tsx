@@ -24,31 +24,29 @@ describe("filterCommands pure", () => {
   });
 });
 
-describe("renderModelList read-only", () => {
-  test("model selector is read-only and preselects default_model", () => {
+describe("renderModelList", () => {
+  test("model selector preselects default_model", () => {
     const out = renderModelList({
       default_model: "deepseek-chat",
-      providers: ["deepseek-chat", "opencode-go/kimi-k3"],
+      providers: [{ name: "deepseek-chat" }, { name: "opencode-go/kimi-k3" }],
     });
     expect(out).toContain("▶ deepseek-chat");
     expect(out).not.toContain("model=");
-    expect(out).toMatch(/config\.toml/);
+    expect(out).toContain("运行期可切换");
   });
 
   test("hint line exact", () => {
     const out = renderModelList({
       default_model: "deepseek-chat",
-      providers: ["deepseek-chat"],
+      providers: [{ name: "deepseek-chat" }],
     });
-    expect(out).toContain(
-      "model is set server-side in config.toml [model] default_model (restart kernel to change)",
-    );
+    expect(out).toContain("model 运行期可切换 · Enter 选择 · j/k 移动");
   });
 
   test("preselects only default", () => {
     const out = renderModelList({
       default_model: "deepseek-chat",
-      providers: ["deepseek-chat", "opencode-go/kimi-k3"],
+      providers: [{ name: "deepseek-chat" }, { name: "opencode-go/kimi-k3" }],
     });
     expect(out).toContain("▶ deepseek-chat");
     expect(out).toContain("  opencode-go/kimi-k3");
@@ -58,16 +56,19 @@ describe("renderModelList read-only", () => {
   test("no wire model param in output", () => {
     const out = renderModelList({
       default_model: "deepseek-chat",
-      providers: ["deepseek-chat"],
+      providers: [{ name: "deepseek-chat" }],
     });
     expect(out).not.toMatch(/model=/);
     expect(out).not.toMatch(/"model"/);
   });
 });
-describe("ModelSelector read-only display", () => {
-  test("renders preselected arrow and hint, disabled no focus", async () => {
+describe("ModelSelector display", () => {
+  test("renders preselected arrow and run-time switch hint", async () => {
     const setup = await testRender(
-      <ModelSelector default_model="deepseek-chat" providers={["deepseek-chat", "opencode-go/kimi-k3"]} />,
+      <ModelSelector
+        default_model="deepseek-chat"
+        providers={[{ name: "deepseek-chat" }, { name: "opencode-go/kimi-k3" }]}
+      />,
       {},
     );
     await act(async () => {
@@ -75,11 +76,9 @@ describe("ModelSelector read-only display", () => {
     });
     const frame = setup.captureCharFrame();
     expect(frame).toContain("deepseek-chat");
-    expect(frame).toContain("config.toml");
-    expect(frame).toContain("restart");
-    expect(frame).toContain("kernel to change");
-    expect(frame).toContain("default_model");
-    expect(frame).toContain("model is set server-side in config.toml");
+    expect(frame).toContain("opencode-go/kimi-k3");
+    expect(frame).toContain("运行期可切换");
+    expect(frame).toContain("Enter");
     act(() => setup.renderer.destroy());
   });
 });
@@ -102,10 +101,10 @@ describe("App palette integration", () => {
     expect(filterCommands("/mod", [...COMMANDS])).toEqual(["models"]);
     const out = renderModelList({
       default_model: "deepseek-chat",
-      providers: ["deepseek-chat", "opencode-go/kimi-k3"],
+      providers: [{ name: "deepseek-chat" }, { name: "opencode-go/kimi-k3" }],
     });
     expect(out).toContain("▶ deepseek-chat");
-    expect(out).toMatch(/config\.toml/);
+    expect(out).toContain("运行期可切换");
     act(() => setup.renderer.destroy());
   });
 });

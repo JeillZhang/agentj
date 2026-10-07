@@ -4,7 +4,7 @@ AI 编码代理工具（Rust）——Linux 内核式「内核调度 + 可插拔�
 内核通过统一的 JSON-RPC 2.0 协议（stdio / TCP / WebSocket）对外暴露能力；
 CLI、TUI、Web、Desktop 均作为协议消费者接入，任意语言可开发前端。
 
-> 当前版本：**v0.25.2**
+> 当前版本：**v0.26.0**
 > · 变更记录：[`docs/changelog/`](docs/changelog/)
 > · 用户指南：[`docs/guide/`](docs/guide/)
 > · 协议规范：[`docs/specs/ipc-protocol.md`](docs/specs/ipc-protocol.md)
@@ -32,7 +32,8 @@ CLI、TUI、Web、Desktop 均作为协议消费者接入，任意语言可开发
   `ToolExecutorModule` + `SubAgentService`
 - [x] **内置工具**：bash / glob / grep / read / write + todo
 - [x] **MCP 桥**：子进程 MCP 客户端 + `McpConnectionManager` 长驻连接
-- [x] **模型提供方**：DeepSeek + opencode-go + Ollama + Mock（三线 wire-format）
+- [x] **模型提供方**：DeepSeek + opencode-go + Ollama + Mock（三线 wire-format）；
+  运行期逐轮切模型见 [运行期切模型](docs/guide/model-switching.md)
 - [x] **opencode-go 订阅**：`agentj auth` 凭据落盘 + live/overlay 动态目录 +
   合规请求头（`agentj/<ver>` UA、`x-opencode-session`）+ 模型可见性
   （见 [订阅指南](docs/guide/subscription.md)）

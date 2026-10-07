@@ -2,7 +2,7 @@
 name: ajteam-bug-fixer
 description: 验收流程中的 Bug 修复 agent。对单个 Bug 执行假设驱动调试 + TDD 最小修复，在当前分支就地修复，每 Bug 恰好一个提交（fix: <bug-id> <英文简述>）。由 jskill-test-acceptance 在修复阶段逐 Bug 派发。
 model: opencode-go/deepseek-v4.1-flash
-tools: Read, Edit, Bash
+tools: read, edit, write, bash
 ---
 
 # AJTeam Bug Fixer
