@@ -6,44 +6,53 @@
 > **强制例外（跨阶段保留）**：「## 待实施」表中**尚未实施**的特性条目必须保留（状态 =
 > 待实施），不得随内容替换而删除；仅当该特性实际实施完成后才能移除（移入功能记录）。
 > 前端总结独立存放于 `summary_and_next_fe.md`；两文件内容隔离，互不写入对方文件。
-> 当前功能：**v0.26.0 运行期切模型——后端部分**
-> ——来源：设计 `docs/superpowers/specs/2026-10-07-agentj-runtime-model-switching-design.md`
-> + 实现计划 `docs/superpowers/plans/2026-10-07-agentj-runtime-model-switching-plan.md`（T0–T23）。
-> 后端范围：`agentj-protocol`（wire 字段 + 版本）+ `agentj-core`（`RunOverrides` /
-> `ProviderRegistry::get` / `TurnRunner` 解析）+ `agentj-ipc`（`dispatch_session_run` 解析）；
-> 加性字段，**无新方法（仍 21）/ 无新 schema（仍 52）**。
-> `PROTOCOL_VERSION` 0.15.0 → **0.16.0**；工作区 0.25.2 → **0.26.0**。
-> 前端部分见 `summary_and_next_fe.md`。
+> 当前功能：**v0.27.0 opencode-go 订阅二期（后端部分）**
+> ——来源：设计 `docs/superpowers/specs/2026-10-07-agentj-opencode-go-phase2-design.md`
+> + 实现计划 `docs/superpowers/plans/2026-10-07-agentj-opencode-go-phase2-plan.md`（T0–T21/T28–T36）。
+> 后端范围：`agentj-protocol`（5 方法 + 20 schema）+ `agentj-auth`（oauth/refresh）+
+> `agentj-model`（usage/console_catalog）+ `agentj-config`（2 键）+ `agentj-ipc`
+> （`ProviderService` 注入）+ `agentj-cli`（设备码登录 / `CliProviderService` / `RefreshingProvider`）。
+> `PROTOCOL_VERSION` 0.16.0 → **0.17.0**（21 → **26 方法**，52 → **72 schemas**）；
+> 工作区 0.26.0 → **0.27.0**。前端部分见 `summary_and_next_fe.md`。
 
-## v0.26.0（运行期切模型，后端部分）✅（本次完成）
+## v0.27.0（opencode-go 订阅二期，后端部分）✅（本次完成）
 
-- ✅ **协议加性字段**：`SessionRunParams` 新增可选 `provider` / `model`（`@since 0.16.0`、
-  snake_case、缺省时 `skip_serializing_if` 不出现在 JSON）；`PROTOCOL_VERSION` 0.15.0 →
-  **0.16.0**；`protocol/methods.json` 版本同步；`schemas/SessionRunParams.json` 内容重生成
-  ——**无新方法（仍 21）、无新 schema（仍 52）**。`session/run` 仍只要求
-  `[session_id, content]`，缺省路径与旧客户端逐字节相同。
-- ✅ **`agentj-core`**：
-  - 只读 `ProviderRegistry::get(name)`（按名查已注册 provider，不改动注册顺序/默认语义）。
-  - 新 `RunOverrides { provider, model }`（`Default` = 全 `None`，即今天的行为）。
-  - `KernelMessage::UserRequest.overrides` + `user_request_with_overrides` 构造器；
-    3 参 `user_request` 保留为委托包装（既有调用点零改动）。
-  - `TurnRunner::spawn_turn` 增加具名 `overrides` 参数；`run_turn` 解析：
-    provider = `overrides.provider` → `get(name)`（**未命中即本轮失败**，文案
-    `unknown provider: <name> (registered: ...)`，**绝不回落 `get_default()`**），
-    否则 `get_default()`；model = `overrides.model` 否则 `config.model.default_model`
-    否则 `deepseek-chat`；空白/纯空白视作「未给」。
-- ✅ **`agentj-ipc`**：`dispatch_session_run` 用 `optional_trimmed` 解析两字段——
-  缺失 / `null` / 空串 / 纯空白 → 视为缺省；非字符串 JSON 类型 → `invalid_params`
-  （-32602）并在 `error.data.field` 指明字段。公开 2 参 `run_turn_stream` 保留
-  （CLI `run` 不变），内部委托给带 overrides 的私有变体。
-- ✅ **文档**：`docs/specs/ipc-protocol.md`（§8.1/§8.7/§9.3/§10/§11.1/§11.3）、
-  新增 `docs/changelog/v0.26.md` + 索引、新增 `docs/guide/model-switching.md` + 索引，
-  并订正 `docs/guide/subscription.md` / `docs/guide/tui.md` 中的陈旧表述。
+- ✅ **协议（`agentj-protocol`）**：新增 `provider` 模块 20 个 wire 类型
+  （`ModelListParams/Result`、`ModelEntry`、`ModelSource`、`AuthStatusParams/Result`、
+  `CredentialInfo/Kind/Source`、`ProviderUsageParams/Result`、`UsageWindow(+Kind/Status)`、
+  `ProviderUsageError`、`AuthDeviceStartParams/Result`、`AuthDevicePollParams/Result`、
+  `DeviceAuthState`），全部 snake_case、值枚举带 `#[serde(other)]` + `#[schemars(skip)] Unknown`；
+  `PROTOCOL_VERSION` 0.17.0，`protocol/methods.json` 26 方法（5 个新增均为
+  `request` + `client_to_server`），schemas 72（新增 20，既有 schema 逐字节未改）。
+  **无新错误码**：未知/不支持 provider → `-32602` + `error.data.reason`；
+  未注入 handle → `-32603` + `reason=provider_service_unavailable`；上游/凭据失败为结果数据。
+- ✅ **`agentj-auth`**：`Credential::key()` 接受 OAuth（access token）；修正一期潜在缺陷
+  （`rename_all=snake_case` 会把 `OAuth` 序列化成 `o_auth`，导致 `{"type":"oauth"}` 无法解析）；
+  新增 `oauth` 模块（RFC 8628 `device_start`/`device_poll`/`device_refresh`、共享 token 解析、
+  `PollOutcome`）与 `refresh::ensure_access`（`auth.json.lock` 单飞、重读后再轮换、
+  refresh token 单次使用不重放、60s 安全余量、失败不落盘）；`AuthStore` 可 Clone；
+  新增 `reqwest`/`tokio` 依赖（无 `oauth2`/`keyring`/`dirs`/`rpassword`）。
+- ✅ **`agentj-model`**：`usage`（防御式 `GET /v1/usage`：只认三窗口、未知键忽略、
+  非整数 percent 降级 `None`、`percent==0` 丢弃占位 `resetsAt`、403 不折叠为 401、
+  无 key 不发请求）与 `console_catalog`（`GET /api/v2/config` 账号级目录，失败即 Err 以便回退）。
+  依赖不变式保持：`agentj-model` 不依赖 `agentj-auth`。
+- ✅ **`agentj-config`**：`[model].quota_warn_percent`（默认 80、`get_int` clamp 1..=100）
+  与 `[model].console_base_url`（默认 `https://opencode.ai/console`），含 merge 规则。
+- ✅ **`agentj-ipc`**：`DispatchError` 公开（pub 字段 + pub 构造器）；新增对象安全
+  `ProviderService` trait；`IpcServer.provider_service` 注入字段（默认 `None`）+
+  `TcpBindOptions` 贯通；5 个方法 dispatch（未注入统一 `-32603`，参数非法 `-32602`
+  且不调用服务，未知方法仍 `-32601`）。**ipc 未新增 auth/model 依赖**。
+- ✅ **`agentj-cli`**：`CliProviderService`（usage 300s 缓存 + `refresh` 绕过 + 域错误即结果数据；
+  `auth/status` 纯读（不轮换、不联网）；`model/list` 三层 account → live → overlay（60s 复用窗口），
+  账号级未命中 overlay 的 id 合成为 `openai-compat` + `verified:false`；设备流按
+  `Authorized` 才落盘）；`RefreshingProvider` 装饰器（OAuth 每次 chat 前保鲜，仅密钥变化才重建；
+  api_key 走透明静态包装）；`build_providers` 增加 `console_base` 参数；
+  `agentj auth login --device`（与 `--api-key` 互斥，deadline 由 `expires_in` 推导，
+  `slow_down` 递增间隔，失败不落盘）；`serve`/`dashboard` 注入 handle（`run` 不注入）。
 
 ## 验证结果（全量门禁清扫，2026-10-07）
 
-> 本表由编排器在本阶段最终树上执行（T23 拥有 AC8/G6）；**全量清扫覆盖前后端两侧并全部
-> 通过**，前端门禁见 `summary_and_next_fe.md`（本文件只列后端门禁）。
+> 本表由编排器在本阶段最终树上执行；后端门禁如下，前端门禁见 `summary_and_next_fe.md`。
 > `cargo test --workspace` 以 `-- --skip permission_request_notified_and_timeout_denies`
 > 运行（见「遗留问题」）。
 
@@ -52,40 +61,37 @@
 | `cargo fmt --check` | clean |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 0 warnings |
 | `cargo check --workspace --locked --quiet` | OK（lockfile fresh） |
-| `cargo test --workspace -- --skip permission_request_notified_and_timeout_denies` | **742 passed / 0 failed（+1 skipped）** |
+| `cargo test --workspace -- --skip permission_request_notified_and_timeout_denies` | **790 passed / 0 failed** |
 | `cargo test -p agentj-protocol -- drift` | 2 passed |
-| `./scripts/check-version.sh` | version-ok（**0.26.0** / `PROTOCOL_VERSION` **0.16.0**） |
-| `node agentj-ui/apps/desktop/check-desktop-ui.mjs` | desktop-ui-ok |
+| `./scripts/check-version.sh` | version-ok（**0.27.0** / `PROTOCOL_VERSION` **0.17.0**） |
+| `cargo run -p agentj-protocol --bin gen_schemas` | 72 schemas |
+
+## 代码评审（Phase 5，`ajteam-task-reviewer` 分组只读审查）
+
+- **后端（T0–T21/T28–T32）：VERDICT PASS**。确认：单次 refresh token 纪律
+  （锁内重读、失败不落盘、空 refresh 先拒绝）、依赖不变式、加性纪律
+  （既有 21 方法逐字节未改）、usage 防御式解析、三层目录与 `openai-compat` 合成、
+  `auth/status` 不联网、结果不含任何完整密钥/token。
+- 评审提出 3 项偏差，其中 2 项为计划口径差异（`ModelSource::Unknown` 规范化为
+  `"unknown"` 而非回填原串；T19 计划注释提到的目录摘要），1 项为纵深防御建议
+  （空 access token 可能形成空 Bearer）。
+- **已修复**（commit `bc19b2b`）：`CliProviderService::key()` 过滤空 key（杜绝空 Bearer）；
+  非 `--offline` 的设备码登录补打模型目录摘要。
+- **前端审查 VERDICT FAIL → 已修复**（commit `99385c6`，见 `_fe.md`）。
 
 ## 遗留问题 / 已知限制（后端）
 
-- **预存在的挂起 e2e（非本阶段回归）**：`crates/agentj-cli/tests/e2e_permission.rs` 的
-  `permission_request_notified_and_timeout_denies` 在本环境会一直阻塞在 60s 权限超时上，
-  未触碰的树上同样挂起——**不是本阶段引入的回归**，因此全量测试以
-  `-- --skip permission_request_notified_and_timeout_denies` 运行（该 1 条已计入 skipped）。
-- **CLI `agentj run` 不支持逐轮选模型**：按计划保留了 2 参 `run_turn_stream`，
-  本地单轮 `run` 无 `--provider` / `--model` flag；只有走 IPC（`session/run` 带两个字段）
-  的客户端（Web / TUI / 脚本）能覆盖。属加性范围之外，后续如需再补 CLI flag。
-- **模型选择不进会话状态**：会话快照 / `SessionRunResult` / 历史消息 / 用量统计均不记录
-  「本轮用的哪个模型」（设计如此，非缺陷）；选择只存在于客户端本地。
-- **无 provider 目录新方法**：客户端仍从 `kernel/status.providers[].models` 取目录，
-  本阶段未新增方法/schema（保持 21 方法 / 52 schemas）。
-- **`SubAgentService` 恒用默认 overrides（Phase 5 评审 LOW，计划明确如此）**：
-  `crates/agentj-core/src/dispatcher.rs` 传 `RunOverrides::default()`，故子代理服务不会继承
-  父 turn 的模型选择；当前无工具路径可达该服务，属预留行为，后续如需再透传父 overrides。
-- **未知 provider 文案中注册名顺序不确定**：取自 `ProviderRegistry::list()`（`HashMap` 迭代序），
-  文案含全部注册名但不保证字母序；测试只断言包含关系（可选硬化：排序后 join）。
-
-## 代码评审（Phase 5，独立评审 agent）
-
-- 结论：**无 CRITICAL / HIGH**；2 项 MEDIUM 已修复，其余 LOW 转遗留（见上）。
-- ✅ MEDIUM（IPC 测试盲点）：`capturing_run_server` 只注册与默认同名的 `mock`，导致
-  `provider` 透传在 IPC 层不可观测。已新增第二个 provider 并为每个 provider 独立捕获，
-  新增 `session_run_provider_override_selects_that_provider`（非默认 provider 服务、默认 provider 零调用）
-  与 `session_run_unknown_provider_fails_on_the_wire`（-32603 + 文案含 `unknown provider: nope`
-  与全部注册名、两个 provider 均未被调用）。
-- 评审确认成立（无需改动）：零回归极性、未知 provider 结构上不可回落默认、
-  空白/类型非法分流、解析先于 run 互斥锁、`run_turn_stream` 兼容签名。
+- **预存在的 e2e 挂起（非本阶段回归）**：`crates/agentj-cli/tests/e2e_permission.rs`
+  的 `permission_request_notified_and_timeout_denies` 在无外部交互时会挂起，
+  全量测试统一以 `-- --skip permission_request_notified_and_timeout_denies` 运行。
+- **锁超时窗口（设计已记录）**：`auth.json.lock` 5s 超时后仍可能由用户手动并发触发刷新；
+  锁文件非进程崩溃自清理，崩溃残留会在 5s 后报错而非自动接管。
+- **usage 上游形状不稳定（设计已记录）**：`GET /v1/usage` 未官方文档化、曾上线一小时内改形状、
+  无 cache 头；面板对不可识别响应用 `error.kind="unavailable"` 而不是编造数据。
+- **`auth/devicePoll` 的 interval 常量 5s（设计已记录）**：服务端不维护会话状态，
+  重复 `slow_down` 每次只报到 10s，累加由客户端（CLI/Web/TUI）自行记账。
+- **`agentj-auth` 由零依赖小 crate 变为带 HTTP 依赖**（设计已记录的架构成本）：
+  token 生命周期与凭据同域，代价是与 `agentj-model` 各持一套 HTTP 栈。
 
 ## 待实施（跨阶段保留：未实施不得删除）
 
@@ -100,8 +106,7 @@
 
 ## 下一步
 
-- **v0.26.0 运行期切模型（后端部分）已落地**，全量门禁清扫通过（742 passed / 0 failed，
-  1 skipped 为预存在挂起 e2e）；待 PR 由用户合并 main。
-- 后端候选：上表 ①②④；或 opencode-go 二期（`GET /zen/go/v1/usage` 用量面板 /
-  device-code OAuth）；或为 CLI `run` 补 `--provider` / `--model` flag。
+- **v0.27.0 opencode-go 二期（后端部分）已落地**，全量门禁清扫通过；待 PR 由用户合并 main。
+- 后端候选：上表 ①②④；或为 CLI `run` 补 `--provider` / `--model` flag；
+  或订阅用量面板的服务端持久化/历史趋势。
 - 前端候选见 `summary_and_next_fe.md`。
