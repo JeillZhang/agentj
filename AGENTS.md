@@ -1,6 +1,6 @@
 # AGENTS.md
 
-> **当前版本 0.25.2** · `PROTOCOL_VERSION` **0.15.0**（21 方法 / 52 schemas / 18 crates）
+> **当前版本 0.26.0** · `PROTOCOL_VERSION` **0.16.0**（21 方法 / 52 schemas / 18 crates）
 > 本文件只记录**约束、入口与基线**（Setup / Commands / Architecture / Conventions / Rules）。
 > **逐版本变更与历史决策不写在这里** —— 见 [`docs/changelog/`](docs/changelog/)、
 > [`docs/guide/`](docs/guide/)、[`docs/specs/`](docs/specs/) 与 `.agents/summary/`。
@@ -69,7 +69,7 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
 
 - `agentj-protocol`（leaf）：IPC 协议权威 wire 类型（JSON-RPC 2.0、错误码、
   21 方法 params/result、流式/订阅/权限/提问/文件列举类型），serde + schemars，
-  零内核耦合。协议版本 `0.15.0`，52 schemas。
+  零内核耦合。协议版本 `0.16.0`，52 schemas。
 - `agentj-core`（内核）：Kernel 混合总线 + 模块 trait 注册表
   + ServiceRegistry（同步/异步） + TurnRunner 总线化 turn 编排
   + `ToolCallContext`（会话根上下文，工具相对路径重定基）
