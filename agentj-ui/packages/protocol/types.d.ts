@@ -50,6 +50,119 @@ export interface Attachment {
 }
 
 /**
+ * `auth/devicePoll` params. @since 0.17.0
+ */
+export interface AuthDevicePollParams {
+  device_code: string;
+  /**
+   * Provider name; omitted means the configured default provider. @since 0.17.0
+   */
+  provider?: string | null;
+  [k: string]: unknown;
+}
+
+/**
+ * Credential kind. `Unknown` tolerates forward values. @since 0.17.0
+ */
+export type CredentialKind = "api_key" | "o_auth";
+/**
+ * Where the credential came from. `Unknown` tolerates forward values. @since 0.17.0
+ */
+export type CredentialSource = "flag" | "env" | "file";
+/**
+ * Device-flow poll state. `Unknown` tolerates forward values. @since 0.17.0
+ */
+export type DeviceAuthState = "pending" | "slow_down" | "authorized" | "expired" | "denied" | "error";
+
+/**
+ * `auth/devicePoll` result — the poll state, never a raw token on failure states.
+ * @since 0.17.0
+ */
+export interface AuthDevicePollResult {
+  credential?: CredentialInfo | null;
+  /**
+   * Next poll interval in seconds (present for `slow_down`). @since 0.17.0
+   */
+  interval?: number | null;
+  message?: string | null;
+  state: DeviceAuthState;
+  [k: string]: unknown;
+}
+/**
+ * Redacted credential projection. `key_hint` is the api_key's last four characters
+ * (`…1234`); OAuth credentials are identified by `org_id`/`expires_at` instead.
+ * @since 0.17.0
+ */
+export interface CredentialInfo {
+  expires_at?: number | null;
+  expiring_soon: boolean;
+  key_hint?: string | null;
+  kind: CredentialKind;
+  org_id?: string | null;
+  source: CredentialSource;
+  [k: string]: unknown;
+}
+
+/**
+ * `auth/deviceStart` params. @since 0.17.0
+ */
+export interface AuthDeviceStartParams {
+  /**
+   * Provider name; omitted means the configured default provider. @since 0.17.0
+   */
+  provider?: string | null;
+  [k: string]: unknown;
+}
+
+/**
+ * `auth/deviceStart` result (RFC 8628 device authorization response). @since 0.17.0
+ */
+export interface AuthDeviceStartResult {
+  device_code: string;
+  expires_in: number;
+  interval: number;
+  provider: string;
+  user_code: string;
+  verification_uri: string;
+  [k: string]: unknown;
+}
+
+/**
+ * `auth/status` params. @since 0.17.0
+ */
+export interface AuthStatusParams {
+  /**
+   * Provider name; omitted means the configured default provider. @since 0.17.0
+   */
+  provider?: string | null;
+  [k: string]: unknown;
+}
+
+/**
+ * Credential kind. `Unknown` tolerates forward values. @since 0.17.0
+ */
+/**
+ * Where the credential came from. `Unknown` tolerates forward values. @since 0.17.0
+ */
+
+/**
+ * `auth/status` result. Never carries a full key/token — see [`CredentialInfo`].
+ * @since 0.17.0
+ */
+export interface AuthStatusResult {
+  authenticated: boolean;
+  credential?: CredentialInfo | null;
+  models_count: number;
+  provider: string;
+  [k: string]: unknown;
+}
+/**
+ * Redacted credential projection. `key_hint` is the api_key's last four characters
+ * (`…1234`); OAuth credentials are identified by `org_id`/`expires_at` instead.
+ * @since 0.17.0
+ */
+
+/**
  * JSON-RPC 2.0 request/notification id. `Null` is used only in error responses
  * where the request id could not be determined (e.g. parse error — JSON-RPC 2.0 §5).
  */
@@ -86,6 +199,31 @@ export interface ClientInfo {
   version: string;
   [k: string]: unknown;
 }
+
+/**
+ * Credential kind. `Unknown` tolerates forward values. @since 0.17.0
+ */
+/**
+ * Where the credential came from. `Unknown` tolerates forward values. @since 0.17.0
+ */
+
+/**
+ * Redacted credential projection. `key_hint` is the api_key's last four characters
+ * (`…1234`); OAuth credentials are identified by `org_id`/`expires_at` instead.
+ * @since 0.17.0
+ */
+
+/**
+ * Credential kind. `Unknown` tolerates forward values. @since 0.17.0
+ */
+
+/**
+ * Where the credential came from. `Unknown` tolerates forward values. @since 0.17.0
+ */
+
+/**
+ * Device-flow poll state. `Unknown` tolerates forward values. @since 0.17.0
+ */
 
 export interface ErrorObject {
   code: number;
@@ -313,6 +451,64 @@ export interface ProviderInfo {
   [k: string]: unknown;
 }
 
+/**
+ * One catalog entry. `verified: false` means the route was synthesized, not known.
+ * @since 0.17.0
+ */
+export interface ModelEntry {
+  format: string;
+  id: string;
+  verified: boolean;
+  [k: string]: unknown;
+}
+
+/**
+ * `model/list` params. @since 0.17.0
+ */
+export interface ModelListParams {
+  /**
+   * Provider name; omitted means the configured default provider. @since 0.17.0
+   */
+  provider?: string | null;
+  /**
+   * Bypass the 60s in-process reuse window. @since 0.17.0
+   */
+  refresh?: boolean | null;
+  [k: string]: unknown;
+}
+
+/**
+ * Catalog tier (account → live → overlay; static for non-go providers).
+ * `Unknown` tolerates forward values; the schema lists only the known tiers.
+ * @since 0.17.0
+ */
+export type ModelSource = "account" | "live" | "overlay" | "static";
+
+/**
+ * `model/list` result — catalog plus the tier it came from. @since 0.17.0
+ */
+export interface ModelListResult {
+  default_model: string;
+  /**
+   * Unix epoch seconds when the catalog was fetched. @since 0.17.0
+   */
+  fetched_at: number;
+  models: ModelEntry[];
+  provider: string;
+  source: ModelSource;
+  [k: string]: unknown;
+}
+/**
+ * One catalog entry. `verified: false` means the route was synthesized, not known.
+ * @since 0.17.0
+ */
+
+/**
+ * Catalog tier (account → live → overlay; static for non-go providers).
+ * `Unknown` tolerates forward values; the schema lists only the known tiers.
+ * @since 0.17.0
+ */
+
 
 
 
@@ -512,6 +708,85 @@ export interface TodoItem {
 /**
  * A workspace file change. @since 0.13.0
  */
+
+/**
+ * Domain failure carried inside a successful `provider/usage` response.
+ * `kind ∈ {no_credential, expired, unauthorized, entitlement, unavailable, network}`.
+ * @since 0.17.0
+ */
+export interface ProviderUsageError {
+  kind: string;
+  message: string;
+  [k: string]: unknown;
+}
+
+/**
+ * `provider/usage` params. @since 0.17.0
+ */
+export interface ProviderUsageParams {
+  /**
+   * Provider name; omitted means the configured default provider. @since 0.17.0
+   */
+  provider?: string | null;
+  /**
+   * Bypass the 300s in-process cache. @since 0.17.0
+   */
+  refresh?: boolean | null;
+  [k: string]: unknown;
+}
+
+/**
+ * Quota window kind. `Unknown` tolerates forward values. @since 0.17.0
+ */
+export type UsageWindowKind = "rolling" | "weekly" | "monthly";
+/**
+ * Window status. `Unknown` tolerates forward values. @since 0.17.0
+ */
+export type UsageWindowStatus = "ok" | "rate-limited";
+
+/**
+ * `provider/usage` result. Domain failures travel in `error` (success response).
+ * @since 0.17.0
+ */
+export interface ProviderUsageResult {
+  error?: ProviderUsageError | null;
+  /**
+   * Unix epoch seconds when the snapshot was fetched. @since 0.17.0
+   */
+  fetched_at: number;
+  provider: string;
+  /**
+   * `true` when `windows` is a reused earlier snapshot (error path). @since 0.17.0
+   */
+  stale: boolean;
+  /**
+   * Client-side warning threshold in percent (1..=100). @since 0.17.0
+   */
+  warn_percent: number;
+  windows: UsageWindow[];
+  [k: string]: unknown;
+}
+/**
+ * Domain failure carried inside a successful `provider/usage` response.
+ * `kind ∈ {no_credential, expired, unauthorized, entitlement, unavailable, network}`.
+ * @since 0.17.0
+ */
+/**
+ * One quota window. `percent` is the *used* percentage. @since 0.17.0
+ */
+export interface UsageWindow {
+  kind: UsageWindowKind;
+  /**
+   * `None` when upstream's value was absent or not an integer. @since 0.17.0
+   */
+  percent?: number | null;
+  /**
+   * Omitted when `percent == 0` (upstream placeholder is dropped). @since 0.17.0
+   */
+  resets_at?: string | null;
+  status: UsageWindowStatus;
+  [k: string]: unknown;
+}
 
 /**
  * `question/respond` params (`answers` are option ids or `other:`-prefixed
@@ -844,3 +1119,22 @@ export interface ToolDefinition {
   [k: string]: unknown;
 }
 
+
+/**
+ * Quota window kind. `Unknown` tolerates forward values. @since 0.17.0
+ */
+/**
+ * Window status. `Unknown` tolerates forward values. @since 0.17.0
+ */
+
+/**
+ * One quota window. `percent` is the *used* percentage. @since 0.17.0
+ */
+
+/**
+ * Quota window kind. `Unknown` tolerates forward values. @since 0.17.0
+ */
+
+/**
+ * Window status. `Unknown` tolerates forward values. @since 0.17.0
+ */
