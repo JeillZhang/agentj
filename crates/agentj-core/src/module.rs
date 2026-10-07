@@ -482,6 +482,11 @@ impl ProviderRegistry {
             .and_then(|name| self.providers.read().get(name).cloned())
     }
 
+    /// Look up a provider by its registered name (read-only). @since 0.26.0
+    pub fn get(&self, name: &str) -> Option<Arc<dyn ModelProvider>> {
+        self.providers.read().get(name).cloned()
+    }
+
     pub fn list(&self) -> Vec<String> {
         self.providers.read().keys().cloned().collect()
     }
@@ -1254,6 +1259,20 @@ mod tests {
     #[test]
     fn provider_models_default_is_empty() {
         assert!(NoModelsProvider.models().is_empty());
+    }
+
+    #[test]
+    fn registry_get_returns_registered_provider() {
+        let reg = ProviderRegistry::new();
+        reg.register("mock".into(), Arc::new(StubProvider(None)));
+        assert!(reg.get("mock").is_some());
+    }
+
+    #[test]
+    fn registry_get_unknown_name_is_none() {
+        let reg = ProviderRegistry::new();
+        reg.register("mock".into(), Arc::new(StubProvider(None)));
+        assert!(reg.get("nope").is_none());
     }
 
     #[test]
