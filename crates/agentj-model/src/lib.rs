@@ -2,6 +2,7 @@ pub mod anthropic;
 pub mod catalog;
 pub mod catalog_gen;
 pub mod catalog_source;
+pub mod console_catalog;
 pub mod factory;
 pub mod gateway_error;
 pub mod http;
