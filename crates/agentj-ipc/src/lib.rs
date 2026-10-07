@@ -2968,17 +2968,29 @@ mod tests {
         }
     }
 
+    /// Per-provider options logs of one capturing server. `mock` is registered
+    /// first and is therefore the *default* provider, `other` the alternative:
+    /// two separate sinks are what makes a `provider` override observable (a
+    /// turn served by `other` must leave `mock` empty, and vice versa).
+    struct CapturedRuns {
+        mock: Arc<std::sync::Mutex<Vec<ModelOptions>>>,
+        other: Arc<std::sync::Mutex<Vec<ModelOptions>>>,
+    }
+
     /// Same wiring as `repeating_run_server` (session store + ToolRegistry +
-    /// ProviderRegistry + kernel modules), with the capturing provider
-    /// registered as `mock` and no permission policies (the mock never calls a
-    /// tool). Returns the server and the shared options log.
-    fn capturing_run_server() -> (IpcServer, Arc<std::sync::Mutex<Vec<ModelOptions>>>) {
-        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    /// ProviderRegistry + kernel modules), with TWO capturing providers — `mock`
+    /// first (hence the default), `other` second — each behind its own options
+    /// log, and no permission policies (the mocks never call a tool). Returns
+    /// the server and both logs.
+    fn capturing_run_server() -> (IpcServer, CapturedRuns) {
+        let mock = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let other = Arc::new(std::sync::Mutex::new(Vec::new()));
         let store: Arc<InMemoryStore> = Arc::new(InMemoryStore::new());
         let session_dyn: Arc<dyn SessionStore> = store.clone();
         let tools = Arc::new(ToolRegistry::new());
         let providers = Arc::new(ProviderRegistry::new());
-        providers.register("mock".into(), Arc::new(CapturingMock(Arc::clone(&seen))));
+        providers.register("mock".into(), Arc::new(CapturingMock(Arc::clone(&mock))));
+        providers.register("other".into(), Arc::new(CapturingMock(Arc::clone(&other))));
         let ctx = KernelContext {
             session: session_dyn.clone(),
             tools: tools.clone(),
@@ -3005,13 +3017,16 @@ mod tests {
         kernel
             .register_module(Box::new(AgentLoopModule::new(runner)), &ctx, &mut reg)
             .unwrap();
-        (IpcServer::new(kernel, session_dyn), seen)
+        (
+            IpcServer::new(kernel, session_dyn),
+            CapturedRuns { mock, other },
+        )
     }
 
     /// Dispatch one `session/run` request against a fresh capturing server and
-    /// return the parsed response plus the recorded `ModelOptions` log.
-    async fn call_session_run(params: Value) -> (Value, Arc<std::sync::Mutex<Vec<ModelOptions>>>) {
-        let (server, seen) = capturing_run_server();
+    /// return the parsed response plus both providers' recorded `ModelOptions`.
+    async fn call_session_run(params: Value) -> (Value, CapturedRuns) {
+        let (server, caps) = capturing_run_server();
         let raw = serde_json::json!({
             "jsonrpc": "2.0", "id": 9, "method": "session/run", "params": params,
         })
@@ -3021,55 +3036,110 @@ mod tests {
             .await
             .expect("dispatch returns a JSON-RPC line");
         let resp: Value = serde_json::from_str(&line).expect("response is JSON");
-        (resp, seen)
+        (resp, caps)
     }
 
     #[tokio::test]
     async fn session_run_passes_model_override_to_provider() {
-        let (resp, seen) = call_session_run(serde_json::json!({
+        let (resp, caps) = call_session_run(serde_json::json!({
             "session_id": "s1", "content": "hi", "provider": "mock", "model": "custom-model"
         }))
         .await;
         assert!(resp.get("error").is_none(), "{resp}");
-        assert_eq!(seen.lock().unwrap().last().unwrap().model, "custom-model");
+        assert_eq!(
+            caps.mock.lock().unwrap().last().unwrap().model,
+            "custom-model"
+        );
+    }
+
+    /// The default provider is `mock` (registered first), so naming `other`
+    /// proves the wire `provider` string really reaches provider selection.
+    #[tokio::test]
+    async fn session_run_provider_override_selects_that_provider() {
+        let (resp, caps) = call_session_run(serde_json::json!({
+            "session_id": "s1", "content": "hi", "provider": "other", "model": "other-model"
+        }))
+        .await;
+        assert!(resp.get("error").is_none(), "{resp}");
+        assert_eq!(
+            caps.other.lock().unwrap().last().unwrap().model,
+            "other-model",
+            "the named provider must serve the turn"
+        );
+        assert!(
+            caps.mock.lock().unwrap().is_empty(),
+            "the default provider must not serve a turn named for another provider"
+        );
+    }
+
+    /// A well-formed but unregistered provider name must fail the run on the
+    /// wire with the actionable message the turn runner builds. Turn errors
+    /// reach the client as `AgentEvent::Error` -> `DispatchError::internal`
+    /// (code `-32603`); the registered-name list order is a `HashMap`
+    /// iteration, so only membership is asserted.
+    #[tokio::test]
+    async fn session_run_unknown_provider_fails_on_the_wire() {
+        let (resp, caps) = call_session_run(serde_json::json!({
+            "session_id": "s1", "content": "hi", "provider": "nope"
+        }))
+        .await;
+        assert_eq!(resp["error"]["code"], -32603, "{resp}");
+        let msg = resp["error"]["message"].as_str().unwrap_or_default();
+        assert!(msg.contains("unknown provider: nope"), "{msg}");
+        assert!(msg.contains("mock"), "{msg}");
+        assert!(msg.contains("other"), "{msg}");
+        assert!(
+            caps.mock.lock().unwrap().is_empty(),
+            "no provider may serve a turn with an unknown provider name"
+        );
+        assert!(
+            caps.other.lock().unwrap().is_empty(),
+            "no provider may serve a turn with an unknown provider name"
+        );
     }
 
     #[tokio::test]
     async fn session_run_without_overrides_uses_default_model() {
-        let (resp, seen) = call_session_run(serde_json::json!({
+        let (resp, caps) = call_session_run(serde_json::json!({
             "session_id": "s1", "content": "hi"
         }))
         .await;
         assert!(resp.get("error").is_none(), "{resp}");
-        assert_eq!(seen.lock().unwrap().last().unwrap().model, "deepseek-chat");
+        assert_eq!(
+            caps.mock.lock().unwrap().last().unwrap().model,
+            "deepseek-chat"
+        );
     }
 
     #[tokio::test]
     async fn session_run_null_fields_are_absent() {
-        let (resp, seen) = call_session_run(serde_json::json!({
+        let (resp, caps) = call_session_run(serde_json::json!({
             "session_id": "s1", "content": "hi", "provider": null, "model": null
         }))
         .await;
         assert!(resp.get("error").is_none(), "{resp}");
-        assert_eq!(seen.lock().unwrap().last().unwrap().model, "deepseek-chat");
+        assert_eq!(
+            caps.mock.lock().unwrap().last().unwrap().model,
+            "deepseek-chat"
+        );
     }
 
     #[tokio::test]
     async fn session_run_blank_provider_is_treated_as_absent() {
-        let (resp, seen) = call_session_run(serde_json::json!({
+        let (resp, caps) = call_session_run(serde_json::json!({
             "session_id": "s1", "content": "hi", "provider": "   "
         }))
         .await;
         assert!(resp.get("error").is_none(), "{resp}");
         assert!(
-            !seen.lock().unwrap().is_empty(),
+            !caps.mock.lock().unwrap().is_empty(),
             "default provider must still serve the turn"
         );
     }
 
     #[tokio::test]
     async fn session_run_non_string_model_is_invalid_params() {
-        let (resp, _seen) = call_session_run(serde_json::json!({
+        let (resp, _caps) = call_session_run(serde_json::json!({
             "session_id": "s1", "content": "hi", "model": 123
         }))
         .await;
@@ -3079,7 +3149,7 @@ mod tests {
 
     #[tokio::test]
     async fn session_run_non_string_provider_is_invalid_params() {
-        let (resp, _seen) = call_session_run(serde_json::json!({
+        let (resp, _caps) = call_session_run(serde_json::json!({
             "session_id": "s1", "content": "hi", "provider": {}
         }))
         .await;
