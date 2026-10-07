@@ -68,6 +68,11 @@ function permissionIndex(mode: ComposerPermission): number {
   return index < 0 ? 0 : index;
 }
 
+/** Two providers can serve the same model name, so a row is identified by name + provider. */
+function modelKey(entry: ModelEntry): string {
+  return `${entry.provider ?? ""}\u0000${entry.name}`;
+}
+
 /**
  * Composer toolbar: model / agent / entropy / permission selectors with exactly
  * one popover open at a time. Preferences persist through layoutStore and the trigger label
@@ -136,6 +141,15 @@ export default function ComposerOptions({
   }, [collapsed]);
 
   const modelName = selected?.name ?? model ?? prefs.model;
+  // An explicit pick identifies its own row; without one only an unambiguous name can
+  // (a name served by several providers cannot say which provider a run would use).
+  const nameMatches = modelOptions.filter((entry) => entry.name === modelName);
+  const pickedKey = selected ? modelKey(selected) : null;
+  const selectedModelIndex = pickedKey
+    ? modelOptions.findIndex((entry) => modelKey(entry) === pickedKey)
+    : nameMatches.length === 1
+      ? modelOptions.indexOf(nameMatches[0])
+      : -1;
   const triggerRefs = {
     model: modelRef,
     agent: agentRef,
@@ -222,10 +236,9 @@ export default function ComposerOptions({
           className="sel"
           aria-haspopup="listbox"
           aria-expanded={openId === "model"}
-          onClick={() => {
-            const index = modelName ? modelOptions.findIndex((e) => e.name === modelName) : 0;
-            openPanel("model", index < 0 ? 0 : index);
-          }}
+          onClick={() =>
+            openPanel("model", selectedModelIndex < 0 ? 0 : selectedModelIndex)
+          }
         >
           <span className="g">◆</span>
           {modelName ?? "模型"}
@@ -243,10 +256,10 @@ export default function ComposerOptions({
         >
           <div className="pop-title" id="composer-model-title">选择模型</div>
           {modelOptions.map((entry, index) => {
-            const isSelected = modelName === entry.name;
+            const isSelected = index === selectedModelIndex;
             return (
               <div
-                key={entry.name}
+                key={modelKey(entry)}
                 role="option"
                 aria-selected={isSelected}
                 className={`pop-item${isSelected ? " sel-item" : ""}${highlight === index ? " hl" : ""}`}

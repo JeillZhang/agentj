@@ -585,6 +585,61 @@ describe("App with mocked SDK transport", () => {
       expect(row).toHaveAttribute("data-state", "warn");
     });
   });
+
+  it("tags served entries with their provider id in list order", async () => {
+    shared.kernelStatusResult.value = {
+      modules: [{ id: "test-mod", state: "running" }],
+      default_model: "dup",
+      providers: [{ id: "aaa", models: ["dup"] }, { id: "zzz", models: ["dup"] }],
+    };
+    shared.newSessionId.value = "s1";
+    render(<App />);
+    await createActiveSession();
+    fireEvent.click(screen.getByRole("button", { name: /dup/ }));
+    const options = screen.getAllByRole("option");
+    expect(options.map((o) => o.textContent)).toEqual(["dup", "dup"]);
+    fireEvent.click(options[1]);
+    const prompt = screen.getByLabelText(/prompt/i);
+    fireEvent.change(prompt, { target: { value: "hi" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+    await waitFor(() => expect(shared.lastRunParams.value).not.toBeNull());
+    expect(shared.lastRunParams.value).toMatchObject({ model: "dup", provider: "zzz" });
+    shared.kernelStatusResult.value = null;
+  });
+
+  it("sends no provider/model until the user picks a model", async () => {
+    shared.newSessionId.value = "s1";
+    render(<App />);
+    await createActiveSession();
+    const prompt = screen.getByLabelText(/prompt/i);
+    fireEvent.change(prompt, { target: { value: "hi" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+    await waitFor(() => expect(shared.lastRunParams.value).not.toBeNull());
+    expect(shared.lastRunParams.value).not.toHaveProperty("provider");
+    expect(shared.lastRunParams.value).not.toHaveProperty("model");
+  });
+
+  it("sends the picked entry provider and model", async () => {
+    shared.kernelStatusResult.value = {
+      modules: [{ id: "test-mod", state: "running" }],
+      default_model: "deepseek-chat",
+      providers: [{ id: "opencode-go", models: ["opencode-go/kimi-k3"] }],
+    };
+    shared.newSessionId.value = "s1";
+    render(<App />);
+    await createActiveSession();
+    fireEvent.click(screen.getByRole("button", { name: /deepseek-chat/ }));
+    fireEvent.click(screen.getByRole("option", { name: /opencode-go\/kimi-k3/ }));
+    const prompt = screen.getByLabelText(/prompt/i);
+    fireEvent.change(prompt, { target: { value: "hi" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+    await waitFor(() => expect(shared.lastRunParams.value).not.toBeNull());
+    expect(shared.lastRunParams.value).toMatchObject({
+      model: "opencode-go/kimi-k3",
+      provider: "opencode-go",
+    });
+    shared.kernelStatusResult.value = null;
+  });
 });
 
 describe("Trajectory mappers", () => {
