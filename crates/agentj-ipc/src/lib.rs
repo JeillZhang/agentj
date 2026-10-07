@@ -18,6 +18,11 @@ use agentj_protocol::base::error_codes;
 use agentj_protocol::file::{FileKind, FileListParams, FileListResult};
 use agentj_protocol::lifecycle::InitializeParams;
 use agentj_protocol::permission::{PermissionRequestParams, PermissionRespondParams};
+use agentj_protocol::provider::{
+    AuthDevicePollParams, AuthDevicePollResult, AuthDeviceStartParams, AuthDeviceStartResult,
+    AuthStatusParams, AuthStatusResult, ModelListParams, ModelListResult, ProviderUsageParams,
+    ProviderUsageResult,
+};
 use agentj_protocol::question::{AskQuestionParams, QuestionRespondParams, QuestionRespondResult};
 use agentj_protocol::session::{
     SessionIdParams, SessionNewParams, SessionStatusResult, SessionSubscribeParams,
@@ -324,11 +329,11 @@ fn optional_trimmed(params: &Value, key: &str) -> Result<Option<String>, Dispatc
 /// parameterized error details (`error.data`, design 决策 #5) and stays off
 /// the wire when None.
 #[derive(Debug, Serialize)]
-struct DispatchError {
-    code: i32,
-    message: String,
+pub struct DispatchError {
+    pub code: i32,
+    pub message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    data: Option<Value>,
+    pub data: Option<Value>,
 }
 
 impl DispatchError {
@@ -339,13 +344,14 @@ impl DispatchError {
             data: None,
         }
     }
-    fn invalid_params_with_data(msg: impl Into<String>, data: Value) -> Self {
+    pub fn invalid_params_with_data(msg: impl Into<String>, data: Value) -> Self {
         Self {
             code: -32602,
             message: msg.into(),
             data: Some(data),
         }
     }
+
     fn invalid_request(msg: impl Into<String>) -> Self {
         Self {
             code: -32600,
@@ -376,6 +382,28 @@ impl DispatchError {
     }
 }
 
+/// Subscription/service handle injected by the CLI assembly (`design D4`).
+///
+/// Defined here (returning `agentj-protocol` types) so `agentj-ipc` gains no dependency on
+/// `agentj-auth` / `agentj-model`; the implementation lives in `agentj-cli`.
+#[async_trait]
+pub trait ProviderService: Send + Sync {
+    async fn model_list(&self, params: ModelListParams) -> Result<ModelListResult, DispatchError>;
+    async fn auth_status(&self, params: AuthStatusParams) -> Result<AuthStatusResult, DispatchError>;
+    async fn usage(
+        &self,
+        params: ProviderUsageParams,
+    ) -> Result<ProviderUsageResult, DispatchError>;
+    async fn device_start(
+        &self,
+        params: AuthDeviceStartParams,
+    ) -> Result<AuthDeviceStartResult, DispatchError>;
+    async fn device_poll(
+        &self,
+        params: AuthDevicePollParams,
+    ) -> Result<AuthDevicePollResult, DispatchError>;
+}
+
 pub struct IpcServer {
     kernel: Kernel,
     session_store: Arc<dyn SessionStore>,
@@ -395,6 +423,8 @@ pub struct IpcServer {
     pub question_module: Option<Arc<QuestionModule>>,
     /// Optional TrajectoryStore: run/respond recording + session/history reads.
     pub trajectory_store: Option<Arc<trajectory::TrajectoryStore>>,
+    /// Optional ProviderService: the five subscription methods dispatch into it (`design D4`).
+    pub provider_service: Option<Arc<dyn ProviderService>>,
 }
 
 /// RAII guard releasing the per-session run mutex (决策 #7): acquired at
@@ -426,6 +456,7 @@ impl IpcServer {
             permission_module: None,
             question_module: None,
             trajectory_store: None,
+            provider_service: None,
         }
     }
 
@@ -2187,7 +2218,7 @@ pub(crate) mod test_support {
 mod tests {
     use super::*;
     use crate::test_support::{
-        MockConfig, stub_bus_server, stub_bus_server_with_usage, stub_session,
+        MockConfig, stub_bus_server, stub_bus_server_with_usage, stub_server, stub_session,
     };
     use agentj_context::ContextPipeline;
     use agentj_core::agent_loop_module::AgentLoopModule;
@@ -2218,6 +2249,105 @@ mod tests {
         let mut server = IpcServer::new(Kernel::new(), stub_session());
         server.permission_module = Some(module.clone());
         (server, module)
+    }
+
+    /// Test ProviderService double: records every call and returns minimal results.
+    #[derive(Default)]
+    struct Recording {
+        calls: std::sync::Mutex<Vec<String>>,
+    }
+
+    #[async_trait]
+    impl ProviderService for Recording {
+        async fn model_list(&self, _p: ModelListParams) -> Result<ModelListResult, DispatchError> {
+            self.calls.lock().unwrap().push("model_list".into());
+            Ok(ModelListResult {
+                provider: "opencode-go".into(),
+                default_model: "m".into(),
+                source: agentj_protocol::provider::ModelSource::Overlay,
+                fetched_at: 1,
+                models: vec![],
+            })
+        }
+        async fn auth_status(&self, p: AuthStatusParams) -> Result<AuthStatusResult, DispatchError> {
+            self.calls.lock().unwrap().push("auth_status".into());
+            Ok(AuthStatusResult {
+                provider: p.provider.unwrap_or_else(|| "opencode-go".into()),
+                authenticated: true,
+                credential: None,
+                models_count: 0,
+            })
+        }
+        async fn usage(
+            &self,
+            _p: ProviderUsageParams,
+        ) -> Result<ProviderUsageResult, DispatchError> {
+            self.calls.lock().unwrap().push("usage".into());
+            Ok(ProviderUsageResult {
+                provider: "opencode-go".into(),
+                fetched_at: 1,
+                stale: false,
+                warn_percent: 80,
+                windows: vec![],
+                error: None,
+            })
+        }
+        async fn device_start(
+            &self,
+            _p: AuthDeviceStartParams,
+        ) -> Result<AuthDeviceStartResult, DispatchError> {
+            self.calls.lock().unwrap().push("device_start".into());
+            Ok(AuthDeviceStartResult {
+                provider: "opencode-go".into(),
+                device_code: "dc".into(),
+                user_code: "UC".into(),
+                verification_uri: "u".into(),
+                expires_in: 600,
+                interval: 5,
+            })
+        }
+        async fn device_poll(
+            &self,
+            _p: AuthDevicePollParams,
+        ) -> Result<AuthDevicePollResult, DispatchError> {
+            self.calls.lock().unwrap().push("device_poll".into());
+            Ok(AuthDevicePollResult {
+                state: agentj_protocol::provider::DeviceAuthState::Pending,
+                interval: None,
+                message: None,
+                credential: None,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn handle_is_optional_and_the_trait_is_object_safe() {
+        assert!(stub_server().provider_service.is_none());
+
+        let rec = Arc::new(Recording::default());
+        let svc: Arc<dyn ProviderService> = rec.clone();
+        assert_eq!(
+            svc.model_list(ModelListParams {
+                provider: None,
+                refresh: None
+            })
+            .await
+            .unwrap()
+            .provider,
+            "opencode-go"
+        );
+        assert_eq!(rec.calls.lock().unwrap().as_slice(), ["model_list"]);
+    }
+
+    #[test]
+    fn dispatch_error_is_constructible_from_outside_the_crate() {
+        let e = DispatchError::invalid_params_with_data(
+            "InvalidParams",
+            serde_json::json!({"field": "provider"}),
+        );
+        assert_eq!(e.code, error_codes::INVALID_PARAMS);
+        assert_eq!(e.data.unwrap()["field"], "provider");
+        assert!(crate::tcp::TcpBindOptions::default().provider_service.is_none());
     }
 
     /// Fixture for the cancel regression test: the AgentLoop's ToolRegistry is
