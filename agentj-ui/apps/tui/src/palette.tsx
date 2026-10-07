@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useKeyboard } from "@opentui/react";
 
-export const COMMANDS = ["models", "sessions", "themes", "help", "exit"] as const;
+export const COMMANDS = ["models", "sessions", "themes", "help", "exit", "subscription"] as const;
 
 export function filterCommands(query: string, commands: string[]): string[] {
   const q = query.replace(/^\//, "").toLowerCase().trim();

@@ -18,6 +18,7 @@ import {
 } from "./session.tsx";
 import { PermissionDialog, usePermissionState } from "./permission.tsx";
 import { Palette } from "./palette.tsx";
+import { SubscriptionOverlay } from "./subscription.tsx";
 import { ModelSelector, useModelConfig } from "./models.tsx";
 import type { ModelEntry } from "./models.tsx";
 import { ThemeProvider, useTheme } from "./theme.tsx";
@@ -380,8 +381,14 @@ function getStatusLine(authError: string | null, status: TransportStatus): strin
 function usePaletteControl(onThemeToggle?: () => void, disabled = false) {
   const [paletteQuery, setPaletteQuery] = useState<string | null>(null);
   const [modelOpen, setModelOpen] = useState(false);
+  const [subOpen, setSubOpen] = useState(false);
   const handleSelect = useCallback(
     (cmd: string) => {
+      if (cmd === "subscription") {
+        setSubOpen(true);
+        setPaletteQuery(null);
+        return;
+      }
       if (cmd === "models") setModelOpen(true);
       if (cmd === "themes") onThemeToggle?.();
       setPaletteQuery(null);
@@ -390,8 +397,10 @@ function usePaletteControl(onThemeToggle?: () => void, disabled = false) {
   );
   const handleClose = useCallback(() => setPaletteQuery(null), []);
   const handleModelClose = useCallback(() => setModelOpen(false), []);
+  const handleSubClose = useCallback(() => setSubOpen(false), []);
   useKeyboard((key) => {
     if (disabled) return;
+    if (subOpen) return;
     if (modelOpen) {
       const name = (key.name ?? "").toLowerCase();
       if (name === "escape") setModelOpen(false);
@@ -421,7 +430,7 @@ function usePaletteControl(onThemeToggle?: () => void, disabled = false) {
     const seq = key.sequence ?? "";
     if (seq === "/") setPaletteQuery("/");
   });
-  return { paletteQuery, modelOpen, handleSelect, handleClose, handleModelClose };
+  return { paletteQuery, modelOpen, subOpen, handleSelect, handleClose, handleModelClose, handleSubClose };
 }
 
 function AppInner({ url, createTransport, backoffBaseMs = 1000 }: AppProps) {
@@ -684,7 +693,7 @@ function AppInner({ url, createTransport, backoffBaseMs = 1000 }: AppProps) {
     [],
   );
   useKeyboard((key) => {
-    if (paletteCtrl.paletteQuery !== null || paletteCtrl.modelOpen || permReq) return;
+    if (paletteCtrl.paletteQuery !== null || paletteCtrl.modelOpen || paletteCtrl.subOpen || permReq) return;
     const name = (key.name ?? "").toLowerCase();
     const seq = key.sequence ?? "";
     const isTab = name === "tab" || seq === "\t" || seq === "\x09";
@@ -846,6 +855,9 @@ function AppInner({ url, createTransport, backoffBaseMs = 1000 }: AppProps) {
             paletteCtrl.handleModelClose();
           }}
         />
+      ) : null}
+      {paletteCtrl.subOpen && client ? (
+        <SubscriptionOverlay client={client} onClose={paletteCtrl.handleSubClose} />
       ) : null}
       {paletteCtrl.paletteQuery !== null && !paletteCtrl.modelOpen ? (
         <Palette
