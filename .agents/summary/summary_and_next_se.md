@@ -42,8 +42,10 @@
 
 ## 验证结果（全量门禁清扫，2026-10-07）
 
-> 本表由编排器在本阶段最终树上执行（T23 拥有 AC8/G6）。`cargo test --workspace` 以
-> `-- --skip permission_request_notified_and_timeout_denies` 运行（见「遗留问题」）。
+> 本表由编排器在本阶段最终树上执行（T23 拥有 AC8/G6）；**全量清扫覆盖前后端两侧并全部
+> 通过**，前端门禁见 `summary_and_next_fe.md`（本文件只列后端门禁）。
+> `cargo test --workspace` 以 `-- --skip permission_request_notified_and_timeout_denies`
+> 运行（见「遗留问题」）。
 
 | 门禁 | 结果 |
 |---|---|
@@ -52,11 +54,6 @@
 | `cargo check --workspace --locked --quiet` | OK（lockfile fresh） |
 | `cargo test --workspace -- --skip permission_request_notified_and_timeout_denies` | **740 passed / 0 failed（+1 skipped）** |
 | `cargo test -p agentj-protocol -- drift` | 2 passed |
-| `npm --prefix agentj-ui test --workspace=@agentj/web` | 626 passed（52 files） |
-| `npm --prefix agentj-ui test --workspace=@agentj/sdk` | 54 passed（6 files） |
-| `npm --prefix agentj-ui run build --workspace=@agentj/protocol` | clean |
-| `npm --prefix agentj-ui run build --workspace=@agentj/web` | clean |
-| `bun --cwd agentj-ui/apps/tui test` | 157 passed |
 | `./scripts/check-version.sh` | version-ok（**0.26.0** / `PROTOCOL_VERSION` **0.16.0**） |
 | `node agentj-ui/apps/desktop/check-desktop-ui.mjs` | desktop-ui-ok |
 

@@ -37,7 +37,8 @@
 
 ## 验证结果（全量门禁清扫，2026-10-07）
 
-> 本表由编排器在本阶段最终树上执行。前端相关门禁如下；后端门禁见 `summary_and_next_se.md`。
+> 本表由编排器在本阶段最终树上执行；**全量清扫覆盖前后端两侧并全部通过**，
+> 前端门禁如下（本文件只列前端门禁），后端门禁见 `summary_and_next_se.md`。
 
 | 门禁 | 结果 |
 |---|---|
@@ -48,8 +49,6 @@
 | `bun --cwd agentj-ui/apps/tui test` | 157 passed |
 | `./scripts/check-version.sh` | version-ok（**0.26.0** / `PROTOCOL_VERSION` **0.16.0**） |
 | `node agentj-ui/apps/desktop/check-desktop-ui.mjs` | desktop-ui-ok |
-| `cargo test --workspace -- --skip permission_request_notified_and_timeout_denies` | 740 passed / 0 failed（+1 skipped） |
-| `cargo clippy --workspace --all-targets -- -D warnings` | 0 warnings |
 
 ## 遗留问题 / 已知限制（前端）
 

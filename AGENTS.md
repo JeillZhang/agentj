@@ -128,7 +128,7 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
 - `agentj-plugin-fixture`（dev-only）：插件 cdylib 测试夹具。
 - `schemas/*.json`：52 JSON Schema（schemars 生成，提交件 + drift 门禁）。
 - `protocol/methods.json`：方法注册表（method ↔ schema/方向/类型；21 方法，
-  protocol_version 0.15.0）。
+  protocol_version 0.16.0）。
 - `docs/specs/ipc-protocol.md`：人类可读协议规范——**错误码表、WS/HTTP 鉴权
   通道、各方法参数/结果契约的权威来源**。
 
