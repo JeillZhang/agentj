@@ -4,7 +4,7 @@ AI 编码代理工具（Rust）——Linux 内核式「内核调度 + 可插拔�
 内核通过统一的 JSON-RPC 2.0 协议（stdio / TCP / WebSocket）对外暴露能力；
 CLI、TUI、Web、Desktop 均作为协议消费者接入，任意语言可开发前端。
 
-> 当前版本：**v0.26.0**
+> 当前版本：**v0.27.0**
 > · 变更记录：[`docs/changelog/`](docs/changelog/)
 > · 用户指南：[`docs/guide/`](docs/guide/)
 > · 协议规范：[`docs/specs/ipc-protocol.md`](docs/specs/ipc-protocol.md)
@@ -22,9 +22,9 @@ CLI、TUI、Web、Desktop 均作为协议消费者接入，任意语言可开发
 
 **内核与协议**
 
-- [x] **IPC 协议契约**：JSON-RPC 2.0 信封 + 错误码 + 21 方法
-  （lifecycle / session / kernel / 通知 / 权限 / 提问 / 文件列举）
-- [x] **JSON Schema**：52 Schema（schemars 生成，提交件 + 漂移门禁）
+- [x] **IPC 协议契约**：JSON-RPC 2.0 信封 + 错误码 + 26 方法
+  （lifecycle / session / kernel / 通知 / 权限 / 提问 / 文件列举 / 订阅服务）
+- [x] **JSON Schema**：72 Schema（schemars 生成，提交件 + 漂移门禁）
 - [x] **方法注册表** `protocol/methods.json` + 跨语言类型绑定 `agentj-ui/packages/protocol`
 - [x] **内核与模块注册表**：Kernel 混合总线 + `ServiceRegistry`（同步/异步）
 - [x] **事件总线**：`EventBus` 订阅/发布 + 重入防护（`MAX_EVENT_DEPTH=16`）
@@ -94,7 +94,7 @@ agentj-ui/                 # 前端 monorepo（npm workspaces，frontend stays i
     tui/                   # TUI（Bun + @opentui/react）
     desktop/               # Tauri 壳（套 web/dist）
 models/                    # models/opencode-go.json
-schemas/                   # 52 JSON Schema（机器事实来源）
+schemas/                   # 72 JSON Schema（机器事实来源）
 protocol/                  # methods.json 方法注册表
 docs/                      # 用户指南（guide/）+ 变更记录（changelog/）+ 规范（specs/）+ 设计（superpowers/）
 ```
@@ -177,14 +177,15 @@ env = { FOO = "bar" }
 ## Protocol
 
 - 规范：`docs/specs/ipc-protocol.md`
-- Schema：`schemas/*.json`（52 个）
-- 方法注册表：`protocol/methods.json`（21 方法）
+- Schema：`schemas/*.json`（72 个）
+- 方法注册表：`protocol/methods.json`（26 方法）
 - 方法面：`initialize` / `initialized` / `shutdown` / `exit` /
   `session/new` / `session/run` / `session/status` / `session/archive` /
   `session/delete` / `session/subscribe` / `session/unsubscribe` /
   `session/list` / `session/history` / `kernel/status` /
   `$/cancelRequest` / `$/progress` / `$/askQuestion` / `$/permissionRequest` /
-  `permission/respond` / `file/list` / `question/respond`
+  `permission/respond` / `file/list` / `question/respond` /
+  `model/list` / `auth/status` / `provider/usage` / `auth/deviceStart` / `auth/devicePoll`
 - 传输：stdio（单客户端）+ TCP（NDJSON 多客户端）+ WebSocket `/ws`
   （同端口分类器；`?token=` + `initialize.token` + 登录 cookie 三通道鉴权）
 - HTTP 面（内核托管）：`/`（Web UI）+ `/assets` + `/login` / `/logout` +

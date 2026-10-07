@@ -1,6 +1,6 @@
 # AGENTS.md
 
-> **当前版本 0.26.0** · `PROTOCOL_VERSION` **0.16.0**（21 方法 / 52 schemas / 18 crates）
+> **当前版本 0.27.0** · `PROTOCOL_VERSION` **0.17.0**（26 方法 / 72 schemas / 18 crates）
 > 本文件只记录**约束、入口与基线**（Setup / Commands / Architecture / Conventions / Rules）。
 > **逐版本变更与历史决策不写在这里** —— 见 [`docs/changelog/`](docs/changelog/)、
 > [`docs/guide/`](docs/guide/)、[`docs/specs/`](docs/specs/) 与 `.agents/summary/`。
@@ -68,8 +68,8 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
 > 下文 `agentj-*` 均为 `crates/agentj-*`，`@agentj/*` 为 `agentj-ui` 包。
 
 - `agentj-protocol`（leaf）：IPC 协议权威 wire 类型（JSON-RPC 2.0、错误码、
-  21 方法 params/result、流式/订阅/权限/提问/文件列举类型），serde + schemars，
-  零内核耦合。协议版本 `0.16.0`，52 schemas。
+  26 方法 params/result、流式/订阅/权限/提问/文件列举/订阅服务类型），serde + schemars，
+  零内核耦合。协议版本 `0.17.0`，72 schemas。
 - `agentj-core`（内核）：Kernel 混合总线 + 模块 trait 注册表
   + ServiceRegistry（同步/异步） + TurnRunner 总线化 turn 编排
   + `ToolCallContext`（会话根上下文，工具相对路径重定基）
@@ -77,16 +77,21 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
   + 事件总线重入防护（EventGuard thread_local + MAX_EVENT_DEPTH=16）。
 - `agentj-config`：TOML 配置（[model]/[permission]/[session]/[license]/[[mcp.servers]]；
   `toml_edit` 定点写回 `[model]` 保留注释）。
-- `agentj-auth`：订阅凭据（`Credential` api_key/oauth 占位 + `AuthStore`
+- `agentj-auth`：订阅凭据（`Credential` api_key/oauth + `AuthStore`
   XDG 路径 / 目录 0700 / 文件 0600 / 原子写 / 权限与 JSON 校验拒绝降级
-  + `resolve_credential` flag>env>file 优先级 + `redact` 仅末 4 位）。
+  + `resolve_credential` flag>env>file 优先级 + `redact` 仅末 4 位
+  + `oauth` 模块（RFC 8628 设备码授权与 refresh 交换）
+  + `refresh::ensure_access`（`auth.json.lock` 单飞刷新、单次 refresh token 轮换、
+  60s 安全余量、失败不落盘））。
 - `agentj-session`：会话生命周期（InMemoryStore/FileBackedStore + 过期清理
   + 会话级 `project_root` 持久化，serde default 兼容旧快照）。
 - `agentj-permission`：权限系统（决策引擎 + 60s 超时 + allow_always）。
 - `agentj-question`：提问通道（`QuestionModule` + `AskTool`，镜像 permission 的
   pending/owner 归属；`ask_blocking` 阻塞等待、`respond` 幂等 `accepted:false`、
   `timeout_s` 可空、`set_notifier`/`set_settle_hook` 统一结算一次）。
-- `agentj-model`：模型提供方（三线 wire-format + opencode-go + Mock + Ollama）。
+- `agentj-model`：模型提供方（三线 wire-format + opencode-go + Mock + Ollama）
+  + `usage`（防御式 `GET /v1/usage`：三窗口、未知键忽略、`percent==0` 丢弃占位 reset）
+  + `console_catalog`（`GET /api/v2/config` 账号级目录，失败即 Err 以便回退）。
 - `agentj-tools`：内置工具（bash/glob/grep/read/write + `todo`，共 6 个）。
 - `agentj-context`：上下文管线。
 - `agentj-stats`：用量统计 UsageCollector。
@@ -96,6 +101,9 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
 - `agentj-skills`：skills 加载器。
 - `agentj-plugin`：插件系统（manifest + 状态机 + 依赖图 + libloading）。
 - `agentj-ipc`：JSON-RPC IPC（stdio/TCP/WS + 同端口分类器 + WsConnection
+  + 注入式 `ProviderService` handle（`model/list` / `auth/status` / `provider/usage` /
+  `auth/deviceStart` / `auth/devicePoll`；未注入统一 `-32603
+  provider_service_unavailable`，ipc 不依赖 auth/model）
   + WsServerState/ws_router/serve_http + per-session 路由
   + `file/list` dispatch（沙箱 + git 状态；目录聚合后代最高优先级字母；`query` 子树搜索
   独立访问预算 20000 + rank + Top-100 + `total`）+ question notifier/settle hook 接线
@@ -121,14 +129,17 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
     （`SpotCheckConfig`，结果经 `/version` `integrity.runtime` 与 `/metrics` 双面暴露）。
   - 依赖：`tower-http`（fs/set-header）+ `uuid`（v4）。
 - `agentj-cli`：`agentj` 二进制（run/serve/dashboard/auth，模块注册进 Kernel，
-  agentj-question 的 stdio 与 `serve --port` 两条装配路径）；`serve`/`dashboard`
+  agentj-question 的 stdio 与 `serve --port` 两条装配路径）；`auth login --device`
+  （设备码登录，与 `--api-key` 互斥）+ `CliProviderService`（ProviderService 实现：
+  usage 300s 缓存 / 三层 `model/list` / 设备流）+ `RefreshingProvider` 装饰器
+  （OAuth 凭据每次 chat 前保鲜，仅密钥变化才重建）；`serve`/`dashboard`
   支持 `--host`（默认仍是 127.0.0.1 本机信任）、`--token`、`--web-dist <PATH>`
   （显式 flag → cwd `agentj-ui/apps/web/dist` → exe 相对两档四级发现），
   启动打印 `http://<host>:<port>/` 并输出 `web_config().startup_warnings()`。
 - `agentj-plugin-fixture`（dev-only）：插件 cdylib 测试夹具。
-- `schemas/*.json`：52 JSON Schema（schemars 生成，提交件 + drift 门禁）。
-- `protocol/methods.json`：方法注册表（method ↔ schema/方向/类型；21 方法，
-  protocol_version 0.16.0）。
+- `schemas/*.json`：72 JSON Schema（schemars 生成，提交件 + drift 门禁）。
+- `protocol/methods.json`：方法注册表（method ↔ schema/方向/类型；26 方法，
+  protocol_version 0.17.0）。
 - `docs/specs/ipc-protocol.md`：人类可读协议规范——**错误码表、WS/HTTP 鉴权
   通道、各方法参数/结果契约的权威来源**。
 
