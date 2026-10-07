@@ -5,7 +5,7 @@ import { METHODS } from "../methods.js";
 describe("config", () => {
   it("version bumped to 0.26.0", () => {
     expect(VERSION).toBe("0.26.0");
-    expect(PROTOCOL_VERSION).toBe("0.16.0");
+    expect(PROTOCOL_VERSION).toBe("0.17.0");
   });
 
 
