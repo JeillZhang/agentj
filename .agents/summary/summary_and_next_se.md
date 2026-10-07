@@ -13,7 +13,7 @@
 > `agentj-model`（usage/console_catalog）+ `agentj-config`（2 键）+ `agentj-ipc`
 > （`ProviderService` 注入）+ `agentj-cli`（设备码登录 / `CliProviderService` / `RefreshingProvider`）。
 > `PROTOCOL_VERSION` 0.16.0 → **0.17.0**（21 → **26 方法**，52 → **72 schemas**）；
-> 工作区 0.26.0 → **0.27.0**。前端部分见 `summary_and_next_fe.md`。
+> 工作区 0.26.0 → **0.27.0** → **0.27.1**（验收修复）。前端部分见 `summary_and_next_fe.md`。
 
 ## v0.27.0（opencode-go 订阅二期，后端部分）✅（本次完成）
 
@@ -61,7 +61,7 @@
 | `cargo fmt --check` | clean |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 0 warnings |
 | `cargo check --workspace --locked --quiet` | OK（lockfile fresh） |
-| `cargo test --workspace -- --skip permission_request_notified_and_timeout_denies` | **790 passed / 0 failed** |
+| `cargo test --workspace -- --skip permission_request_notified_and_timeout_denies` | **792 passed / 0 failed** |
 | `cargo test -p agentj-protocol -- drift` | 2 passed |
 | `./scripts/check-version.sh` | version-ok（**0.27.0** / `PROTOCOL_VERSION` **0.17.0**） |
 | `cargo run -p agentj-protocol --bin gen_schemas` | 72 schemas |
@@ -78,6 +78,24 @@
 - **已修复**（commit `bc19b2b`）：`CliProviderService::key()` 过滤空 key（杜绝空 Bearer）；
   非 `--offline` 的设备码登录补打模型目录摘要。
 - **前端审查 VERDICT FAIL → 已修复**（commit `99385c6`，见 `_fe.md`）。
+
+## 验收（`jskill-test-acceptance`，两轮修复后通过）
+
+| 轮次 | 结果 |
+|------|------|
+| 1 test | 11 项门禁全绿；探索式 QA 发现 **BUG-001**（low）：`auth/status` 在凭据仅来自 `api_key_env`
+（无 `auth.json` 条目）时返回 `authenticated:true` 却省略 `credential` |
+| 1 fix | `bad6894` `fix: BUG-001 report credential info when api_key comes from env only` |
+| 1 regression | BUG-001 **verified**；无新 Bug |
+| 2 test | 编排器复核发现 **BUG-002**（medium）：`CredentialKind::OAuth` 线值被
+`rename_all="snake_case"` 渲染成 `o_auth`（应为 `oauth`；tester 当成「既定线值」判定有误） |
+| 2 fix | `9ad70f3` `fix: BUG-002 render CredentialKind::OAuth as "oauth" on the wire` |
+| 2 regression | BUG-002 **verified**、BUG-001 未回归；无新 Bug；门禁全绿 → **验收 PASS** |
+
+- 版本：验收修复 bump 产品 patch **0.27.0 → 0.27.1**（同分支，未发布）；
+  changelog 新增 `## 0.27.1 —— 验收修复（修复）`，索引同步；`AGENTS.md` / `README.md` 版本行同步。
+- 最终门禁：`cargo test --workspace` **792 passed / 0 failed**（前 790 + BUG-001/002 两条新单测），
+  其余门禁与上表一致保持全绿。
 
 ## 遗留问题 / 已知限制（后端）
 

@@ -12,7 +12,7 @@
 > + 实现计划 `docs/superpowers/plans/2026-10-07-agentj-opencode-go-phase2-plan.md`（T4/T5/T22–T27）。
 > 前端范围：`packages/protocol`（类型重生成）+ `packages/sdk`（METHODS 26 + VERSION）+
 > `apps/web`（订阅面板 / 设置 tab / 客户端贯通 / 配额提示）+ `apps/tui`（订阅 overlay / palette）
-> + `apps/desktop`（版本清单）；工作区 0.26.0 → **0.27.0**。
+> + `apps/desktop`（版本清单）；工作区 0.26.0 → **0.27.0** → **0.27.1**（验收修复）。
 > 后端部分见 `summary_and_next_se.md`。
 
 ## v0.27.0（opencode-go 订阅二期，前端部分）✅（本次完成）
@@ -68,6 +68,17 @@
     同时在卸载时清除挂起的轮询定时器，而非仅依赖 `cancelled` 标志。
   - 复审结论：原偏差已消除，Web/TUI 口径一致。
 
+## 验收（`jskill-test-acceptance`，两轮修复后通过）
+
+- 前端相关修复：**BUG-002**（`CredentialKind` 的 OAuth 线值 `o_auth` → `oauth`）
+  同步了 `@agentj/protocol` 的 `types.d.ts` 与 Web `SubscriptionPanel.tsx`（`cred.kind === "oauth"`）
+  及其测试，提交 `9ad70f3`。
+- 最终门禁：Web **637**（53 files）、SDK **54**、TUI **169**、Web/protocol 构建 clean、
+  `version-ok`（**0.27.1** / `PROTOCOL_VERSION` **0.17.0**）、`desktop-ui-ok`——全部保持绿。
+- 版本：验收修复 bump 产品 patch **0.27.0 → 0.27.1**（同分支）；desktop 三清单与
+  `package-lock.json` / `bun.lock` / `src-tauri/Cargo.lock` 版本元数据同步；
+  changelog `## 0.27.1` 与索引同步。
+
 ## 遗留问题 / 已知限制（前端）
 
 - **预存在的 TUI 工具链问题（非本阶段回归）**：`bunx tsc --noEmit` 在
@@ -89,7 +100,7 @@
 
 ## 下一步
 
-- v0.27.0 opencode-go 二期（前端部分）完成：Web 637 / SDK 54 / TUI 169 全绿，
+- v0.27.1（opencode-go 二期 + 验收修复）完成：Web 637 / SDK 54 / TUI 169 全绿，
   Web + protocol 构建 clean，check-version / desktop-ui 通过；待 PR 由用户合并 main。
 - 前端候选：③ Web 接入服务端搜索；或在弹层重新打开时从 `agentj.composer.model` 回灌选择；
   或订阅状态常驻指示（需先定义新鲜度语义，见设计 D10 的非目标）。

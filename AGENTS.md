@@ -1,6 +1,6 @@
 # AGENTS.md
 
-> **当前版本 0.27.0** · `PROTOCOL_VERSION` **0.17.0**（26 方法 / 72 schemas / 18 crates）
+> **当前版本 0.27.1** · `PROTOCOL_VERSION` **0.17.0**（26 方法 / 72 schemas / 18 crates）
 > 本文件只记录**约束、入口与基线**（Setup / Commands / Architecture / Conventions / Rules）。
 > **逐版本变更与历史决策不写在这里** —— 见 [`docs/changelog/`](docs/changelog/)、
 > [`docs/guide/`](docs/guide/)、[`docs/specs/`](docs/specs/) 与 `.agents/summary/`。
