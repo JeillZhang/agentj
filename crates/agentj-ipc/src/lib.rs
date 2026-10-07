@@ -380,7 +380,7 @@ impl DispatchError {
             data: None,
         }
     }
-    fn internal_with_data(msg: impl Into<String>, data: Value) -> Self {
+    pub fn internal_with_data(msg: impl Into<String>, data: Value) -> Self {
         Self {
             code: -32603,
             message: msg.into(),
@@ -396,7 +396,10 @@ impl DispatchError {
 #[async_trait]
 pub trait ProviderService: Send + Sync {
     async fn model_list(&self, params: ModelListParams) -> Result<ModelListResult, DispatchError>;
-    async fn auth_status(&self, params: AuthStatusParams) -> Result<AuthStatusResult, DispatchError>;
+    async fn auth_status(
+        &self,
+        params: AuthStatusParams,
+    ) -> Result<AuthStatusResult, DispatchError>;
     async fn usage(
         &self,
         params: ProviderUsageParams,
@@ -2343,7 +2346,10 @@ mod tests {
                 models: vec![],
             })
         }
-        async fn auth_status(&self, p: AuthStatusParams) -> Result<AuthStatusResult, DispatchError> {
+        async fn auth_status(
+            &self,
+            p: AuthStatusParams,
+        ) -> Result<AuthStatusResult, DispatchError> {
             self.calls.lock().unwrap().push("auth_status".into());
             Ok(AuthStatusResult {
                 provider: p.provider.unwrap_or_else(|| "opencode-go".into()),
@@ -2421,13 +2427,20 @@ mod tests {
         );
         assert_eq!(e.code, error_codes::INVALID_PARAMS);
         assert_eq!(e.data.unwrap()["field"], "provider");
-        assert!(crate::tcp::TcpBindOptions::default().provider_service.is_none());
+        assert!(
+            crate::tcp::TcpBindOptions::default()
+                .provider_service
+                .is_none()
+        );
     }
 
-    async fn call(server: &IpcServer, method: &str, params: serde_json::Value) -> serde_json::Value {
+    async fn call(
+        server: &IpcServer,
+        method: &str,
+        params: serde_json::Value,
+    ) -> serde_json::Value {
         let raw =
-            serde_json::json!({"jsonrpc":"2.0","id":7,"method":method,"params":params})
-                .to_string();
+            serde_json::json!({"jsonrpc":"2.0","id":7,"method":method,"params":params}).to_string();
         serde_json::from_str(&server.handle_request_from(&raw, "c1").await.unwrap()).unwrap()
     }
 
@@ -2452,7 +2465,11 @@ mod tests {
             ("model/list", serde_json::json!({}), "model_list"),
             ("provider/usage", serde_json::json!({}), "usage"),
             ("auth/deviceStart", serde_json::json!({}), "device_start"),
-            ("auth/devicePoll", serde_json::json!({"device_code":"dc"}), "device_poll"),
+            (
+                "auth/devicePoll",
+                serde_json::json!({"device_code":"dc"}),
+                "device_poll",
+            ),
         ] {
             let v = call(&server, method, params).await;
             assert!(v.get("error").is_none(), "{method} must succeed: {v}");
@@ -2483,7 +2500,12 @@ mod tests {
         let rec = Arc::new(Recording::default());
         let svc: Arc<dyn ProviderService> = rec.clone();
         server.provider_service = Some(svc);
-        let v = call(&server, "auth/devicePoll", serde_json::json!({"device_code": 42})).await;
+        let v = call(
+            &server,
+            "auth/devicePoll",
+            serde_json::json!({"device_code": 42}),
+        )
+        .await;
         assert_eq!(v["error"]["code"], -32602);
         assert!(
             rec.calls.lock().unwrap().is_empty(),

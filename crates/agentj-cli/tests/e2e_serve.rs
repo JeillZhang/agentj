@@ -445,3 +445,99 @@ fn e2e_tcp_session_history_replays_run_events() {
     let _ = child.0.wait();
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// T21: a resident `serve --port` process exposes the five subscription methods through the
+/// injected `CliProviderService`, and still reports an unsupported provider as -32602.
+#[test]
+fn serve_exposes_the_subscription_methods() {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!(
+        "agentj-e2e-subscription-{}-{}",
+        std::process::id(),
+        nanos
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let sess_dir = dir.join("sessions");
+    std::fs::create_dir_all(&sess_dir).unwrap();
+
+    // A resolvable key is required: providers without one are skipped and an empty
+    // registry makes `agentj serve` exit before it prints the listening line.
+    // SAFETY: unique test-local variable name; the child inherits it.
+    unsafe { std::env::set_var("AGENTJ_E2E_OPENCODE_KEY", "sk-e2e-key") };
+    let cfg = dir.join("subscription_config.toml");
+    std::fs::write(
+        &cfg,
+        format!(
+            "[model]\nprovider = \"opencode-go\"\n\n\
+             [[model.providers]]\nname = \"opencode-go\"\nkind = \"opencode-go\"\n\
+             base_url = \"https://opencode.ai/zen/go\"\n\
+             api_key_env = \"AGENTJ_E2E_OPENCODE_KEY\"\n\n\
+             [[model.providers]]\nname = \"deepseek\"\nkind = \"openai-compat\"\n\
+             base_url = \"https://api.deepseek.com\"\n\
+             api_key_env = \"AGENTJ_E2E_DEEPSEEK_KEY\"\n\n\
+             [session]\ndir = \"{}\"\n",
+            sess_dir.display()
+        ),
+    )
+    .unwrap();
+
+    let mut child = AutoReap(
+        Command::new(env!("CARGO_BIN_EXE_agentj"))
+            .args(["--config", cfg.to_str().unwrap(), "serve", "--port", "0"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let stdout = child.0.stdout.take().unwrap();
+    let mut server_reader = BufReader::new(stdout);
+    let addr = read_listening_addr(&mut server_reader);
+
+    let stream = TcpStream::connect(&addr).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(20)))
+        .unwrap();
+    let mut writer = stream.try_clone().unwrap();
+    let mut reader = BufReader::new(stream);
+    let mut seen: Vec<String> = Vec::new();
+
+    writeln!(
+        writer,
+        r#"{{"jsonrpc":"2.0","id":1,"method":"initialize","params":{{"protocol_version":"0.17.0","client_info":{{"name":"e2e","version":"0.27.0"}}}}}}"#
+    )
+    .unwrap();
+    let init = read_socket_line(&mut reader, &seen);
+    seen.push(init);
+
+    writeln!(
+        writer,
+        r#"{{"jsonrpc":"2.0","id":2,"method":"auth/status","params":{{"provider":"opencode-go"}}}}"#
+    )
+    .unwrap();
+    let status_line = read_socket_line(&mut reader, &seen);
+    seen.push(status_line.clone());
+    let status: serde_json::Value = serde_json::from_str(&status_line).unwrap();
+    assert!(
+        status["result"].is_object(),
+        "expected a result, got {status}"
+    );
+    assert_eq!(status["result"]["provider"], "opencode-go");
+
+    writeln!(
+        writer,
+        r#"{{"jsonrpc":"2.0","id":3,"method":"provider/usage","params":{{"provider":"deepseek"}}}}"#
+    )
+    .unwrap();
+    let unsupported_line = read_socket_line(&mut reader, &seen);
+    let unsupported: serde_json::Value = serde_json::from_str(&unsupported_line).unwrap();
+    assert_eq!(unsupported["error"]["code"], -32602);
+    assert_eq!(
+        unsupported["error"]["data"]["reason"],
+        "unsupported_provider"
+    );
+}

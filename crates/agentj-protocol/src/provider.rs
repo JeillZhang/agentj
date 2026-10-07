@@ -38,7 +38,7 @@ pub struct ModelEntry {
 /// Catalog tier (account → live → overlay; static for non-go providers).
 /// `Unknown` tolerates forward values; the schema lists only the known tiers.
 /// @since 0.17.0
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ModelSource {
     Account,
@@ -86,7 +86,7 @@ pub struct CredentialInfo {
 }
 
 /// Credential kind. `Unknown` tolerates forward values. @since 0.17.0
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum CredentialKind {
     ApiKey,
@@ -97,7 +97,7 @@ pub enum CredentialKind {
 }
 
 /// Where the credential came from. `Unknown` tolerates forward values. @since 0.17.0
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum CredentialSource {
     Flag,
@@ -149,7 +149,7 @@ pub struct UsageWindow {
 }
 
 /// Quota window kind. `Unknown` tolerates forward values. @since 0.17.0
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum UsageWindowKind {
     Rolling,
@@ -161,7 +161,7 @@ pub enum UsageWindowKind {
 }
 
 /// Window status. `Unknown` tolerates forward values. @since 0.17.0
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub enum UsageWindowStatus {
     #[serde(rename = "ok")]
     Ok,
@@ -224,7 +224,7 @@ pub struct AuthDevicePollResult {
 }
 
 /// Device-flow poll state. `Unknown` tolerates forward values. @since 0.17.0
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum DeviceAuthState {
     Pending,

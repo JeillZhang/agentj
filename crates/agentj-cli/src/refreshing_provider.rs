@@ -6,8 +6,8 @@
 //! and the inner provider is rebuilt **only** when the access token actually changed. Static
 //! (api_key / flag / env) credentials pay zero cost.
 
-use agentj_auth::store::AuthStore;
 use agentj_auth::ensure_access;
+use agentj_auth::store::AuthStore;
 use agentj_core::error::ModelError;
 use agentj_core::module::ModelProvider;
 use agentj_core::types::{ChatMessage, ChatResponse, ModelEvent, ModelOptions, ToolDefinition};
@@ -15,8 +15,6 @@ use futures::stream::BoxStream;
 use std::sync::{Arc, RwLock};
 
 /// Builds an inner provider for a given access key.
-// TODO(T20): remove once `build_providers` wraps opencode-go; kept in the plan's order.
-#[allow(dead_code)]
 pub type Builder = Arc<dyn Fn(&str) -> Arc<dyn ModelProvider> + Send + Sync>;
 
 /// Wraps a provider whose credential may rotate.
@@ -24,7 +22,6 @@ pub type Builder = Arc<dyn Fn(&str) -> Arc<dyn ModelProvider> + Send + Sync>;
 /// For OAuth the inner provider is built **lazily** on first use, so an initial
 /// already-expired key never causes a wasted build and the builder is called only
 /// with a freshly resolved access token.
-#[allow(dead_code)]
 pub struct RefreshingProvider {
     inner: RwLock<Option<Arc<dyn ModelProvider>>>,
     builder: Builder,
@@ -34,7 +31,6 @@ pub struct RefreshingProvider {
     current_key: RwLock<String>,
 }
 
-#[allow(dead_code)]
 impl RefreshingProvider {
     /// Static credential (api_key from flag/env, or an api_key file entry): no refresh.
     pub fn r#static(inner: Arc<dyn ModelProvider>) -> Self {
@@ -182,9 +178,11 @@ mod tests {
 
     async fn mount_token_success(server: &wiremock::MockServer, access: &str) {
         wiremock::Mock::given(wiremock::matchers::path("/auth/device/token"))
-            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "access_token": access, "refresh_token": "new-refresh", "expires_in": 600,
-                "org_id": "org_1" })))
+                "org_id": "org_1" })),
+            )
             .mount(server)
             .await;
     }
@@ -209,7 +207,8 @@ mod tests {
             })
         };
 
-        let p = RefreshingProvider::oauth(builder, store, "opencode-go", &server.uri(), "acl".into());
+        let p =
+            RefreshingProvider::oauth(builder, store, "opencode-go", &server.uri(), "acl".into());
         assert!(
             p.chat_stream(vec![], vec![], ModelOptions::default())
                 .await
@@ -228,7 +227,14 @@ mod tests {
             "one refresh only"
         );
         assert_eq!(
-            last.lock().unwrap().as_ref().unwrap().hits.lock().unwrap().len(),
+            last.lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .hits
+                .lock()
+                .unwrap()
+                .len(),
             2,
             "both chat calls are served by the rebuilt instance"
         );
