@@ -29,6 +29,7 @@ mod auth;
 mod license;
 mod logging;
 mod providers;
+mod refreshing_provider;
 
 #[derive(Parser)]
 #[command(name = "agentj", version, about = "AgentJ — AI coding agent")]

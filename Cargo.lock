@@ -36,6 +36,7 @@ dependencies = [
  "agentj-stats",
  "agentj-tools",
  "anyhow",
+ "async-trait",
  "base64",
  "clap",
  "ed25519-dalek",
