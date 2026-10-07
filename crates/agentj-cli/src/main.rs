@@ -299,6 +299,8 @@ async fn serve_tcp(
             max_connections: options.max_connections,
             trajectory_store: options.trajectory_store,
             web_dist: web_dist.clone(),
+            // T21 injects the CliProviderService here.
+            provider_service: None,
         },
     )
     .await?;

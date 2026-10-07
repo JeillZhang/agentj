@@ -352,6 +352,13 @@ impl DispatchError {
         }
     }
 
+    /// Uninjected handle: the five subscription methods report this (`design D4`).
+    pub(crate) fn provider_service_unavailable() -> Self {
+        Self::internal_with_data(
+            "ProviderServiceUnavailable",
+            serde_json::json!({ "reason": "provider_service_unavailable" }),
+        )
+    }
     fn invalid_request(msg: impl Into<String>) -> Self {
         Self {
             code: -32600,
@@ -402,6 +409,16 @@ pub trait ProviderService: Send + Sync {
         &self,
         params: AuthDevicePollParams,
     ) -> Result<AuthDevicePollResult, DispatchError>;
+}
+
+/// Serialize a subscription result, mapping a (practically impossible) failure to `-32603`.
+fn provider_result<T: Serialize>(out: T) -> Result<Value, DispatchError> {
+    serde_json::to_value(out).map_err(|e| {
+        DispatchError::internal_with_data(
+            "SerializationFailed",
+            serde_json::json!({ "reason": e.to_string() }),
+        )
+    })
 }
 
 pub struct IpcServer {
@@ -569,6 +586,11 @@ impl IpcServer {
                 "session/archive" => self.dispatch_session_archive(&req),
                 "session/delete" => self.dispatch_session_delete(&req),
                 "file/list" => self.dispatch_file_list(&req).await,
+                "model/list" => self.dispatch_model_list(&req).await,
+                "auth/status" => self.dispatch_auth_status(&req).await,
+                "provider/usage" => self.dispatch_provider_usage(&req).await,
+                "auth/deviceStart" => self.dispatch_device_start(&req).await,
+                "auth/devicePoll" => self.dispatch_device_poll(&req).await,
                 "shutdown" => self.dispatch_shutdown(),
                 "permission/respond" => self.dispatch_permission_respond(&req, conn_id).await,
                 "question/respond" => self.dispatch_question_respond(&req, conn_id),
@@ -1243,6 +1265,58 @@ impl IpcServer {
         };
         Ok(serde_json::to_value(result).expect("serializable"))
     }
+    /// Deserialize a subscription method's params (missing → `{}`). A malformed shape is
+    /// `-32602` and the injected service is never called.
+    fn provider_params<T: serde::de::DeserializeOwned>(
+        &self,
+        req: &JsonRpcRequest,
+    ) -> Result<T, DispatchError> {
+        let raw = req.params.clone().unwrap_or_else(|| serde_json::json!({}));
+        serde_json::from_value(raw).map_err(|e| {
+            DispatchError::invalid_params_with_data(
+                "InvalidParams",
+                serde_json::json!({ "reason": "invalid_params", "detail": e.to_string() }),
+            )
+        })
+    }
+
+    /// The injected handle, or `-32603 provider_service_unavailable` (design D4).
+    fn provider_service(&self) -> Result<&Arc<dyn ProviderService>, DispatchError> {
+        self.provider_service
+            .as_ref()
+            .ok_or_else(DispatchError::provider_service_unavailable)
+    }
+
+    async fn dispatch_model_list(&self, req: &JsonRpcRequest) -> Result<Value, DispatchError> {
+        let svc = self.provider_service()?;
+        let params = self.provider_params(req)?;
+        provider_result(svc.model_list(params).await?)
+    }
+
+    async fn dispatch_auth_status(&self, req: &JsonRpcRequest) -> Result<Value, DispatchError> {
+        let svc = self.provider_service()?;
+        let params = self.provider_params(req)?;
+        provider_result(svc.auth_status(params).await?)
+    }
+
+    async fn dispatch_provider_usage(&self, req: &JsonRpcRequest) -> Result<Value, DispatchError> {
+        let svc = self.provider_service()?;
+        let params = self.provider_params(req)?;
+        provider_result(svc.usage(params).await?)
+    }
+
+    async fn dispatch_device_start(&self, req: &JsonRpcRequest) -> Result<Value, DispatchError> {
+        let svc = self.provider_service()?;
+        let params = self.provider_params(req)?;
+        provider_result(svc.device_start(params).await?)
+    }
+
+    async fn dispatch_device_poll(&self, req: &JsonRpcRequest) -> Result<Value, DispatchError> {
+        let svc = self.provider_service()?;
+        let params = self.provider_params(req)?;
+        provider_result(svc.device_poll(params).await?)
+    }
+
     /// the session `project_root`, with git porcelain statuses per file entry.
     async fn dispatch_file_list(&self, req: &JsonRpcRequest) -> Result<Value, DispatchError> {
         let params: FileListParams = serde_json::from_value(
@@ -2348,6 +2422,79 @@ mod tests {
         assert_eq!(e.code, error_codes::INVALID_PARAMS);
         assert_eq!(e.data.unwrap()["field"], "provider");
         assert!(crate::tcp::TcpBindOptions::default().provider_service.is_none());
+    }
+
+    async fn call(server: &IpcServer, method: &str, params: serde_json::Value) -> serde_json::Value {
+        let raw =
+            serde_json::json!({"jsonrpc":"2.0","id":7,"method":method,"params":params})
+                .to_string();
+        serde_json::from_str(&server.handle_request_from(&raw, "c1").await.unwrap()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn subscription_methods_forward_to_the_service() {
+        let mut server = stub_server();
+        let rec = Arc::new(Recording::default());
+        let svc: Arc<dyn ProviderService> = rec.clone();
+        server.provider_service = Some(svc);
+
+        let v = call(
+            &server,
+            "auth/status",
+            serde_json::json!({"provider":"opencode-go"}),
+        )
+        .await;
+        assert_eq!(v["result"]["provider"], "opencode-go");
+        assert!(v.get("error").is_none());
+        assert_eq!(rec.calls.lock().unwrap().len(), 1);
+
+        for (method, params, name) in [
+            ("model/list", serde_json::json!({}), "model_list"),
+            ("provider/usage", serde_json::json!({}), "usage"),
+            ("auth/deviceStart", serde_json::json!({}), "device_start"),
+            ("auth/devicePoll", serde_json::json!({"device_code":"dc"}), "device_poll"),
+        ] {
+            let v = call(&server, method, params).await;
+            assert!(v.get("error").is_none(), "{method} must succeed: {v}");
+            assert!(v["result"].is_object(), "{method} result must be an object");
+            assert!(rec.calls.lock().unwrap().iter().any(|c| c == name));
+        }
+    }
+
+    #[tokio::test]
+    async fn missing_service_is_internal_error_and_bad_params_are_invalid_params() {
+        let server = stub_server();
+        for method in [
+            "model/list",
+            "auth/status",
+            "provider/usage",
+            "auth/deviceStart",
+            "auth/devicePoll",
+        ] {
+            let v = call(&server, method, serde_json::json!({})).await;
+            assert_eq!(
+                v["error"]["code"], -32603,
+                "{method} must report the missing handle"
+            );
+            assert_eq!(v["error"]["data"]["reason"], "provider_service_unavailable");
+        }
+
+        let mut server = stub_server();
+        let rec = Arc::new(Recording::default());
+        let svc: Arc<dyn ProviderService> = rec.clone();
+        server.provider_service = Some(svc);
+        let v = call(&server, "auth/devicePoll", serde_json::json!({"device_code": 42})).await;
+        assert_eq!(v["error"]["code"], -32602);
+        assert!(
+            rec.calls.lock().unwrap().is_empty(),
+            "service must not be called on bad params"
+        );
+
+        let v = call(&server, "kernel/status", serde_json::json!({})).await;
+        assert!(v.get("error").is_none(), "existing dispatch unaffected");
+
+        let v = call(&server, "no/such/method", serde_json::json!({})).await;
+        assert_eq!(v["error"]["code"], -32601);
     }
 
     /// Fixture for the cancel regression test: the AgentLoop's ToolRegistry is
