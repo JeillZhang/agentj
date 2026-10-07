@@ -1,5 +1,5 @@
 {
-  "protocol_version": "0.16.0",
+  "protocol_version": "0.17.0",
   "methods": [
     { "method": "initialize", "kind": "request", "direction": "client_to_server", "params": "InitializeParams", "result": "InitializeResult" },
     { "method": "initialized", "kind": "notification", "direction": "client_to_server", "params": null, "result": null },
@@ -21,6 +21,11 @@
     { "method": "permission/respond", "kind": "request", "direction": "client_to_server", "params": "PermissionRespondParams", "result": "PermissionRespondResult" },
     { "method": "file/list", "kind": "request", "direction": "client_to_server", "params": "FileListParams", "result": "FileListResult" },
     { "method": "$/askQuestion", "kind": "notification", "direction": "server_to_client", "params": "AskQuestionParams", "result": null },
-    { "method": "question/respond", "kind": "request", "direction": "client_to_server", "params": "QuestionRespondParams", "result": "QuestionRespondResult" }
+    { "method": "question/respond", "kind": "request", "direction": "client_to_server", "params": "QuestionRespondParams", "result": "QuestionRespondResult" },
+    { "method": "model/list", "kind": "request", "direction": "client_to_server", "params": "ModelListParams", "result": "ModelListResult" },
+    { "method": "auth/status", "kind": "request", "direction": "client_to_server", "params": "AuthStatusParams", "result": "AuthStatusResult" },
+    { "method": "provider/usage", "kind": "request", "direction": "client_to_server", "params": "ProviderUsageParams", "result": "ProviderUsageResult" },
+    { "method": "auth/deviceStart", "kind": "request", "direction": "client_to_server", "params": "AuthDeviceStartParams", "result": "AuthDeviceStartResult" },
+    { "method": "auth/devicePoll", "kind": "request", "direction": "client_to_server", "params": "AuthDevicePollParams", "result": "AuthDevicePollResult" }
   ]
 }

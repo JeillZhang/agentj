@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ProviderUsageParams",
+  "description": "`provider/usage` params. @since 0.17.0",
+  "type": "object",
+  "properties": {
+    "provider": {
+      "description": "Provider name; omitted means the configured default provider. @since 0.17.0",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "refresh": {
+      "description": "Bypass the 300s in-process cache. @since 0.17.0",
+      "type": [
+        "boolean",
+        "null"
+      ]
+    }
+  }
+}

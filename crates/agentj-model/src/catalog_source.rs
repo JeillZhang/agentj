@@ -53,7 +53,7 @@ pub async fn fetch_live_models(
 }
 
 /// Prefix a bare upstream id; ids that already carry the namespace are returned unchanged.
-fn namespaced(id: &str) -> String {
+pub(crate) fn namespaced(id: &str) -> String {
     if id.starts_with(NAMESPACE) {
         id.to_string()
     } else {

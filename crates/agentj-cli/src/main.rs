@@ -13,7 +13,8 @@ use agentj_context::ContextPipeline;
 use agentj_core::dispatcher::SubAgentService;
 use agentj_core::kernel::Kernel;
 use agentj_core::module::{
-    KernelContext, KernelMessage, ModuleRegister, ProviderRegistry, SessionStore, ToolRegistry,
+    ConfigProvider, KernelContext, KernelMessage, ModuleRegister, ProviderRegistry, SessionStore,
+    ToolRegistry,
 };
 use agentj_core::tool_executor::ToolExecutorModule;
 use agentj_core::turn_runner::TurnRunner;
@@ -28,7 +29,9 @@ use agentj_tools::builtins::register_builtins;
 mod auth;
 mod license;
 mod logging;
+mod provider_service;
 mod providers;
+mod refreshing_provider;
 
 #[derive(Parser)]
 #[command(name = "agentj", version, about = "AgentJ — AI coding agent")]
@@ -138,12 +141,30 @@ fn build_ipc_server(
     permission_module: Arc<agentj_permission::PermissionModule>,
     question_module: Arc<QuestionModule>,
     trajectory_store: Option<Arc<agentj_ipc::trajectory::TrajectoryStore>>,
+    provider_service: Option<Arc<dyn agentj_ipc::ProviderService>>,
 ) -> IpcServer {
     let mut ipc_server = IpcServer::new(kernel, session);
     ipc_server.permission_module = Some(permission_module);
     ipc_server.question_module = Some(question_module);
     ipc_server.trajectory_store = trajectory_store;
+    ipc_server.provider_service = provider_service;
     ipc_server
+}
+
+/// Project `config.model.providers` into the service's own config type.
+fn provider_cfgs(config: &agentj_config::Config) -> Vec<provider_service::ProviderCfg> {
+    config
+        .inner()
+        .model
+        .providers
+        .iter()
+        .map(|p| provider_service::ProviderCfg {
+            name: p.name.clone(),
+            kind: p.kind.clone(),
+            base_url: p.base_url.clone(),
+            api_key_env: p.api_key_env.clone(),
+        })
+        .collect()
 }
 
 fn spawn_signal_task(sender: agentj_core::kernel::KernelSender) -> tokio::task::JoinHandle<()> {
@@ -207,6 +228,8 @@ struct TcpServeOptions {
     max_connections: usize,
     web_dist: Option<std::path::PathBuf>,
     trajectory_store: Option<Arc<agentj_ipc::trajectory::TrajectoryStore>>,
+    /// Optional subscription handle (design D4); `run` passes none.
+    provider_service: Option<Arc<dyn agentj_ipc::ProviderService>>,
 }
 
 /// Whether `host` refers to the loopback interface (the local-trust default).
@@ -299,6 +322,7 @@ async fn serve_tcp(
             max_connections: options.max_connections,
             trajectory_store: options.trajectory_store,
             web_dist: web_dist.clone(),
+            provider_service: options.provider_service,
         },
     )
     .await?;
@@ -440,15 +464,24 @@ async fn main() -> anyhow::Result<()> {
         let auth_store =
             agentj_auth::AuthStore::with_default_path().map_err(|e| anyhow::anyhow!("{e}"))?;
         let live_base = agentj_model::catalog::ModelCatalog::builtin().base_url;
-        let assembly = providers::build_providers(config.inner(), None, &auth_store, || {
-            let base = live_base.clone();
-            async move {
-                agentj_model::catalog_source::fetch_live_models(&base, None)
-                    .await
-                    .map(Some)
-                    .map_err(|e| e.to_string())
-            }
-        })
+        let console_base = config
+            .get_str("model.console_base_url")
+            .unwrap_or_else(|| "https://opencode.ai/console".into());
+        let assembly = providers::build_providers(
+            config.inner(),
+            None,
+            &auth_store,
+            || {
+                let base = live_base.clone();
+                async move {
+                    agentj_model::catalog_source::fetch_live_models(&base, None)
+                        .await
+                        .map(Some)
+                        .map_err(|e| e.to_string())
+                }
+            },
+            &console_base,
+        )
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
         for warning in &assembly.warnings {
@@ -458,6 +491,33 @@ async fn main() -> anyhow::Result<()> {
             providers.register(name, provider);
         }
     }
+
+    // design D4: only the IPC-serving commands expose the subscription methods; `run` has no
+    // IPC server and `run --attach` targets a remote kernel whose own handle serves them.
+    let inject_subscription = matches!(
+        &cli.command,
+        Some(Commands::Serve { .. }) | Some(Commands::Dashboard { .. })
+    );
+    let provider_service: Option<Arc<dyn agentj_ipc::ProviderService>> = if inject_subscription {
+        let store =
+            agentj_auth::AuthStore::with_default_path().map_err(|e| anyhow::anyhow!("{e}"))?;
+        let console_base = config
+            .get_str("model.console_base_url")
+            .unwrap_or_else(|| "https://opencode.ai/console".into());
+        let default_model = config.get_str("model.default_model").unwrap_or_default();
+        let svc = provider_service::CliProviderService::new(
+            store,
+            provider_cfgs(&config),
+            config.get_str("model.provider").unwrap_or_default(),
+            console_base,
+            config.get_int("model.quota_warn_percent").unwrap_or(80) as u8,
+            providers.clone(),
+        )
+        .with_default_model(default_model);
+        Some(Arc::new(svc))
+    } else {
+        None
+    };
 
     // Extract before `config` is boxed into the KernelContext — its config field
     // is Arc<dyn ConfigProvider>, which erases the concrete Config type.
@@ -586,6 +646,7 @@ async fn main() -> anyhow::Result<()> {
                     permission_module,
                     question_module.clone(),
                     Some(Arc::clone(&trajectory_store)),
+                    provider_service.clone(),
                 );
                 let signal_task = spawn_signal_task(ipc_server.kernel_sender());
                 let sid = ipc_server.create_session()?;
@@ -618,6 +679,7 @@ async fn main() -> anyhow::Result<()> {
                 permission_module,
                 question_module.clone(),
                 Some(Arc::clone(&trajectory_store)),
+                provider_service.clone(),
             );
             let signal_task = spawn_signal_task(ipc_server.kernel_sender());
             ipc_server.serve_stdio().await?;
@@ -643,6 +705,7 @@ async fn main() -> anyhow::Result<()> {
                     max_connections,
                     web_dist,
                     trajectory_store: Some(Arc::clone(&trajectory_store)),
+                    provider_service: provider_service.clone(),
                 },
                 mcp_manager.clone(),
             )
@@ -666,6 +729,7 @@ async fn main() -> anyhow::Result<()> {
                     max_connections: 16,
                     web_dist,
                     trajectory_store: Some(Arc::clone(&trajectory_store)),
+                    provider_service: provider_service.clone(),
                 },
                 mcp_manager.clone(),
             )
@@ -679,6 +743,7 @@ async fn main() -> anyhow::Result<()> {
                 permission_module,
                 question_module.clone(),
                 Some(Arc::clone(&trajectory_store)),
+                provider_service.clone(),
             );
             ipc_server.signal_shutdown()?;
             mcp_manager.close_all().await;

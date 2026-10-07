@@ -1,19 +1,22 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
+import type { RpcClient } from "@agentj/sdk";
 import ConnectionBar from "../ConnectionBar";
 import { isDemoEnabled, setDemoEnabled, subscribeDemo } from "../demoData";
 import { firstIndex, lastIndex, moveSelection, tabIndexFor } from "../hooks/useRovingFocus";
 import ModalDialog from "./ModalDialog";
 import SettingsDisplayPanel from "./SettingsDisplayPanel";
 import SettingsProjectPanel from "./SettingsProjectPanel";
+import SubscriptionPanel from "./SubscriptionPanel";
 import "./settingsDialog.css";
 
 type Props = {
   onConnect: (host: string, port: string, token: string) => void;
   onClose: () => void;
+  client?: RpcClient | null;
 };
 
-type CategoryId = "connection" | "display" | "project" | "demo";
+type CategoryId = "connection" | "display" | "project" | "demo" | "subscription";
 type Category = { id: CategoryId; label: string };
 
 const CATEGORIES: Category[] = [
@@ -21,6 +24,7 @@ const CATEGORIES: Category[] = [
   { id: "display", label: "显示" },
   { id: "project", label: "项目" },
   { id: "demo", label: "演示数据" },
+  { id: "subscription", label: "订阅" },
 ];
 
 function panelId(id: CategoryId): string {
@@ -31,7 +35,7 @@ function tabId(id: CategoryId): string {
   return `aj-settings-tab-${id}`;
 }
 
-export default function SettingsDialog({ onConnect, onClose }: Props) {
+export default function SettingsDialog({ onConnect, onClose, client = null }: Props) {
   const [active, setActive] = useState<CategoryId>("connection");
   const [demo, setDemo] = useState(isDemoEnabled);
   const tabRefs = useRef(new Map<CategoryId, HTMLButtonElement | null>());
@@ -47,9 +51,11 @@ export default function SettingsDialog({ onConnect, onClose }: Props) {
   const onTabKeyDown = useCallback(
     (event: KeyboardEvent<HTMLButtonElement>) => {
       const count = CATEGORIES.length;
+      const from = CATEGORIES.findIndex((category) => tabRefs.current.get(category.id) === event.currentTarget);
+      if (from < 0) return;
       let next: number;
-      if (event.key === "ArrowDown") next = moveSelection(activeIndex, 1, count, { wrap: true });
-      else if (event.key === "ArrowUp") next = moveSelection(activeIndex, -1, count, { wrap: true });
+      if (event.key === "ArrowDown") next = moveSelection(from, 1, count, { wrap: true });
+      else if (event.key === "ArrowUp") next = moveSelection(from, -1, count, { wrap: true });
       else if (event.key === "Home") next = firstIndex(count);
       else if (event.key === "End") next = lastIndex(count);
       else return;
@@ -57,7 +63,7 @@ export default function SettingsDialog({ onConnect, onClose }: Props) {
       event.preventDefault();
       select(CATEGORIES[next].id);
     },
-    [activeIndex, select],
+    [select],
   );
 
   return (
@@ -115,6 +121,12 @@ export default function SettingsDialog({ onConnect, onClose }: Props) {
               </button>
             </div>
           )}
+          {active === "subscription" &&
+            (client ? (
+              <SubscriptionPanel client={client} onClose={onClose} />
+            ) : (
+              <p className="aj-hint">先连接内核</p>
+            ))}
         </div>
       </div>
     </ModalDialog>

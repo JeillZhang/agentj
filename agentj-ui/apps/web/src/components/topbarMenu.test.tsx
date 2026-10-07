@@ -1,8 +1,12 @@
 import { expect, test, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import { act, render, screen, fireEvent, within, waitFor } from "@testing-library/react";
+import type { RpcClient } from "@agentj/sdk";
+import { METHODS } from "@agentj/sdk";
 import TopbarMenu from "./TopbarMenu";
 import { createProject, loadProjects, saveProjectDefaults, setCurrentProject } from "../projectStore";
+
+const topbarProps = { onConnect: () => {}, onContinue: () => {} };
 
 function openMenu() {
   fireEvent.click(screen.getByRole("button", { name: "更多" }));
@@ -248,4 +252,15 @@ test("normalizes an empty work dir to null on project create", () => {
   fireEvent.click(screen.getByRole("button", { name: "添加" }));
   const created = loadProjects().find((p) => p.name === "X");
   expect(created?.workDir).toBeNull();
+});
+
+test("forwards the client into the settings dialog", async () => {
+  localStorage.clear();
+  const c = { request: vi.fn().mockResolvedValue({}) } as unknown as RpcClient;
+  render(<TopbarMenu {...topbarProps} client={c} />);
+  openMenu();
+  fireEvent.click(screen.getByRole("menuitem", { name: "设置…" }));
+  fireEvent.click(await screen.findByRole("tab", { name: "订阅" }));
+  await waitFor(() => expect(c.request).toHaveBeenCalledWith(METHODS.authStatus, expect.anything()));
+  localStorage.clear();
 });

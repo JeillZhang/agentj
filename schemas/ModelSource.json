@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ModelSource",
+  "description": "Catalog tier (account → live → overlay; static for non-go providers).\n`Unknown` tolerates forward values; the schema lists only the known tiers.\n@since 0.17.0",
+  "type": "string",
+  "enum": [
+    "account",
+    "live",
+    "overlay",
+    "static"
+  ]
+}

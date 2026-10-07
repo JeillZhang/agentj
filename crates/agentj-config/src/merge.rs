@@ -12,6 +12,14 @@ pub fn merge_config(base: AgentJConfig, file: AgentJConfig) -> AgentJConfig {
     if !file.model.default_model.is_empty() {
         config.model.default_model = file.model.default_model;
     }
+    if file.model.quota_warn_percent != crate::default_quota_warn_percent() {
+        config.model.quota_warn_percent = file.model.quota_warn_percent;
+    }
+    if !file.model.console_base_url.is_empty()
+        && file.model.console_base_url != crate::default_console_base_url()
+    {
+        config.model.console_base_url = file.model.console_base_url;
+    }
     if file.permission.is_some() {
         config.permission = file.permission;
     }
@@ -61,6 +69,8 @@ mod tests {
                     kind: "opencode-go".into(),
                 }],
                 default_model: "opencode-go/kimi-k3".into(),
+                quota_warn_percent: crate::default_quota_warn_percent(),
+                console_base_url: crate::default_console_base_url(),
             },
             permission: None,
             session: None,
@@ -82,6 +92,8 @@ mod tests {
                 provider: "deepseek".into(),
                 providers: vec![],
                 default_model: String::new(), // empty → keep base
+                quota_warn_percent: crate::default_quota_warn_percent(),
+                console_base_url: crate::default_console_base_url(),
             },
             permission: None,
             session: None,
