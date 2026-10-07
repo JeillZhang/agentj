@@ -2,12 +2,13 @@
 
 /// Canonical wire protocol version — single source of truth for the `initialize`
 /// handshake `protocol_version` field (mirrors `protocol/methods.json` + sdk `config.ts`).
-pub const PROTOCOL_VERSION: &str = "0.16.0";
+pub const PROTOCOL_VERSION: &str = "0.17.0";
 
 pub mod base;
 pub mod file;
 pub mod lifecycle;
 pub mod permission;
+pub mod provider;
 pub mod question;
 pub mod schema;
 pub mod session;

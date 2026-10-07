@@ -111,6 +111,8 @@ pub struct TcpBindOptions {
     pub max_connections: usize,
     pub trajectory_store: Option<Arc<crate::trajectory::TrajectoryStore>>,
     pub web_dist: Option<std::path::PathBuf>,
+    /// Optional ProviderService handle (`design D4`), copied onto the shared server at bind.
+    pub provider_service: Option<Arc<dyn crate::ProviderService>>,
 }
 
 impl Default for TcpBindOptions {
@@ -120,6 +122,7 @@ impl Default for TcpBindOptions {
             max_connections: 16,
             trajectory_store: None,
             web_dist: None,
+            provider_service: None,
         }
     }
 }
@@ -149,6 +152,7 @@ impl TcpIpcServer {
         server.permission_module = permission_module;
         server.question_module = question_module;
         server.trajectory_store = options.trajectory_store.clone();
+        server.provider_service = options.provider_service.clone();
         server.attach_permission_notifier();
         server.attach_question_notifier();
         server.set_token(options.token.clone());

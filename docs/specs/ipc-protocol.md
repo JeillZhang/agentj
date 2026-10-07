@@ -2,7 +2,7 @@
 
 > 本文档是 AgentJ 内核对外暴露的统一 UI 接口协议（IPC）的**人类可读权威规范**。
 > 机器可读工件（`schemas/*.json` 与 `protocol/methods.json`）是本规范的机器事实来源，见 [机器可读模型](#10-机器可读模型)。
-> 协议当前版本：`0.16.0`。
+> 协议当前版本：`0.17.0`。
 
 ## 1. 范围与一致性
 
@@ -10,7 +10,7 @@
 
 - **传输层**：每种传输各自的帧格式（stdio / TCP 使用 NDJSON，WebSocket 使用原生帧）。
 - **基础协议**：传输无关的 JSON-RPC 2.0 消息信封、错误对象与错误码。
-- **方法面**：本规范支持的 21 个方法（注册表 `protocol/methods.json` 收录全部方法，含 `session/subscribe` / `session/unsubscribe`（见 8.11 / 8.12）、`session/list`（8.18）、`session/history`（8.19）、`file/list`（8.20）、`$/askQuestion`（8.21）、`question/respond`（8.22））及其参数 / 结果结构。
+- **方法面**：本规范支持的 26 个方法（21 个既有 + 5 个订阅方法；注册表 `protocol/methods.json` 收录全部方法，含 `session/subscribe` / `session/unsubscribe`（见 8.11 / 8.12）、`session/list`（8.18）、`session/history`（8.19）、`file/list`（8.20）、`$/askQuestion`（8.21）、`question/respond`（8.22）、`model/list`（8.23）、`auth/status`（8.24）、`provider/usage`（8.25）、`auth/deviceStart`（8.26）、`auth/devicePoll`（8.27））及其参数 / 结果结构。
 
 本文档适用于所有传输。任何传输都必须遵循基础协议与方法面的全部规则。
 
@@ -176,6 +176,14 @@ WebSocket 与 raw TCP 同端口共存，通过连接分类器按首字节区分 
 | `-32805` | SessionBusy | agentj | 同 session 已有活动 run 时再次 `session/run`（`@since 0.3.0`） |
 | `-32806` | NotAuthorized | agentj | 非 owner 连接的 `permission/respond`、`$/cancelRequest` 或 `question/respond`；`--token` 不匹配（`@since 0.3.0`） |
 | `-32807` | PathNotAllowed | agentj | `file/list` 沙箱越界：请求路径（经词法规范化 + canonicalize）落在会话 `project_root` 之外（`@since 0.13.0`，见 8.20） |
+
+协议扩展（`0.17.0`）**不新增任何错误码**：订阅面的 5 个方法（`model/list` / `auth/status` / `provider/usage` / `auth/deviceStart` / `auth/devicePoll`）复用既有码，并以 `error.data.reason` 区分两类拒绝：
+
+- **未知 provider 名**（不在已注册 provider 中）→ `-32602 InvalidParams` + `error.data = { "field": "provider", "reason": "unknown_provider", "registered": ["<名>", …] }`。
+- **provider 已知但不支持该能力**（如对非 opencode-go 调 `provider/usage` / `auth/deviceStart`）→ `-32602 InvalidParams` + `error.data = { "field": "provider", "reason": "unsupported_provider", "capability": "<usage|device_flow>" }`。
+- **`provider_service` handle 未注入**（如 `run --attach` 连接远端内核）→ `-32603 Internal error` + `error.data = { "reason": "provider_service_unavailable" }`。
+
+上游 / 凭据失败（未登录、401、403、5xx、网络）是**领域失败**，**不占错误码**：以**成功响应**的结果数据表达（`ProviderUsageResult.error.kind`、`AuthDevicePollResult.state`），使客户端能同时拿到「上次快照 + 失败原因」（`stale: true`，见 §8.25 / §8.27）。
 
 错误码是**稳定的协议契约**，一旦发布不可更改含义。新增错误码 SHOULD 从 `-32800` 段向下或 `-32000 … -32099` 段内加性分配。
 
@@ -384,7 +392,7 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 
 ### 8.1 方法总表
 
-与 `protocol/methods.json` 一致（注册表收录全部 21 个方法）：
+与 `protocol/methods.json` 一致（注册表收录全部 26 个方法）：
 
 | 方法 | 类型 | 方向 | params | result | 说明 |
 |------|------|------|--------|--------|------|
@@ -409,6 +417,11 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 | `file/list` | request | C→S | FileListParams | FileListResult | 沙箱化目录列举（`@since 0.13.0`，见 8.20） |
 | `$/askQuestion` | notification | S→C | AskQuestionParams | — | owner 定向模型提问（`@since 0.13.0`，见 8.21） |
 | `question/respond` | request | C→S | QuestionRespondParams | QuestionRespondResult | 响应模型提问（`@since 0.13.0`，见 8.22） |
+| `model/list` | request | C→S | ModelListParams | ModelListResult | 三层来源的模型目录（`@since 0.17.0`，见 8.23） |
+| `auth/status` | request | C→S | AuthStatusParams | AuthStatusResult | 凭据状态纯读投影（`@since 0.17.0`，见 8.24） |
+| `provider/usage` | request | C→S | ProviderUsageParams | ProviderUsageResult | 三窗口用量快照（`@since 0.17.0`，见 8.25） |
+| `auth/deviceStart` | request | C→S | AuthDeviceStartParams | AuthDeviceStartResult | 设备码授权起点（`@since 0.17.0`，见 8.26） |
+| `auth/devicePoll` | request | C→S | AuthDevicePollParams | AuthDevicePollResult | 设备码轮询状态（`@since 0.17.0`，见 8.27） |
 
 ### 8.2 initialize（请求，见 §4.1）
 
@@ -840,6 +853,238 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 - **部分结果**：无。
 - **error.data**：非 owner → `-32806`；未知 option id → `-32602` + `{ "unknown_options": ["<id>", …] }`；单选传多答 → `-32602` + `{ "reason": "too_many_answers" }`。
 
+### 8.23 model/list（请求，`@since 0.17.0`）
+
+- **能力声明**：订阅能力（provider 目录）。需内核在装配时注入 `provider_service` handle；未注入 → `-32603` + `data{reason:"provider_service_unavailable"}`（见 §3.4）。
+- **请求**：`ModelListParams`（两个字段均可选）。
+
+```json
+{ "jsonrpc": "2.0", "id": 12, "method": "model/list", "params": {
+  "provider": "opencode-go",
+  "refresh": true
+} }
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `provider` | string | 否 | provider 名（= `kernel/status.providers[].id`）；省略 / `null` = 内核配置的默认 provider |
+| `refresh` | boolean | 否 | `true` 绕过 **60s** 进程内复用窗口强制重拉；缺省 / `null` = 窗口内直接返回上次结果（防面板反复开关打上游） |
+
+- **响应**：`ModelListResult`。
+
+```json
+{ "jsonrpc": "2.0", "id": 12, "result": {
+  "provider": "opencode-go",
+  "default_model": "opencode-go/kimi-k3",
+  "source": "account",
+  "fetched_at": 1700000000,
+  "models": [ { "id": "opencode-go/kimi-k3", "verified": true, "format": "anthropic" } ]
+} }
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `provider` | string | 是 | 实际查询的 provider 名 |
+| `default_model` | string | 是 | 内核配置的默认模型 id（`config.model.default_model`；未配置时为 provider 名） |
+| `source` | ModelSource | 是 | 本次目录的来源层级，见 §9.1 |
+| `fetched_at` | integer | 是 | 本目录的获取时刻（epoch **秒**，int64） |
+| `models` | ModelEntry[] | 是 | 目录条目（可为空数组）；`ModelEntry = { id, verified, format }` |
+
+- **目录三层来源（`account` → `live` → `overlay`；非 opencode-go 为 `static`）**：有可用凭据 → 账号级 `GET {console}/api/v2/config`（`Bearer <key|access>`，OAuth 凭据额外带 `x-org-id`），成功即 `source:"account"`；失败或凭据不可用 → live 目录 ∩ overlay → `source:"live"`；live 也失败 → overlay 全集 → `source:"overlay"`；`kind` 非 `opencode-go` 的 provider **不发网络请求**，直接投影 `ModelProvider::models()` → `source:"static"`。逐层回退**全部静默**（`model/list` 仍成功），账号级目录不可读（401 / 403 / 畸形响应）不向客户端报错。
+- **路由标记**：账号级 / live 的 id 命中 overlay → 沿用其 `format` 与 `verified`；未命中 → 合成为 `openai-compat` + `verified:false`（**绝不按名字猜路由**）。`format` 取值 `openai-compat` \| `responses` \| `anthropic`。
+- **部分结果**：无（一次性快照）。
+- **error.data**：未知 provider → `-32602` + `{ "field": "provider", "reason": "unknown_provider", "registered": ["<名>", …] }`；params 结构畸形（如 `provider` 为数字 / 对象）→ `-32602` + `{ "reason": "invalid_params", "detail": "<原文>" }`；handle 未注入 → `-32603` + `{ "reason": "provider_service_unavailable" }`。
+
+### 8.24 auth/status（请求，`@since 0.17.0`）
+
+- **能力声明**：订阅能力（凭据状态）。需注入 `provider_service` handle；未注入 → `-32603` + `data{reason:"provider_service_unavailable"}`。
+- **请求**：`AuthStatusParams`。
+
+```json
+{ "jsonrpc": "2.0", "id": 13, "method": "auth/status", "params": { "provider": "opencode-go" } }
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `provider` | string | 否 | provider 名；省略 / `null` = 内核配置的默认 provider |
+
+- **响应**：`AuthStatusResult`。
+
+```json
+{ "jsonrpc": "2.0", "id": 13, "result": {
+  "provider": "opencode-go",
+  "authenticated": true,
+  "credential": { "kind": "api_key", "source": "file", "key_hint": "…1234", "expiring_soon": false },
+  "models_count": 44
+} }
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `provider` | string | 是 | 实际查询的 provider 名 |
+| `authenticated` | boolean | 是 | 解析后是否存在**可用**凭据（`false` 时省略 `credential`） |
+| `credential` | CredentialInfo | 否 | 已脱敏的凭据投影，见下 |
+| `models_count` | integer | 是 | 该 provider 已注册目录的模型数（`kernel/status.providers[].models` 的长度） |
+
+- **CredentialInfo（脱敏投影，永不携带完整密钥）**：
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `kind` | CredentialKind | 是 | `api_key` \| `oauth`（见 §9.1） |
+| `source` | CredentialSource | 是 | `flag` \| `env` \| `file`（本期内核实现只产生 `env` / `file`；`flag` 为加性预留） |
+| `key_hint` | string | 否 | 仅 `api_key`：`redact()` 输出，形如 `…1234`（末 4 位）；密钥长度 ≤ 4 时为 `…` |
+| `expires_at` | integer | 否 | 仅 OAuth：access token 到期时刻（epoch **秒**，int64） |
+| `expiring_soon` | boolean | 是 | 仅 OAuth 有意义：剩余寿命 < **120s** 时为 `true`（api_key 恒 `false`） |
+| `org_id` | string | 否 | 仅 OAuth：上游返回的组织 id |
+
+- **纯读语义**：`auth/status` **绝不轮换 token、绝不发网络请求**——只报告本地凭据事实（`api_key` 走 `redact()`，OAuth 走 `org_id` / `expires_at`）。需要触发刷新的是真实请求路径（内核在每轮 run 前 `ensure_access`）。
+- **部分结果**：无。
+- **error.data**：未知 provider → `-32602` + `{ "field": "provider", "reason": "unknown_provider", "registered": […] }`；params 结构畸形 → `-32602` + `{ "reason": "invalid_params", "detail": "<原文>" }`；凭据文件不可读 / 权限不合规 → `-32603` + `{ "reason": "<原文>" }`；handle 未注入 → `-32603` + `{ "reason": "provider_service_unavailable" }`。
+
+### 8.25 provider/usage（请求，`@since 0.17.0`）
+
+- **能力声明**：订阅能力（用量查询），**仅 opencode-go** 支持。需注入 `provider_service` handle。
+- **请求**：`ProviderUsageParams`（两个字段均可选）。
+
+```json
+{ "jsonrpc": "2.0", "id": 14, "method": "provider/usage", "params": {
+  "provider": "opencode-go",
+  "refresh": false
+} }
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `provider` | string | 否 | provider 名；省略 / `null` = 内核配置的默认 provider；非 opencode-go → `-32602` + `reason:"unsupported_provider"` |
+| `refresh` | boolean | 否 | `true` 绕过 **300s** 进程内缓存强制重拉；缺省 / `null` = 缓存内直接返回上次快照 |
+
+- **响应**：`ProviderUsageResult`（**成功响应**，甚至失败时也是——见下）。
+
+```json
+{ "jsonrpc": "2.0", "id": 14, "result": {
+  "provider": "opencode-go",
+  "fetched_at": 1700000000,
+  "stale": false,
+  "warn_percent": 80,
+  "windows": [
+    { "kind": "rolling", "status": "ok", "percent": 4, "resets_at": "2026-08-13T16:27:38Z" },
+    { "kind": "weekly", "status": "ok", "percent": 3, "resets_at": "2026-08-17T00:00:00Z" },
+    { "kind": "monthly", "status": "rate-limited", "percent": 100 }
+  ],
+  "error": null
+} }
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `provider` | string | 是 | 实际查询的 provider 名 |
+| `fetched_at` | integer | 是 | 快照获取时刻（epoch **秒**，int64） |
+| `stale` | boolean | 是 | `true` = `windows` 是更早一次成功快照的复用（失败路径）；失败且无缓存时 `windows` 为空数组、仍为 `false` |
+| `warn_percent` | integer | 是 | 客户端警示阈值（`[model].quota_warn_percent`，默认 **80**，clamp **1..=100**）；客户端只做展示，不各自维护配置 |
+| `windows` | UsageWindow[] | 是 | 已知窗口（`rolling` 5h / `weekly` / `monthly`）的用量；无数据 / 失败无缓存时为空数组（**不编造百分比**） |
+| `error` | ProviderUsageError | 否 | **领域失败**通道（成功响应内），见下；成功时为 `null` / 省略 |
+
+- **UsageWindow**：
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `kind` | UsageWindowKind | 是 | `rolling`（滚动 5 小时）\| `weekly` \| `monthly`（见 §9.1） |
+| `status` | UsageWindowStatus | 是 | `ok` \| `rate-limited` |
+| `percent` | integer | 否 | **已用**百分比 `0..=255`；上游缺字段或非整数时省略（该窗口降级为「未知」） |
+| `resets_at` | string | 否 | 该窗口重置时刻（上游原文，ISO 8601）；`percent == 0` 时**省略**（上游占位值会误导用户） |
+
+- **无余额字段**：结果**只提供已用百分比**，不存在余额 / 剩余额度 / 货币字段；「free 额度」不是本协议的一部分。
+- **ProviderUsageError（领域失败即结果数据）**：`kind ∈ { no_credential, expired, unauthorized, entitlement, unavailable, network }`（**普通字符串**，未知取值客户端 MUST 容忍）+ `message`（中文可读文案，如「尚未登录：请运行 agentj auth login --device」「密钥无效或已被撤销：请重新登录」「该工作区没有 OpenCode Go 订阅」「用量暂时不可用（上游响应无法识别）」「网络不可达：<原因>」）。有旧缓存 → 返回旧窗口 + `stale:true` + `error`；无缓存 → 空窗口 + `error`。客户端按 `kind` 映射文案，不解析 `message`。
+- **防御式解析**：只认 `usage` 对象下的 `rolling` / `weekly` / `monthly` 三个已知键（未知键忽略）；`status` 未知值归 `Unknown`（不失败）；`percent` 非整数 → 该窗口降级且其余窗口保留；`usage` 整体缺失 → `kind:"unavailable"`，**不编造窗口**。
+- **部分结果**：无。
+- **error.data**：未知 provider → `-32602` + `{ "field": "provider", "reason": "unknown_provider", "registered": […] }`；非 opencode-go → `-32602` + `{ "field": "provider", "reason": "unsupported_provider", "capability": "usage" }`；params 结构畸形 → `-32602` + `{ "reason": "invalid_params", "detail": "<原文>" }`；handle 未注入 → `-32603` + `{ "reason": "provider_service_unavailable" }`。
+
+### 8.26 auth/deviceStart（请求，`@since 0.17.0`）
+
+- **能力声明**：订阅能力（RFC 8628 设备授权），**仅 opencode-go** 支持。需注入 `provider_service` handle。
+- **请求**：`AuthDeviceStartParams`。
+
+```json
+{ "jsonrpc": "2.0", "id": 15, "method": "auth/deviceStart", "params": { "provider": "opencode-go" } }
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `provider` | string | 否 | provider 名；省略 / `null` = 内核配置的默认 provider；非 opencode-go → `-32602` + `reason:"unsupported_provider"` |
+
+- **响应**：`AuthDeviceStartResult`（上游设备授权响应原样透传，不落盘任何凭据）。
+
+```json
+{ "jsonrpc": "2.0", "id": 15, "result": {
+  "provider": "opencode-go",
+  "device_code": "dc-…",
+  "user_code": "ABCD-1234",
+  "verification_uri": "https://opencode.ai/console/device?user_code=ABCD-1234",
+  "expires_in": 600,
+  "interval": 5
+} }
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `provider` | string | 是 | 实际查询的 provider 名 |
+| `device_code` | string | 是 | 设备码（**不透明**，客户端在后续 `auth/devicePoll` 原样回传；内核无状态，不保存它） |
+| `user_code` | string | 是 | 用户在浏览器中输入的短码 |
+| `verification_uri` | string | 是 | 用户应在浏览器打开的地址（`{console}/device?…`） |
+| `expires_in` | integer | 是 | 设备码有效秒数（上游当前为 600） |
+| `interval` | integer | 是 | 建议轮询间隔秒数（上游当前为 5） |
+
+- **无状态语义**：`device_code` 由客户端持有并回传；内核不保存设备流会话，`auth/deviceStart` 不写 `auth.json`。授权成功与否只由 `auth/devicePoll` 判定（见 8.27）。
+- **部分结果**：无。
+- **error.data**：未知 provider / 非 opencode-go → `-32602`（同上两种 `reason`）；params 结构畸形 → `-32602` + `{ "reason": "invalid_params", "detail": "<原文>" }`；上游不可达 / 非 200 / 响应畸形 → `-32603` + `{ "reason": "<上游或网络错误原文>" }`（**不落盘任何凭据**）；handle 未注入 → `-32603` + `{ "reason": "provider_service_unavailable" }`。
+
+### 8.27 auth/devicePoll（请求，`@since 0.17.0`）
+
+- **能力声明**：订阅能力（RFC 8628 设备授权轮询），**仅 opencode-go** 支持。需注入 `provider_service` handle。
+- **请求**：`AuthDevicePollParams`。
+
+```json
+{ "jsonrpc": "2.0", "id": 16, "method": "auth/devicePoll", "params": {
+  "device_code": "dc-…",
+  "provider": "opencode-go"
+} }
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `device_code` | string | 是 | `auth/deviceStart` 返回的 `device_code`，原样回传 |
+| `provider` | string | 否 | provider 名；省略 / `null` = 内核配置的默认 provider；非 opencode-go → `-32602` + `reason:"unsupported_provider"` |
+
+- **响应**：`AuthDevicePollResult`（**待授权不是错误**——`pending` / `slow_down` 同样以成功响应返回）。
+
+```json
+{ "jsonrpc": "2.0", "id": 16, "result": { "state": "pending" } }
+```
+
+```json
+{ "jsonrpc": "2.0", "id": 16, "result": { "state": "slow_down", "interval": 10 } }
+```
+
+```json
+{ "jsonrpc": "2.0", "id": 16, "result": {
+  "state": "authorized",
+  "credential": { "kind": "oauth", "source": "file", "expires_at": 1700000600, "expiring_soon": false, "org_id": "org-…" }
+} }
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `state` | DeviceAuthState | 是 | `pending` \| `slow_down` \| `authorized` \| `expired` \| `denied` \| `error`（见 §9.1） |
+| `interval` | integer | 否 | 仅 `slow_down`：下一次轮询间隔秒数（= 本次间隔 + **5s**） |
+| `message` | string | 否 | 仅 `error`：未识别上游错误的**原文**（不猜测、不改写） |
+| `credential` | CredentialInfo | 否 | 仅 `authorized`：刚落盘的 OAuth 凭据脱敏投影（字段同 §8.24；`expiring_soon` 恒 `false`） |
+
+- **状态语义（RFC 8628 映射）**：`authorization_pending` → `pending`；`slow_down` → `slow_down` + `interval`（客户端据此**延长**轮询）；`200` → `authorized`（**唯一写盘的一次调用**：`AuthStore::set` 写入 `auth.json`，目录 `0700` / 文件 `0600` 原子写）；`access_denied` → `denied`；`expired_token` / 设备码用尽 → `expired`；其余非空上游错误字符串 → `error` + 原文。
+- **覆盖语义**：同一 provider 再次授权成功 = **替换**既有凭据（`AuthStore::set`），不新增多账号概念，也不新增 wire 字段。
+- **凭据长期可用**：返回的 OAuth 凭据其 access token 生命期为 **600s**，内核在每轮真实请求前自动刷新（`auth.json.lock` 文件锁串行化 + 重读校验；refresh token **单次使用**，复用即吊销整个会话）；刷新失败 → 下一轮 run 以可行动错误失败，**绝不回落到空 Bearer 或旧 token 重试**。`auth/status` 是纯读，永不触发该刷新。
+- **部分结果**：无（客户端按 `interval` 自行循环调用）。
+- **error.data**：未知 provider / 非 opencode-go → `-32602`（同上两种 `reason`）；`device_code` 缺失 / 类型非法 → `-32602` + `{ "reason": "invalid_params", "detail": "<原文>" }`；上游不可达 / 非 200 且无错误码 / 响应畸形 → `-32603` + `{ "reason": "<上游或网络错误原文>" }`（未识别错误码不走此通道，而是 `state:"error"`）；落盘失败 → `-32603` + `{ "reason": "<原文>" }`；handle 未注入 → `-32603` + `{ "reason": "provider_service_unavailable" }`。
+
 ## 9. 值枚举与未知值宽容
 
 ### 9.1 值枚举
@@ -856,8 +1101,14 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 | `TodoStatus` | `pending` \| `in_progress` \| `completed` \| `cancelled` | TODO 条目状态（`@since 0.13.0`，见 7.3） |
 | `FileChangeKind` | `add` \| `modify` \| `delete` | 文件变更操作（`@since 0.13.0`，见 7.3） |
 | `FileChangeSource` | `write` \| `bash` | 文件变更来源（`@since 0.15.0`，见 7.3；`write`=LCS diff 口径，`bash`=numstat 计数口径） |
+| `ModelSource` | `account` \| `live` \| `overlay` \| `static` | `model/list` 目录来源层级（`@since 0.17.0`，见 8.23） |
+| `CredentialKind` | `api_key` \| `oauth` | `auth/status` 凭据种类（`@since 0.17.0`，见 8.24；`oauth` 即 `auth.json` 中 `type:"oauth"` 的 OAuth 条目） |
+| `CredentialSource` | `flag` \| `env` \| `file` | 凭据来源（`@since 0.17.0`，见 8.24；本期内核实现只产生 `env` / `file`，`flag` 为加性预留） |
+| `UsageWindowKind` | `rolling` \| `weekly` \| `monthly` | 用量窗口种类（`@since 0.17.0`，见 8.25） |
+| `UsageWindowStatus` | `ok` \| `rate-limited` | 用量窗口状态（`@since 0.17.0`，见 8.25） |
+| `DeviceAuthState` | `pending` \| `slow_down` \| `authorized` \| `expired` \| `denied` \| `error` | 设备码轮询状态（`@since 0.17.0`，见 8.27） |
 
-上述枚举均带 `Unknown` 变体容忍前向值（`FileKind` / `TodoStatus` / `FileChangeKind` / `FileChangeSource` 由 `serde(other)` + `schemars(skip)` 实现，schema 只列已知值；`git_status` 的 `M`/`A`/`U`/`D` 为 `FileEntry` 内联的固定字母集合，见 8.20）。
+上述枚举均带 `Unknown` 变体容忍前向值（`FileKind` / `TodoStatus` / `FileChangeKind` / `FileChangeSource` 与 0.17.0 新增的 `ModelSource` / `CredentialKind` / `CredentialSource` / `UsageWindowKind` / `UsageWindowStatus` / `DeviceAuthState` 由 `serde(other)` + `schemars(skip)` 实现，schema 只列已知值；`git_status` 的 `M`/`A`/`U`/`D` 为 `FileEntry` 内联的固定字母集合，见 8.20）。未知取值反序列化为 `Unknown`，**重序列化一律为规范字面量 `"unknown"`**（不保留原始字符串）——因此仅适用于「写回不敏感」的字段。
 
 ### 9.2 未知值宽容规则
 
@@ -873,10 +1124,11 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 - 协议扩展（0.14.0）新增的 `file/list` 参数 `query` 与结果 `total`、`SessionNewResult.project_root`、`SessionStatusResult.project_root` 同为**加性字段**（标注 `@since 0.14.0`；不新增方法、不新增 schema、不改既有字段语义）。
 - 协议扩展（0.15.0）新增的 `FileChangeSource` 值枚举与 `FileChange` / `ProgressValue::Todo` / `ProgressValue::FileChange` / `TrajectoryValue::Todo` / `TrajectoryValue::FileChange` / `SessionRunResult` / `SessionHistoryParams` 的 `run_id` / `seq` / `source` / `total_bytes` 四加性字段同为**加性字段**（标注 `@since 0.15.0`；不新增方法、不改既有字段语义；新增 `FileChangeSource.json` 一个 schema，去重键由全局 `path` 升为 `(run_id, path)`）。
 - 协议扩展（0.16.0）新增的 `session/run` 参数 `provider` / `model` 同为**加性字段**（标注 `@since 0.16.0`；不新增方法、不新增 schema——仅更新 `SessionRunParams.json` 内容，21 方法 / 52 schemas 不变；两者均省略 / `null` / 空串时行为逐字不变）。
+- 协议扩展（0.17.0）新增 **5 个请求方法**（`model/list` / `auth/status` / `provider/usage` / `auth/deviceStart` / `auth/devicePoll`）与 **20 个 schema**（`ModelListParams` / `ModelListResult` / `ModelEntry` / `ModelSource`；`AuthStatusParams` / `AuthStatusResult` / `CredentialInfo` / `CredentialKind` / `CredentialSource`；`ProviderUsageParams` / `ProviderUsageResult` / `ProviderUsageError` / `UsageWindow` / `UsageWindowKind` / `UsageWindowStatus`；`AuthDeviceStartParams` / `AuthDeviceStartResult` / `AuthDevicePollParams` / `AuthDevicePollResult` / `DeviceAuthState`）与 6 个新值枚举，全部标注 `@since 0.17.0`；方法数 21 → 26、schema 总数 52 → 72，**不新增错误码**（复用 `-32602` / `-32603` + `error.data.reason`，见 §3.4），既有方法 / 既有字段的语义与 wire 形状零变化——全部为加性变更，此前客户端零破坏。
 
 ## 10. 机器可读模型
 
-- **`protocol/methods.json`**：方法注册表，捕获 JSON Schema 表达不了的方法语义（method 字符串 ↔ params/result schema 引用、方向、类型）。当前收录 21 个方法，`protocol_version` 为 `0.16.0`。
+- **`protocol/methods.json`**：方法注册表，捕获 JSON Schema 表达不了的方法语义（method 字符串 ↔ params/result schema 引用、方向、类型）。当前收录 26 个方法，`protocol_version` 为 `0.17.0`。
 
 对应关系：
 
@@ -903,8 +1155,13 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 | `file/list` | `FileListParams.json` | `FileListResult.json` |
 | `$/askQuestion` | `AskQuestionParams.json` | — |
 | `question/respond` | `QuestionRespondParams.json` | `QuestionRespondResult.json` |
+| `model/list` | `ModelListParams.json` | `ModelListResult.json` |
+| `auth/status` | `AuthStatusParams.json` | `AuthStatusResult.json` |
+| `provider/usage` | `ProviderUsageParams.json` | `ProviderUsageResult.json` |
+| `auth/deviceStart` | `AuthDeviceStartParams.json` | `AuthDeviceStartResult.json` |
+| `auth/devicePoll` | `AuthDevicePollParams.json` | `AuthDevicePollResult.json` |
 
-信封与公共类型见 `RequestMessage.json`、`NotificationMessage.json`、`ResponseMessage.json`、`ErrorObject.json`、`Id.json`、`ProgressToken.json`、`ProgressValue.json`、`Role.json`、`PermissionDecision.json` 等；协议扩展（0.13.0）新增 / 更新的公共类型见 `SessionNewParams.json`、`SessionSummary.json`、`FileListParams.json`、`FileListResult.json`、`FileEntry.json`、`FileKind.json`、`AskQuestionParams.json`、`AskOption.json`、`QuestionRespondParams.json`、`QuestionRespondResult.json`、`TodoItem.json`、`TodoStatus.json`、`FileChange.json`、`FileChangeKind.json`、`UsageInfo.json`。协议扩展（0.14.0）不新增 schema，仅向既有 schema 追加字段：`FileListParams.json`（`query`）、`FileListResult.json`（`total`）、`SessionNewResult.json` 与 `SessionStatusResult.json`（`project_root`）；协议扩展（0.15.0）新增 `FileChangeSource.json` 一个 schema（`FileChange`/`ProgressValue`/`TrajectoryValue`/`SessionHistoryParams`/`SessionRunResult` 的 `run_id`/`seq`/`source`/`total_bytes` 为加性字段）；协议扩展（0.16.0）不新增 schema，仅向既有 `SessionRunParams.json` 追加 `provider` / `model` 两个加性可选字段；schema 总数保持 **52**。
+信封与公共类型见 `RequestMessage.json`、`NotificationMessage.json`、`ResponseMessage.json`、`ErrorObject.json`、`Id.json`、`ProgressToken.json`、`ProgressValue.json`、`Role.json`、`PermissionDecision.json` 等；协议扩展（0.13.0）新增 / 更新的公共类型见 `SessionNewParams.json`、`SessionSummary.json`、`FileListParams.json`、`FileListResult.json`、`FileEntry.json`、`FileKind.json`、`AskQuestionParams.json`、`AskOption.json`、`QuestionRespondParams.json`、`QuestionRespondResult.json`、`TodoItem.json`、`TodoStatus.json`、`FileChange.json`、`FileChangeKind.json`、`UsageInfo.json`。协议扩展（0.14.0）不新增 schema，仅向既有 schema 追加字段：`FileListParams.json`（`query`）、`FileListResult.json`（`total`）、`SessionNewResult.json` 与 `SessionStatusResult.json`（`project_root`）；协议扩展（0.15.0）新增 `FileChangeSource.json` 一个 schema（`FileChange`/`ProgressValue`/`TrajectoryValue`/`SessionHistoryParams`/`SessionRunResult` 的 `run_id`/`seq`/`source`/`total_bytes` 为加性字段）；协议扩展（0.16.0）不新增 schema，仅向既有 `SessionRunParams.json` 追加 `provider` / `model` 两个加性可选字段；协议扩展（0.17.0）新增 **20 个 schema**（`ModelListParams` / `ModelListResult` / `ModelEntry` / `ModelSource`；`AuthStatusParams` / `AuthStatusResult` / `CredentialInfo` / `CredentialKind` / `CredentialSource`；`ProviderUsageParams` / `ProviderUsageResult` / `ProviderUsageError` / `UsageWindow` / `UsageWindowKind` / `UsageWindowStatus`；`AuthDeviceStartParams` / `AuthDeviceStartResult` / `AuthDevicePollParams` / `AuthDevicePollResult` / `DeviceAuthState`），并新增 `ModelSource` / `CredentialKind` / `CredentialSource` / `UsageWindowKind` / `UsageWindowStatus` / `DeviceAuthState` 六个值枚举（均带 `Unknown` 容忍前向值）；schema 总数 52 → **72**。
 
 一致性锚点：Rust 侧 `schemars` 生成 `schemas/*.json` 并提交，契约测试断言实际 wire 输出与 Schema 一致，CI 漂移门禁在生成结果与提交版本不一致时失败。
 
@@ -912,7 +1169,7 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 
 ### 11.1 版本策略
 
-协议版本遵循语义化版本（semver），规则见 §4.3：major 破坏 / minor 加方法或加性字段 / patch 修 bug。当前版本 `0.16.0`（`protocol/methods.json` 中 `protocol_version` 字段为准）。
+协议版本遵循语义化版本（semver），规则见 §4.3：major 破坏 / minor 加方法或加性字段 / patch 修 bug。当前版本 `0.17.0`（`protocol/methods.json` 中 `protocol_version` 字段为准）。
 
 ### 11.2 命名归一化决策（v0.1.0 记录）
 
@@ -1018,5 +1275,15 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 - **校验与失败可行动**：非字符串类型（数字 / 对象 / 数组）→ `-32602`，`error.data` 携带 `{ "field": "provider" | "model" }`；未知但格式合法的 provider 名 → 本轮运行失败（与今天 `no default provider` 同一 turn 错误通道），文案含 `unknown provider: <name>` 与已注册 provider 名列表，**不回落默认 provider**；不属于所选 provider 的 `model` 沿用既有 `UnknownModel` 路径。
 - **纯前端（无 wire 变化）**：Web composer 模型弹层与 TUI `/models` 选择器在选中后于**下一次** `session/run` 携带两个字段；未选择时**不携带**新字段（no-selection 路径逐字不变）；选择仅本地保存（Web localStorage / TUI 会话内存）。
 - 协议版本 minor 递增 `0.15.0 → 0.16.0`；工作区 `0.25.2 → 0.26.0`；此前客户端零破坏（旧内核忽略未知字段 → 行为不变）。
+
+#### 0.17.0（订阅面：用量 / 设备码登录 / 账号级目录）
+
+- **方法面 21 → 26**：新增 5 个请求方法——`model/list`（三层目录：`account` → `live` → `overlay`；非 opencode-go 为 `static`）、`auth/status`（凭据状态**纯读**：`key_hint` / `org_id` / `expires_at` / `expiring_soon`，绝不轮换 token）、`provider/usage`（三窗口 `rolling` 5h / `weekly` / `monthly`，`percent` 为**已用**百分比，无余额字段）、`auth/deviceStart`（RFC 8628 设备授权起点）、`auth/devicePoll`（轮询状态：`pending` / `slow_down` / `authorized` / `expired` / `denied` / `error`）。五个方法的参数 / 结果契约见 §8.23–§8.27；§8.1 方法总表与 §10 映射表补齐至 26 行。
+- **新 schema（20 个）**：`ModelListParams` / `ModelListResult` / `ModelEntry` / `ModelSource`、`AuthStatusParams` / `AuthStatusResult` / `CredentialInfo` / `CredentialKind` / `CredentialSource`、`ProviderUsageParams` / `ProviderUsageResult` / `ProviderUsageError` / `UsageWindow` / `UsageWindowKind` / `UsageWindowStatus`、`AuthDeviceStartParams` / `AuthDeviceStartResult` / `AuthDevicePollParams` / `AuthDevicePollResult` / `DeviceAuthState`；schema 总数 52 → **72**。
+- **新值枚举（6 个）**：`ModelSource`、`CredentialKind`（`api_key` \| `oauth`）、`CredentialSource`、`UsageWindowKind`、`UsageWindowStatus`、`DeviceAuthState`——均带 `Unknown` 变体容忍前向值（仅列已知值入 schema，`Unknown` 重序列化为规范字面量 `"unknown"`，见 §9.1 / §9.2）。
+- **不新增错误码**（见 §3.4）：未知 provider 名 → `-32602` + `data{field:"provider", reason:"unknown_provider", registered:[…]}`；provider 已知但不支持该能力 → `-32602` + `data{field:"provider", reason:"unsupported_provider", capability:"<usage|device_flow>"}`；`provider_service` handle 未注入 → `-32603` + `data{reason:"provider_service_unavailable"}`。上游 / 凭据失败（未登录 / 401 / 403 / 5xx / 网络）是**领域失败**，以成功响应的结果数据表达（`ProviderUsageResult.error.kind`、`AuthDevicePollResult.state`），使客户端能同时拿到「上次快照 + 失败原因」（`stale:true`）。
+- **缓存与新鲜度语义**：`model/list` 进程内复用窗口 **60s**、`provider/usage` TTL **300s**（两者的 `refresh:true` 均强制绕过）；警示阈值 `warn_percent` 由 `[model].quota_warn_percent`（默认 80，clamp 1..=100）随结果下发；OAuth access token 生命期 **600s**，由内核在真实请求前自动刷新（`auth.json.lock` 文件锁串行化；refresh token 单次使用），刷新失败以可行动错误失败——以上均不改变 wire 契约（客户端只消费结果字段）。
+- **客户端兼容契约**：未知枚举取值与未知 `error.kind` 字符串 MUST 容忍（不因未知而失败，按 §9.2 处理）；未注入 handle 的内核（如 `run --attach` 连接远端内核）统一 `-32603`，客户端展示「该内核未提供订阅服务」且**不缓存该失败**。
+- 全部为**加性变更（只加不改）**：既有方法、既有字段的语义与 wire 形状零变化，此前客户端零破坏；协议版本 minor 递增 `0.16.0 → 0.17.0`。
 
 #### 后续版本

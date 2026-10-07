@@ -103,4 +103,25 @@ mod tests {
                 .is_none()
         );
     }
+
+    #[test]
+    fn oauth_file_credential_resolves_with_file_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = AuthStore::with_path(dir.path().join("auth.json"));
+        store
+            .set(
+                "opencode-go",
+                Credential::try_from_value(&serde_json::json!({
+                    "type":"oauth","access":"a-tok","refresh":"r-tok","expires":42
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+        let got = resolve_credential("opencode-go", None, None, &store)
+            .unwrap()
+            .unwrap();
+        assert_eq!((got.key.as_str(), got.source), ("a-tok", KeySource::File));
+        let cloned = store.clone();
+        assert_eq!(cloned.path(), store.path());
+    }
 }

@@ -17,7 +17,7 @@ fn registry_lists_all_v01_methods() {
         .iter()
         .map(|m| m["method"].as_str().unwrap())
         .collect();
-    assert_eq!(methods.len(), 21, "unexpected method count");
+    assert_eq!(methods.len(), 26, "unexpected method count");
     for expected in [
         "initialize",
         "initialized",
@@ -40,6 +40,11 @@ fn registry_lists_all_v01_methods() {
         "file/list",
         "$/askQuestion",
         "question/respond",
+        "model/list",
+        "auth/status",
+        "provider/usage",
+        "auth/deviceStart",
+        "auth/devicePoll",
     ] {
         assert!(names.contains(&expected), "missing method {expected}");
     }
@@ -78,7 +83,36 @@ fn registry_extension_method_shapes() {
     assert_eq!(respond["result"], "QuestionRespondResult");
 
     assert_eq!(find("session/new")["params"], "SessionNewParams");
-    assert_eq!(reg["protocol_version"], "0.16.0");
+    assert_eq!(reg["protocol_version"], "0.17.0");
+}
+
+#[test]
+fn protocol_version_and_new_methods_are_registered() {
+    let raw = include_str!("../../../protocol/methods.json");
+    let reg: serde_json::Value = serde_json::from_str(raw).unwrap();
+    assert_eq!(reg["protocol_version"], "0.17.0");
+    let methods = reg["methods"].as_array().unwrap();
+    assert_eq!(methods.len(), 26, "unexpected method count");
+    let names: Vec<&str> = methods
+        .iter()
+        .map(|m| m["method"].as_str().unwrap())
+        .collect();
+    for expected in [
+        "model/list",
+        "auth/status",
+        "provider/usage",
+        "auth/deviceStart",
+        "auth/devicePoll",
+    ] {
+        assert!(names.contains(&expected), "missing method {expected}");
+    }
+    for m in methods.iter().filter(|m| {
+        let name = m["method"].as_str().unwrap();
+        name.starts_with("auth/") || name.starts_with("model/") || name == "provider/usage"
+    }) {
+        assert_eq!(m["kind"], "request");
+        assert_eq!(m["direction"], "client_to_server");
+    }
 }
 
 #[test]

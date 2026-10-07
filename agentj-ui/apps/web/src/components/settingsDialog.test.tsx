@@ -1,6 +1,7 @@
 import { expect, test, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
-import { render, screen, fireEvent, within } from "@testing-library/react";
+import { render, screen, fireEvent, within, waitFor } from "@testing-library/react";
+import type { RpcClient } from "@agentj/sdk";
 import SettingsDialog from "./SettingsDialog";
 
 test("defaults to the 连接 tab, uses the wide card and switches categories via the tablist", () => {
@@ -12,6 +13,7 @@ test("defaults to the 连接 tab, uses the wide card and switches categories via
     "显示",
     "项目",
     "演示数据",
+    "订阅",
   ]);
   expect(screen.getByRole("tab", { name: "连接" })).toHaveAttribute("aria-selected", "true");
   expect(screen.getByLabelText("connection")).toBeInTheDocument();
@@ -37,11 +39,11 @@ test("ArrowDown moves tab selection, focus and the tabpanel", () => {
   expect(screen.getByRole("tabpanel")).toHaveAttribute("aria-labelledby", "aj-settings-tab-display");
 });
 
-test("shows the four final categories and mounts both new panels", () => {
+test("shows the five final categories and mounts both new panels", () => {
   localStorage.clear();
   render(<SettingsDialog onConnect={() => {}} onClose={() => {}} />);
   const tabs = screen.getAllByRole("tab").map((t) => t.textContent);
-  expect(tabs).toEqual(["连接", "显示", "项目", "演示数据"]);
+  expect(tabs).toEqual(["连接", "显示", "项目", "演示数据", "订阅"]);
   expect(screen.queryByText("会话列表")).toBeNull();
   fireEvent.click(screen.getByRole("tab", { name: "显示" }));
   expect(screen.getByRole("switch", { name: "减弱动画" })).toBeTruthy();
@@ -49,7 +51,7 @@ test("shows the four final categories and mounts both new panels", () => {
   expect(screen.getByLabelText("默认项目")).toBeTruthy();
 });
 
-test("keeps keyboard roaming across four tabs", () => {
+test("keeps keyboard roaming across five tabs", () => {
   localStorage.clear();
   render(<SettingsDialog onConnect={() => {}} onClose={() => {}} />);
   const first = screen.getByRole("tab", { name: "连接" });
@@ -57,7 +59,7 @@ test("keeps keyboard roaming across four tabs", () => {
   fireEvent.keyDown(first, { key: "ArrowDown" });
   expect(document.activeElement?.textContent).toBe("显示");
   fireEvent.keyDown(document.activeElement as Element, { key: "End" });
-  expect(document.activeElement?.textContent).toBe("演示数据");
+  expect(document.activeElement?.textContent).toBe("订阅");
 });
 
 test("keeps wrap + Home/End via shared helpers", () => {
@@ -66,7 +68,7 @@ test("keeps wrap + Home/End via shared helpers", () => {
   const connection = screen.getByRole("tab", { name: "连接" });
   connection.focus();
   fireEvent.keyDown(connection, { key: "End" });
-  expect(document.activeElement).toHaveTextContent(/演示数据/);
+  expect(document.activeElement).toHaveTextContent(/订阅/);
   fireEvent.keyDown(document.activeElement as Element, { key: "ArrowDown" }); // wraps to first
   expect(document.activeElement).toHaveTextContent(/^连接$/);
 });
@@ -95,4 +97,24 @@ test("connection tab submits through ConnectionBar then closes the dialog", () =
   fireEvent.click(within(bar).getByRole("button", { name: /connect/i }));
   expect(onConnect).toHaveBeenCalledWith("10.0.0.5", "5000", "");
   expect(onClose).toHaveBeenCalledTimes(1);
+});
+
+test("lists the subscription tab and reaches it from the keyboard", async () => {
+  localStorage.clear();
+  const c = { request: vi.fn().mockResolvedValue({}) } as unknown as RpcClient;
+  render(<SettingsDialog onConnect={() => {}} onClose={() => {}} client={c} />);
+  expect(screen.getAllByRole("tab").map((t) => t.textContent))
+    .toEqual(["连接", "显示", "项目", "演示数据", "订阅"]);
+  const demo = screen.getByRole("tab", { name: "演示数据" });
+  demo.focus();
+  fireEvent.keyDown(demo, { key: "ArrowDown" });
+  expect(screen.getByRole("tab", { name: "订阅" })).toHaveAttribute("aria-selected", "true");
+  await waitFor(() => expect(c.request).toHaveBeenCalled()); // SubscriptionPanel mounted with the client
+});
+
+test("renders a connect hint when no client exists", () => {
+  localStorage.clear();
+  render(<SettingsDialog onConnect={() => {}} onClose={() => {}} client={null} />);
+  fireEvent.click(screen.getByRole("tab", { name: "订阅" }));
+  expect(screen.getByText(/先连接内核/)).toBeInTheDocument();
 });

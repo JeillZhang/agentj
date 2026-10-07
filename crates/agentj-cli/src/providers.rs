@@ -3,11 +3,14 @@
 
 use std::sync::Arc;
 
+use agentj_auth::credential::Credential;
 use agentj_auth::{AuthStore, resolve_credential};
 use agentj_config::AgentJConfig;
 use agentj_core::module::ModelProvider;
 use agentj_model::catalog::ModelCatalog;
 use agentj_model::factory::ProviderFactory;
+
+use crate::refreshing_provider::{Builder as RefreshingBuilder, RefreshingProvider};
 
 /// Kinds that require a resolvable key; everything else (mock*) is key-free.
 const KEY_REQUIRED_KINDS: [&str; 4] = ["openai-compat", "responses", "anthropic", "opencode-go"];
@@ -27,6 +30,7 @@ pub async fn build_providers<F, Fut>(
     flag: Option<&str>,
     store: &AuthStore,
     live: F,
+    console_base: &str,
 ) -> Result<Assembly, String>
 where
     F: Fn() -> Fut,
@@ -72,14 +76,43 @@ where
                     .into_iter()
                     .map(|id| format!("opencode-go：模型路由未验证：{id}")),
             );
-            let provider = ProviderFactory::create_with_catalog(
-                "opencode-go",
-                &pcfg.name,
-                &pcfg.base_url,
-                resolved.key.clone(),
-                catalog,
-            )
-            .map_err(|e| e.to_string())?;
+            let provider: Arc<dyn ModelProvider> = match store.get(&pcfg.name).ok().flatten() {
+                // OAuth (design D8): keep the 600s access token fresh before every chat call.
+                Some(Credential::OAuth { .. }) => {
+                    let build: RefreshingBuilder = {
+                        let catalog = catalog.clone();
+                        let name = pcfg.name.clone();
+                        let base = pcfg.base_url.clone();
+                        Arc::new(move |key: &str| {
+                            ProviderFactory::create_with_catalog(
+                                "opencode-go",
+                                &name,
+                                &base,
+                                key.to_string(),
+                                catalog.clone(),
+                            )
+                            .expect("opencode-go provider")
+                        })
+                    };
+                    Arc::new(RefreshingProvider::oauth(
+                        build,
+                        store.clone(),
+                        &pcfg.name,
+                        console_base,
+                        resolved.key.clone(),
+                    ))
+                }
+                _ => Arc::new(RefreshingProvider::r#static(
+                    ProviderFactory::create_with_catalog(
+                        "opencode-go",
+                        &pcfg.name,
+                        &pcfg.base_url,
+                        resolved.key.clone(),
+                        catalog,
+                    )
+                    .map_err(|e| e.to_string())?,
+                )),
+            };
             providers.push((pcfg.name.clone(), provider));
         } else {
             let provider = ProviderFactory::create(
@@ -112,6 +145,7 @@ where
 mod tests {
     use super::*;
     use agentj_config::ModelProviderConfig;
+    use agentj_core::types::ModelOptions;
     use wiremock::MockServer;
 
     fn provider(name: &str, kind: &str, api_key_env: &str) -> ModelProviderConfig {
@@ -151,9 +185,15 @@ mod tests {
             provider("mock", "mock", ""),
             provider("deepseek", "openai-compat", "AGENTJ_MISSING"),
         ]);
-        let out = build_providers(&config, None, &store, || async { Ok(None) })
-            .await
-            .unwrap();
+        let out = build_providers(
+            &config,
+            None,
+            &store,
+            || async { Ok(None) },
+            "https://opencode.ai/console",
+        )
+        .await
+        .unwrap();
         assert_eq!(out.providers.len(), 1);
         assert_eq!(out.providers[0].0, "mock");
         assert!(out.warnings.iter().any(|w| w.contains("deepseek")));
@@ -168,7 +208,15 @@ mod tests {
             "openai-compat",
             "AGENTJ_MISSING",
         )]);
-        let err = match build_providers(&config, None, &store, || async { Ok(None) }).await {
+        let err = match build_providers(
+            &config,
+            None,
+            &store,
+            || async { Ok(None) },
+            "https://opencode.ai/console",
+        )
+        .await
+        {
             Err(e) => e,
             Ok(_) => panic!("expected a hard error"),
         };
@@ -180,9 +228,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = AuthStore::with_path(dir.path().join("auth.json"));
         let config = config_with(vec![provider("mock", "mock", "")]);
-        let out = build_providers(&config, None, &store, || async { Ok(None) })
-            .await
-            .unwrap();
+        let out = build_providers(
+            &config,
+            None,
+            &store,
+            || async { Ok(None) },
+            "https://opencode.ai/console",
+        )
+        .await
+        .unwrap();
         assert_eq!(out.providers.len(), 1);
     }
 
@@ -197,9 +251,15 @@ mod tests {
             "openai-compat",
             "AGENTJ_TEST_ASSEMBLY_KEY",
         )]);
-        let out = build_providers(&config, None, &store, || async { Ok(None) })
-            .await
-            .unwrap();
+        let out = build_providers(
+            &config,
+            None,
+            &store,
+            || async { Ok(None) },
+            "https://opencode.ai/console",
+        )
+        .await
+        .unwrap();
         assert_eq!(out.providers.len(), 1);
     }
 
@@ -214,9 +274,13 @@ mod tests {
             "opencode-go",
             "AGENTJ_TEST_OG_KEY",
         )]);
-        let out = build_providers(&config, None, &store, || async {
-            Err("offline".to_string())
-        })
+        let out = build_providers(
+            &config,
+            None,
+            &store,
+            || async { Err("offline".to_string()) },
+            "https://opencode.ai/console",
+        )
         .await
         .unwrap();
         assert_eq!(out.providers.len(), 1);
@@ -241,13 +305,114 @@ mod tests {
             provider("mock", "mock", ""),
             provider_base("deepseek", "openai-compat", "AGENTJ_MISSING", &server.uri()),
         ]);
-        let out = build_providers(&config, None, &store, || async { Ok(None) })
-            .await
-            .unwrap();
+        let out = build_providers(
+            &config,
+            None,
+            &store,
+            || async { Ok(None) },
+            "https://opencode.ai/console",
+        )
+        .await
+        .unwrap();
         assert_eq!(out.providers.len(), 1);
         assert!(
             server.received_requests().await.unwrap().is_empty(),
             "no empty-Bearer request may be sent"
+        );
+    }
+
+    fn config_with_opencode_go(base_url: &str) -> AgentJConfig {
+        config_with(vec![ModelProviderConfig {
+            name: "opencode-go".into(),
+            kind: "opencode-go".into(),
+            api_key_env: None,
+            base_url: base_url.into(),
+        }])
+    }
+
+    fn store_with_api_key(dir: &std::path::Path, key: &str) -> AuthStore {
+        let store = AuthStore::with_path(dir.join("auth.json"));
+        store
+            .set(
+                "opencode-go",
+                Credential::ApiKey {
+                    key: key.into(),
+                    label: None,
+                    created_at: None,
+                },
+            )
+            .unwrap();
+        store
+    }
+
+    fn store_with_oauth(dir: &std::path::Path, expires: i64) -> AuthStore {
+        let store = AuthStore::with_path(dir.join("auth.json"));
+        store
+            .set(
+                "opencode-go",
+                Credential::try_from_value(&serde_json::json!({
+                    "type":"oauth","access":"old-access","refresh":"old-refresh","expires":expires
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+        store
+    }
+
+    async fn mount_token_success(server: &MockServer, access: &str) {
+        wiremock::Mock::given(wiremock::matchers::path("/auth/device/token"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "access_token": access, "refresh_token": "new-refresh", "expires_in": 600,
+                "org_id": "org_1" })),
+            )
+            .mount(server)
+            .await;
+    }
+
+    /// The provider's own base_url is unreachable so the chat call never reaches the token
+    /// server; only the refresh request is observable there.
+    const DEAD_PROVIDER_BASE: &str = "http://127.0.0.1:9";
+
+    #[tokio::test]
+    async fn oauth_credentials_produce_a_refreshing_provider() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store_with_oauth(dir.path(), agentj_auth::oauth::now_epoch() - 1);
+        let server = MockServer::start().await;
+        mount_token_success(&server, "new-access").await;
+
+        let cfg = config_with_opencode_go(DEAD_PROVIDER_BASE);
+        let asm = build_providers(&cfg, None, &store, || async { Ok(None) }, &server.uri())
+            .await
+            .unwrap();
+        let provider = asm.providers[0].1.clone();
+        assert!(!provider.models().is_empty());
+        let _ = provider
+            .chat_stream(vec![], vec![], ModelOptions::default())
+            .await;
+        assert_eq!(
+            server.received_requests().await.unwrap().len(),
+            1,
+            "the decorator refreshes once before the first chat"
+        );
+    }
+
+    #[tokio::test]
+    async fn api_key_credentials_do_not_refresh() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store_with_api_key(dir.path(), "sk-k");
+        let server = MockServer::start().await;
+        let cfg = config_with_opencode_go(DEAD_PROVIDER_BASE);
+        let asm = build_providers(&cfg, None, &store, || async { Ok(None) }, &server.uri())
+            .await
+            .unwrap();
+        let provider = asm.providers[0].1.clone();
+        let _ = provider
+            .chat_stream(vec![], vec![], ModelOptions::default())
+            .await;
+        assert!(
+            server.received_requests().await.unwrap().is_empty(),
+            "an api_key credential must never hit the token endpoint"
         );
     }
 }

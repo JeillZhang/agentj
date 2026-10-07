@@ -3,9 +3,9 @@ import { PROTOCOL_VERSION, VERSION, resolveWsUrl } from "../config.js";
 import { METHODS } from "../methods.js";
 
 describe("config", () => {
-  it("version bumped to 0.26.0", () => {
-    expect(VERSION).toBe("0.26.0");
-    expect(PROTOCOL_VERSION).toBe("0.16.0");
+  it("version bumped to 0.27.1", () => {
+    expect(VERSION).toBe("0.27.1");
+    expect(PROTOCOL_VERSION).toBe("0.17.0");
   });
 
 
@@ -19,12 +19,17 @@ describe("config", () => {
     expect(resolveWsUrl({ envUrl: "ws://host:1/ws" })).toBe("ws://host:1/ws");
   });
 
-  it("methods cover the 21-method registry", () => {
+  it("methods cover the 26-method registry", () => {
     expect(METHODS.kernelStatus).toBe("kernel/status");
-    expect(Object.keys(METHODS)).toHaveLength(21);
+    expect(Object.keys(METHODS)).toHaveLength(26);
     expect(METHODS.fileList).toBe("file/list");
     expect(METHODS.askQuestion).toBe("$/askQuestion");
     expect(METHODS.questionRespond).toBe("question/respond");
+    expect(METHODS.modelList).toBe("model/list");
+    expect(METHODS.authStatus).toBe("auth/status");
+    expect(METHODS.providerUsage).toBe("provider/usage");
+    expect(METHODS.authDeviceStart).toBe("auth/deviceStart");
+    expect(METHODS.authDevicePoll).toBe("auth/devicePoll");
   });
 
   it("resolveWsUrl derives the host from the page location", () => {

@@ -7,6 +7,7 @@ import type {
   KeyboardEvent as ReactKeyboardEvent,
   MouseEvent as ReactMouseEvent,
 } from "react";
+import type { RpcClient } from "@agentj/sdk";
 import { loadFavorites } from "../layoutStore";
 import {
   createProject,
@@ -24,6 +25,7 @@ import "./topbarmenu.css";
 type Props = {
   onConnect: (host: string, port: string, token: string) => void;
   onContinue: (sessionId: string) => void;
+  client?: RpcClient | null;
 };
 
 type DialogKind = null | "continue" | "addProject" | "settings";
@@ -31,7 +33,7 @@ type FlyoutKind = null | "project" | "favorites";
 
 const FLYOUT_CLOSE_DELAY_MS = 120;
 
-export default function TopbarMenu({ onConnect, onContinue }: Props) {
+export default function TopbarMenu({ onConnect, onContinue, client = null }: Props) {
   const [open, setOpen] = useState(false);
   const [dialog, setDialog] = useState<DialogKind>(null);
   const [flyout, setFlyout] = useState<FlyoutKind>(null);
@@ -387,7 +389,7 @@ export default function TopbarMenu({ onConnect, onContinue }: Props) {
       )}
 
       {dialog === "settings" && (
-        <SettingsDialog onConnect={onConnect} onClose={closeDialog} />
+        <SettingsDialog onConnect={onConnect} onClose={closeDialog} client={client} />
       )}
 
       {dialog === "continue" && (

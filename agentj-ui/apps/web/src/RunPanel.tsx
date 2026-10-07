@@ -86,6 +86,10 @@ export function failRun(entries: RunEntry[], message: string): RunEntry[] {
   return [...settled, { kind: "error", text: message }];
 }
 
+export function isQuotaLimitError(text: string): boolean {
+  return text.includes("GoUsageLimitError");
+}
+
 export function fmtDuration(ms: number): string {
   return ms < 1000 ? `${Math.round(ms)}ms` : `${(ms / 1000).toFixed(2)}s`;
 }
@@ -198,6 +202,7 @@ export function ConversationFeed({
   model,
   elapsedMs,
   collapsed = false,
+  quotaHintIndex = -1,
   onLeaveBottom,
   onReachBottom,
 }: {
@@ -206,6 +211,7 @@ export function ConversationFeed({
   model?: string;
   elapsedMs?: number;
   collapsed?: boolean;
+  quotaHintIndex?: number;
   onLeaveBottom?: () => void;
   onReachBottom?: () => void;
 }) {
@@ -349,6 +355,11 @@ export function ConversationFeed({
             return (
               <div key={i} className="aj-error-row" role="alert">
                 {entry.text}
+                {i === quotaHintIndex && (
+                  <span className="aj-run__hint" style={{ marginLeft: 8, color: "var(--aj-warning)" }}>
+                    可能是订阅额度受限 → 设置 · 订阅
+                  </span>
+                )}
               </div>
             );
         }
@@ -398,6 +409,10 @@ export default function RunPanel({
 }: Props) {
   const [entries, setEntries] = useState<RunEntry[]>(initialEntries);
   const [elapsedMs, setElapsedMs] = useState<number | undefined>(undefined);
+  const quotaHintIndex = useMemo(
+    () => entries.findIndex((e) => e.kind === "error" && isQuotaLimitError(e.text)),
+    [entries],
+  );
   const [draft, setDraft] = useState("");
   const busy = useRef(false);
   const [isBusy, setIsBusy] = useState(false);
@@ -767,6 +782,7 @@ export default function RunPanel({
         model={model}
         elapsedMs={elapsedMs}
         collapsed={collapsed}
+        quotaHintIndex={quotaHintIndex}
         onLeaveBottom={() => applyCollapseEvent({ type: "scroll-away" })}
         onReachBottom={() => applyCollapseEvent({ type: "reach-bottom" })}
       />

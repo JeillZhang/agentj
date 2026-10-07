@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ModelListResult",
+  "description": "`model/list` result — catalog plus the tier it came from. @since 0.17.0",
+  "type": "object",
+  "properties": {
+    "default_model": {
+      "type": "string"
+    },
+    "fetched_at": {
+      "description": "Unix epoch seconds when the catalog was fetched. @since 0.17.0",
+      "type": "integer",
+      "format": "int64"
+    },
+    "models": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/ModelEntry"
+      }
+    },
+    "provider": {
+      "type": "string"
+    },
+    "source": {
+      "$ref": "#/$defs/ModelSource"
+    }
+  },
+  "required": [
+    "provider",
+    "default_model",
+    "source",
+    "fetched_at",
+    "models"
+  ],
+  "$defs": {
+    "ModelEntry": {
+      "description": "One catalog entry. `verified: false` means the route was synthesized, not known.\n@since 0.17.0",
+      "type": "object",
+      "properties": {
+        "format": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "verified": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "verified",
+        "format"
+      ]
+    },
+    "ModelSource": {
+      "description": "Catalog tier (account → live → overlay; static for non-go providers).\n`Unknown` tolerates forward values; the schema lists only the known tiers.\n@since 0.17.0",
+      "type": "string",
+      "enum": [
+        "account",
+        "live",
+        "overlay",
+        "static"
+      ]
+    }
+  }
+}

@@ -77,6 +77,20 @@ function createStayConnecting(): TransportHandle {
   };
 }
 
+// Opens immediately and answers every request with an empty result — enough to
+// mount client-dependent overlays (e.g. the subscription one) without a kernel.
+function fakeTransport(_url: string, _router: ResponseRouter): TransportHandle {
+  const handle: TransportHandle & { send: (l: string) => Promise<string> } = {
+    close() {},
+    async send(line: string): Promise<string> {
+      const req = JSON.parse(line) as { id: number };
+      return JSON.stringify({ jsonrpc: "2.0", id: req.id, result: {} });
+    },
+  };
+  queueMicrotask(() => act(() => handle.onStatusChange?.("open")));
+  return handle;
+}
+
 type KernelCall = { method: string } & Record<string, unknown>;
 
 const KERNEL_TREE: Record<string, RawFileEntry[]> = {
@@ -983,6 +997,25 @@ describe("files search mode", () => {
     await act(async () => { await input.type("."); await setup.flush(); });
     await settleDebounce(setup);
     expect(withQuery()).toBe(1); // local filtering issues no further requests
+    act(() => setup.renderer.destroy());
+  });
+});
+
+describe("App subscription overlay", () => {
+  test("opens from the palette and closes with Esc", async () => {
+    const setup = await testRender(
+      <App url="ws://127.0.0.1:1" createTransport={fakeTransport} backoffBaseMs={60000} />,
+      {},
+    );
+    const input = getInput(setup);
+    await act(async () => { input.press("/"); await setup.flush(); });
+    await act(async () => { await input.type("sub"); await setup.flush(); });
+    await setup.waitFor(() => setup.captureCharFrame().includes("subscription"));
+    await act(async () => { input.press("enter"); await setup.flush(); });
+    await setup.waitFor(() => setup.captureCharFrame().includes("订阅")); // the overlay title
+    await pressEscape(setup, input);
+    await repaint(setup);
+    await setup.waitFor(() => !setup.captureCharFrame().includes("订阅"));
     act(() => setup.renderer.destroy());
   });
 });

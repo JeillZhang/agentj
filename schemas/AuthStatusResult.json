@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AuthStatusResult",
+  "description": "`auth/status` result. Never carries a full key/token — see [`CredentialInfo`].\n@since 0.17.0",
+  "type": "object",
+  "properties": {
+    "authenticated": {
+      "type": "boolean"
+    },
+    "credential": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CredentialInfo"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "models_count": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "provider": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "provider",
+    "authenticated",
+    "models_count"
+  ],
+  "$defs": {
+    "CredentialInfo": {
+      "description": "Redacted credential projection. `key_hint` is the api_key's last four characters\n(`…1234`); OAuth credentials are identified by `org_id`/`expires_at` instead.\n@since 0.17.0",
+      "type": "object",
+      "properties": {
+        "expires_at": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        },
+        "expiring_soon": {
+          "type": "boolean"
+        },
+        "key_hint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "$ref": "#/$defs/CredentialKind"
+        },
+        "org_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "$ref": "#/$defs/CredentialSource"
+        }
+      },
+      "required": [
+        "kind",
+        "source",
+        "expiring_soon"
+      ]
+    },
+    "CredentialKind": {
+      "description": "Credential kind. `Unknown` tolerates forward values. @since 0.17.0",
+      "type": "string",
+      "enum": [
+        "api_key",
+        "oauth"
+      ]
+    },
+    "CredentialSource": {
+      "description": "Where the credential came from. `Unknown` tolerates forward values. @since 0.17.0",
+      "type": "string",
+      "enum": [
+        "flag",
+        "env",
+        "file"
+      ]
+    }
+  }
+}

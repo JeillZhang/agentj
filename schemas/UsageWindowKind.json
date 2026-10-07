@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "UsageWindowKind",
+  "description": "Quota window kind. `Unknown` tolerates forward values. @since 0.17.0",
+  "type": "string",
+  "enum": [
+    "rolling",
+    "weekly",
+    "monthly"
+  ]
+}
