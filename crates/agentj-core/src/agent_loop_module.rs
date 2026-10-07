@@ -60,13 +60,18 @@ impl KernelModule for AgentLoopModule {
         if let KernelMessage::UserRequest {
             session_id,
             content,
-            overrides: _,
+            overrides,
             attachments: _,
             reply,
         } = msg
         {
-            self.runner
-                .spawn_turn(session_id.clone(), content.clone(), None, reply.clone())?;
+            self.runner.spawn_turn(
+                session_id.clone(),
+                content.clone(),
+                None,
+                overrides.clone(),
+                reply.clone(),
+            )?;
         }
         Ok(KernelResponse::Handled)
     }
