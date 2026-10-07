@@ -4,6 +4,7 @@
 //! `OAuth` variant reserved for phase 2.
 
 pub mod credential;
+pub mod oauth;
 pub mod resolve;
 pub mod store;
 
