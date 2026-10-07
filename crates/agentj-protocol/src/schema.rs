@@ -12,6 +12,10 @@ use crate::lifecycle::{ClientInfo, InitializeParams, InitializeResult, ServerInf
 use crate::permission::{
     PermissionDecision, PermissionRequestParams, PermissionRespondParams, PermissionRespondResult,
 };
+use crate::provider::{
+    AuthStatusParams, AuthStatusResult, CredentialInfo, CredentialKind, CredentialSource, ModelEntry,
+    ModelListParams, ModelListResult, ModelSource,
+};
 use crate::question::{AskOption, AskQuestionParams, QuestionRespondParams, QuestionRespondResult};
 use crate::session::{
     SessionHistoryParams, SessionHistoryResult, SessionIdParams, SessionListParams,
@@ -92,6 +96,15 @@ pub fn generate_schemas() -> BTreeMap<String, Schema> {
         schema_for!(PermissionRespondResult),
     );
     m.insert("PermissionDecision".into(), schema_for!(PermissionDecision));
+    m.insert("ModelListParams".into(), schema_for!(ModelListParams));
+    m.insert("ModelListResult".into(), schema_for!(ModelListResult));
+    m.insert("ModelEntry".into(), schema_for!(ModelEntry));
+    m.insert("ModelSource".into(), schema_for!(ModelSource));
+    m.insert("AuthStatusParams".into(), schema_for!(AuthStatusParams));
+    m.insert("AuthStatusResult".into(), schema_for!(AuthStatusResult));
+    m.insert("CredentialInfo".into(), schema_for!(CredentialInfo));
+    m.insert("CredentialKind".into(), schema_for!(CredentialKind));
+    m.insert("CredentialSource".into(), schema_for!(CredentialSource));
     m.insert("FileListParams".into(), schema_for!(FileListParams));
     m.insert("FileListResult".into(), schema_for!(FileListResult));
     m.insert("FileEntry".into(), schema_for!(FileEntry));

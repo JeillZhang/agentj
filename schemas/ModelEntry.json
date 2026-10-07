@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ModelEntry",
+  "description": "One catalog entry. `verified: false` means the route was synthesized, not known.\n@since 0.17.0",
+  "type": "object",
+  "properties": {
+    "format": {
+      "type": "string"
+    },
+    "id": {
+      "type": "string"
+    },
+    "verified": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "id",
+    "verified",
+    "format"
+  ]
+}

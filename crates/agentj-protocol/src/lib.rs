@@ -8,6 +8,7 @@ pub mod base;
 pub mod file;
 pub mod lifecycle;
 pub mod permission;
+pub mod provider;
 pub mod question;
 pub mod schema;
 pub mod session;
