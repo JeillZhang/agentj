@@ -66,7 +66,7 @@ it("polls the device flow, honours slow_down, refreshes and stops", async () => 
         verification_uri: "https://opencode.ai/console/device?user_code=ABCD-1234", expires_in: 600, interval: 5 },
       [METHODS.modelList]: { provider: "opencode-go", default_model: "m", source: "account", fetched_at: 1, models: [] },
     }, { [METHODS.authDevicePoll]: [{ state: "pending" }, { state: "slow_down", interval: 10 },
-                                    { state: "authorized", credential: { kind: "o_auth", source: "file", expiring_soon: false } }] });
+                                    { state: "authorized", credential: { kind: "oauth", source: "file", expiring_soon: false } }] });
 
     render(<SubscriptionPanel client={c} onClose={() => {}} />);
     fireEvent.click(screen.getByRole("button", { name: /设备码登录/ }));

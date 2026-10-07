@@ -58,7 +58,7 @@ function CredentialRow({ status }: { status: AuthStatus }) {
   if (!cred) return <p className="aj-sub__cred">已认证</p>;
   return (
     <p className="aj-sub__cred">
-      <span className="aj-sub__cred-kind">{cred.kind === "o_auth" ? "OAuth" : "API Key"}</span>
+      <span className="aj-sub__cred-kind">{cred.kind === "oauth" ? "OAuth" : "API Key"}</span>
       {cred.key_hint && <span className="aj-sub__cred-hint">{cred.key_hint}</span>}
       {cred.org_id && <span className="aj-sub__cred-org">{cred.org_id}</span>}
     </p>

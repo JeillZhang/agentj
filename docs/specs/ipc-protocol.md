@@ -930,7 +930,7 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| `kind` | CredentialKind | 是 | `api_key` \| `o_auth`（见 §9.1） |
+| `kind` | CredentialKind | 是 | `api_key` \| `oauth`（见 §9.1） |
 | `source` | CredentialSource | 是 | `flag` \| `env` \| `file`（本期内核实现只产生 `env` / `file`；`flag` 为加性预留） |
 | `key_hint` | string | 否 | 仅 `api_key`：`redact()` 输出，形如 `…1234`（末 4 位）；密钥长度 ≤ 4 时为 `…` |
 | `expires_at` | integer | 否 | 仅 OAuth：access token 到期时刻（epoch **秒**，int64） |
@@ -1068,7 +1068,7 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 ```json
 { "jsonrpc": "2.0", "id": 16, "result": {
   "state": "authorized",
-  "credential": { "kind": "o_auth", "source": "file", "expires_at": 1700000600, "expiring_soon": false, "org_id": "org-…" }
+  "credential": { "kind": "oauth", "source": "file", "expires_at": 1700000600, "expiring_soon": false, "org_id": "org-…" }
 } }
 ```
 
@@ -1102,7 +1102,7 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 | `FileChangeKind` | `add` \| `modify` \| `delete` | 文件变更操作（`@since 0.13.0`，见 7.3） |
 | `FileChangeSource` | `write` \| `bash` | 文件变更来源（`@since 0.15.0`，见 7.3；`write`=LCS diff 口径，`bash`=numstat 计数口径） |
 | `ModelSource` | `account` \| `live` \| `overlay` \| `static` | `model/list` 目录来源层级（`@since 0.17.0`，见 8.23） |
-| `CredentialKind` | `api_key` \| `o_auth` | `auth/status` 凭据种类（`@since 0.17.0`，见 8.24；`o_auth` 即 `auth.json` 中 `type:"oauth"` 的 OAuth 条目） |
+| `CredentialKind` | `api_key` \| `oauth` | `auth/status` 凭据种类（`@since 0.17.0`，见 8.24；`oauth` 即 `auth.json` 中 `type:"oauth"` 的 OAuth 条目） |
 | `CredentialSource` | `flag` \| `env` \| `file` | 凭据来源（`@since 0.17.0`，见 8.24；本期内核实现只产生 `env` / `file`，`flag` 为加性预留） |
 | `UsageWindowKind` | `rolling` \| `weekly` \| `monthly` | 用量窗口种类（`@since 0.17.0`，见 8.25） |
 | `UsageWindowStatus` | `ok` \| `rate-limited` | 用量窗口状态（`@since 0.17.0`，见 8.25） |
@@ -1280,7 +1280,7 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 
 - **方法面 21 → 26**：新增 5 个请求方法——`model/list`（三层目录：`account` → `live` → `overlay`；非 opencode-go 为 `static`）、`auth/status`（凭据状态**纯读**：`key_hint` / `org_id` / `expires_at` / `expiring_soon`，绝不轮换 token）、`provider/usage`（三窗口 `rolling` 5h / `weekly` / `monthly`，`percent` 为**已用**百分比，无余额字段）、`auth/deviceStart`（RFC 8628 设备授权起点）、`auth/devicePoll`（轮询状态：`pending` / `slow_down` / `authorized` / `expired` / `denied` / `error`）。五个方法的参数 / 结果契约见 §8.23–§8.27；§8.1 方法总表与 §10 映射表补齐至 26 行。
 - **新 schema（20 个）**：`ModelListParams` / `ModelListResult` / `ModelEntry` / `ModelSource`、`AuthStatusParams` / `AuthStatusResult` / `CredentialInfo` / `CredentialKind` / `CredentialSource`、`ProviderUsageParams` / `ProviderUsageResult` / `ProviderUsageError` / `UsageWindow` / `UsageWindowKind` / `UsageWindowStatus`、`AuthDeviceStartParams` / `AuthDeviceStartResult` / `AuthDevicePollParams` / `AuthDevicePollResult` / `DeviceAuthState`；schema 总数 52 → **72**。
-- **新值枚举（6 个）**：`ModelSource`、`CredentialKind`（`api_key` \| `o_auth`）、`CredentialSource`、`UsageWindowKind`、`UsageWindowStatus`、`DeviceAuthState`——均带 `Unknown` 变体容忍前向值（仅列已知值入 schema，`Unknown` 重序列化为规范字面量 `"unknown"`，见 §9.1 / §9.2）。
+- **新值枚举（6 个）**：`ModelSource`、`CredentialKind`（`api_key` \| `oauth`）、`CredentialSource`、`UsageWindowKind`、`UsageWindowStatus`、`DeviceAuthState`——均带 `Unknown` 变体容忍前向值（仅列已知值入 schema，`Unknown` 重序列化为规范字面量 `"unknown"`，见 §9.1 / §9.2）。
 - **不新增错误码**（见 §3.4）：未知 provider 名 → `-32602` + `data{field:"provider", reason:"unknown_provider", registered:[…]}`；provider 已知但不支持该能力 → `-32602` + `data{field:"provider", reason:"unsupported_provider", capability:"<usage|device_flow>"}`；`provider_service` handle 未注入 → `-32603` + `data{reason:"provider_service_unavailable"}`。上游 / 凭据失败（未登录 / 401 / 403 / 5xx / 网络）是**领域失败**，以成功响应的结果数据表达（`ProviderUsageResult.error.kind`、`AuthDevicePollResult.state`），使客户端能同时拿到「上次快照 + 失败原因」（`stale:true`）。
 - **缓存与新鲜度语义**：`model/list` 进程内复用窗口 **60s**、`provider/usage` TTL **300s**（两者的 `refresh:true` 均强制绕过）；警示阈值 `warn_percent` 由 `[model].quota_warn_percent`（默认 80，clamp 1..=100）随结果下发；OAuth access token 生命期 **600s**，由内核在真实请求前自动刷新（`auth.json.lock` 文件锁串行化；refresh token 单次使用），刷新失败以可行动错误失败——以上均不改变 wire 契约（客户端只消费结果字段）。
 - **客户端兼容契约**：未知枚举取值与未知 `error.kind` 字符串 MUST 容忍（不因未知而失败，按 §9.2 处理）；未注入 handle 的内核（如 `run --attach` 连接远端内核）统一 `-32603`，客户端展示「该内核未提供订阅服务」且**不缓存该失败**。

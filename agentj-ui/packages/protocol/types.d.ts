@@ -64,7 +64,7 @@ export interface AuthDevicePollParams {
 /**
  * Credential kind. `Unknown` tolerates forward values. @since 0.17.0
  */
-export type CredentialKind = "api_key" | "o_auth";
+export type CredentialKind = "api_key" | "oauth";
 /**
  * Where the credential came from. `Unknown` tolerates forward values. @since 0.17.0
  */

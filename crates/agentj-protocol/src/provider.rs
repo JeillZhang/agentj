@@ -90,6 +90,9 @@ pub struct CredentialInfo {
 #[serde(rename_all = "snake_case")]
 pub enum CredentialKind {
     ApiKey,
+    // The explicit rename is required because `rename_all = "snake_case"` would render
+    // `OAuth` as `o_auth`; the wire value must be `oauth` (matches the `type:"oauth"` file tag).
+    #[serde(rename = "oauth")]
     OAuth,
     #[serde(other)]
     #[schemars(skip)]
@@ -293,6 +296,22 @@ mod tests {
         assert_eq!(v["credential"]["key_hint"], "…cdef");
         assert_eq!(v["credential"]["kind"], "api_key");
         assert!(!v.to_string().contains("sk-"), "no full key may appear");
+    }
+
+    #[test]
+    fn credential_kind_oauth_uses_the_oauth_wire_value() {
+        // Why: `rename_all = "snake_case"` would render `OAuth` as `o_auth`; the wire value
+        // must be `oauth` (plan T16 AC; spec §8.24/§9.1; matches the `type:"oauth"` file tag).
+        assert_eq!(
+            serde_json::to_value(CredentialKind::OAuth).unwrap(),
+            "oauth"
+        );
+        let back: CredentialKind = serde_json::from_value(serde_json::json!("oauth")).unwrap();
+        assert!(matches!(back, CredentialKind::OAuth));
+        assert_eq!(
+            serde_json::to_value(CredentialKind::ApiKey).unwrap(),
+            "api_key"
+        );
     }
 
     #[test]

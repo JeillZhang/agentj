@@ -76,7 +76,7 @@
       "type": "string",
       "enum": [
         "api_key",
-        "o_auth"
+        "oauth"
       ]
     },
     "CredentialSource": {
