@@ -460,12 +460,7 @@ mod tests {
         let (tx, _rx) = tokio::sync::mpsc::channel(4);
         kernel
             .sender()
-            .send(KernelMessage::UserRequest {
-                session_id: "s1".into(),
-                content: "hello".into(),
-                attachments: vec![],
-                reply: tx,
-            })
+            .send(KernelMessage::user_request("s1", "hello", tx))
             .unwrap();
 
         tokio::time::sleep(Duration::from_millis(50)).await;

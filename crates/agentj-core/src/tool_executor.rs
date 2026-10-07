@@ -689,12 +689,7 @@ mod tests {
         let ctx = executor_ctx(Arc::new(AllowAll));
         let mut m = ToolExecutorModule::new(ctx);
         let (tx, _rx) = tokio::sync::mpsc::channel(4);
-        let msg = KernelMessage::UserRequest {
-            session_id: "s1".into(),
-            content: "hi".into(),
-            attachments: vec![],
-            reply: tx,
-        };
+        let msg = KernelMessage::user_request("s1", "hi", tx);
         let res = m.handle(&msg).unwrap();
         assert!(matches!(res, KernelResponse::Handled));
     }

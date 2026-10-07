@@ -295,12 +295,7 @@ mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::channel(64);
         kernel
             .sender()
-            .send(KernelMessage::UserRequest {
-                session_id: sid.clone(),
-                content: "hi".into(),
-                attachments: vec![],
-                reply: tx.clone(),
-            })
+            .send(KernelMessage::user_request(sid.clone(), "hi", tx.clone()))
             .unwrap();
         let mut saw_tool_call = false;
         while let Some(ev) = rx.recv().await {
