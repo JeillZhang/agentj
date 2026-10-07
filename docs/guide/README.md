@@ -22,6 +22,7 @@ Web、Desktop 均作为**协议消费者**接入，任意语言都可开发前�
 | [桌面应用（Desktop）](desktop.md) | Tauri 壳与安装包 |
 | [配置](configuration.md) | `config.toml`（模型 / 权限 / 会话 / license / MCP） |
 | [opencode-go 订阅](subscription.md) | `agentj auth` 登录、凭据优先级、动态模型目录、合规请求头 |
+| [运行期切模型](model-switching.md) | 在 Web / TUI 里按轮次选模型、生效范围与本地保存 |
 | [HTTP 面与鉴权](http-and-auth.md) | 内核托管 HTTP、登录、`/version`、`/metrics` |
 
 ## 文档导航

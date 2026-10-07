@@ -1,6 +1,6 @@
 # AGENTS.md
 
-> **当前版本 0.25.2** · `PROTOCOL_VERSION` **0.15.0**（21 方法 / 52 schemas / 18 crates）
+> **当前版本 0.26.0** · `PROTOCOL_VERSION` **0.16.0**（21 方法 / 52 schemas / 18 crates）
 > 本文件只记录**约束、入口与基线**（Setup / Commands / Architecture / Conventions / Rules）。
 > **逐版本变更与历史决策不写在这里** —— 见 [`docs/changelog/`](docs/changelog/)、
 > [`docs/guide/`](docs/guide/)、[`docs/specs/`](docs/specs/) 与 `.agents/summary/`。
@@ -69,7 +69,7 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
 
 - `agentj-protocol`（leaf）：IPC 协议权威 wire 类型（JSON-RPC 2.0、错误码、
   21 方法 params/result、流式/订阅/权限/提问/文件列举类型），serde + schemars，
-  零内核耦合。协议版本 `0.15.0`，52 schemas。
+  零内核耦合。协议版本 `0.16.0`，52 schemas。
 - `agentj-core`（内核）：Kernel 混合总线 + 模块 trait 注册表
   + ServiceRegistry（同步/异步） + TurnRunner 总线化 turn 编排
   + `ToolCallContext`（会话根上下文，工具相对路径重定基）
@@ -128,7 +128,7 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
 - `agentj-plugin-fixture`（dev-only）：插件 cdylib 测试夹具。
 - `schemas/*.json`：52 JSON Schema（schemars 生成，提交件 + drift 门禁）。
 - `protocol/methods.json`：方法注册表（method ↔ schema/方向/类型；21 方法，
-  protocol_version 0.15.0）。
+  protocol_version 0.16.0）。
 - `docs/specs/ipc-protocol.md`：人类可读协议规范——**错误码表、WS/HTTP 鉴权
   通道、各方法参数/结果契约的权威来源**。
 
@@ -215,12 +215,14 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
   `docs/changelog/README.md` 索引）。
 - 用户可见特性 → `docs/guide/`（按主题，去版本号叙事）。
 - 当前正在开发功能的进度 / 遗留问题 / 待实施 / 下一步 → `.agents/summary/`（见下）。
-- 协议与设计细节 → `docs/specs/`、`docs/superpowers/specs/`。
-- `docs/` 下文档是跟踪交付物 —— 必须提交。
+- 协议与设计细节 → `docs/specs/`。
+- `docs/superpowers/`（design spec + plan）：**本地工作文档，不入版本控制**——不提交、不随 PR，
+  由 `.gitignore` 忽略；设计与计划意图经 `.agents/summary/`、`docs/changelog/` 与 PR 描述传达。
+- `docs/` 下其余文档（`docs/specs/`、`docs/changelog/`、`docs/guide/` 等）是跟踪交付物 —— 必须提交。
 
 ### 版本与提交
 
-- Commit messages in English. `docs/superpowers/specs/` 文档用中文。
+- Commit messages in English. `docs/superpowers/` 本地文档用中文（不入库）。
 - Bump version on every feature (`0.1.0` → `0.2.0`) and bugfix (`0.1.0` → `0.1.1`)。
 - 涉及协议 wire 的变更必须同步 `PROTOCOL_VERSION` + `protocol/methods.json` + schemas。
 
@@ -243,7 +245,7 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
 4. Commit as `docs: auto-sync AGENTS.md, README.md, summary (fe/se) after {phase}`
    （未触及 `AGENTS.md` / `README.md` 时按实际触及文件命名）。
 5. 不等待用户 —— 这是强制步骤。
-- 更新 `docs/superpowers/specs` 目标 spec 文档的 TODO 列表。
+- 更新**本地** `docs/superpowers/specs` 目标 spec 文档的 TODO 列表（本地文件，不入库、不提交）。
 - `docs/superpowers/specs/` 下所有图表必须使用 UML 或 Mermaid。
 - 每阶段后清理临时文件与 Docker 容器。
 - 命令挂起 >120s 时取消并重试。

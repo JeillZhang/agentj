@@ -15,6 +15,13 @@
     "content": {
       "type": "string"
     },
+    "model": {
+      "description": "Per-run model id override, e.g. \"opencode-go/kimi-k3\". Absent = config\nmodel.default_model. @since 0.16.0",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "progress_token": {
       "anyOf": [
         {
@@ -23,6 +30,13 @@
         {
           "type": "null"
         }
+      ]
+    },
+    "provider": {
+      "description": "Per-run provider name override (registered provider name). Absent = default\nprovider. @since 0.16.0",
+      "type": [
+        "string",
+        "null"
       ]
     },
     "session_id": {

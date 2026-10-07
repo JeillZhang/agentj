@@ -12,7 +12,7 @@ use agentj_core::artifacts::{
 use agentj_core::error::{IpcError, KernelError, ModuleError};
 use agentj_core::kernel::Kernel;
 use agentj_core::module::{KernelMessage, SessionStore};
-use agentj_core::types::{AgentEvent, SessionId};
+use agentj_core::types::{AgentEvent, RunOverrides, SessionId};
 use agentj_permission::{ApprovalDecision, PermissionModule};
 use agentj_protocol::base::error_codes;
 use agentj_protocol::file::{FileKind, FileListParams, FileListResult};
@@ -300,6 +300,24 @@ fn extract_request_id(value: &Value) -> Option<Value> {
     }
 }
 
+/// Optional string param for `session/run` (design 错误处理): a missing key or
+/// JSON `null` means "absent"; a string is trimmed and a blank result also
+/// means "absent" (same semantics as `file/list {query}`); any other JSON type
+/// is `-32602` with the offending field name in `error.data`.
+fn optional_trimmed(params: &Value, key: &str) -> Result<Option<String>, DispatchError> {
+    match params.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) => {
+            let trimmed = s.trim();
+            Ok((!trimmed.is_empty()).then(|| trimmed.to_string()))
+        }
+        Some(_) => Err(DispatchError::invalid_params_with_data(
+            format!("{key} must be a string"),
+            serde_json::json!({ "field": key }),
+        )),
+    }
+}
+
 /// Method-dispatch failure carrying the JSON-RPC 2.0 standard error code
 /// (design 决策 #4). `handle_request` echoes the request `id` alongside this
 /// code so every error path round-trips the correlation id. `data` carries
@@ -416,18 +434,27 @@ impl IpcServer {
     }
 
     pub fn run_turn_stream(&self, sid: &str, input: &str) -> mpsc::Receiver<AgentEvent> {
+        self.run_turn_stream_with_overrides(sid, input, RunOverrides::default())
+    }
+
+    /// Turn entry carrying per-run overrides parsed from `session/run` (T9).
+    /// Kept separate from `run_turn_stream` so non-dispatch callers (CLI `run`)
+    /// keep the override-free signature and today's behavior.
+    fn run_turn_stream_with_overrides(
+        &self,
+        sid: &str,
+        input: &str,
+        overrides: RunOverrides,
+    ) -> mpsc::Receiver<AgentEvent> {
         let (tx, rx) = mpsc::channel(64);
         let sid = sid.to_string();
         let content = input.to_string();
         if self
             .kernel
             .sender()
-            .send(KernelMessage::UserRequest {
-                session_id: sid,
-                content,
-                attachments: vec![],
-                reply: tx,
-            })
+            .send(KernelMessage::user_request_with_overrides(
+                sid, content, overrides, tx,
+            ))
             .is_err()
         {
             let (etx, erx) = mpsc::channel(1);
@@ -745,6 +772,12 @@ impl IpcServer {
             .as_str()
             .ok_or_else(|| DispatchError::invalid_params("missing session_id"))?;
         let content = params["content"].as_str().unwrap_or("");
+        // Per-run model overrides (T9): parsed before the run mutex so an
+        // invalid field is rejected without touching registry/owner state.
+        let overrides = RunOverrides {
+            provider: optional_trimmed(params, "provider")?,
+            model: optional_trimmed(params, "model")?,
+        };
         // Per-session run mutex (决策 #7): a concurrent run on the same session
         // is rejected with -32805 SessionBusy instead of interleaving streams.
         let acquired = self
@@ -786,7 +819,7 @@ impl IpcServer {
                 content: content.to_string(),
             },
         );
-        let mut rx = self.run_turn_stream(sid, content);
+        let mut rx = self.run_turn_stream_with_overrides(sid, content, overrides);
         let mut text = String::new();
         let mut tc_list = vec![];
         let mut usage_opt: Option<serde_json::Value> = None;
@@ -2901,6 +2934,227 @@ mod tests {
         let mut server = IpcServer::new(kernel, session_dyn);
         server.permission_module = Some(module.clone());
         (server, module)
+    }
+
+    /// Provider double recording every `ModelOptions` it is handed, so the
+    /// `session/run` dispatch tests can assert which model actually reached the
+    /// provider (T9: per-run `provider`/`model` overrides).
+    struct CapturingMock(Arc<std::sync::Mutex<Vec<ModelOptions>>>);
+
+    #[async_trait::async_trait]
+    impl agentj_core::module::ModelProvider for CapturingMock {
+        async fn chat_stream(
+            &self,
+            _m: Vec<ChatMessage>,
+            _t: Vec<ToolDefinition>,
+            options: ModelOptions,
+        ) -> Result<
+            futures::stream::BoxStream<'static, Result<ModelEvent, agentj_core::error::ModelError>>,
+            agentj_core::error::ModelError,
+        > {
+            self.0.lock().unwrap().push(options);
+            let ev = vec![Ok(ModelEvent::Delta("ok".into())), Ok(ModelEvent::Done)];
+            Ok(Box::pin(futures::stream::iter(ev)))
+        }
+        async fn chat(
+            &self,
+            _m: Vec<ChatMessage>,
+            _o: ModelOptions,
+        ) -> Result<ChatResponse, agentj_core::error::ModelError> {
+            Ok(ChatResponse {
+                content: String::new(),
+                tool_calls: vec![],
+            })
+        }
+    }
+
+    /// Per-provider options logs of one capturing server. `mock` is registered
+    /// first and is therefore the *default* provider, `other` the alternative:
+    /// two separate sinks are what makes a `provider` override observable (a
+    /// turn served by `other` must leave `mock` empty, and vice versa).
+    struct CapturedRuns {
+        mock: Arc<std::sync::Mutex<Vec<ModelOptions>>>,
+        other: Arc<std::sync::Mutex<Vec<ModelOptions>>>,
+    }
+
+    /// Same wiring as `repeating_run_server` (session store + ToolRegistry +
+    /// ProviderRegistry + kernel modules), with TWO capturing providers — `mock`
+    /// first (hence the default), `other` second — each behind its own options
+    /// log, and no permission policies (the mocks never call a tool). Returns
+    /// the server and both logs.
+    fn capturing_run_server() -> (IpcServer, CapturedRuns) {
+        let mock = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let other = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let store: Arc<InMemoryStore> = Arc::new(InMemoryStore::new());
+        let session_dyn: Arc<dyn SessionStore> = store.clone();
+        let tools = Arc::new(ToolRegistry::new());
+        let providers = Arc::new(ProviderRegistry::new());
+        providers.register("mock".into(), Arc::new(CapturingMock(Arc::clone(&mock))));
+        providers.register("other".into(), Arc::new(CapturingMock(Arc::clone(&other))));
+        let ctx = KernelContext {
+            session: session_dyn.clone(),
+            tools: tools.clone(),
+            providers: providers.clone(),
+            config: Arc::new(MockConfig),
+        };
+        let mut kernel = Kernel::new();
+        let mut reg =
+            ModuleRegister::with_services(tools.clone(), providers.clone(), kernel.services());
+        kernel
+            .register_module(
+                Box::new(ToolExecutorModule::new(ctx.clone())),
+                &ctx,
+                &mut reg,
+            )
+            .unwrap();
+        let runner = TurnRunner::new(
+            ctx.clone(),
+            Arc::new(ContextPipeline::new()),
+            "You are helpful.".into(),
+            kernel.sender(),
+            "tool_executor".into(),
+        );
+        kernel
+            .register_module(Box::new(AgentLoopModule::new(runner)), &ctx, &mut reg)
+            .unwrap();
+        (
+            IpcServer::new(kernel, session_dyn),
+            CapturedRuns { mock, other },
+        )
+    }
+
+    /// Dispatch one `session/run` request against a fresh capturing server and
+    /// return the parsed response plus both providers' recorded `ModelOptions`.
+    async fn call_session_run(params: Value) -> (Value, CapturedRuns) {
+        let (server, caps) = capturing_run_server();
+        let raw = serde_json::json!({
+            "jsonrpc": "2.0", "id": 9, "method": "session/run", "params": params,
+        })
+        .to_string();
+        let line = server
+            .handle_request_from(&raw, "conn-capture")
+            .await
+            .expect("dispatch returns a JSON-RPC line");
+        let resp: Value = serde_json::from_str(&line).expect("response is JSON");
+        (resp, caps)
+    }
+
+    #[tokio::test]
+    async fn session_run_passes_model_override_to_provider() {
+        let (resp, caps) = call_session_run(serde_json::json!({
+            "session_id": "s1", "content": "hi", "provider": "mock", "model": "custom-model"
+        }))
+        .await;
+        assert!(resp.get("error").is_none(), "{resp}");
+        assert_eq!(
+            caps.mock.lock().unwrap().last().unwrap().model,
+            "custom-model"
+        );
+    }
+
+    /// The default provider is `mock` (registered first), so naming `other`
+    /// proves the wire `provider` string really reaches provider selection.
+    #[tokio::test]
+    async fn session_run_provider_override_selects_that_provider() {
+        let (resp, caps) = call_session_run(serde_json::json!({
+            "session_id": "s1", "content": "hi", "provider": "other", "model": "other-model"
+        }))
+        .await;
+        assert!(resp.get("error").is_none(), "{resp}");
+        assert_eq!(
+            caps.other.lock().unwrap().last().unwrap().model,
+            "other-model",
+            "the named provider must serve the turn"
+        );
+        assert!(
+            caps.mock.lock().unwrap().is_empty(),
+            "the default provider must not serve a turn named for another provider"
+        );
+    }
+
+    /// A well-formed but unregistered provider name must fail the run on the
+    /// wire with the actionable message the turn runner builds. Turn errors
+    /// reach the client as `AgentEvent::Error` -> `DispatchError::internal`
+    /// (code `-32603`); the registered-name list order is a `HashMap`
+    /// iteration, so only membership is asserted.
+    #[tokio::test]
+    async fn session_run_unknown_provider_fails_on_the_wire() {
+        let (resp, caps) = call_session_run(serde_json::json!({
+            "session_id": "s1", "content": "hi", "provider": "nope"
+        }))
+        .await;
+        assert_eq!(resp["error"]["code"], -32603, "{resp}");
+        let msg = resp["error"]["message"].as_str().unwrap_or_default();
+        assert!(msg.contains("unknown provider: nope"), "{msg}");
+        assert!(msg.contains("mock"), "{msg}");
+        assert!(msg.contains("other"), "{msg}");
+        assert!(
+            caps.mock.lock().unwrap().is_empty(),
+            "no provider may serve a turn with an unknown provider name"
+        );
+        assert!(
+            caps.other.lock().unwrap().is_empty(),
+            "no provider may serve a turn with an unknown provider name"
+        );
+    }
+
+    #[tokio::test]
+    async fn session_run_without_overrides_uses_default_model() {
+        let (resp, caps) = call_session_run(serde_json::json!({
+            "session_id": "s1", "content": "hi"
+        }))
+        .await;
+        assert!(resp.get("error").is_none(), "{resp}");
+        assert_eq!(
+            caps.mock.lock().unwrap().last().unwrap().model,
+            "deepseek-chat"
+        );
+    }
+
+    #[tokio::test]
+    async fn session_run_null_fields_are_absent() {
+        let (resp, caps) = call_session_run(serde_json::json!({
+            "session_id": "s1", "content": "hi", "provider": null, "model": null
+        }))
+        .await;
+        assert!(resp.get("error").is_none(), "{resp}");
+        assert_eq!(
+            caps.mock.lock().unwrap().last().unwrap().model,
+            "deepseek-chat"
+        );
+    }
+
+    #[tokio::test]
+    async fn session_run_blank_provider_is_treated_as_absent() {
+        let (resp, caps) = call_session_run(serde_json::json!({
+            "session_id": "s1", "content": "hi", "provider": "   "
+        }))
+        .await;
+        assert!(resp.get("error").is_none(), "{resp}");
+        assert!(
+            !caps.mock.lock().unwrap().is_empty(),
+            "default provider must still serve the turn"
+        );
+    }
+
+    #[tokio::test]
+    async fn session_run_non_string_model_is_invalid_params() {
+        let (resp, _caps) = call_session_run(serde_json::json!({
+            "session_id": "s1", "content": "hi", "model": 123
+        }))
+        .await;
+        assert_eq!(resp["error"]["code"], -32602);
+        assert_eq!(resp["error"]["data"]["field"], "model");
+    }
+
+    #[tokio::test]
+    async fn session_run_non_string_provider_is_invalid_params() {
+        let (resp, _caps) = call_session_run(serde_json::json!({
+            "session_id": "s1", "content": "hi", "provider": {}
+        }))
+        .await;
+        assert_eq!(resp["error"]["code"], -32602);
+        assert_eq!(resp["error"]["data"]["field"], "provider");
     }
 
     #[tokio::test]

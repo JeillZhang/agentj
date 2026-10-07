@@ -73,6 +73,8 @@ fn session_run_request_wire_shape() {
                 content: "hi".into(),
                 attachments: None,
                 progress_token: Some(ProgressToken::Str("tok-1".into())),
+                provider: None,
+                model: None,
             })
             .unwrap(),
         ),
@@ -313,4 +315,27 @@ fn question_respond_result_wire_shape() {
     };
     let json = serde_json::to_value(resp).unwrap();
     assert_eq!(json["result"]["accepted"], true);
+}
+
+const SESSION_RUN_SCHEMA: &str = include_str!("../../../schemas/SessionRunParams.json");
+
+#[test]
+fn session_run_params_wire_shape_has_provider_and_model() {
+    let v: serde_json::Value = serde_json::from_str(SESSION_RUN_SCHEMA).unwrap();
+    let props = v["properties"].as_object().unwrap();
+    assert!(
+        props.contains_key("provider"),
+        "provider must be an optional property"
+    );
+    assert!(
+        props.contains_key("model"),
+        "model must be an optional property"
+    );
+    let required: Vec<&str> = v["required"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|x| x.as_str().unwrap())
+        .collect();
+    assert_eq!(required, vec!["session_id", "content"]);
 }

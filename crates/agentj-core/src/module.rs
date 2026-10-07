@@ -482,6 +482,11 @@ impl ProviderRegistry {
             .and_then(|name| self.providers.read().get(name).cloned())
     }
 
+    /// Look up a provider by its registered name (read-only). @since 0.26.0
+    pub fn get(&self, name: &str) -> Option<Arc<dyn ModelProvider>> {
+        self.providers.read().get(name).cloned()
+    }
+
     pub fn list(&self) -> Vec<String> {
         self.providers.read().keys().cloned().collect()
     }
@@ -685,6 +690,8 @@ pub enum KernelMessage {
         session_id: SessionId,
         content: String,
         attachments: Vec<Attachment>,
+        /// Per-run overrides from `session/run`; `Default` = no override. @since 0.26.0
+        overrides: RunOverrides,
         reply: tokio::sync::mpsc::Sender<crate::types::AgentEvent>,
     },
     ToolCallRequest {
@@ -708,6 +715,34 @@ pub enum KernelMessage {
 pub enum KernelResponse {
     Handled,
     Streaming(Vec<String>),
+}
+
+/// Single construction point for `KernelMessage::UserRequest`, so the variant's
+/// shape can grow without touching every call site. @since 0.26.0
+impl KernelMessage {
+    /// Callers with no per-run overrides; delegates to the overrides form. @since 0.26.0
+    pub fn user_request(
+        session_id: impl Into<String>,
+        content: impl Into<String>,
+        reply: tokio::sync::mpsc::Sender<AgentEvent>,
+    ) -> Self {
+        Self::user_request_with_overrides(session_id, content, RunOverrides::default(), reply)
+    }
+
+    pub fn user_request_with_overrides(
+        session_id: impl Into<String>,
+        content: impl Into<String>,
+        overrides: RunOverrides,
+        reply: tokio::sync::mpsc::Sender<AgentEvent>,
+    ) -> Self {
+        KernelMessage::UserRequest {
+            session_id: session_id.into(),
+            content: content.into(),
+            attachments: Vec::new(),
+            overrides,
+            reply,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1257,6 +1292,20 @@ mod tests {
     }
 
     #[test]
+    fn registry_get_returns_registered_provider() {
+        let reg = ProviderRegistry::new();
+        reg.register("mock".into(), Arc::new(StubProvider(None)));
+        assert!(reg.get("mock").is_some());
+    }
+
+    #[test]
+    fn registry_get_unknown_name_is_none() {
+        let reg = ProviderRegistry::new();
+        reg.register("mock".into(), Arc::new(StubProvider(None)));
+        assert!(reg.get("nope").is_none());
+    }
+
+    #[test]
     fn list_with_models_is_sorted_and_carries_reported_models() {
         let reg = ProviderRegistry::new();
         reg.register(
@@ -1271,5 +1320,50 @@ mod tests {
                 ("b".to_string(), vec!["m2".into(), "m1".into()])
             ]
         );
+    }
+
+    #[test]
+    fn user_request_constructor_builds_the_variant() {
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        match KernelMessage::user_request("s1", "hi", tx) {
+            KernelMessage::UserRequest {
+                session_id,
+                content,
+                attachments,
+                ..
+            } => {
+                assert_eq!(session_id, "s1");
+                assert_eq!(content, "hi");
+                assert!(attachments.is_empty());
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn user_request_with_overrides_carries_them() {
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        let overrides = RunOverrides {
+            provider: Some("mock".into()),
+            model: Some("m1".into()),
+        };
+        match KernelMessage::user_request_with_overrides("s1", "hi", overrides, tx) {
+            KernelMessage::UserRequest { overrides, .. } => {
+                assert_eq!(overrides.provider.as_deref(), Some("mock"));
+                assert_eq!(overrides.model.as_deref(), Some("m1"));
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn user_request_defaults_to_no_overrides() {
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        match KernelMessage::user_request("s1", "hi", tx) {
+            KernelMessage::UserRequest { overrides, .. } => {
+                assert!(overrides.provider.is_none() && overrides.model.is_none())
+            }
+            _ => unreachable!(),
+        }
     }
 }

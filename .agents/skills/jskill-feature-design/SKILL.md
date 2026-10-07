@@ -17,6 +17,8 @@ Orchestrates the Superpowers brainstorming workflow for feature ideation and des
 
 **Modeling:** Flowcharts, architecture diagrams, and software models must use **Mermaid** or **PlantUML**. No ASCII art.
 
+**VCS:** `docs/superpowers/` 在本项目**不入版本控制**（`.gitignore` 忽略）。写完 design spec 后**不要** `git add`/commit——此项目约束覆盖通用 `brainstorming` skill 的「commit the design document」步骤；设计意图经 `.agents/summary/`、`docs/changelog/` 与 PR 描述传达。
+
 **Example:** `jskill-feature-design "Add user authentication with OAuth2 support for Google and GitHub"`
 
 ## Entry: Intake → Research → brainstorming → Exit: prompt user to run `/jskill-feature-plan <design-spec>`

@@ -17,6 +17,8 @@ Orchestrates the Superpowers planning workflow with a **Plan Validation Gate** �
 
 **Modeling:** Dependency graphs, task flow diagrams, and architecture models must use **Mermaid** or **PlantUML**. No ASCII art.
 
+**VCS:** `docs/superpowers/` 在本项目**不入版本控制**（`.gitignore` 忽略）。写完 plan 后**不要** `git add`/commit；计划意图经 `.agents/summary/`、`docs/changelog/` 与 PR 描述传达。
+
 **Example:** `jskill-feature-plan docs/superpowers/specs/2026-08-09-oauth2-auth-design.md`
 
 ## Entry: writing-plans → Plan Validation Gate → Exit: prompt user to run `/jskill-feature-dev <plan-file>`

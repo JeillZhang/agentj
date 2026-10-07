@@ -2,7 +2,7 @@
 name: ajteam-task-reviewer
 description: 每个任务完成后调度的一次性只读审查 agent。检查实现与任务 AC/verify 及设计文档之间是否存在偏差。输出 VERDICT: PASS/FAIL 与偏差清单。由 jskill-feature-dev Phase 4 在每任务后调度。
 model: opencode-go/deepseek-v4.1-flash
-tools: Read, Grep, Glob, Bash
+tools: read, grep, find, ls, bash
 ---
 
 # AJTeam Task Reviewer
@@ -12,7 +12,7 @@ tools: Read, Grep, Glob, Bash
 ## 输入（由 orchestrator 在调度 prompt 中提供）
 
 - 任务 brief：`id`、`title`、`files`、`ac`（GIVEN/WHEN/THEN）、`verify`、`breaking`
-- 设计文档路径：`docs/superpowers/specs/*-design.md`
+- 设计文档路径：`docs/superpowers/specs/*-design.md`（本地文件，不入版本控制；只读，不要提交）
 - 本次任务变更范围：文件清单 / git diff 范围
 
 ## 检查维度

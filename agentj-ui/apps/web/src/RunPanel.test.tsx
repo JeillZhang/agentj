@@ -6,6 +6,7 @@ import { createProject, setCurrentProject } from "./projectStore";
 import { setDemoEnabled } from "./demoData";
 import { formatUsageTitle } from "./tokenUsage";
 import { METHODS, type ProgressFrame } from "@agentj/sdk";
+import type { ModelEntry } from "./components/ComposerOptions";
 
 beforeEach(() => localStorage.clear());
 
@@ -238,6 +239,51 @@ describe("RunPanel composer toolbar", () => {
     expect(toolbar.textContent).toContain("均衡");
     expect(within(toolbar).getByRole("button", { name: /发送|send/i })).toBeInTheDocument();
     expect(screen.queryByLabelText("status")).toBeNull();
+  });
+});
+
+describe("RunPanel run overrides", () => {
+  function captureClient() {
+    const calls: { method: string; params: Record<string, unknown> }[] = [];
+    const client = {
+      setNotificationHandler: () => {},
+      removeNotificationHandler: () => {},
+      request: async (method: string, params: Record<string, unknown>) => {
+        calls.push({ method, params });
+        return null;
+      },
+    } as unknown as Parameters<typeof RunPanel>[0]["client"];
+    return { client, calls };
+  }
+
+  async function submitRun(selected: ModelEntry | null): Promise<Record<string, unknown>> {
+    const { client, calls } = captureClient();
+    render(<RunPanel client={client} activeSessionId="s1" selected={selected} />);
+    fireEvent.change(screen.getByLabelText(/prompt/i), { target: { value: "hi" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+    await waitFor(() => expect(calls.length).toBe(1));
+    expect(calls[0].method).toBe(METHODS.sessionRun);
+    return calls[0].params;
+  }
+
+  it("submits provider and model when a model is selected", async () => {
+    const params = await submitRun({ name: "opencode-go/kimi-k3", provider: "opencode-go" });
+    expect(params).toMatchObject({
+      content: "hi",
+      model: "opencode-go/kimi-k3",
+      provider: "opencode-go",
+    });
+  });
+
+  it("submits model only when the entry has no provider", async () => {
+    const params = await submitRun({ name: "bare-model" });
+    expect(params).toMatchObject({ content: "hi", model: "bare-model" });
+    expect(params).not.toHaveProperty("provider");
+  });
+
+  it("submits nothing extra when no model is selected", async () => {
+    const params = await submitRun(null);
+    expect(Object.keys(params).sort()).toEqual(["content", "session_id"]);
   });
 });
 

@@ -9,7 +9,8 @@ use crate::error::ModuleError;
 use crate::kernel::KernelSender;
 use crate::module::{ContextPipeline, KernelContext, KernelMessage, ToolExecutionOutcome};
 use crate::types::{
-    AgentEvent, ChatMessage, ModelEvent, ModelOptions, ModuleId, SessionId, TokenUsage, ToolCall,
+    AgentEvent, ChatMessage, ModelEvent, ModelOptions, ModuleId, RunOverrides, SessionId,
+    TokenUsage, ToolCall,
 };
 
 pub struct TurnHandle {
@@ -102,6 +103,7 @@ impl TurnRunner {
         session_id: SessionId,
         content: String,
         system_prompt: Option<String>,
+        overrides: RunOverrides,
         reply: mpsc::Sender<AgentEvent>,
     ) -> Result<(), ModuleError> {
         let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
@@ -136,6 +138,7 @@ impl TurnRunner {
                 run_id.clone(),
                 content,
                 system_prompt,
+                overrides,
                 max_iter,
                 reply.clone(),
                 sender,
@@ -164,6 +167,7 @@ impl TurnRunner {
         run_id: String,
         user_input: String,
         system_prompt: String,
+        overrides: RunOverrides,
         max_iter: usize,
         reply: mpsc::Sender<AgentEvent>,
         sender: KernelSender,
@@ -181,17 +185,37 @@ impl TurnRunner {
             .session
             .get(&session_id)
             .map_err(|e| route(e.to_string()))?;
-        let provider = ctx
-            .providers
-            .get_default()
-            .ok_or_else(|| route("no default provider".into()))?;
+        let provider = match overrides
+            .provider
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+        {
+            Some(name) => ctx.providers.get(name).ok_or_else(|| {
+                route(format!(
+                    "unknown provider: {name} (registered: {})",
+                    ctx.providers.list().join(", ")
+                ))
+            })?,
+            None => ctx
+                .providers
+                .get_default()
+                .ok_or_else(|| route("no default provider".into()))?,
+        };
         let tool_defs = ctx.tools.definitions();
         let mut messages = pipeline.assemble(&system_prompt, &history, &[]);
         let mut all_tool_calls: Vec<ToolCall> = vec![];
-        let model = ctx
-            .config
-            .get_str("model.default_model")
-            .unwrap_or_else(|| "deepseek-chat".into());
+        let model = overrides
+            .model
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| {
+                ctx.config
+                    .get_str("model.default_model")
+                    .unwrap_or_else(|| "deepseek-chat".into())
+            });
         let default_options = ModelOptions {
             model,
             session_id: Some(session_id.clone()),
@@ -644,7 +668,7 @@ mod tests {
         let sid = runner.create_session().unwrap();
         let (tx, mut rx) = tokio::sync::mpsc::channel(64);
         runner
-            .spawn_turn(sid.clone(), "hi".into(), None, tx)
+            .spawn_turn(sid.clone(), "hi".into(), None, RunOverrides::default(), tx)
             .unwrap();
         let mut kinds = vec![];
         let mut text = String::new();
@@ -700,7 +724,7 @@ mod tests {
         let sid = runner.create_session().unwrap();
         let (tx, mut rx) = tokio::sync::mpsc::channel(64);
         runner
-            .spawn_turn(sid.clone(), "hi".into(), None, tx)
+            .spawn_turn(sid.clone(), "hi".into(), None, RunOverrides::default(), tx)
             .unwrap();
         loop {
             match rx.recv().await.unwrap() {
@@ -751,7 +775,7 @@ mod tests {
         let sid = runner.create_session().unwrap();
         let (tx, mut rx) = tokio::sync::mpsc::channel(64);
         runner
-            .spawn_turn(sid.clone(), "hi".into(), None, tx)
+            .spawn_turn(sid.clone(), "hi".into(), None, RunOverrides::default(), tx)
             .unwrap();
         while let Some(ev) = rx.recv().await {
             if let AgentEvent::ToolCall(_) = ev {
@@ -815,7 +839,7 @@ mod tests {
         let sid = runner.create_session().unwrap();
         let (tx, rx) = tokio::sync::mpsc::channel(1);
         runner
-            .spawn_turn(sid.clone(), "hi".into(), None, tx)
+            .spawn_turn(sid.clone(), "hi".into(), None, RunOverrides::default(), tx)
             .unwrap();
         drop(rx);
         // give turn time to attempt sends and abort
@@ -895,7 +919,7 @@ mod tests {
         let sid = runner.create_session().unwrap();
         let (tx, mut rx) = tokio::sync::mpsc::channel(64);
         runner
-            .spawn_turn(sid.clone(), "hi".into(), None, tx)
+            .spawn_turn(sid.clone(), "hi".into(), None, RunOverrides::default(), tx)
             .unwrap();
         let mut done_usage = None;
         while let Some(ev) = rx.recv().await {
@@ -1006,7 +1030,7 @@ mod tests {
         let sid = runner.create_session().unwrap();
         let (tx, mut rx) = tokio::sync::mpsc::channel(64);
         runner
-            .spawn_turn(sid.clone(), "hi".into(), None, tx)
+            .spawn_turn(sid.clone(), "hi".into(), None, RunOverrides::default(), tx)
             .unwrap();
         let mut kinds: Vec<String> = vec![];
         let mut todos: Vec<(u64, TodoSnapshot)> = vec![];
@@ -1070,7 +1094,7 @@ mod tests {
         let sid = runner.create_session().unwrap();
         let (tx, mut rx) = tokio::sync::mpsc::channel(64);
         runner
-            .spawn_turn(sid.clone(), "hi".into(), None, tx)
+            .spawn_turn(sid.clone(), "hi".into(), None, RunOverrides::default(), tx)
             .unwrap();
         let mut kinds: Vec<String> = vec![];
         let mut received = None;
@@ -1175,13 +1199,25 @@ mod tests {
         let sid = runner.create_session().unwrap();
         let (tx1, rx1) = tokio::sync::mpsc::channel(64);
         runner
-            .spawn_turn(sid.clone(), "hi1".into(), None, tx1)
+            .spawn_turn(
+                sid.clone(),
+                "hi1".into(),
+                None,
+                RunOverrides::default(),
+                tx1,
+            )
             .unwrap();
         let id1 = collect_done_run_id(rx1).await.expect("done 1");
         assert!(is_uuid_v4(&id1));
         let (tx2, rx2) = tokio::sync::mpsc::channel(64);
         runner
-            .spawn_turn(sid.clone(), "hi2".into(), None, tx2)
+            .spawn_turn(
+                sid.clone(),
+                "hi2".into(),
+                None,
+                RunOverrides::default(),
+                tx2,
+            )
             .unwrap();
         let id2 = collect_done_run_id(rx2).await.expect("done 2");
         assert!(is_uuid_v4(&id2));
@@ -1219,7 +1255,7 @@ mod tests {
         let sid = runner.create_session().unwrap();
         let (tx, mut rx) = tokio::sync::mpsc::channel(64);
         runner
-            .spawn_turn(sid.clone(), "hi".into(), None, tx)
+            .spawn_turn(sid.clone(), "hi".into(), None, RunOverrides::default(), tx)
             .unwrap();
         let mut revs = vec![];
         let mut run_ids = vec![];
@@ -1243,7 +1279,13 @@ mod tests {
         // Second run on same runner/session must reset revision to 1 and have distinct run_id
         let (tx2, mut rx2) = tokio::sync::mpsc::channel(64);
         runner
-            .spawn_turn(sid.clone(), "hi2".into(), None, tx2)
+            .spawn_turn(
+                sid.clone(),
+                "hi2".into(),
+                None,
+                RunOverrides::default(),
+                tx2,
+            )
             .unwrap();
         let mut revs2 = vec![];
         let mut run_ids2 = vec![];
@@ -1298,7 +1340,7 @@ mod tests {
         let sid = runner.create_session().unwrap();
         let (tx, mut rx) = tokio::sync::mpsc::channel(64);
         runner
-            .spawn_turn(sid.clone(), "hi".into(), None, tx)
+            .spawn_turn(sid.clone(), "hi".into(), None, RunOverrides::default(), tx)
             .unwrap();
         let mut seqs = vec![];
         let mut run_ids = vec![];
@@ -1319,7 +1361,13 @@ mod tests {
         // Next run must reset seq to 1
         let (tx2, mut rx2) = tokio::sync::mpsc::channel(64);
         runner
-            .spawn_turn(sid.clone(), "hi2".into(), None, tx2)
+            .spawn_turn(
+                sid.clone(),
+                "hi2".into(),
+                None,
+                RunOverrides::default(),
+                tx2,
+            )
             .unwrap();
         let mut seqs2 = vec![];
         while let Some(ev) = rx2.recv().await {
@@ -1378,7 +1426,7 @@ mod tests {
         let sid = runner.create_session().unwrap();
         let (tx, mut rx) = tokio::sync::mpsc::channel(64);
         runner
-            .spawn_turn(sid.clone(), "hi".into(), None, tx)
+            .spawn_turn(sid.clone(), "hi".into(), None, RunOverrides::default(), tx)
             .unwrap();
         while let Some(ev) = rx.recv().await {
             match ev {
@@ -1394,5 +1442,231 @@ mod tests {
             .expect("chat_stream must be called");
         assert_eq!(seen.session_id.as_deref(), Some(sid.as_str()));
         kernel.sender().send(KernelMessage::Shutdown).unwrap();
+    }
+
+    /// Model override must not lose the injected `session_id` (subscription transports
+    /// key on it), so this asserts both fields on the override path.
+    #[tokio::test]
+    async fn run_turn_model_override_still_injects_session_id() {
+        let (kernel, sender) = spy_kernel_with(ToolSpy);
+        let ctx = loop_test_ctx();
+        let seen: Arc<Mutex<Option<ModelOptions>>> = Arc::new(Mutex::new(None));
+        let runner = TurnRunner::new(
+            ctx.clone(),
+            Arc::new(MockPipeline),
+            "sys".into(),
+            sender,
+            "tool_spy".into(),
+        );
+        ctx.providers
+            .register("mock".into(), Arc::new(RecordingProvider(seen.clone())));
+        let sid = runner.create_session().unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+        runner
+            .spawn_turn(
+                sid.clone(),
+                "hi".into(),
+                None,
+                RunOverrides {
+                    provider: None,
+                    model: Some("custom-model".into()),
+                },
+                tx,
+            )
+            .unwrap();
+        while let Some(ev) = rx.recv().await {
+            match ev {
+                AgentEvent::Done { .. } => break,
+                AgentEvent::Error(e) => panic!("turn error: {e}"),
+                _ => {}
+            }
+        }
+        let captured = seen
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("chat_stream must be called");
+        assert_eq!(captured.model, "custom-model");
+        assert_eq!(captured.session_id, Some(sid.clone()));
+        kernel.sender().send(KernelMessage::Shutdown).unwrap();
+    }
+
+    /// Config double that answers only `model.default_model` (MockConfig returns None for all).
+    struct FixedConfig(&'static str);
+    impl ConfigProvider for FixedConfig {
+        fn get_str(&self, key: &str) -> Option<String> {
+            (key == "model.default_model").then(|| self.0.to_string())
+        }
+        fn get_int(&self, _key: &str) -> Option<i64> {
+            None
+        }
+        fn providers(&self) -> Vec<(String, String)> {
+            vec![]
+        }
+    }
+
+    /// Records `"<name>:<model>"` for every model call it serves.
+    struct NamedRecordingProvider {
+        name: &'static str,
+        seen: Arc<Mutex<Vec<String>>>,
+    }
+
+    #[async_trait]
+    impl crate::module::ModelProvider for NamedRecordingProvider {
+        async fn chat_stream(
+            &self,
+            _m: Vec<ChatMessage>,
+            _t: Vec<ToolDefinition>,
+            options: ModelOptions,
+        ) -> Result<BoxStream<'static, Result<ModelEvent, ModelError>>, ModelError> {
+            self.seen
+                .lock()
+                .unwrap()
+                .push(format!("{}:{}", self.name, options.model));
+            Ok(Box::pin(stream::iter(vec![
+                Ok(ModelEvent::Delta("ok".into())),
+                Ok(ModelEvent::Done),
+            ])))
+        }
+        async fn chat(
+            &self,
+            _m: Vec<ChatMessage>,
+            _o: ModelOptions,
+        ) -> Result<crate::types::ChatResponse, ModelError> {
+            unimplemented!()
+        }
+    }
+
+    /// One turn with two providers registered: "mock" first (thus the default) and "alt".
+    async fn run_with(
+        overrides: RunOverrides,
+        default_model: Option<&'static str>,
+    ) -> (Vec<String>, Option<String>) {
+        let (kernel, sender) = spy_kernel_with(ToolSpy);
+        let mut ctx = loop_test_ctx();
+        if let Some(dm) = default_model {
+            ctx.config = Arc::new(FixedConfig(dm));
+        }
+        let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let runner = TurnRunner::new(
+            ctx.clone(),
+            Arc::new(MockPipeline),
+            "sys".into(),
+            sender,
+            "tool_spy".into(),
+        );
+        ctx.providers.register(
+            "mock".into(),
+            Arc::new(NamedRecordingProvider {
+                name: "mock",
+                seen: seen.clone(),
+            }),
+        );
+        ctx.providers.register(
+            "alt".into(),
+            Arc::new(NamedRecordingProvider {
+                name: "alt",
+                seen: seen.clone(),
+            }),
+        );
+        let sid = runner.create_session().unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+        runner
+            .spawn_turn(sid, "hi".into(), None, overrides, tx)
+            .unwrap();
+        let mut error = None;
+        while let Some(ev) = rx.recv().await {
+            match ev {
+                AgentEvent::Done { .. } => break,
+                AgentEvent::Error(e) => {
+                    error = Some(e);
+                    break;
+                }
+                _ => {}
+            }
+        }
+        let out = seen.lock().unwrap().clone();
+        kernel.sender().send(KernelMessage::Shutdown).unwrap();
+        (out, error)
+    }
+
+    #[tokio::test]
+    async fn run_turn_applies_model_override() {
+        let (seen, err) = run_with(
+            RunOverrides {
+                provider: None,
+                model: Some("custom-model".into()),
+            },
+            None,
+        )
+        .await;
+        assert!(err.is_none(), "{err:?}");
+        assert_eq!(seen, vec!["mock:custom-model".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn run_turn_routes_to_explicit_non_default_provider() {
+        let (seen, err) = run_with(
+            RunOverrides {
+                provider: Some("alt".into()),
+                model: Some("m1".into()),
+            },
+            None,
+        )
+        .await;
+        assert!(err.is_none(), "{err:?}");
+        // the default provider "mock" must not be called
+        assert_eq!(seen, vec!["alt:m1".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn run_turn_provider_only_keeps_config_model() {
+        let (seen, err) = run_with(
+            RunOverrides {
+                provider: Some("alt".into()),
+                model: None,
+            },
+            Some("cfg-model"),
+        )
+        .await;
+        assert!(err.is_none(), "{err:?}");
+        assert_eq!(seen, vec!["alt:cfg-model".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn run_turn_unknown_provider_fails_without_fallback() {
+        let (seen, err) = run_with(
+            RunOverrides {
+                provider: Some("nope".into()),
+                model: None,
+            },
+            None,
+        )
+        .await;
+        let err = err.expect("unknown provider must fail the turn");
+        assert!(err.contains("unknown provider: nope"), "{err}");
+        assert!(err.contains("alt") && err.contains("mock"), "{err}");
+        assert!(seen.is_empty(), "no provider may serve the turn");
+    }
+
+    #[tokio::test]
+    async fn run_turn_without_overrides_uses_config_default() {
+        let (seen, err) = run_with(RunOverrides::default(), Some("cfg-model")).await;
+        assert!(err.is_none(), "{err:?}");
+        assert_eq!(seen, vec!["mock:cfg-model".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn run_turn_blank_overrides_are_absent() {
+        let (seen, err) = run_with(
+            RunOverrides {
+                provider: Some("  ".into()),
+                model: Some("".into()),
+            },
+            Some("cfg-model"),
+        )
+        .await;
+        assert!(err.is_none(), "{err:?}");
+        assert_eq!(seen, vec!["mock:cfg-model".to_string()]);
     }
 }

@@ -14,7 +14,8 @@ bun --cwd agentj-ui/apps/tui test         # testRender + mock WS e2e
 ## 功能
 
 - 连接管理（地址 / token / 重连，鉴权错误停止重连）。
-- 会话：新建 / 切换 / 继续；只读展示当前模型。
+- 会话：新建 / 切换 / 继续；模型可在 `/models` 选择器里切换（`j` / `k` 移动、`Enter` 确认，
+  应用于下一轮 run，见 [运行期切模型](model-switching.md)）。
 - **Composer**：多行输入、`@` 文件补全、`/` palette。
 - 流式渲染（标准帧 transcript，语义色）、审批模态、usage 结算（prompt/completion）。
 - 主题切换；优雅退出。

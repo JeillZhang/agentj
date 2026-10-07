@@ -14,6 +14,7 @@ import { Moon, Sun, Monitor, Menu, PanelRight } from "lucide-react";
 import ApprovalDialog from "./ApprovalDialog";
 import type { ApprovalRequest } from "./ApprovalDialog";
 import RunPanel from "./RunPanel";
+import type { ModelEntry } from "./components/ComposerOptions";
 import TopbarMenu from "./components/TopbarMenu";
 import ConnectionStatus from "./components/ConnectionStatus";
 import UnifiedSidebar from "./components/UnifiedSidebar";
@@ -168,7 +169,7 @@ function useSharedKernel(wsUrl: string, seq: number) {
   const [banner, setBanner] = useState<string | null>(null);
   const [unreachable, setUnreachable] = useState(false);
   const [modelName, setModelName] = useState<string | null>(null);
-  const [models, setModels] = useState<{ name: string }[]>([]);
+  const [models, setModels] = useState<ModelEntry[]>([]);
   const [serverVersion, setServerVersion] = useState<string | null>(null);
   const [client, setClient] = useState<RpcClient | null>(null);
   const transportRef = useRef<WebSocketTransport | null>(null);
@@ -215,9 +216,10 @@ function useSharedKernel(wsUrl: string, seq: number) {
             if (cancelled) return;
             setModules(data.modules ?? []);
             setModelName(data.default_model ?? null);
-            const served = (data.providers ?? [])
-              .flatMap((p) => p.models ?? [])
-              .map((name) => ({ name }));
+            // Provider tag travels with each entry (design D7: never inferred from list order).
+            const served: ModelEntry[] = (data.providers ?? []).flatMap((p) =>
+              (p.models ?? []).map((name) => ({ name, provider: p.id })),
+            );
             if (served.length > 0) setModels(served);
             setStatus("connected");
           })
@@ -295,6 +297,7 @@ export default function App() {
   const { client: sharedClient, modules, status, banner, unreachable, modelName, models, serverVersion } =
     useSharedKernel(wsUrl, connectSeq);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const [selectedModel, setSelectedModel] = useState<ModelEntry | null>(null);
   const { pending, approvalError, respond, close } = useApproval(sharedClient, activeSessionId);
   const [theme, setTheme] = useState<ThemeMode>(storedThemeMode() ?? "system");
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -644,7 +647,23 @@ export default function App() {
             ) : (
               <>
                 {(historyEvents === null || historySession !== activeSessionId) && <p className="aj-empty">Loading history…</p>}
-                <RunPanel client={sharedClient} key={activeSessionId} activeSessionId={activeSessionId} initialEntries={historyEvents && historySession === activeSessionId ? historyToConversation(historyEvents) : []} pendingTool={pending?.tool} model={modelName ?? undefined} models={models} modules={modules} status={status} unreachable={unreachable} onRunId={(id) => setActiveRunId(id)} />
+                <RunPanel
+                  client={sharedClient}
+                  key={activeSessionId}
+                  activeSessionId={activeSessionId}
+                  initialEntries={historyEvents && historySession === activeSessionId
+                    ? historyToConversation(historyEvents)
+                    : []}
+                  pendingTool={pending?.tool}
+                  model={modelName ?? undefined}
+                  models={models}
+                  selected={selectedModel}
+                  onSelect={setSelectedModel}
+                  modules={modules}
+                  status={status}
+                  unreachable={unreachable}
+                  onRunId={(id) => setActiveRunId(id)}
+                />
               </>
             )
           ) : activeSessionId && historySession === activeSessionId && historyEvents ? (

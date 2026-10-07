@@ -19,6 +19,7 @@ import {
 import { PermissionDialog, usePermissionState } from "./permission.tsx";
 import { Palette } from "./palette.tsx";
 import { ModelSelector, useModelConfig } from "./models.tsx";
+import type { ModelEntry } from "./models.tsx";
 import { ThemeProvider, useTheme } from "./theme.tsx";
 import Sidebar, { SIDEBAR_WIDTH, loadCollapsed, loadProjects, saveCollapsed } from "./sidebar.tsx";
 import type { Project, SidebarSession, SidebarView } from "./sidebar.tsx";
@@ -433,6 +434,7 @@ function AppInner({ url, createTransport, backoffBaseMs = 1000 }: AppProps) {
   const { toggle: toggleTheme, palette } = useTheme();
   const statusLine = getStatusLine(authError, status);
   const modelConfig = useModelConfig(client);
+  const [selectedModel, setSelectedModel] = useState<ModelEntry | null>(null);
   const [transcriptRows, setTranscriptRows] = useState<TranscriptRow[]>([]);
   const [todos, setTodos] = useState<TodoState>(EMPTY_TODOS);
   const [sidebarView, setSidebarView] = useState<SidebarView>("threads");
@@ -630,13 +632,20 @@ function AppInner({ url, createTransport, backoffBaseMs = 1000 }: AppProps) {
       if (!client || !sid) return;
       st.setErr(null);
       setTranscriptRows((prev) => [...prev, { key: nextKey(prev), kind: "user", text }]);
+      // D5: no picked entry sends exactly {session_id, content}; the provider
+      // always travels with the picked entry (D7), never from list position.
+      const params: Record<string, unknown> = { session_id: sid, content: text };
+      if (selectedModel) {
+        params.model = selectedModel.name;
+        if (selectedModel.provider) params.provider = selectedModel.provider;
+      }
       try {
-        await client.request(METHODS.sessionRun, { session_id: sid, content: text });
+        await client.request(METHODS.sessionRun, params);
       } catch (e) {
         st.setErr(e instanceof Error ? e.message : String(e));
       }
     },
-    [client, st],
+    [client, st, selectedModel],
   );
   const statusColor =
     authError !== null ? palette.error : status === "open" ? palette.success : palette.warning;
@@ -826,7 +835,17 @@ function AppInner({ url, createTransport, backoffBaseMs = 1000 }: AppProps) {
         />
       ) : null}
       {paletteCtrl.modelOpen ? (
-        <ModelSelector default_model={modelConfig.default_model} providers={modelConfig.providers} />
+        <ModelSelector
+          default_model={modelConfig.default_model}
+          providers={modelConfig.providers}
+          selected={selectedModel}
+          onSelect={(entry) => {
+            // Closing the picker is required: the global key handler swallows
+            // composer typing while modelOpen stays true.
+            setSelectedModel(entry);
+            paletteCtrl.handleModelClose();
+          }}
+        />
       ) : null}
       {paletteCtrl.paletteQuery !== null && !paletteCtrl.modelOpen ? (
         <Palette

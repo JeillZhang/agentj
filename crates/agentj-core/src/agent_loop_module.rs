@@ -60,12 +60,18 @@ impl KernelModule for AgentLoopModule {
         if let KernelMessage::UserRequest {
             session_id,
             content,
+            overrides,
             attachments: _,
             reply,
         } = msg
         {
-            self.runner
-                .spawn_turn(session_id.clone(), content.clone(), None, reply.clone())?;
+            self.runner.spawn_turn(
+                session_id.clone(),
+                content.clone(),
+                None,
+                overrides.clone(),
+                reply.clone(),
+            )?;
         }
         Ok(KernelResponse::Handled)
     }
@@ -295,12 +301,7 @@ mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::channel(64);
         kernel
             .sender()
-            .send(KernelMessage::UserRequest {
-                session_id: sid.clone(),
-                content: "hi".into(),
-                attachments: vec![],
-                reply: tx.clone(),
-            })
+            .send(KernelMessage::user_request(sid.clone(), "hi", tx.clone()))
             .unwrap();
         let mut saw_tool_call = false;
         while let Some(ev) = rx.recv().await {
