@@ -60,13 +60,21 @@ function errorSentence(err: UsageError | null | undefined, fallback: string): st
 
 function windowLine(w: UsageWindow): string {
   const label = WINDOW_LABEL[w.kind] ?? w.kind;
-  const percent = typeof w.percent === "number" ? w.percent : 0;
+  // `percent` is optional on the wire (upstream may omit it or send a non-integer);
+  // never fabricate a number — render an explicit unknown marker instead.
+  const pct = typeof w.percent === "number" ? `${w.percent}%` : "—";
   const limited = w.status === "rate-limited" ? " 已限流" : "";
-  return `${label}  ${percent}%${limited}`;
+  return `${label}  ${pct}${limited}`;
 }
 
 export function SubscriptionOverlay(props: SubscriptionOverlayProps): React.ReactNode {
-  const { client, onClose, schedule = (fn, ms) => void setTimeout(fn, ms) } = props;
+  const { client, onClose } = props;
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const schedule =
+    props.schedule ??
+    ((fn: () => void, ms: number) => {
+      timerRef.current = setTimeout(fn, ms);
+    });
   const [usage, setUsage] = useState<UsageResult | null>(null);
   const [status, setStatus] = useState<AuthStatus | null>(null);
   const [device, setDevice] = useState<{ user_code: string; verification_uri: string } | null>(null);
@@ -103,6 +111,10 @@ export function SubscriptionOverlay(props: SubscriptionOverlayProps): React.Reac
     })();
     return () => {
       cancelled.current = true;
+      if (timerRef.current !== null) {
+        clearTimeout(timerRef.current);
+        timerRef.current = null;
+      }
     };
   }, [client]);
 

@@ -74,6 +74,31 @@ describe("SubscriptionOverlay", () => {
     act(() => setup.renderer.destroy());
   });
 
+  test("never fabricates a percentage for a window whose percent is absent", async () => {
+    const client = fakeClient({
+      [METHODS.authStatus]: { provider: "opencode-go", authenticated: true },
+      [METHODS.providerUsage]: {
+        provider: "opencode-go",
+        fetched_at: 1,
+        stale: false,
+        warn_percent: 80,
+        windows: [{ kind: "rolling", status: "ok" }],
+      },
+    });
+    const setup = await testRender(
+      <SubscriptionOverlay client={client} onClose={() => {}} />,
+      {},
+    );
+    await act(async () => {
+      await setup.flush();
+    });
+    await setup.waitFor(() => setup.captureCharFrame().includes("5 小时"));
+    const frame = setup.captureCharFrame();
+    expect(frame).toContain("—");
+    expect(frame).not.toContain("0%");
+    act(() => setup.renderer.destroy());
+  });
+
   test("stops polling after authorization and follows the upstream interval", async () => {
     const scheduled: Array<{ ms: number; run: () => void }> = [];
     const client = fakeClient({
