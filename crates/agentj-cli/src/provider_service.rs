@@ -257,6 +257,16 @@ impl CliProviderService {
         let (key, source) = self.key_read_only(&cfg)?;
         let stored = self.store.get(&cfg.name).ok().flatten();
         let credential = match (&key, &stored) {
+            // BUG-001: an `api_key_env` credential is effective on its own — it must be projected
+            // as `api_key`/`env` even when no `auth.json` entry backs it (`stored == None`).
+            (Some(k), _) if source == CredentialSource::Env => Some(CredentialInfo {
+                kind: CredentialKind::ApiKey,
+                source,
+                key_hint: Some(redact(k)),
+                expires_at: None,
+                expiring_soon: false,
+                org_id: None,
+            }),
             (Some(k), Some(Credential::ApiKey { .. })) => Some(CredentialInfo {
                 kind: CredentialKind::ApiKey,
                 source,
@@ -912,6 +922,43 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(r.credential.unwrap().source, CredentialSource::Env);
+    }
+
+    /// BUG-001: an env-only credential (`api_key_env` set, no `auth.json` entry) must still be
+    /// projected as `kind: api_key` / `source: env` / redacted `key_hint`; omitting it makes the
+    /// client fall back to a generic "authenticated" state and lose the `kind` / `source` hint.
+    #[tokio::test]
+    async fn auth_status_reports_env_credential_without_stored_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let server = wiremock::MockServer::start().await;
+        // SAFETY: single-threaded test-local env mutation with a unique variable name.
+        unsafe { std::env::set_var("AGENTJ_TEST_ENV_ONLY_KEY", "sk-envonly-9876") };
+        let s = CliProviderService::new(
+            // No `auth.json` entry at all: the credential comes solely from the env var.
+            AuthStore::with_path(dir.path().join("auth.json")),
+            vec![ProviderCfg {
+                name: "opencode-go".into(),
+                kind: "opencode-go".into(),
+                base_url: server.uri(),
+                api_key_env: Some("AGENTJ_TEST_ENV_ONLY_KEY".into()),
+            }],
+            "opencode-go".into(),
+            server.uri(),
+            80,
+            empty_registry(),
+        );
+        let r = s
+            .auth_status(AuthStatusParams { provider: None })
+            .await
+            .unwrap();
+        assert!(r.authenticated);
+        let c = r.credential.expect("env-only credential must be reported");
+        assert_eq!(
+            (c.kind, c.source, c.key_hint.as_deref()),
+            (CredentialKind::ApiKey, CredentialSource::Env, Some("…9876"))
+        );
+        assert!(!c.expiring_soon);
+        unsafe { std::env::remove_var("AGENTJ_TEST_ENV_ONLY_KEY") };
     }
 
     fn ids(entries: &[ModelEntry]) -> Vec<&str> {
