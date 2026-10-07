@@ -31,6 +31,14 @@ pub struct SessionRunParams {
     pub attachments: Option<Vec<Attachment>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub progress_token: Option<ProgressToken>,
+    /// Per-run provider name override (registered provider name). Absent = default
+    /// provider. @since 0.16.0
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    /// Per-run model id override, e.g. "opencode-go/kimi-k3". Absent = config
+    /// model.default_model. @since 0.16.0
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema)]
@@ -278,6 +286,8 @@ mod tests {
             content: "hi".into(),
             attachments: None,
             progress_token: None,
+            provider: None,
+            model: None,
         };
         let json = serde_json::to_value(&p).unwrap();
         assert_eq!(json["session_id"], "s1");
@@ -296,10 +306,37 @@ mod tests {
                 mime: None,
             }]),
             progress_token: Some(ProgressToken::Str("tok".into())),
+            provider: None,
+            model: None,
         };
         let json = serde_json::to_value(&p).unwrap();
         assert_eq!(json["progress_token"], "tok");
         assert_eq!(json["attachments"][0]["path"], "a.txt");
+    }
+
+    #[test]
+    fn run_params_roundtrip_with_provider_and_model() {
+        let p: SessionRunParams = serde_json::from_value(serde_json::json!({
+            "session_id": "s1", "content": "hi",
+            "provider": "opencode-go", "model": "opencode-go/kimi-k3"
+        }))
+        .unwrap();
+        assert_eq!(p.provider.as_deref(), Some("opencode-go"));
+        assert_eq!(p.model.as_deref(), Some("opencode-go/kimi-k3"));
+        let out = serde_json::to_value(&p).unwrap();
+        assert_eq!(out["provider"], "opencode-go");
+        assert_eq!(out["model"], "opencode-go/kimi-k3");
+    }
+
+    #[test]
+    fn run_params_omits_absent_provider_and_model() {
+        let p: SessionRunParams = serde_json::from_value(serde_json::json!({
+            "session_id": "s1", "content": "hi"
+        }))
+        .unwrap();
+        assert!(p.provider.is_none() && p.model.is_none());
+        let out = serde_json::to_value(&p).unwrap();
+        assert!(out.get("provider").is_none() && out.get("model").is_none());
     }
 
     #[test]
