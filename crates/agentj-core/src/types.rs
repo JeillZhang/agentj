@@ -155,6 +155,13 @@ impl Default for ModelOptions {
     }
 }
 
+/// Per-run overrides parsed from `session/run`. `Default` == no override (today's behavior). @since 0.26.0
+#[derive(Debug, Clone, Default)]
+pub struct RunOverrides {
+    pub provider: Option<String>,
+    pub model: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Attachment {
     pub path: Option<String>,
@@ -233,6 +240,12 @@ mod tests {
         assert_eq!(opts.model, "deepseek-chat");
         assert!(opts.stream);
         assert!(opts.session_id.is_none());
+    }
+
+    #[test]
+    fn run_overrides_default_is_no_override() {
+        let o = RunOverrides::default();
+        assert!(o.provider.is_none() && o.model.is_none());
     }
 
     #[test]
