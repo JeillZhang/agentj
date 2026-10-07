@@ -1444,6 +1444,53 @@ mod tests {
         kernel.sender().send(KernelMessage::Shutdown).unwrap();
     }
 
+    /// Model override must not lose the injected `session_id` (subscription transports
+    /// key on it), so this asserts both fields on the override path.
+    #[tokio::test]
+    async fn run_turn_model_override_still_injects_session_id() {
+        let (kernel, sender) = spy_kernel_with(ToolSpy);
+        let ctx = loop_test_ctx();
+        let seen: Arc<Mutex<Option<ModelOptions>>> = Arc::new(Mutex::new(None));
+        let runner = TurnRunner::new(
+            ctx.clone(),
+            Arc::new(MockPipeline),
+            "sys".into(),
+            sender,
+            "tool_spy".into(),
+        );
+        ctx.providers
+            .register("mock".into(), Arc::new(RecordingProvider(seen.clone())));
+        let sid = runner.create_session().unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+        runner
+            .spawn_turn(
+                sid.clone(),
+                "hi".into(),
+                None,
+                RunOverrides {
+                    provider: None,
+                    model: Some("custom-model".into()),
+                },
+                tx,
+            )
+            .unwrap();
+        while let Some(ev) = rx.recv().await {
+            match ev {
+                AgentEvent::Done { .. } => break,
+                AgentEvent::Error(e) => panic!("turn error: {e}"),
+                _ => {}
+            }
+        }
+        let captured = seen
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("chat_stream must be called");
+        assert_eq!(captured.model, "custom-model");
+        assert_eq!(captured.session_id, Some(sid.clone()));
+        kernel.sender().send(KernelMessage::Shutdown).unwrap();
+    }
+
     /// Config double that answers only `model.default_model` (MockConfig returns None for all).
     struct FixedConfig(&'static str);
     impl ConfigProvider for FixedConfig {
