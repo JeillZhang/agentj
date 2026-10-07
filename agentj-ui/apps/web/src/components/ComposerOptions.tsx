@@ -8,7 +8,7 @@ import "./options.css";
 
 type OpenId = "model" | "agent" | "entropy" | "permission" | null;
 
-export type ModelEntry = { name: string; cap?: string };
+export type ModelEntry = { name: string; cap?: string; provider?: string };
 type AgentEntry = { id: ComposerAgent; label: string; cap: string };
 type EntropyPreset = { value: number; label: string; short: string };
 type PermissionEntry = { id: ComposerPermission; label: string; cap: string };
@@ -36,6 +36,10 @@ export type ComposerOptionsProps = {
   model?: string | null;
   /** Kernel-served model list; falls back to MODEL_LIST when absent/empty. */
   models?: ModelEntry[];
+  /** Explicit user pick; wins over the kernel-default `model` for the trigger label. */
+  selected?: ModelEntry | null;
+  /** Called with the exact picked entry (provider tag included) on model selection. */
+  onSelect?: (entry: ModelEntry) => void;
   collapsed?: boolean;
   children?: ReactNode;
 };
@@ -73,6 +77,8 @@ function permissionIndex(mode: ComposerPermission): number {
 export default function ComposerOptions({
   model = null,
   models,
+  selected = null,
+  onSelect,
   collapsed = false,
   children,
 }: ComposerOptionsProps) {
@@ -129,7 +135,7 @@ export default function ComposerOptions({
     if (collapsed) setOpenId(null);
   }, [collapsed]);
 
-  const modelName = model ?? prefs.model;
+  const modelName = selected?.name ?? model ?? prefs.model;
   const triggerRefs = {
     model: modelRef,
     agent: agentRef,
@@ -157,6 +163,7 @@ export default function ComposerOptions({
       if (!entry) return;
       setPrefs({ ...prefs, model: entry.name });
       saveComposerPrefs({ model: entry.name });
+      onSelect?.(entry);
     } else if (id === "agent") {
       const entry = AGENT_LIST[index];
       if (!entry) return;
@@ -236,20 +243,20 @@ export default function ComposerOptions({
         >
           <div className="pop-title" id="composer-model-title">选择模型</div>
           {modelOptions.map((entry, index) => {
-            const selected = modelName === entry.name;
+            const isSelected = modelName === entry.name;
             return (
               <div
                 key={entry.name}
                 role="option"
-                aria-selected={selected}
-                className={`pop-item${selected ? " sel-item" : ""}${highlight === index ? " hl" : ""}`}
+                aria-selected={isSelected}
+                className={`pop-item${isSelected ? " sel-item" : ""}${highlight === index ? " hl" : ""}`}
                 onClick={() => selectOption("model", index)}
               >
                 <div>
                   <div className="nm">{entry.name}</div>
                   <div className="cap">{entry.cap}</div>
                 </div>
-                {selected && <span className="tick">✓</span>}
+                {isSelected && <span className="tick">✓</span>}
               </div>
             );
           })}
