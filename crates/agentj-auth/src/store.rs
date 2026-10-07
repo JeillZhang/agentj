@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use crate::credential::{AuthError, AuthFile};
 
 /// Reads/writes `$XDG_DATA_HOME/agentj/auth.json` (fallback `~/.local/share`).
+#[derive(Debug, Clone)]
 pub struct AuthStore {
     path: PathBuf,
 }

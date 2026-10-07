@@ -12,6 +12,9 @@ pub enum Credential {
         #[serde(default)]
         created_at: Option<String>,
     },
+    /// Phase 2: the stored OAuth credential (`type: "oauth"`). The explicit rename is
+    /// required because `rename_all = "snake_case"` would render `OAuth` as `o_auth`.
+    #[serde(rename = "oauth")]
     OAuth {
         access: String,
         refresh: String,
@@ -33,6 +36,12 @@ pub enum AuthError {
     Malformed { path: String, reason: String },
     #[error("unsupported credential type '{kind}': requires agentj phase 2 or newer")]
     Unsupported { kind: String },
+    #[error("credential network failure: {reason}")]
+    Network { reason: String },
+    #[error("credential endpoint returned {status}: {message}")]
+    Http { status: u16, message: String },
+    #[error("refresh token rejected ({reason}); run `agentj auth login --device` again")]
+    RefreshRejected { reason: String },
     #[error("no home directory: cannot locate credential store")]
     NoHomeDir,
 }
@@ -40,13 +49,12 @@ pub enum AuthError {
 pub type AuthFile = std::collections::BTreeMap<String, Credential>;
 
 impl Credential {
-    /// The secret usable as a bearer token. OAuth is rejected with a phase-2 hint.
+    /// The secret usable as a bearer token. For OAuth this is the stored **access token**;
+    /// freshness is enforced by [`crate::refresh::ensure_access`] before use (design D7/D8).
     pub fn key(&self) -> Result<&str, AuthError> {
         match self {
             Credential::ApiKey { key, .. } => Ok(key),
-            Credential::OAuth { .. } => Err(AuthError::Unsupported {
-                kind: "oauth".into(),
-            }),
+            Credential::OAuth { access, .. } => Ok(access),
         }
     }
 
@@ -54,15 +62,12 @@ impl Credential {
     /// `Malformed`, so a newer agentj written file fails with an actionable message.
     pub fn try_from_value(v: &serde_json::Value) -> Result<Self, AuthError> {
         match v.get("type").and_then(|t| t.as_str()) {
-            Some("api_key") => {
+            Some("api_key") | Some("oauth") => {
                 serde_json::from_value(v.clone()).map_err(|e| AuthError::Malformed {
                     path: "<credential>".into(),
                     reason: e.to_string(),
                 })
             }
-            Some("oauth") => Err(AuthError::Unsupported {
-                kind: "oauth".into(),
-            }),
             Some(other) => Err(AuthError::Unsupported {
                 kind: other.to_string(),
             }),
@@ -114,15 +119,19 @@ mod tests {
     }
 
     #[test]
-    fn oauth_and_unknown_tags_report_unsupported() {
-        let oauth = serde_json::json!({"type":"oauth","access":"a","refresh":"r","expires":123});
-        assert!(
-            matches!(Credential::try_from_value(&oauth), Err(AuthError::Unsupported { ref kind }) if kind == "oauth")
-        );
-        let weird = serde_json::json!({"type":"perpetual"});
-        assert!(
-            matches!(Credential::try_from_value(&weird), Err(AuthError::Unsupported { ref kind }) if kind == "perpetual")
-        );
+    fn oauth_credential_exposes_its_access_token() {
+        let c = Credential::try_from_value(&serde_json::json!({
+            "type": "oauth", "access": "a-tok", "refresh": "r-tok", "expires": 42
+        }))
+        .unwrap();
+        assert_eq!(c.key().unwrap(), "a-tok");
+    }
+
+    #[test]
+    fn unknown_credential_type_is_still_rejected() {
+        let e = Credential::try_from_value(&serde_json::json!({"type":"wellknown","key":"k"}))
+            .unwrap_err();
+        assert!(matches!(e, AuthError::Unsupported { ref kind } if kind == "wellknown"));
     }
 
     #[test]
