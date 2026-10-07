@@ -24,9 +24,10 @@ function staticEntries(): ModelEntry[] {
   return MODEL_CONFIG.providers.map(({ name }) => ({ name }));
 }
 
-export function providersFromStatus(data: Record<string, unknown>): ModelEntry[] {
+/** Kernel-reported models, or null when the kernel reports no model at all. */
+function kernelModelEntries(data: Record<string, unknown>): ModelEntry[] | null {
   const prov = data?.["providers"];
-  if (!Array.isArray(prov) || prov.length === 0) return staticEntries();
+  if (!Array.isArray(prov)) return null;
   const entries = (prov as Array<{ id?: unknown; models?: unknown }>).flatMap((p) => {
     const provider = typeof p?.id === "string" ? p.id : undefined;
     if (!Array.isArray(p?.models)) return [];
@@ -34,7 +35,11 @@ export function providersFromStatus(data: Record<string, unknown>): ModelEntry[]
       .filter((m): m is string => typeof m === "string")
       .map((name) => (provider ? { name, provider } : { name }));
   });
-  return entries.length > 0 ? entries : staticEntries();
+  return entries.length > 0 ? entries : null;
+}
+
+export function providersFromStatus(data: Record<string, unknown>): ModelEntry[] {
+  return kernelModelEntries(data) ?? staticEntries();
 }
 
 export function useModelConfig(client: RpcClient | null): ModelListInput {
@@ -45,21 +50,41 @@ export function useModelConfig(client: RpcClient | null): ModelListInput {
       .request(METHODS.kernelStatus)
       .then((r) => {
         const data = r as unknown as Record<string, unknown>;
+        // The kernel's model list is authoritative on its own: a missing/empty
+        // default_model only means "no default row", not "use the static list"
+        // (a static entry would submit without a provider tag and mis-route).
+        const providers = kernelModelEntries(data);
+        if (!providers) return;
         const dm = data?.["default_model"];
-        if (typeof dm === "string" && dm.length > 0) {
-          const providers = providersFromStatus(data);
-          setCfg({ default_model: dm, providers });
-        }
+        setCfg({ default_model: typeof dm === "string" ? dm : "", providers });
       })
       .catch(() => {});
   }, [client]);
   return cfg;
 }
 
+/** Two providers can serve the same model name, so a row is identified by name + provider. */
+function modelKey(entry: ModelEntry): string {
+  return `${entry.provider ?? ""}\u0000${entry.name}`;
+}
+
+/**
+ * Index of the row carrying the ▶ marker, or -1 when no row is authoritative:
+ * an explicit pick identifies its own row, a bare default only an unambiguous name.
+ */
+function markerIndex(
+  providers: ModelEntry[],
+  selected: ModelEntry | null | undefined,
+  defaultModel: string,
+): number {
+  if (selected) return providers.findIndex((e) => modelKey(e) === modelKey(selected));
+  const named = providers.filter((e) => e.name === defaultModel);
+  return named.length === 1 ? providers.indexOf(named[0]) : -1;
+}
+
 export function renderModelList(input: ModelListInput & { selected?: ModelEntry | null }): string {
-  const { default_model, providers, selected } = input;
-  const active = selected?.name ?? default_model;
-  const rows = providers.map((e) => (e.name === active ? `▶ ${e.name}` : `  ${e.name}`));
+  const marker = markerIndex(input.providers, input.selected, input.default_model);
+  const rows = input.providers.map((e, i) => (i === marker ? `▶ ${e.name}` : `  ${e.name}`));
   return [...rows, MODEL_LIST_HINT].join("\n");
 }
 
@@ -68,34 +93,36 @@ export type ModelSelectorProps = ModelListInput & {
   onSelect?: (entry: ModelEntry) => void;
 };
 
-function highlightIndex(providers: ModelEntry[], anchor: string): number {
-  const i = providers.findIndex((e) => e.name === anchor);
-  return i >= 0 ? i : 0;
+/** -1 means "no authoritative row"; the cursor then sits on the first row. */
+function cursorOf(idx: number): number {
+  return idx < 0 ? 0 : idx;
 }
 
 export function ModelSelector(props: ModelSelectorProps): React.ReactNode {
   const { default_model, providers, selected, onSelect } = props;
-  const anchor = selected?.name ?? default_model;
-  const [idx, setIdx] = useState(() => highlightIndex(providers, anchor));
+  const anchor = markerIndex(providers, selected, default_model);
+  const [idx, setIdx] = useState(() => anchor);
   useEffect(() => {
-    setIdx(highlightIndex(providers, anchor));
-  }, [providers, anchor]);
+    setIdx(markerIndex(providers, selected, default_model));
+  }, [providers, selected, default_model]);
   useKeyboard((key) => {
     const name = (key.name ?? "").toLowerCase();
     if (name === "j" || name === "down") {
-      setIdx((v) => Math.min(providers.length - 1, v + 1));
+      setIdx((v) => Math.min(providers.length - 1, cursorOf(v) + 1));
       return;
     }
     if (name === "k" || name === "up") {
-      setIdx((v) => Math.max(0, v - 1));
+      setIdx((v) => Math.max(0, cursorOf(v) - 1));
       return;
     }
     const isEnter = name === "return" || name === "enter" || key.sequence === "\r";
-    const entry = providers[idx];
+    const entry = providers[cursorOf(idx)];
     if (isEnter && entry) onSelect?.(entry);
   });
-  const highlighted = providers[idx] ?? selected ?? null;
-  const lines = renderModelList({ default_model, providers, selected: highlighted }).split("\n");
+  // The cursor row is the marker once it is authoritative (idx >= 0); an -1 anchor
+  // falls back to the raw pick so an unresolvable one still marks no row.
+  const marked = idx >= 0 ? providers[idx] : selected ?? null;
+  const lines = renderModelList({ default_model, providers, selected: marked }).split("\n");
   return (
     <box flexDirection="column" border padding={1}>
       {lines.map((line, i) => (

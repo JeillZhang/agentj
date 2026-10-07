@@ -1,7 +1,55 @@
 import { describe, expect, it, mock } from "bun:test";
 import { testRender } from "@opentui/react/test-utils";
+import type { TestRendererSetup } from "@opentui/core/testing";
 import { act } from "react";
-import { MODEL_CONFIG, ModelSelector, providersFromStatus, renderModelList } from "./models";
+import type { RpcClient } from "@agentj/sdk";
+import {
+  MODEL_CONFIG,
+  ModelSelector,
+  providersFromStatus,
+  renderModelList,
+  useModelConfig,
+} from "./models";
+import type { ModelListInput } from "./models";
+
+// D1: two providers may serve the same model id; the row is identified by
+// name + provider, exactly like the Web picker's modelKey.
+const DUP_PROVIDERS = [
+  { name: "dup", provider: "aaa" },
+  { name: "dup", provider: "zzz" },
+];
+
+type ConfigControl = { current: ModelListInput | null };
+
+function ModelConfigProbe({ client, control }: {
+  client: RpcClient | null;
+  control: ConfigControl;
+}) {
+  const cfg = useModelConfig(client);
+  control.current = cfg;
+  return <text>{cfg.providers.map((e) => `${e.provider ?? "-"}:${e.name}`).join(",")}</text>;
+}
+
+async function renderConfigProbe(
+  data: Record<string, unknown>,
+): Promise<{ cfg: () => ModelListInput; setup: TestRendererSetup }> {
+  let settle: (value: unknown) => void = () => {};
+  const pending = new Promise<unknown>((resolve) => {
+    settle = resolve;
+  });
+  const client = { request: () => pending } as unknown as RpcClient;
+  const control: ConfigControl = { current: null };
+  const setup = await testRender(<ModelConfigProbe client={client} control={control} />, {});
+  await act(async () => {
+    settle(data);
+    await setup.flush();
+  });
+  return { cfg: () => control.current!, setup };
+}
+
+function markerCount(frame: string): number {
+  return (frame.match(/▶/g) ?? []).length;
+}
 
 describe("providersFromStatus", () => {
   it("tags entries with their provider id", () => {
@@ -60,6 +108,22 @@ describe("renderModelList", () => {
     expect(lines[1]).toBe("▶ opencode-go/b");
   });
 
+  it("marks only the picked row when two providers serve the same model id", () => {
+    const out = renderModelList({
+      default_model: "dup",
+      providers: DUP_PROVIDERS,
+      selected: { name: "dup", provider: "zzz" },
+    });
+    expect(out.match(/▶/g)).toHaveLength(1);
+    expect(out.split("\n").slice(0, 2)).toEqual(["  dup", "▶ dup"]);
+  });
+
+  it("marks no row when the default name is served by several providers", () => {
+    const out = renderModelList({ default_model: "dup", providers: DUP_PROVIDERS });
+    expect(out).not.toContain("▶");
+    expect(out.split("\n").slice(0, 2)).toEqual(["  dup", "  dup"]);
+  });
+
   it("hint text no longer mentions restarting the kernel", () => {
     const out = renderModelList({ default_model: "a", providers: [{ name: "a" }] });
     expect(out).not.toContain("重启内核生效");
@@ -90,6 +154,47 @@ describe("ModelSelector", () => {
     act(() => setup.renderer.destroy());
   });
 
+  it("submits the selected provider entry when two providers serve the same model id", async () => {
+    const onSelect = mock(() => {});
+    const setup = await testRender(
+      <ModelSelector
+        default_model="dup"
+        providers={DUP_PROVIDERS}
+        selected={{ name: "dup", provider: "zzz" }}
+        onSelect={onSelect}
+      />,
+      {},
+    );
+    await act(async () => {
+      await setup.flush();
+    });
+    expect(markerCount(setup.captureCharFrame())).toBe(1);
+    await act(async () => {
+      setup.mockInput.pressEnter();
+      await setup.flush();
+    });
+    expect(onSelect).toHaveBeenCalledWith({ name: "dup", provider: "zzz" });
+    act(() => setup.renderer.destroy());
+  });
+
+  it("marks no row and keeps the cursor on the first entry for an ambiguous default", async () => {
+    const onSelect = mock(() => {});
+    const setup = await testRender(
+      <ModelSelector default_model="dup" providers={DUP_PROVIDERS} onSelect={onSelect} />,
+      {},
+    );
+    await act(async () => {
+      await setup.flush();
+    });
+    expect(markerCount(setup.captureCharFrame())).toBe(0);
+    await act(async () => {
+      setup.mockInput.pressEnter();
+      await setup.flush();
+    });
+    expect(onSelect).toHaveBeenCalledWith({ name: "dup", provider: "aaa" });
+    act(() => setup.renderer.destroy());
+  });
+
   it("starts the highlight on the selected entry and moves back with k", async () => {
     const onSelect = mock(() => {});
     const setup = await testRender(
@@ -110,6 +215,40 @@ describe("ModelSelector", () => {
       await setup.flush();
     });
     expect(onSelect).toHaveBeenCalledWith({ name: "b" });
+    act(() => setup.renderer.destroy());
+  });
+});
+
+describe("useModelConfig", () => {
+  it("accepts kernel providers when default_model is absent", async () => {
+    const { cfg, setup } = await renderConfigProbe({
+      providers: [{ id: "opencode-go", models: ["opencode-go/kimi-k3"] }],
+    });
+    expect(cfg().providers).toEqual([{ name: "opencode-go/kimi-k3", provider: "opencode-go" }]);
+    expect(cfg().default_model).toBe("");
+    act(() => setup.renderer.destroy());
+  });
+
+  it("accepts kernel providers when default_model is empty", async () => {
+    const { cfg, setup } = await renderConfigProbe({
+      default_model: "",
+      providers: [
+        { id: "deepseek", models: ["deepseek-chat"] },
+        { id: "opencode-go", models: ["opencode-go/kimi-k3"] },
+      ],
+    });
+    expect(cfg().providers).toEqual([
+      { name: "deepseek-chat", provider: "deepseek" },
+      { name: "opencode-go/kimi-k3", provider: "opencode-go" },
+    ]);
+    expect(cfg().default_model).toBe("");
+    act(() => setup.renderer.destroy());
+  });
+
+  it("keeps the static list when the kernel reports no models at all", async () => {
+    const { cfg, setup } = await renderConfigProbe({ default_model: "deepseek-chat" });
+    expect(cfg().providers).toEqual(MODEL_CONFIG.providers.map(({ name }) => ({ name })));
+    expect(cfg().default_model).toBe("deepseek-chat");
     act(() => setup.renderer.destroy());
   });
 });
