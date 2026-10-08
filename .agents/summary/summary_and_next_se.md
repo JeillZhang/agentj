@@ -10,7 +10,7 @@
 > 当前功能：**v0.29.0 Web/TUI 链接 opencode-go API Key（后端部分）**
 > ——来源：设计 `docs/superpowers/specs/2026-10-08-agentj-ui-opencode-go-api-key-link-design.md`
 > + 实现计划 `docs/superpowers/plans/2026-10-08-agentj-ui-opencode-go-api-key-link-plan.md`
-> （T0–T12 / T21 / T23）。
+> （T0–T12 / T21–T22 / T23 + Phase-5 评审修复）。
 > 后端范围：`agentj-protocol`（6 个 wire 类型 + 2 方法 + 6 schemas）、`agentj-core`
 > （`ProviderRegistry::remove`）、`agentj-ipc`（trait 7 方法 + 2 dispatch 臂）、`agentj-cli`
 > （`set_api_key` / `clear_credential` + 运行期激活 helper + 内置条目 + 设备码激活）、
@@ -18,7 +18,7 @@
 > `PROTOCOL_VERSION` 0.17.0 → **0.18.0**（26 → **28** 方法 / 72 → **78** schemas）；
 > 工作区 0.28.0 → **0.29.0**。前端部分见 `summary_and_next_fe.md`。
 
-## v0.29.0（Web/TUI 链接 opencode-go API Key，后端部分）✅（T0–T12 / T21 / T23）
+## v0.29.0（Web/TUI 链接 opencode-go API Key，后端部分）✅（T0–T12 / T21–T22 / T23 + 评审修复）
 
 - ✅ **`agentj-protocol`（T0/T1/T2）**：新增 6 个 wire 类型（`AuthSetApiKeyParams` /
   `AuthSetApiKeyResult` / `ApiKeyOutcome`，含 `#[serde(other)]` 的 `Unknown` 向前兼容 /
@@ -35,7 +35,7 @@
 - ✅ **`agentj-cli`（T5/T6）**：有效 provider 列表 = `config.model.providers` ∪ 内置
   `opencode-go` 默认条目（`base_url = https://opencode.ai/zen/go`、无 `api_key_env`；
   显式条目优先、不写用户 TOML），`build_providers` 与 `CliProviderService` 共用同一函数；
-  运行期激活 helper = `build_go_provider`（api_key → `RefreshingProvider::static`，
+  运行期激活 helper = `build_opencode_go`（api_key → `RefreshingProvider::static`，
   OAuth → `RefreshingProvider::oauth`）+ 替换 `registry.register` / `remove` + 失效该 provider
   的模型与用量缓存。
 - ✅ **`agentj-cli`（T7/T8/T9/T10）**：`auth/setApiKey` 一次 `GET {console}/api/v2/config`
@@ -56,9 +56,16 @@
   `entitlement` / 换入瞬间进行中轮次可能用旧凭据的风险说明）；§3.4 标注复用既有错误码 +
   `-32603 reason:"activation_failed"`；§10 / §11.3 记 `@since 0.18.0`（0.17.0 → 0.18.0）；
   新建 `docs/changelog/v0.29.md` + 索引行。
-- ✅ **版本元数据（T21）**：`Cargo.toml` / `Cargo.lock` 与 `scripts/check-version.sh` 同步
-  **0.29.0**（`PROTOCOL_VERSION` **0.18.0**）；desktop 三清单与前端 lockfile 见
-  `summary_and_next_fe.md`（T22 待实施）。
+- ✅ **版本元数据（T21/T22）**：`Cargo.toml` / `Cargo.lock` 与 `scripts/check-version.sh` 同步
+  **0.29.0**（`PROTOCOL_VERSION` **0.18.0**）；desktop 三清单与前端 lockfile 亦同步
+  **0.29.0**（详见 `summary_and_next_fe.md`），`check-version.sh` = `version-ok`。
+- ✅ **评审修复（Phase 5，`fix:` 提交）**：整体分支持续只读评审得 1 HIGH / 1 MEDIUM / 4 LOW，
+  全部闭合：**H1** `clear_credential` 增加 `require_kind("api_key")` 守卫——已知非 opencode-go
+  provider 返回 `-32602 unsupported_provider` 且**凭据与注册表均不被触碰**（此前会把无关 provider
+  注销或以 opencode-go 工厂误重建）；**L1** `deactivate_opencode_go` 无密钥分支补启动同款
+  `tracing::warn!`（D7）；**L2/L4** `authorized_login` 与 `save_link` 失效对应 provider 的
+  `model_cache` / `usage_cache`（协议 §8.28「两处缓存」）；`docs/specs/ipc-protocol.md`§8.29
+  能力声明由「任意已注册 provider」收窄为「仅 opencode-go」。复审 **VERDICT: PASS**。
 
 ## 验证结果（当前树实测，2026-10-08）
 
@@ -66,15 +73,17 @@
 |---|---|
 | `cargo fmt --check` | clean |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 0 warnings |
-| `cargo test --workspace -- --skip permission_request_notified_and_timeout_denies` | 848 passed / 0 failed（48 suites） |
+| `cargo test --workspace -- --skip permission_request_notified_and_timeout_denies` | **851** passed / 0 failed（48 suites） |
 | `cargo test -p agentj-protocol -- drift` | 2 passed |
 | `schemas/*.json` | **78** |
 | `protocol/methods.json` | **28** 方法 / `protocol_version` **0.18.0** |
 | `crates/agentj-protocol` `PROTOCOL_VERSION` | **0.18.0** |
-| `./scripts/check-version.sh` | ⏳ 未通过：0.29.0 / 0.18.0 已在 Rust + SDK 就位，desktop 三清单仍 0.28.0（T22，前端侧） |
+| `./scripts/check-version.sh` | **version-ok（0.29.0 / 0.18.0）** |
+| `node agentj-ui/apps/desktop/check-desktop-ui.mjs` | desktop-ui-ok |
+| `git diff main...HEAD -- schemas/KernelStatusResult.json` | 空（`kernel/status` 逐字不变） |
 
-> 本表在 Phase 8 收尾（`docs: auto-sync ...`）于最终树重跑；T22 / T25 落地后 `check-version.sh`
-> 应转为 `version-ok`（0.29.0 / 0.18.0）。
+> 本表于 Phase 8 收尾在最终树重跑；前端侧（SDK 55 · Web 652 · TUI 177 · 构建 clean）见
+> `summary_and_next_fe.md`。
 
 ## 遗留问题 / 已知限制（后端）
 
@@ -105,7 +114,6 @@
 
 ## 下一步
 
-- 收尾 v0.29.0：T22（desktop 三清单 + lockfile，前端侧）与 T25（AGENTS.md / README.md 基线
-  0.29.0 / 0.18.0 / 28 方法 / 78 schemas），随后重跑本文件「验证结果」表并确认
-  `./scripts/check-version.sh` = `version-ok`。
+- v0.29.0 后端 + 评审修复已落地，全门禁绿（`version-ok`）；自动验收（`jskill-test-acceptance`）
+  通过后由验收流程在 `origin` 创建 PR，用户负责合并。
 - 后端候选：上表 ①②④⑥；或前端跟进见 `summary_and_next_fe.md`。

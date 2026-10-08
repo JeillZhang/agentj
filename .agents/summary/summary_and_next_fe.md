@@ -11,14 +11,14 @@
 > 当前功能：**v0.29.0 Web/TUI 链接 opencode-go API Key（前端部分）**
 > ——来源：设计 `docs/superpowers/specs/2026-10-08-agentj-ui-opencode-go-api-key-link-design.md`
 > + 实现计划 `docs/superpowers/plans/2026-10-08-agentj-ui-opencode-go-api-key-link-plan.md`
-> （T13–T22 / T24–T25）。
+> （T13–T22 / T24–T25 + Phase-5 评审修复）。
 > 前端范围：`packages/protocol`（78 schemas 类型重生成）+ `packages/sdk`（METHODS 28 + 版本常量）
 > + `apps/web`（订阅面板「链接方式」区块）+ `apps/tui`（订阅 overlay 链接模式）
 > + `apps/desktop`（版本清单）。
 > 工作区 0.28.0 → **0.29.0**；`PROTOCOL_VERSION` 0.17.0 → **0.18.0**。后端部分见
 > `summary_and_next_se.md`。
 
-## v0.29.0（Web/TUI 链接 opencode-go API Key，前端部分）🟡（T13–T16 / T20 完成）
+## v0.29.0（Web/TUI 链接 opencode-go API Key，前端部分）✅（T13–T22 / T24–T25 + 评审修复）
 
 - ✅ **`packages/protocol`**：`schemas/*.json` 72 → **78**（`AuthSetApiKeyParams` /
   `AuthSetApiKeyResult` / `ApiKeyOutcome` / `ApiKeyLinkError` / `AuthClearCredentialParams` /
@@ -36,14 +36,21 @@
   `Enter` 提交、`Esc` 取消（链接模式下 Esc 取消输入而非关闭 overlay）、`c` 解除链接；
   三态文案与 env 优先提示、「只保存在所连接内核主机」说明；
   overlay 打开时全局键盘早退与 Esc 关闭不回归；`subscription.test.tsx` 覆盖。
-- ⏳ **剩余步骤（同阶段内闭合，Phase 8 收尾前必须落地）**：
-  - **T17 / T18 / T19**：`App` 合并 `auth/setApiKey` 返回的账号目录并自动选中首个 opencode-go
-    条目、`SettingsDialog` 透传 `onLinked` 回调、`TopbarMenu` 的 RPC mock 补齐。当前
-    `SubscriptionPanel` 的 `onLinked` **尚无人消费**——目录覆盖与自动选中未接通，
-    `docs/guide/subscription.md` 已按设计 D10 的目标行为描述。
-  - **T22**：`apps/desktop` 三清单（`package.json` / `tauri.conf.json` / `src-tauri/Cargo.toml`）
-    与 lockfile 版本元数据 → 0.29.0（`check-version.sh` 的 desktop 段仍停在 0.28.0）。
-  - **T25**：`AGENTS.md` / `README.md` 基线（0.29.0 / 0.18.0 / 28 方法 / 78 schemas）。
+- ✅ **Web · 目录合并与自动选中（T17–T19）**：`App` 把 `auth/setApiKey` 返回的账号目录
+  作为**覆盖层**合入 composer 列表（按 provider 原位替换、不追加重复项），并在**用户未选中任何
+  模型**时自动选中首个账号条目（显式选择其他 provider 时保留）；`TopbarMenu` → `SettingsDialog`
+  → `SubscriptionPanel` 贯通 `onModelsLinked`；`AuthSetApiKeyResult` / 目录 `ModelEntry` 统一从
+  `@agentj/protocol` 导入（`packages/protocol` 新增 `exports` 映射、`apps/web` 声明该 workspace 依赖）；
+  `App.test.tsx` / `settingsDialog.test.tsx` / `topbarMenu.test.tsx` 覆盖合并、自动选中、显式选择保留
+  与回调透传。
+- ✅ **版本清单（T22）+ 基线（T25）**：`apps/desktop` 三清单（`package.json` /
+  `tauri.conf.json` / `src-tauri/Cargo.toml`）与 lockfile 版本元数据 → **0.29.0**，
+  `check-version.sh` = `version-ok`；`AGENTS.md` / `README.md` 基线 → 0.29.0 / 0.18.0 /
+  28 方法 / 78 schemas。
+- ✅ **评审修复（Phase 5，`fix:` 提交）**：**M1** 解除链接（`onCleared` → `onModelsCleared` →
+  `App.dropLinkedCatalog`）立即丢弃已链接目录并回退非内核提供的选中项，`App.test.tsx` 断言
+  链接 id 消失；**L3** `SubscriptionPanel` 不再本地重声明协议类型（改用 `@agentj/protocol`
+  生成类型，不再丢失 `source`）。复审 **VERDICT: PASS**。
 
 ## 验证结果（当前树实测，2026-10-08）
 
@@ -51,14 +58,13 @@
 |---|---|
 | `npm --prefix agentj-ui run build --workspace=@agentj/protocol` | clean（`tsc --noEmit`） |
 | `npm --prefix agentj-ui test --workspace=@agentj/sdk` | 55 passed（6 files） |
-| `npm --prefix agentj-ui test --workspace=@agentj/web` | 644 passed（53 files） |
+| `npm --prefix agentj-ui test --workspace=@agentj/web` | **652** passed（53 files） |
 | `npm --prefix agentj-ui run build --workspace=@agentj/web` | clean（仅 chunk > 500 kB 提示） |
 | `bun --cwd agentj-ui/apps/tui test` | 177 passed（21 files） |
 | `node agentj-ui/apps/desktop/check-desktop-ui.mjs` | desktop-ui-ok |
-| `./scripts/check-version.sh` | ⏳ 未通过：0.29.0 / 0.18.0 已就位，desktop 三清单仍 0.28.0（待 T22） |
+| `./scripts/check-version.sh` | **version-ok（0.29.0 / 0.18.0）** |
 
-> 本表在 Phase 8 收尾（`docs: auto-sync ...`）于最终树重跑；T17–T19 / T22 / T25 落地后数字
-> 会再变，以收尾轮的实测为准。
+> 本表于 Phase 8 收尾在最终树重跑并全部通过；后端侧（cargo 851）见 `summary_and_next_se.md`。
 
 ## 人工验收（真实 Go 订阅 Key；**非 CI 跟踪项**）
 
@@ -84,7 +90,9 @@
 
 ## 下一步
 
-- 收尾 v0.29.0 前端：T17–T19（目录覆盖 / 自动选中 / 回调透传 / mock 补齐）→ T22（desktop
-  三清单 + lockfile）→ T25（AGENTS.md / README.md 基线），随后重跑本文件「验证结果」表。
-- 前端候选：③ Web 接入服务端搜索；或订阅状态常驻指示（需先定义新鲜度语义，见设计 D10 的非目标）。
+- v0.29.0 前端（含 M1/L3 评审修复）已落地，全门禁绿（SDK 55 · Web 652 · TUI 177 ·
+  `version-ok` · `desktop-ui-ok`）；自动验收（`jskill-test-acceptance`）通过后由验收流程在
+  `origin` 创建 PR，用户负责合并。
+- 前端候选：③ Web 接入服务端搜索；或订阅状态常驻指示（需先定义新鲜度语义，见设计 D10 的非目标）；
+  或清理 `TopbarMenu` / `SettingsDialog` 测试里的重复 stub helper。
 - 后端候选见 `summary_and_next_se.md`。
