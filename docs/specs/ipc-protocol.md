@@ -2,7 +2,7 @@
 
 > 本文档是 AgentJ 内核对外暴露的统一 UI 接口协议（IPC）的**人类可读权威规范**。
 > 机器可读工件（`schemas/*.json` 与 `protocol/methods.json`）是本规范的机器事实来源，见 [机器可读模型](#10-机器可读模型)。
-> 协议当前版本：`0.17.0`。
+> 协议当前版本：`0.18.0`。
 
 ## 1. 范围与一致性
 
@@ -10,7 +10,7 @@
 
 - **传输层**：每种传输各自的帧格式（stdio / TCP 使用 NDJSON，WebSocket 使用原生帧）。
 - **基础协议**：传输无关的 JSON-RPC 2.0 消息信封、错误对象与错误码。
-- **方法面**：本规范支持的 26 个方法（21 个既有 + 5 个订阅方法；注册表 `protocol/methods.json` 收录全部方法，含 `session/subscribe` / `session/unsubscribe`（见 8.11 / 8.12）、`session/list`（8.18）、`session/history`（8.19）、`file/list`（8.20）、`$/askQuestion`（8.21）、`question/respond`（8.22）、`model/list`（8.23）、`auth/status`（8.24）、`provider/usage`（8.25）、`auth/deviceStart`（8.26）、`auth/devicePoll`（8.27））及其参数 / 结果结构。
+- **方法面**：本规范支持的 28 个方法（21 个既有 + 5 个订阅方法 + 2 个凭据链接方法；注册表 `protocol/methods.json` 收录全部方法，含 `session/subscribe` / `session/unsubscribe`（见 8.11 / 8.12）、`session/list`（8.18）、`session/history`（8.19）、`file/list`（8.20）、`$/askQuestion`（8.21）、`question/respond`（8.22）、`model/list`（8.23）、`auth/status`（8.24）、`provider/usage`（8.25）、`auth/deviceStart`（8.26）、`auth/devicePoll`（8.27）、`auth/setApiKey`（8.28）、`auth/clearCredential`（8.29））及其参数 / 结果结构。
 
 本文档适用于所有传输。任何传输都必须遵循基础协议与方法面的全部规则。
 
@@ -184,6 +184,8 @@ WebSocket 与 raw TCP 同端口共存，通过连接分类器按首字节区分 
 - **`provider_service` handle 未注入**（如 `run --attach` 连接远端内核）→ `-32603 Internal error` + `error.data = { "reason": "provider_service_unavailable" }`。
 
 上游 / 凭据失败（未登录、401、403、5xx、网络）是**领域失败**，**不占错误码**：以**成功响应**的结果数据表达（`ProviderUsageResult.error.kind`、`AuthDevicePollResult.state`），使客户端能同时拿到「上次快照 + 失败原因」（`stale: true`，见 §8.25 / §8.27）。
+
+协议扩展（`0.18.0`）同样**不新增错误码**：`auth/setApiKey` / `auth/clearCredential` 复用既有码——`-32602 InvalidParams` 的三种 `reason`（`invalid_params` / `unknown_provider` / `unsupported_provider`，其中不支持该能力的 `capability` 为 `"api_key"`）与 `-32603 Internal error` 的 `provider_service_unavailable`，语义与 0.17.0 逐字相同；`-32603` 另新增一个 `reason`：**凭据已落盘但运行期注册 / 注销失败** → `-32603` + `error.data = { "reason": "activation_failed", "detail": "<自产原因>" }`（凭据保留在盘上，重试有意义）。链接的三种校验结果（`verified` / `unverified` / `rejected`）与「无凭据可清除」同样是**领域失败即结果数据**，不占错误码（见 §8.28 / §8.29）。
 
 错误码是**稳定的协议契约**，一旦发布不可更改含义。新增错误码 SHOULD 从 `-32800` 段向下或 `-32000 … -32099` 段内加性分配。
 
@@ -392,7 +394,7 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 
 ### 8.1 方法总表
 
-与 `protocol/methods.json` 一致（注册表收录全部 26 个方法）：
+与 `protocol/methods.json` 一致（注册表收录全部 28 个方法）：
 
 | 方法 | 类型 | 方向 | params | result | 说明 |
 |------|------|------|--------|--------|------|
@@ -422,6 +424,8 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 | `provider/usage` | request | C→S | ProviderUsageParams | ProviderUsageResult | 三窗口用量快照（`@since 0.17.0`，见 8.25） |
 | `auth/deviceStart` | request | C→S | AuthDeviceStartParams | AuthDeviceStartResult | 设备码授权起点（`@since 0.17.0`，见 8.26） |
 | `auth/devicePoll` | request | C→S | AuthDevicePollParams | AuthDevicePollResult | 设备码轮询状态（`@since 0.17.0`，见 8.27） |
+| `auth/setApiKey` | request | C→S | AuthSetApiKeyParams | AuthSetApiKeyResult | 链接 API Key 并触发运行期激活（`@since 0.18.0`，见 8.28） |
+| `auth/clearCredential` | request | C→S | AuthClearCredentialParams | AuthClearCredentialResult | 解除已存凭据并收敛注册（`@since 0.18.0`，见 8.29） |
 
 ### 8.2 initialize（请求，见 §4.1）
 
@@ -1085,6 +1089,110 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 - **部分结果**：无（客户端按 `interval` 自行循环调用）。
 - **error.data**：未知 provider / 非 opencode-go → `-32602`（同上两种 `reason`）；`device_code` 缺失 / 类型非法 → `-32602` + `{ "reason": "invalid_params", "detail": "<原文>" }`；上游不可达 / 非 200 且无错误码 / 响应畸形 → `-32603` + `{ "reason": "<上游或网络错误原文>" }`（未识别错误码不走此通道，而是 `state:"error"`）；落盘失败 → `-32603` + `{ "reason": "<原文>" }`；handle 未注入 → `-32603` + `{ "reason": "provider_service_unavailable" }`。
 
+### 8.28 auth/setApiKey（请求，`@since 0.18.0`）
+
+- **能力声明**：凭据链接能力，**仅 opencode-go** 支持（不支持时 `capability` 为 `api_key`）。需注入 `provider_service` handle；未注入 → `-32603` + `data{reason:"provider_service_unavailable"}`。
+- **请求**：`AuthSetApiKeyParams`。
+
+```json
+{ "jsonrpc": "2.0", "id": 17, "method": "auth/setApiKey", "params": {
+  "provider": "opencode-go",
+  "api_key": "sk-…",
+  "label": "web"
+} }
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `provider` | string | 否 | provider 名；省略 / `null` = 内核配置的默认 provider |
+| `api_key` | string | 是 | 待链接的 API Key；`trim()` 后为空 → `-32602` + `reason:"invalid_params"`，且**不发任何上游请求、不写盘** |
+| `label` | string | 否 | 用户自填标签，随凭据一起落盘（`auth.json` 的 api_key 条目 `label`）；不参与解析优先级 |
+
+- **响应**：`AuthSetApiKeyResult`（**三种结果均为成功响应**——见下方的三态语义）。
+
+```json
+{ "jsonrpc": "2.0", "id": 17, "result": {
+  "provider": "opencode-go",
+  "saved": true,
+  "outcome": "verified",
+  "credential": { "kind": "api_key", "source": "file", "key_hint": "…1234", "expiring_soon": false },
+  "source": "account",
+  "effective_source": "file",
+  "fetched_at": 1700000000,
+  "models": [ { "id": "opencode-go/kimi-k3", "verified": true, "format": "anthropic" } ]
+} }
+```
+
+```json
+{ "jsonrpc": "2.0", "id": 17, "result": {
+  "provider": "opencode-go",
+  "saved": false,
+  "outcome": "rejected",
+  "error": { "kind": "unauthorized", "message": "API Key 无效或已被撤销（未保存）：请在 opencode.ai 控制台重新复制" },
+  "effective_source": "file",
+  "fetched_at": 1700000000,
+  "models": []
+} }
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `provider` | string | 是 | 实际链接的 provider 名 |
+| `saved` | boolean | 是 | 凭据是否已写入 `auth.json`（`rejected` 恒 `false`，`verified` / `unverified` 恒 `true`） |
+| `outcome` | ApiKeyOutcome | 是 | `verified` \| `unverified` \| `rejected`（见 §9.1） |
+| `error` | ApiKeyLinkError | 否 | 仅 `rejected`：`{ kind, message }`，见下 |
+| `credential` | CredentialInfo | 否 | 仅已落盘：脱敏投影，字段同 §8.24；`source` = `effective_source`、`key_hint` = `redact()` 输出（形如 `…1234`）、`expires_at` / `org_id` 恒缺省 |
+| `source` | ModelSource | 否 | 仅已落盘：本次目录层级 `account` \| `live` \| `overlay`（`rejected` 时省略） |
+| `effective_source` | CredentialSource | 是 | **真正生效**的凭据来源（`file` / `env`）；`api_key_env` 指向的变量非空时为 `env`，此时刚存的 key **暂不生效** |
+| `fetched_at` | integer | 是 | 本次链接的时刻（epoch **秒**，int64） |
+| `models` | ModelEntry[] | 是 | 与本次目录一致的条目（`rejected` 时为空数组；条目结构同 §8.23） |
+
+- **三态语义（领域失败即结果数据，不新增错误码）**——一次 `GET {console}/api/v2/config` 调用同时决定校验与目录：
+  1. **`verified`**：`200` 且解析出账号级 opencode-go 目录 → 落盘 + 运行期激活 + 播种 60s 模型缓存；`source:"account"`，`models` 为账号 id 逐条映射（命中 overlay 沿用其 `format` / `verified`，未命中合成为 `openai-compat` + `verified:false`——**绝不按名字猜路由**）。
+  2. **`rejected`（401 / 403）**：**不落盘、不注册**，`saved:false`；`error.kind` 为 `unauthorized`（401）或 `entitlement`（403），`error.message` 是**内核自产**文案，**绝不回显上游响应体**（含 `_tag` 等）。`effective_source` 保持 `file`——失败的尝试不改动解析优先级。
+  3. **`unverified`（超时 / 网络不可达 / 5xx / 畸形响应 / 200 但目录解析不出 go 模型）**：**落盘**并标注未校验，`saved:true`；目录退到 live ∩ overlay（live 也失败 → overlay 全集，**绝不编造目录**），`source` 为 `live` / `overlay`。
+- **`ApiKeyLinkError.kind` 是普通字符串**（`String`，不是值枚举；先例 `ProviderUsageError.kind`）：本期内核只产出 `unauthorized` / `entitlement` 两个取值，客户端 MUST 容忍未知取值（按 §9.2 处理），`message` 恒为内核自产明文。
+- **覆盖语义**：同一 provider 再次链接 = **替换**既有凭据（`AuthStore::set`），不新增多账号概念、不新增 wire 字段；已有 OAuth 凭据时同样替换（提交前的提示由 UI 负责）。
+- **运行期激活**：落盘后立刻重建该 provider 实例并**替换注册**（`ProviderRegistry` 内部为 `RwLock`，`register` 为单次写），同时失效该 provider 的两处进程内缓存，使紧随其后的 `session/run` / `model/list` / `provider/usage` / `auth/status` 立即可用；`auth/devicePoll` 的 `authorized` 分支出走**同一激活路径**。
+- **风险说明（时序）**：替换注册与并发 `session/run` 之间**没有全局互斥**——换入瞬间**进行中的那一轮 run 可能仍使用旧凭据，新凭据从下一轮生效**。
+- **不泄露（no-secret 不变式）**：结果只含 `redact()` 投影出的 `key_hint`，完整 key **绝不**出现在结果、日志或错误文案中（`redact()` 是唯一投影方式）；结果中不存在 `api_key` / `key` / `access` 字段。
+- **写入目标**：凭据写入**当前连接内核所在机器**的 `auth.json`（目录 `0700` / 文件 `0600` / 原子写）；`--attach` / 远程 `serve` 场景下即远端内核主机，非回环 `serve --host` 必须配 `--token`。
+- **部分结果**：无（一次性快照 + 目录复用窗口；本次结果已播种 60s 缓存，带 `refresh` 的 `model/list` 仍强制重拉）。
+- **error.data**：未知 provider → `-32602` + `{ "field": "provider", "reason": "unknown_provider", "registered": ["<名>", …] }`；provider 已知但非 opencode-go → `-32602` + `{ "field": "provider", "reason": "unsupported_provider", "capability": "api_key" }`；`api_key` 为空 / 全空白 → `-32602` + `{ "field": "api_key", "reason": "invalid_params" }`；params 结构畸形（如 `api_key` 为数字 / 对象）→ `-32602` + `{ "reason": "invalid_params", "detail": "<原文>" }`；凭据落盘失败 → `-32603` + `{ "reason": "<原文>" }`；凭据已落盘但运行期激活失败 → `-32603` + `{ "reason": "activation_failed", "detail": "<自产原因>" }`（可重试）；handle 未注入 → `-32603` + `{ "reason": "provider_service_unavailable" }`。
+
+### 8.29 auth/clearCredential（请求，`@since 0.18.0`）
+
+- **能力声明**：凭据解除能力，对**任意已注册 provider** 有效（不限于 opencode-go）。需注入 `provider_service` handle；未注入 → `-32603` + `data{reason:"provider_service_unavailable"}`。
+- **请求**：`AuthClearCredentialParams`。
+
+```json
+{ "jsonrpc": "2.0", "id": 18, "method": "auth/clearCredential", "params": { "provider": "opencode-go" } }
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `provider` | string | 否 | provider 名；省略 / `null` = 内核配置的默认 provider；未知 → `-32602` + `reason:"unknown_provider"` |
+
+- **响应**：`AuthClearCredentialResult`（**没有可清除的条目也是成功响应**）。
+
+```json
+{ "jsonrpc": "2.0", "id": 18, "result": { "provider": "opencode-go", "cleared": true } }
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `provider` | string | 是 | 实际解除的 provider 名 |
+| `cleared` | boolean | 是 | 是否真的移除了已存条目；无条目 → `false`（仍是成功响应，不是错误） |
+
+- **收敛语义**：移除 `auth.json` 中该 provider 的条目（文件变空即删文件，沿用既有行为）+ 失效该 provider 的模型 / 用量两处进程内缓存，然后**重新解析剩余凭据**并收敛注册表：
+  - 仍有 key（`api_key_env` 非空）→ 按该 key 重建并替换注册（订阅仍可用，只是不再用文件凭据）；
+  - 无任何 key → **注销**该 provider（与启动期「无密钥即跳过」严格一致），此后 `auth/status` 转 `authenticated:false`、`model/list` 退到 live ∩ overlay；
+  - 绝不保留持有旧密钥的实例（「已解除链接但仍在用旧 key」是不可接受状态）。
+- **风险说明（时序）**：与 §8.28 相同——注销 / 替换注册没有全局互斥，**进行中的一轮 run 可能仍持有旧实例**，下一轮生效。
+- **不泄露（no-secret 不变式）**：结果只含 `provider` / `cleared`，不含任何凭据字段（含 `key_hint` 也不返回）。
+- **部分结果**：无。
+- **error.data**：未知 provider → `-32602` + `{ "field": "provider", "reason": "unknown_provider", "registered": ["<名>", …] }`；params 结构畸形 → `-32602` + `{ "reason": "invalid_params", "detail": "<原文>" }`；凭据文件不可读 / 权限不合规 / 落盘失败 → `-32603` + `{ "reason": "<原文>" }`；收敛（注销 / 重建注册）失败 → `-32603` + `{ "reason": "activation_failed", "detail": "<自产原因>" }`；handle 未注入 → `-32603` + `{ "reason": "provider_service_unavailable" }`。
+
 ## 9. 值枚举与未知值宽容
 
 ### 9.1 值枚举
@@ -1107,8 +1215,9 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 | `UsageWindowKind` | `rolling` \| `weekly` \| `monthly` | 用量窗口种类（`@since 0.17.0`，见 8.25） |
 | `UsageWindowStatus` | `ok` \| `rate-limited` | 用量窗口状态（`@since 0.17.0`，见 8.25） |
 | `DeviceAuthState` | `pending` \| `slow_down` \| `authorized` \| `expired` \| `denied` \| `error` | 设备码轮询状态（`@since 0.17.0`，见 8.27） |
+| `ApiKeyOutcome` | `verified` \| `unverified` \| `rejected` | `auth/setApiKey` 链接结果（`@since 0.18.0`，见 8.28） |
 
-上述枚举均带 `Unknown` 变体容忍前向值（`FileKind` / `TodoStatus` / `FileChangeKind` / `FileChangeSource` 与 0.17.0 新增的 `ModelSource` / `CredentialKind` / `CredentialSource` / `UsageWindowKind` / `UsageWindowStatus` / `DeviceAuthState` 由 `serde(other)` + `schemars(skip)` 实现，schema 只列已知值；`git_status` 的 `M`/`A`/`U`/`D` 为 `FileEntry` 内联的固定字母集合，见 8.20）。未知取值反序列化为 `Unknown`，**重序列化一律为规范字面量 `"unknown"`**（不保留原始字符串）——因此仅适用于「写回不敏感」的字段。
+上述枚举均带 `Unknown` 变体容忍前向值（`FileKind` / `TodoStatus` / `FileChangeKind` / `FileChangeSource` 与 0.17.0 新增的 `ModelSource` / `CredentialKind` / `CredentialSource` / `UsageWindowKind` / `UsageWindowStatus` / `DeviceAuthState` 与 0.18.0 新增的 `ApiKeyOutcome` 由 `serde(other)` + `schemars(skip)` 实现，schema 只列已知值；`git_status` 的 `M`/`A`/`U`/`D` 为 `FileEntry` 内联的固定字母集合，见 8.20）。未知取值反序列化为 `Unknown`，**重序列化一律为规范字面量 `"unknown"`**（不保留原始字符串）——因此仅适用于「写回不敏感」的字段。
 
 ### 9.2 未知值宽容规则
 
@@ -1128,7 +1237,7 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 
 ## 10. 机器可读模型
 
-- **`protocol/methods.json`**：方法注册表，捕获 JSON Schema 表达不了的方法语义（method 字符串 ↔ params/result schema 引用、方向、类型）。当前收录 26 个方法，`protocol_version` 为 `0.17.0`。
+- **`protocol/methods.json`**：方法注册表，捕获 JSON Schema 表达不了的方法语义（method 字符串 ↔ params/result schema 引用、方向、类型）。当前收录 28 个方法，`protocol_version` 为 `0.18.0`。
 
 对应关系：
 
@@ -1160,8 +1269,10 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 | `provider/usage` | `ProviderUsageParams.json` | `ProviderUsageResult.json` |
 | `auth/deviceStart` | `AuthDeviceStartParams.json` | `AuthDeviceStartResult.json` |
 | `auth/devicePoll` | `AuthDevicePollParams.json` | `AuthDevicePollResult.json` |
+| `auth/setApiKey` | `AuthSetApiKeyParams.json` | `AuthSetApiKeyResult.json` |
+| `auth/clearCredential` | `AuthClearCredentialParams.json` | `AuthClearCredentialResult.json` |
 
-信封与公共类型见 `RequestMessage.json`、`NotificationMessage.json`、`ResponseMessage.json`、`ErrorObject.json`、`Id.json`、`ProgressToken.json`、`ProgressValue.json`、`Role.json`、`PermissionDecision.json` 等；协议扩展（0.13.0）新增 / 更新的公共类型见 `SessionNewParams.json`、`SessionSummary.json`、`FileListParams.json`、`FileListResult.json`、`FileEntry.json`、`FileKind.json`、`AskQuestionParams.json`、`AskOption.json`、`QuestionRespondParams.json`、`QuestionRespondResult.json`、`TodoItem.json`、`TodoStatus.json`、`FileChange.json`、`FileChangeKind.json`、`UsageInfo.json`。协议扩展（0.14.0）不新增 schema，仅向既有 schema 追加字段：`FileListParams.json`（`query`）、`FileListResult.json`（`total`）、`SessionNewResult.json` 与 `SessionStatusResult.json`（`project_root`）；协议扩展（0.15.0）新增 `FileChangeSource.json` 一个 schema（`FileChange`/`ProgressValue`/`TrajectoryValue`/`SessionHistoryParams`/`SessionRunResult` 的 `run_id`/`seq`/`source`/`total_bytes` 为加性字段）；协议扩展（0.16.0）不新增 schema，仅向既有 `SessionRunParams.json` 追加 `provider` / `model` 两个加性可选字段；协议扩展（0.17.0）新增 **20 个 schema**（`ModelListParams` / `ModelListResult` / `ModelEntry` / `ModelSource`；`AuthStatusParams` / `AuthStatusResult` / `CredentialInfo` / `CredentialKind` / `CredentialSource`；`ProviderUsageParams` / `ProviderUsageResult` / `ProviderUsageError` / `UsageWindow` / `UsageWindowKind` / `UsageWindowStatus`；`AuthDeviceStartParams` / `AuthDeviceStartResult` / `AuthDevicePollParams` / `AuthDevicePollResult` / `DeviceAuthState`），并新增 `ModelSource` / `CredentialKind` / `CredentialSource` / `UsageWindowKind` / `UsageWindowStatus` / `DeviceAuthState` 六个值枚举（均带 `Unknown` 容忍前向值）；schema 总数 52 → **72**。
+信封与公共类型见 `RequestMessage.json`、`NotificationMessage.json`、`ResponseMessage.json`、`ErrorObject.json`、`Id.json`、`ProgressToken.json`、`ProgressValue.json`、`Role.json`、`PermissionDecision.json` 等；协议扩展（0.13.0）新增 / 更新的公共类型见 `SessionNewParams.json`、`SessionSummary.json`、`FileListParams.json`、`FileListResult.json`、`FileEntry.json`、`FileKind.json`、`AskQuestionParams.json`、`AskOption.json`、`QuestionRespondParams.json`、`QuestionRespondResult.json`、`TodoItem.json`、`TodoStatus.json`、`FileChange.json`、`FileChangeKind.json`、`UsageInfo.json`。协议扩展（0.14.0）不新增 schema，仅向既有 schema 追加字段：`FileListParams.json`（`query`）、`FileListResult.json`（`total`）、`SessionNewResult.json` 与 `SessionStatusResult.json`（`project_root`）；协议扩展（0.15.0）新增 `FileChangeSource.json` 一个 schema（`FileChange`/`ProgressValue`/`TrajectoryValue`/`SessionHistoryParams`/`SessionRunResult` 的 `run_id`/`seq`/`source`/`total_bytes` 为加性字段）；协议扩展（0.16.0）不新增 schema，仅向既有 `SessionRunParams.json` 追加 `provider` / `model` 两个加性可选字段；协议扩展（0.17.0）新增 **20 个 schema**（`ModelListParams` / `ModelListResult` / `ModelEntry` / `ModelSource`；`AuthStatusParams` / `AuthStatusResult` / `CredentialInfo` / `CredentialKind` / `CredentialSource`；`ProviderUsageParams` / `ProviderUsageResult` / `ProviderUsageError` / `UsageWindow` / `UsageWindowKind` / `UsageWindowStatus`；`AuthDeviceStartParams` / `AuthDeviceStartResult` / `AuthDevicePollParams` / `AuthDevicePollResult` / `DeviceAuthState`），并新增 `ModelSource` / `CredentialKind` / `CredentialSource` / `UsageWindowKind` / `UsageWindowStatus` / `DeviceAuthState` 六个值枚举（均带 `Unknown` 容忍前向值）；schema 总数 52 → **72**。协议扩展（0.18.0）新增 **6 个 schema**（`AuthSetApiKeyParams` / `AuthSetApiKeyResult` / `ApiKeyLinkError` / `ApiKeyOutcome`；`AuthClearCredentialParams` / `AuthClearCredentialResult`），并新增 `ApiKeyOutcome` 一个值枚举（带 `Unknown` 容忍前向值，见 §9.1）；schema 总数 72 → **78**。
 
 一致性锚点：Rust 侧 `schemars` 生成 `schemas/*.json` 并提交，契约测试断言实际 wire 输出与 Schema 一致，CI 漂移门禁在生成结果与提交版本不一致时失败。
 
@@ -1169,7 +1280,7 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 
 ### 11.1 版本策略
 
-协议版本遵循语义化版本（semver），规则见 §4.3：major 破坏 / minor 加方法或加性字段 / patch 修 bug。当前版本 `0.17.0`（`protocol/methods.json` 中 `protocol_version` 字段为准）。
+协议版本遵循语义化版本（semver），规则见 §4.3：major 破坏 / minor 加方法或加性字段 / patch 修 bug。当前版本 `0.18.0`（`protocol/methods.json` 中 `protocol_version` 字段为准）。
 
 ### 11.2 命名归一化决策（v0.1.0 记录）
 
@@ -1285,5 +1396,15 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 - **缓存与新鲜度语义**：`model/list` 进程内复用窗口 **60s**、`provider/usage` TTL **300s**（两者的 `refresh:true` 均强制绕过）；警示阈值 `warn_percent` 由 `[model].quota_warn_percent`（默认 80，clamp 1..=100）随结果下发；OAuth access token 生命期 **600s**，由内核在真实请求前自动刷新（`auth.json.lock` 文件锁串行化；refresh token 单次使用），刷新失败以可行动错误失败——以上均不改变 wire 契约（客户端只消费结果字段）。
 - **客户端兼容契约**：未知枚举取值与未知 `error.kind` 字符串 MUST 容忍（不因未知而失败，按 §9.2 处理）；未注入 handle 的内核（如 `run --attach` 连接远端内核）统一 `-32603`，客户端展示「该内核未提供订阅服务」且**不缓存该失败**。
 - 全部为**加性变更（只加不改）**：既有方法、既有字段的语义与 wire 形状零变化，此前客户端零破坏；协议版本 minor 递增 `0.16.0 → 0.17.0`。
+
+#### 0.18.0（API Key 链接：`auth/setApiKey` + `auth/clearCredential`）
+
+- **方法面 26 → 28**：新增 2 个请求方法——`auth/setApiKey`（链接 opencode-go API Key：一次上游调用决定校验三态 `verified` / `unverified` / `rejected`，落盘、运行期激活、播种 60s 模型缓存并返回账号级目录）与 `auth/clearCredential`（移除已存凭据并收敛注册：仍有 env key → 重建，无 key → 注销）；契约见 §8.28 / §8.29；§8.1 方法总表与 §10 映射表补齐至 28 行。
+- **新 schema（6 个）**：`AuthSetApiKeyParams` / `AuthSetApiKeyResult` / `ApiKeyLinkError` / `ApiKeyOutcome` / `AuthClearCredentialParams` / `AuthClearCredentialResult`；新值枚举 `ApiKeyOutcome`（`verified` \| `unverified` \| `rejected`，带 `Unknown`）；schema 总数 72 → **78**。
+- **不新增错误码**（见 §3.4）：复用 `-32602`（`reason` ∈ `invalid_params` / `unknown_provider` / `unsupported_provider`，后者 `capability:"api_key"`）与 `-32603`（`provider_service_unavailable`），并为「凭据已落盘但运行期注册 / 注销失败」新增 `-32603` + `error.data{reason:"activation_failed"}`。
+- **领域失败即结果数据**：401 / 403 以**成功响应**表达（`saved:false` + `outcome:"rejected"` + `error.kind` ∈ `unauthorized` / `entitlement`，文案内核自产、不回显上游正文）；超时 / 5xx / 畸形响应为 `outcome:"unverified"` 且**仍落盘**（目录退到 live ∩ overlay，不编造）；`ApiKeyLinkError.kind` 为普通字符串（本期内核只产出上述两个取值）。
+- **凭据语义零变化**：解析优先级仍为 `--api-key` flag > `api_key_env`（非空）> `auth.json`；`effective_source` 如实回告 env 遮蔽；结果仅经 `redact()` 暴露 `key_hint`，完整 key 不出现在结果 / 日志 / 错误文案中；`auth/status` 仍是纯读投影。
+- **已知时序风险**：替换 / 注销注册与并发 `session/run` 之间无全局互斥——**进行中的一轮 run 可能仍使用旧凭据，下一轮生效**。
+- 全部为**加性变更（只加不改）**：既有方法、既有字段的语义与 wire 形状零变化（`kernel/status` 逐字不变），此前客户端零破坏；协议版本 minor 递增 `0.17.0 → 0.18.0`。
 
 #### 后续版本
