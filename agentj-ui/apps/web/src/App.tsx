@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   METHODS,
   PROTOCOL_VERSION,
@@ -15,6 +15,7 @@ import ApprovalDialog from "./ApprovalDialog";
 import type { ApprovalRequest } from "./ApprovalDialog";
 import RunPanel from "./RunPanel";
 import type { ModelEntry } from "./components/ComposerOptions";
+import type { AuthSetApiKeyResult, ModelEntry as LinkedModelEntry } from "./components/SubscriptionPanel";
 import TopbarMenu from "./components/TopbarMenu";
 import ConnectionStatus from "./components/ConnectionStatus";
 import UnifiedSidebar from "./components/UnifiedSidebar";
@@ -112,6 +113,40 @@ export function isProtocolCompatible(clientVersion: string, serverVersion: strin
   const server = SEMVER_RE.exec(serverVersion);
   if (!client || !server) return false;
   return Number(client[1]) === Number(server[1]);
+}
+
+/** Provider id the linked catalog belongs to when the payload omits it. */
+const LINKED_PROVIDER = "opencode-go";
+
+function linkedEntry(entry: LinkedModelEntry, provider: string): ModelEntry {
+  return { name: entry.id, provider };
+}
+
+/** First catalog row as a composer entry — the auto-selection target after a link. */
+export function firstEntryOf(catalog: AuthSetApiKeyResult | null): ModelEntry | null {
+  const first = catalog?.models?.[0];
+  if (!first) return null;
+  return linkedEntry(first, catalog?.provider ?? LINKED_PROVIDER);
+}
+
+/**
+ * Kernel-served rows for `provider` are replaced in place by the linked catalog, so a
+ * stale account list never lingers next to the fresh one. Entries of other providers, and
+ * the list itself when no catalog was linked, stay untouched (the MODEL_LIST fallback for
+ * an empty list lives in ComposerOptions).
+ */
+export function mergeProviderEntries(
+  models: ModelEntry[],
+  provider: string,
+  catalog: AuthSetApiKeyResult | null,
+): ModelEntry[] {
+  const linked = catalog?.models ?? [];
+  if (linked.length === 0) return models;
+  const replacement = linked.map((entry) => linkedEntry(entry, provider));
+  const index = models.findIndex((entry) => entry.provider === provider);
+  const kept = models.filter((entry) => entry.provider !== provider);
+  if (index < 0) return [...kept, ...replacement];
+  return [...kept.slice(0, index), ...replacement, ...kept.slice(index)];
 }
 
 let patched = false;
@@ -298,6 +333,19 @@ export default function App() {
     useSharedKernel(wsUrl, connectSeq);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [selectedModel, setSelectedModel] = useState<ModelEntry | null>(null);
+  // The linked account catalog overrides the kernel-served opencode-go rows; the kernel
+  // list itself is never mutated (its projection stays in useSharedKernel).
+  const [linkedCatalog, setLinkedCatalog] = useState<AuthSetApiKeyResult | null>(null);
+  const mergedModels = useMemo(
+    () => mergeProviderEntries(models, LINKED_PROVIDER, linkedCatalog),
+    [models, linkedCatalog],
+  );
+  // An explicit pick from another provider survives a link; otherwise the first linked
+  // entry becomes the per-run selection (config.toml is never rewritten).
+  const applyLinkedCatalog = useCallback((res: AuthSetApiKeyResult) => {
+    setLinkedCatalog(res);
+    setSelectedModel((prev) => prev ?? firstEntryOf(res));
+  }, []);
   const { pending, approvalError, respond, close } = useApproval(sharedClient, activeSessionId);
   const [theme, setTheme] = useState<ThemeMode>(storedThemeMode() ?? "system");
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -533,7 +581,12 @@ export default function App() {
         </div>
         <div className="aj-topbar__center" aria-hidden="true" />
         <div className="aj-topbar__actions">
-          <TopbarMenu onConnect={handleConnect} onContinue={setActiveSessionIdAndHydrate} client={sharedClient} />
+          <TopbarMenu
+            onConnect={handleConnect}
+            onContinue={setActiveSessionIdAndHydrate}
+            client={sharedClient}
+            onModelsLinked={applyLinkedCatalog}
+          />
           <button type="button" aria-label="toggle sessions" className="aj-button aj-drawer-toggle" aria-expanded={drawerOpen} aria-controls="aj-sidebar" onClick={() => setDrawerOpen((o) => !o)}><Menu size={16} aria-hidden="true" /></button>
           <button type="button" aria-label="toggle theme" className="aj-icon-btn" onClick={() => setTheme((t) => THEME_CYCLE[t])}>
             {theme === "dark" ? <Moon size={16} aria-hidden="true" /> : theme === "light" ? <Sun size={16} aria-hidden="true" /> : <Monitor size={16} aria-hidden="true" />}
@@ -656,7 +709,7 @@ export default function App() {
                     : []}
                   pendingTool={pending?.tool}
                   model={modelName ?? undefined}
-                  models={models}
+                  models={mergedModels}
                   selected={selectedModel}
                   onSelect={setSelectedModel}
                   modules={modules}

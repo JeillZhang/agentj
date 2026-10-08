@@ -25,6 +25,16 @@ const shared = vi.hoisted(() => ({
   historyResult: { value: { events: [] as Array<Record<string, unknown>>, next_cursor: null as number | null } },
   lastHistoryParams: { value: null as Record<string, unknown> | null },
   kernelStatusResult: { value: null as Record<string, unknown> | null },
+  authSetApiKeyResult: {
+    value: {
+      provider: "opencode-go",
+      saved: true,
+      outcome: "verified",
+      effective_source: "file",
+      fetched_at: 1,
+      models: [] as Array<Record<string, unknown>>,
+    },
+  },
 }));
 
 vi.mock("@agentj/sdk", () => {
@@ -89,6 +99,10 @@ vi.mock("@agentj/sdk", () => {
         shared.lastHistoryParams.value = params as Record<string, unknown> | null;
         return shared.historyResult.value;
       }
+      if (method === "auth/status") return { provider: "opencode-go", authenticated: false };
+      if (method === "provider/usage") return { provider: "opencode-go", windows: [] };
+      if (method === "auth/setApiKey") return shared.authSetApiKeyResult.value;
+      if (method === "auth/clearCredential") return { provider: "opencode-go", cleared: true };
       if (method === "kernel/status") {
         return (
           shared.kernelStatusResult.value ?? {
@@ -203,6 +217,8 @@ vi.mock("@agentj/sdk", () => {
       providerUsage: "provider/usage",
       authDeviceStart: "auth/deviceStart",
       authDevicePoll: "auth/devicePoll",
+      authSetApiKey: "auth/setApiKey",
+      authClearCredential: "auth/clearCredential",
     },
     PROTOCOL_VERSION: "0.12.1",
     VERSION: "0.20.0",
@@ -254,6 +270,30 @@ const ASK_CORPUS = [
 async function createActiveSession(): Promise<void> {
   fireEvent.click(screen.getAllByRole("button", { name: /new session/i })[0]);
   await waitFor(() => expect(screen.getByLabelText(/prompt/i)).not.toBeDisabled());
+}
+
+/**
+ * Walks the real settings → 订阅 → API Key → 链接 path against the mocked SDK,
+ * so the App-level link behaviour is exercised end to end (not stubbed away).
+ */
+async function linkFromSettings(catalog: {
+  models: Array<{ id: string; verified: boolean; format: string }>;
+}): Promise<void> {
+  shared.authSetApiKeyResult.value = {
+    provider: "opencode-go",
+    saved: true,
+    outcome: "verified",
+    effective_source: "file",
+    fetched_at: 1,
+    models: catalog.models,
+  };
+  fireEvent.click(screen.getByRole("button", { name: "更多" }));
+  fireEvent.click(screen.getByText("设置…"));
+  fireEvent.click(screen.getByRole("tab", { name: "订阅" }));
+  fireEvent.change(screen.getByLabelText(/API Key/), { target: { value: "sk-x" } });
+  fireEvent.click(screen.getByRole("button", { name: "链接" }));
+  await screen.findByText(/已链接/);
+  fireEvent.click(screen.getByRole("button", { name: "close" }));
 }
 
 describe("App with mocked SDK transport", () => {
@@ -643,6 +683,60 @@ describe("App with mocked SDK transport", () => {
       model: "opencode-go/kimi-k3",
       provider: "opencode-go",
     });
+    shared.kernelStatusResult.value = null;
+  });
+
+  it("replaces opencode-go entries and auto-selects the first linked model", async () => {
+    shared.kernelStatusResult.value = {
+      modules: [{ id: "test-mod", state: "running" }],
+      default_model: "deepseek-chat",
+      providers: [
+        { id: "deepseek-chat", models: ["deepseek-chat"] },
+        { id: "opencode-go", models: ["opencode-go/old"] },
+      ],
+    };
+    render(<App />);
+    await createActiveSession();
+    await linkFromSettings({ models: [
+      { id: "opencode-go/kimi-k3", verified: true, format: "anthropic" },
+      { id: "opencode-go/m3", verified: false, format: "openai-compat" }] });
+    // The composer trigger already carries the auto-selected first catalog entry.
+    fireEvent.click(screen.getByRole("button", { name: /kimi-k3/ }));
+    expect(screen.getAllByRole("option").map((option) => option.querySelector(".nm")?.textContent)).toEqual([
+      "deepseek-chat",
+      "opencode-go/kimi-k3",
+      "opencode-go/m3",
+    ]);
+    expect(screen.queryByRole("option", { name: /opencode-go\/old/ })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /kimi-k3/ }));
+    const prompt = screen.getByLabelText(/prompt/i);
+    fireEvent.change(prompt, { target: { value: "hi" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+    await waitFor(() => expect(shared.lastRunParams.value).toMatchObject({
+      provider: "opencode-go", model: "opencode-go/kimi-k3" }));   // auto-selected first entry
+    shared.kernelStatusResult.value = null;
+  });
+
+  it("keeps an explicit pick from another provider when a link succeeds", async () => {
+    shared.kernelStatusResult.value = {
+      modules: [{ id: "test-mod", state: "running" }],
+      default_model: "deepseek-chat",
+      providers: [
+        { id: "deepseek-chat", models: ["deepseek-chat"] },
+        { id: "opencode-go", models: ["opencode-go/old"] },
+      ],
+    };
+    render(<App />);
+    await createActiveSession();
+    fireEvent.click(screen.getByRole("button", { name: /deepseek-chat/ }));
+    fireEvent.click(screen.getByRole("option", { name: /deepseek-chat/ }));
+    await linkFromSettings({ models: [
+      { id: "opencode-go/kimi-k3", verified: true, format: "anthropic" }] });
+    const prompt = screen.getByLabelText(/prompt/i);
+    fireEvent.change(prompt, { target: { value: "hi" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+    await waitFor(() => expect(shared.lastRunParams.value).toMatchObject({
+      provider: "deepseek-chat", model: "deepseek-chat" }));
     shared.kernelStatusResult.value = null;
   });
 });

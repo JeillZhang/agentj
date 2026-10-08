@@ -7,13 +7,15 @@ import { firstIndex, lastIndex, moveSelection, tabIndexFor } from "../hooks/useR
 import ModalDialog from "./ModalDialog";
 import SettingsDisplayPanel from "./SettingsDisplayPanel";
 import SettingsProjectPanel from "./SettingsProjectPanel";
-import SubscriptionPanel from "./SubscriptionPanel";
+import SubscriptionPanel, { type AuthSetApiKeyResult } from "./SubscriptionPanel";
 import "./settingsDialog.css";
 
 type Props = {
   onConnect: (host: string, port: string, token: string) => void;
   onClose: () => void;
   client?: RpcClient | null;
+  /** Forwards a successful API-key link's account catalog to the app shell. */
+  onModelsLinked?: (catalog: AuthSetApiKeyResult) => void;
 };
 
 type CategoryId = "connection" | "display" | "project" | "demo" | "subscription";
@@ -35,7 +37,7 @@ function tabId(id: CategoryId): string {
   return `aj-settings-tab-${id}`;
 }
 
-export default function SettingsDialog({ onConnect, onClose, client = null }: Props) {
+export default function SettingsDialog({ onConnect, onClose, client = null, onModelsLinked }: Props) {
   const [active, setActive] = useState<CategoryId>("connection");
   const [demo, setDemo] = useState(isDemoEnabled);
   const tabRefs = useRef(new Map<CategoryId, HTMLButtonElement | null>());
@@ -123,7 +125,7 @@ export default function SettingsDialog({ onConnect, onClose, client = null }: Pr
           )}
           {active === "subscription" &&
             (client ? (
-              <SubscriptionPanel client={client} onClose={onClose} />
+              <SubscriptionPanel client={client} onClose={onClose} onLinked={onModelsLinked} />
             ) : (
               <p className="aj-hint">先连接内核</p>
             ))}
