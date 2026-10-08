@@ -12,10 +12,13 @@ use agentj_auth::store::AuthStore;
 use agentj_core::error::ModelError;
 use agentj_core::module::ProviderRegistry;
 use agentj_ipc::{DispatchError, ProviderService};
+use agentj_model::catalog::ModelCatalog;
 use agentj_model::usage as mu;
 use agentj_protocol::provider::*;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+
+use crate::activation;
 
 const USAGE_TTL_SECS: i64 = 300;
 const MODEL_TTL_SECS: i64 = 60;
@@ -503,9 +506,10 @@ impl CliProviderService {
         }
         // One upstream call decides all three outcomes (design D2/D4); the upstream body is
         // never echoed, only the kernel sentence for the decisive status.
-        match agentj_model::console_catalog::fetch_account_models(&self.console_base, &key, None)
-            .await
-        {
+        let account =
+            agentj_model::console_catalog::fetch_account_models(&self.console_base, &key, None)
+                .await;
+        match account {
             Err(ModelError::Api { status: 401, .. }) => Ok(rejected(
                 &cfg,
                 "unauthorized",
@@ -516,8 +520,71 @@ impl CliProviderService {
                 "entitlement",
                 "该工作区没有 OpenCode Go 订阅（未保存）",
             )),
-            // T8: 200 with account models ⇒ verified; timeout / 5xx / malformed ⇒ unverified.
-            Ok(_) | Err(_) => Ok(set_api_key_pending(&cfg)),
+            // 200 with account models ⇒ verified; timeout / 5xx / malformed / 200 without
+            // go models ⇒ unverified (design D2) — the key is stored either way.
+            Ok(ids) => self.save_link(&cfg, &key, p.label.clone(), Some(ids)).await,
+            Err(_) => self.save_link(&cfg, &key, p.label.clone(), None).await,
+        }
+    }
+
+    /// Persist the link, activate the provider and seed the catalog reuse window (design
+    /// D2/D3/D7): `account` is `Some` only for a verified console catalog.
+    async fn save_link(
+        &self,
+        cfg: &ProviderCfg,
+        key: &str,
+        label: Option<String>,
+        account: Option<Vec<String>>,
+    ) -> Result<AuthSetApiKeyResult, DispatchError> {
+        let (catalog, source) = self.link_catalog(cfg, account).await;
+        let now = now_epoch();
+        self.store
+            .set(
+                &cfg.name,
+                Credential::ApiKey {
+                    key: key.to_string(),
+                    label,
+                    created_at: Some(now.to_string()),
+                },
+            )
+            .map_err(credential_error)?;
+        activation::activate_opencode_go(&self.registry, cfg, key, catalog.clone(), None)
+            .map_err(activation_failed)?;
+        let models = entries_of(&catalog.ids(), &catalog);
+        let cached = ModelListResult {
+            provider: cfg.name.clone(),
+            default_model: self.default_model(&cfg.name),
+            source,
+            fetched_at: now,
+            models: models.clone(),
+        };
+        self.model_cache
+            .lock()
+            .unwrap()
+            .insert(cfg.name.clone(), (cached, now));
+        Ok(link_result(cfg, key, source, models, now))
+    }
+
+    /// The catalog a link reports (design D2): the verified account ids, else the live probe,
+    /// else the committed overlay. It never fabricates ids and is never empty.
+    async fn link_catalog(
+        &self,
+        cfg: &ProviderCfg,
+        account: Option<Vec<String>>,
+    ) -> (ModelCatalog, ModelSource) {
+        let overlay = ModelCatalog::builtin();
+        if let Some(ids) = account {
+            return (
+                ModelCatalog::from_overlay_and_live(overlay, Some(ids)),
+                ModelSource::Account,
+            );
+        }
+        match agentj_model::catalog_source::fetch_live_models(&cfg.base_url, None).await {
+            Ok(live) => (
+                ModelCatalog::from_overlay_and_live(overlay, Some(live)),
+                ModelSource::Live,
+            ),
+            Err(_) => (overlay, ModelSource::Overlay),
         }
     }
 
@@ -593,21 +660,58 @@ fn rejected(cfg: &ProviderCfg, kind: &str, message: &str) -> AuthSetApiKeyResult
     }
 }
 
-/// T8 placeholder: the `verified` (200 + account catalog) and `unverified` (timeout / 5xx /
-/// malformed / 200 without go models) outcomes persist and activate there. Until then every
-/// non-rejected outcome reports nothing saved, so a client cannot read it as a linked key.
-fn set_api_key_pending(cfg: &ProviderCfg) -> AuthSetApiKeyResult {
+/// The successful-link payload (design D2/D3): the redacted hint plus the catalog tier.
+fn link_result(
+    cfg: &ProviderCfg,
+    key: &str,
+    source: ModelSource,
+    models: Vec<ModelEntry>,
+    now: i64,
+) -> AuthSetApiKeyResult {
+    let effective = effective_source(cfg);
     AuthSetApiKeyResult {
         provider: cfg.name.clone(),
-        saved: false,
-        outcome: ApiKeyOutcome::Unverified,
+        saved: true,
+        outcome: if source == ModelSource::Account {
+            ApiKeyOutcome::Verified
+        } else {
+            ApiKeyOutcome::Unverified
+        },
         error: None,
-        credential: None,
-        source: None,
-        effective_source: CredentialSource::File,
-        fetched_at: now_epoch(),
-        models: vec![],
+        credential: Some(CredentialInfo {
+            kind: CredentialKind::ApiKey,
+            source: effective,
+            key_hint: Some(redact(key)),
+            expires_at: None,
+            expiring_soon: false,
+            org_id: None,
+        }),
+        source: Some(source),
+        effective_source: effective,
+        fetched_at: now,
+        models,
     }
+}
+
+/// D3/G7: a non-blank `api_key_env` shadows the entry just written, so the result reports
+/// `env` instead of claiming the new credential is the effective one.
+fn effective_source(cfg: &ProviderCfg) -> CredentialSource {
+    if let Some(var) = cfg.api_key_env.as_deref()
+        && let Ok(v) = std::env::var(var)
+        && !v.trim().is_empty()
+    {
+        return CredentialSource::Env;
+    }
+    CredentialSource::File
+}
+
+/// A registration failure after the credential is already on disk (design D2): `-32603` with
+/// a machine-readable reason; the save stays on disk, so a retry is meaningful.
+fn activation_failed(reason: String) -> DispatchError {
+    DispatchError::internal_with_data(
+        "provider activation failed",
+        serde_json::json!({ "reason": "activation_failed", "detail": reason }),
+    )
 }
 
 fn state(
@@ -815,6 +919,28 @@ mod tests {
 
     fn svc_with_console(console: &str) -> (CliProviderService, tempfile::TempDir) {
         console_service(vec![go_cfg(console)], "opencode-go", console)
+    }
+
+    /// The same service with `api_key_env` pointing at a (test-local) variable, so a stored
+    /// link and an env key can be observed shadowing each other.
+    fn svc_with_console_and_env(
+        console: &str,
+        env_var: &str,
+    ) -> (CliProviderService, tempfile::TempDir) {
+        console_service(
+            vec![ProviderCfg {
+                api_key_env: Some(env_var.into()),
+                ..go_cfg(console)
+            }],
+            "opencode-go",
+            console,
+        )
+    }
+
+    /// Permission bits of `path`, for the `auth.json` mode assertion.
+    fn file_mode(path: &std::path::Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(path).unwrap().permissions().mode() & 0o777
     }
 
     fn params(api_key: &str, provider: Option<&str>) -> AuthSetApiKeyParams {
@@ -1060,6 +1186,117 @@ mod tests {
         assert_eq!(out.error.unwrap().kind, "entitlement");
         assert!(!dir.path().join("auth.json").exists());
         assert_eq!(server.received_requests().await.unwrap().len(), 1);
+    }
+
+    /// `params` with a stored label and the default provider (the plan's `Some("web")`
+    /// stands for the client-supplied label, not a provider name).
+    fn labelled_params(api_key: &str, label: &str) -> AuthSetApiKeyParams {
+        AuthSetApiKeyParams {
+            provider: None,
+            api_key: api_key.into(),
+            label: Some(label.into()),
+        }
+    }
+
+    #[tokio::test]
+    async fn verified_link_saves_caches_and_activates() {
+        let server = wiremock::MockServer::start().await;
+        mount_v2_config(&server, 200, v2_body(&["kimi-k3", "minimax-m3"])).await;
+        let (svc, dir) = svc_with_console(&server.uri());
+        let out = svc
+            .set_api_key(labelled_params("sk-good", "web"))
+            .await
+            .unwrap();
+        assert!(out.saved && matches!(out.outcome, ApiKeyOutcome::Verified));
+        assert_eq!(out.source, Some(ModelSource::Account));
+        assert_eq!(
+            out.models.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+            vec!["opencode-go/kimi-k3", "opencode-go/minimax-m3"]
+        );
+        assert_eq!(file_mode(&dir.path().join("auth.json")), 0o600);
+        assert!(!serde_json::to_string(&out).unwrap().contains("sk-good"));
+        assert!(svc.registry.get("opencode-go").is_some());
+        assert!(matches!(
+            svc.store.get("opencode-go").unwrap().unwrap(),
+            Credential::ApiKey { key, label: Some(l), .. } if key == "sk-good" && l == "web"
+        ));
+    }
+
+    #[tokio::test]
+    async fn unverified_after_500_still_saves_and_never_invents_catalog() {
+        let server = wiremock::MockServer::start().await;
+        mount_v2_config(&server, 500, serde_json::json!({})).await;
+        mount_live_models(&server, 200, &["kimi-k3"]).await;
+        let (svc, dir) = svc_with_console(&server.uri());
+        let out = svc.set_api_key(params("sk-maybe", None)).await.unwrap();
+        assert!(out.saved && matches!(out.outcome, ApiKeyOutcome::Unverified));
+        assert_eq!(out.source, Some(ModelSource::Live));
+        assert_eq!(out.models.len(), 1);
+        assert!(dir.path().join("auth.json").exists());
+    }
+
+    #[tokio::test]
+    async fn env_key_shadows_the_stored_credential() {
+        // SAFETY: unique test-local variable name.
+        unsafe { std::env::set_var("AGENTJ_TEST_SHADOW_KEY", "env-key") };
+        let server = wiremock::MockServer::start().await;
+        mount_v2_config(&server, 200, v2_body(&["kimi-k3"])).await;
+        let (svc, _dir) = svc_with_console_and_env(&server.uri(), "AGENTJ_TEST_SHADOW_KEY");
+        let out = svc.set_api_key(params("sk-good", None)).await.unwrap();
+        assert_eq!(out.effective_source, CredentialSource::Env);
+        assert!(out.saved);
+        unsafe { std::env::remove_var("AGENTJ_TEST_SHADOW_KEY") };
+    }
+
+    #[tokio::test]
+    async fn verified_link_caches_the_account_catalog_and_reports_a_hint() {
+        let server = wiremock::MockServer::start().await;
+        mount_v2_config(&server, 200, v2_body(&["kimi-k3", "minimax-m3"])).await;
+        let (svc, _dir) = svc_with_console(&server.uri());
+        let out = svc.set_api_key(params("sk-good", None)).await.unwrap();
+        let calls = server.received_requests().await.unwrap().len();
+        let cached = svc
+            .model_list(ModelListParams {
+                provider: None,
+                refresh: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(cached.source, ModelSource::Account);
+        assert_eq!(ids(&cached.models), ids(&out.models));
+        assert_eq!(
+            server.received_requests().await.unwrap().len(),
+            calls,
+            "a link seeds the 60s catalog reuse window"
+        );
+
+        let status = svc
+            .auth_status(AuthStatusParams { provider: None })
+            .await
+            .unwrap();
+        assert!(status.authenticated);
+        let c = status.credential.unwrap();
+        assert_eq!(
+            (c.kind, c.source, c.key_hint.as_deref()),
+            (
+                CredentialKind::ApiKey,
+                CredentialSource::File,
+                Some("…good")
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn unverified_falls_back_to_the_overlay_when_live_also_fails() {
+        let server = wiremock::MockServer::start().await;
+        mount_v2_config(&server, 500, serde_json::json!({})).await;
+        mount_live_models(&server, 500, &[]).await;
+        let (svc, dir) = svc_with_console(&server.uri());
+        let out = svc.set_api_key(params("sk-maybe", None)).await.unwrap();
+        assert!(out.saved && matches!(out.outcome, ApiKeyOutcome::Unverified));
+        assert_eq!(out.source, Some(ModelSource::Overlay));
+        assert!(!out.models.is_empty(), "the overlay catalog is never empty");
+        assert!(dir.path().join("auth.json").exists());
     }
 
     #[tokio::test]
