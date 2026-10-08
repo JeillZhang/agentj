@@ -157,18 +157,16 @@ fn build_ipc_server(
     ipc_server
 }
 
-/// Project `config.model.providers` into the service's own config type.
+/// Project the effective provider list into the service's own config type. Shares
+/// `providers::service_cfgs` with the startup assembly (design D5: single derivation).
 fn provider_cfgs(config: &agentj_config::Config) -> Vec<provider_service::ProviderCfg> {
-    config
-        .inner()
-        .model
-        .providers
-        .iter()
+    providers::service_cfgs(config.inner())
+        .into_iter()
         .map(|p| provider_service::ProviderCfg {
-            name: p.name.clone(),
-            kind: p.kind.clone(),
-            base_url: p.base_url.clone(),
-            api_key_env: p.api_key_env.clone(),
+            name: p.name,
+            kind: p.kind,
+            base_url: p.base_url,
+            api_key_env: p.api_key_env,
         })
         .collect()
 }
