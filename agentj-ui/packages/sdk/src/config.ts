@@ -1,5 +1,5 @@
-export const VERSION = "0.28.0";
-export const PROTOCOL_VERSION = "0.17.0";
+export const VERSION = "0.29.0";
+export const PROTOCOL_VERSION = "0.18.0";
 
 /** Page-origin inputs used to derive a default WS URL in browsers. */
 export interface WsLocation {
