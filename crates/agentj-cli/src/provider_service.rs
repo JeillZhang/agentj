@@ -9,6 +9,7 @@
 use agentj_auth::credential::{Credential, redact};
 use agentj_auth::ensure_access;
 use agentj_auth::store::AuthStore;
+use agentj_core::error::ModelError;
 use agentj_core::module::ProviderRegistry;
 use agentj_ipc::{DispatchError, ProviderService};
 use agentj_model::usage as mu;
@@ -486,6 +487,52 @@ impl CliProviderService {
             }
         })
     }
+
+    pub async fn set_api_key(
+        &self,
+        p: AuthSetApiKeyParams,
+    ) -> Result<AuthSetApiKeyResult, DispatchError> {
+        let cfg = self.cfg(p.provider.as_deref())?.clone();
+        self.require_kind(&cfg, "api_key")?;
+        let key = p.api_key.trim().to_string();
+        if key.is_empty() {
+            return Err(DispatchError::invalid_params_with_data(
+                "api_key must not be blank",
+                serde_json::json!({ "field": "api_key", "reason": "invalid_params" }),
+            ));
+        }
+        // One upstream call decides all three outcomes (design D2/D4); the upstream body is
+        // never echoed, only the kernel sentence for the decisive status.
+        match agentj_model::console_catalog::fetch_account_models(&self.console_base, &key, None)
+            .await
+        {
+            Err(ModelError::Api { status: 401, .. }) => Ok(rejected(
+                &cfg,
+                "unauthorized",
+                "API Key 无效或已被撤销（未保存）：请在 opencode.ai 控制台重新复制",
+            )),
+            Err(ModelError::Api { status: 403, .. }) => Ok(rejected(
+                &cfg,
+                "entitlement",
+                "该工作区没有 OpenCode Go 订阅（未保存）",
+            )),
+            // T8: 200 with account models ⇒ verified; timeout / 5xx / malformed ⇒ unverified.
+            Ok(_) | Err(_) => Ok(set_api_key_pending(&cfg)),
+        }
+    }
+
+    pub async fn clear_credential(
+        &self,
+        p: AuthClearCredentialParams,
+    ) -> Result<AuthClearCredentialResult, DispatchError> {
+        let cfg = self.cfg(p.provider.as_deref())?;
+        // T9: replace with the real convergence (store removal, cache invalidation,
+        // deregistration) — the placeholder keeps the wire contract compilable.
+        Ok(AuthClearCredentialResult {
+            provider: cfg.name.clone(),
+            cleared: false,
+        })
+    }
 }
 
 #[async_trait::async_trait]
@@ -510,6 +557,56 @@ impl ProviderService for CliProviderService {
         p: AuthDevicePollParams,
     ) -> Result<AuthDevicePollResult, DispatchError> {
         CliProviderService::device_poll(self, p).await
+    }
+    async fn set_api_key(
+        &self,
+        p: AuthSetApiKeyParams,
+    ) -> Result<AuthSetApiKeyResult, DispatchError> {
+        CliProviderService::set_api_key(self, p).await
+    }
+    async fn clear_credential(
+        &self,
+        p: AuthClearCredentialParams,
+    ) -> Result<AuthClearCredentialResult, DispatchError> {
+        CliProviderService::clear_credential(self, p).await
+    }
+}
+
+/// A `rejected` link (design D2): nothing was written or registered, so `effective_source`
+/// stays `file` — a failed attempt leaves the resolution precedence untouched. `kind` is
+/// one of the two emitted [`ApiKeyLinkError`] values and `message` is kernel-authored; the
+/// upstream response body must never reach the client through either field.
+fn rejected(cfg: &ProviderCfg, kind: &str, message: &str) -> AuthSetApiKeyResult {
+    AuthSetApiKeyResult {
+        provider: cfg.name.clone(),
+        saved: false,
+        outcome: ApiKeyOutcome::Rejected,
+        error: Some(ApiKeyLinkError {
+            kind: kind.into(),
+            message: message.into(),
+        }),
+        credential: None,
+        source: None,
+        effective_source: CredentialSource::File,
+        fetched_at: now_epoch(),
+        models: vec![],
+    }
+}
+
+/// T8 placeholder: the `verified` (200 + account catalog) and `unverified` (timeout / 5xx /
+/// malformed / 200 without go models) outcomes persist and activate there. Until then every
+/// non-rejected outcome reports nothing saved, so a client cannot read it as a linked key.
+fn set_api_key_pending(cfg: &ProviderCfg) -> AuthSetApiKeyResult {
+    AuthSetApiKeyResult {
+        provider: cfg.name.clone(),
+        saved: false,
+        outcome: ApiKeyOutcome::Unverified,
+        error: None,
+        credential: None,
+        source: None,
+        effective_source: CredentialSource::File,
+        fetched_at: now_epoch(),
+        models: vec![],
     }
 }
 
@@ -687,6 +784,47 @@ mod tests {
         )
     }
 
+    fn go_cfg(base: &str) -> ProviderCfg {
+        ProviderCfg {
+            name: "opencode-go".into(),
+            kind: "opencode-go".into(),
+            base_url: base.into(),
+            api_key_env: None,
+        }
+    }
+
+    /// A service over `cfgs` whose provider base and console base are both `console`, plus
+    /// the temp dir holding its (initially absent) `auth.json`.
+    fn console_service(
+        cfgs: Vec<ProviderCfg>,
+        default: &str,
+        console: &str,
+    ) -> (CliProviderService, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = AuthStore::with_path(dir.path().join("auth.json"));
+        let svc = CliProviderService::new(
+            store,
+            cfgs,
+            default.into(),
+            console.into(),
+            80,
+            empty_registry(),
+        );
+        (svc, dir)
+    }
+
+    fn svc_with_console(console: &str) -> (CliProviderService, tempfile::TempDir) {
+        console_service(vec![go_cfg(console)], "opencode-go", console)
+    }
+
+    fn params(api_key: &str, provider: Option<&str>) -> AuthSetApiKeyParams {
+        AuthSetApiKeyParams {
+            provider: provider.map(str::to_string),
+            api_key: api_key.into(),
+            label: None,
+        }
+    }
+
     #[tokio::test]
     async fn usage_is_cached_and_refresh_bypasses_the_cache() {
         let dir = tempfile::tempdir().unwrap();
@@ -825,6 +963,127 @@ mod tests {
             (e.code, e.data.as_ref().unwrap()["reason"].as_str().unwrap()),
             (-32602, "unsupported_provider")
         );
+    }
+
+    #[tokio::test]
+    async fn blank_key_is_invalid_params_without_upstream_call() {
+        let server = wiremock::MockServer::start().await;
+        let (svc, dir) = svc_with_console(&server.uri());
+        let err = svc.set_api_key(params("   ", None)).await.unwrap_err();
+        assert_eq!(err.code, -32602);
+        assert_eq!(err.data.unwrap()["reason"], "invalid_params");
+        assert!(server.received_requests().await.unwrap().is_empty());
+        assert!(!dir.path().join("auth.json").exists());
+    }
+
+    #[tokio::test]
+    async fn rejected_key_writes_nothing_and_calls_upstream_once() {
+        let server = wiremock::MockServer::start().await;
+        mount_v2_config(&server, 401, serde_json::json!({"_tag":"Unauthorized"})).await;
+        let (svc, dir) = svc_with_console(&server.uri());
+        let out = svc.set_api_key(params("sk-bad", None)).await.unwrap();
+        assert!(!out.saved);
+        assert!(matches!(out.outcome, ApiKeyOutcome::Rejected));
+        let err = out.error.unwrap();
+        assert_eq!(err.kind, "unauthorized");
+        assert!(
+            !err.message.contains("Unauthorized") && !err.message.contains("_tag"),
+            "no upstream body"
+        );
+        assert!(!dir.path().join("auth.json").exists());
+        assert_eq!(server.received_requests().await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn unknown_provider_reports_the_effective_names_sorted() {
+        let server = wiremock::MockServer::start().await;
+        let (svc, _dir) = console_service(
+            vec![
+                go_cfg("https://example.invalid"),
+                ProviderCfg {
+                    name: "deepseek-chat".into(),
+                    kind: "openai-compat".into(),
+                    base_url: "https://example.invalid".into(),
+                    api_key_env: None,
+                },
+            ],
+            "opencode-go",
+            &server.uri(),
+        );
+        let err = svc
+            .set_api_key(params("sk-k", Some("nope")))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, -32602);
+        assert_eq!(
+            err.data.unwrap()["registered"],
+            serde_json::json!(["deepseek-chat", "opencode-go"])
+        );
+        assert!(server.received_requests().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn non_go_provider_is_unsupported_for_api_key_linking() {
+        let server = wiremock::MockServer::start().await;
+        let (svc, _dir) = console_service(
+            vec![ProviderCfg {
+                name: "deepseek-chat".into(),
+                kind: "openai-compat".into(),
+                base_url: "https://example.invalid".into(),
+                api_key_env: None,
+            }],
+            "deepseek-chat",
+            &server.uri(),
+        );
+        let err = svc
+            .set_api_key(params("sk-k", Some("deepseek-chat")))
+            .await
+            .unwrap_err();
+        let data = err.data.unwrap();
+        assert_eq!(err.code, -32602);
+        assert_eq!(data["reason"], "unsupported_provider");
+        assert_eq!(data["capability"], "api_key");
+        assert!(server.received_requests().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn forbidden_key_is_rejected_with_entitlement_and_writes_nothing() {
+        let server = wiremock::MockServer::start().await;
+        mount_v2_config(&server, 403, serde_json::json!({"error":"no_subscription"})).await;
+        let (svc, dir) = svc_with_console(&server.uri());
+        let out = svc
+            .set_api_key(params("sk-nosub", Some("opencode-go")))
+            .await
+            .unwrap();
+        assert!(!out.saved);
+        assert!(matches!(out.outcome, ApiKeyOutcome::Rejected));
+        assert_eq!(out.error.unwrap().kind, "entitlement");
+        assert!(!dir.path().join("auth.json").exists());
+        assert_eq!(server.received_requests().await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn omitted_provider_resolves_to_the_configured_default() {
+        // The configured default is a non-go provider, so an omitted `provider` must reach
+        // *its* kind check rather than fail as an unknown name.
+        let server = wiremock::MockServer::start().await;
+        let (svc, _dir) = console_service(
+            vec![
+                go_cfg("https://example.invalid"),
+                ProviderCfg {
+                    name: "deepseek-chat".into(),
+                    kind: "openai-compat".into(),
+                    base_url: "https://example.invalid".into(),
+                    api_key_env: None,
+                },
+            ],
+            "deepseek-chat",
+            &server.uri(),
+        );
+        let err = svc.set_api_key(params("sk-k", None)).await.unwrap_err();
+        assert_eq!(err.code, -32602);
+        assert_eq!(err.data.unwrap()["reason"], "unsupported_provider");
+        assert!(server.received_requests().await.unwrap().is_empty());
     }
 
     #[tokio::test]
