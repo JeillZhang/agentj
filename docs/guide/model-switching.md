@@ -23,6 +23,14 @@ AgentJ 允许在**运行期**逐轮选择模型：不用改 `config.toml`、不�
   内核默认模型），上下移动后随光标走；只有 `Enter` 确认的条目才会成为本页的选择。
 - 详见 [终端界面（TUI）](tui.md)。
 
+### CLI
+
+- `agentj run --provider <NAME> --model <MODEL_ID> "…"` 是同一 per-run 覆盖的命令行形式：
+  只对本次运行生效，不写入配置、不进入会话。
+- 两者相互独立：可只给 `--model`（用默认 provider）；`--attach` 附着到常驻内核时同样支持。
+- 语义与 Web / TUI 完全一致：未知 provider 名 → 本轮运行失败（文案含该名与已注册列表），
+  **不回落默认**；空白 / 缺省按「没给」处理。详见 [`agentj run`](cli.md#agentj-run)。
+
 ## 生效范围：下一轮 run
 
 - 选择**按 run 生效**：确认后再发送的那一轮 `session/run` 才携带所选 provider / 模型；

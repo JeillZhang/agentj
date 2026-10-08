@@ -4,12 +4,29 @@
 
 ## `agentj run`
 
-运行一次（或附着）代理任务。
+运行一次（或附着）代理任务。默认使用内核默认 provider 与 `[model].default_model`；
+`--provider` / `--model` 只对**本次运行**生效，不写入配置、不影响后续运行。
 
 ```bash
 agentj run "explain this codebase"
-agentj run --attach tcp://127.0.0.1:4096 "hi"   # 附着到常驻内核
+agentj run --provider deepseek --model deepseek-chat "explain this codebase"
+agentj run --model opencode-go/kimi-k3 "hi"                            # 仅覆盖模型，provider 用默认
+agentj run --attach tcp://127.0.0.1:4096 --provider opencode-go "hi"   # 附着到常驻内核
 ```
+
+| 参数 | 说明 |
+| --- | --- |
+| `--provider <NAME>` | 仅本次运行使用的 provider 名（默认：内核默认 provider） |
+| `--model <MODEL_ID>` | 仅本次运行使用的模型 id，如 `opencode-go/kimi-k3`（默认：`[model].default_model`） |
+
+- 两个 flag **相互独立**：只给 `--model` 合法（用默认 provider 跑指定模型）；`serve` /
+  `dashboard` **不接受**这两个 flag（常驻内核的覆盖由各客户端在 `session/run` 中携带）。
+- **空白值等同缺省**：`--provider ""` / `--provider "   "`（`--model` 同理）都按「未提供」处理，
+  由内核回落到默认值，不是错误。
+- **未知 provider 不回落**：`--provider nope` 会让本轮运行失败（不会改用默认 provider）。CLI 在
+  stderr 打印一行 `error: agent error: unknown provider: nope (registered: …)` 并以退出码 `1`
+  结束，stdout 不会出现最终回答；`--attach` 的远端错误同样映射为这一行。
+- 未知模型 / 上游网络或鉴权失败同样以 `error: …` + 退出码 `1` 结束。
 
 ## `agentj serve`
 
