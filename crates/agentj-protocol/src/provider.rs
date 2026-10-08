@@ -241,6 +241,75 @@ pub enum DeviceAuthState {
     Unknown,
 }
 
+/// `auth/setApiKey` params. @since 0.18.0
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AuthSetApiKeyParams {
+    /// Provider name; omitted means the configured default provider. @since 0.18.0
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    pub api_key: String,
+    /// Free-form user label stored next to the credential. @since 0.18.0
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+}
+
+/// `auth/setApiKey` result. Never carries a full key — see [`CredentialInfo`];
+/// `effective_source` is where the live credential actually resolved from.
+/// @since 0.18.0
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AuthSetApiKeyResult {
+    pub provider: String,
+    pub saved: bool,
+    pub outcome: ApiKeyOutcome,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<ApiKeyLinkError>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential: Option<CredentialInfo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<ModelSource>,
+    pub effective_source: CredentialSource,
+    pub fetched_at: i64,
+    pub models: Vec<ModelEntry>,
+}
+
+/// Verification outcome of a stored key. `Unknown` tolerates forward values.
+/// @since 0.18.0
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ApiKeyOutcome {
+    Verified,
+    Unverified,
+    Rejected,
+    #[serde(other)]
+    #[schemars(skip)]
+    Unknown,
+}
+
+/// Why a key could not be linked. `kind` stays a `String` for forward compatibility
+/// (precedent: [`ProviderUsageError::kind`]); `message` is always kernel-authored.
+/// @since 0.18.0
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ApiKeyLinkError {
+    pub kind: String,
+    pub message: String,
+}
+
+/// `auth/clearCredential` params. @since 0.18.0
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct AuthClearCredentialParams {
+    /// Provider name; omitted means the configured default provider. @since 0.18.0
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+}
+
+/// `auth/clearCredential` result; `cleared: false` means no stored entry existed.
+/// @since 0.18.0
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AuthClearCredentialResult {
+    pub provider: String,
+    pub cleared: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -347,6 +416,83 @@ mod tests {
             credential: None,
         };
         assert_eq!(serde_json::to_value(&slow).unwrap()["state"], "slow_down");
+    }
+
+    #[test]
+    fn rejected_set_api_key_result_never_carries_a_key() {
+        let r = AuthSetApiKeyResult {
+            provider: "opencode-go".into(),
+            saved: false,
+            outcome: ApiKeyOutcome::Rejected,
+            error: Some(ApiKeyLinkError {
+                kind: "unauthorized".into(),
+                message: "API Key 无效".into(),
+            }),
+            credential: Some(CredentialInfo {
+                kind: CredentialKind::ApiKey,
+                source: CredentialSource::File,
+                key_hint: Some("…k3".into()),
+                expires_at: None,
+                expiring_soon: false,
+                org_id: None,
+            }),
+            source: None,
+            effective_source: CredentialSource::Env,
+            fetched_at: 1,
+            models: vec![],
+        };
+        let v = serde_json::to_value(&r).unwrap();
+        assert_eq!(v["outcome"], "rejected");
+        assert_eq!(v["saved"], false);
+        // no secret of any shape, and no full-key-bearing field name
+        assert!(!v.to_string().contains("sk-secret-value"));
+        assert!(v["credential"].get("key").is_none());
+        assert!(v["credential"].get("api_key").is_none());
+        assert_eq!(v["credential"]["key_hint"], "…k3");
+    }
+
+    #[test]
+    fn unknown_api_key_outcome_is_tolerated() {
+        let v = serde_json::json!({"provider":"opencode-go","saved":true,"outcome":"quarantined",
+            "effective_source":"file","fetched_at":1,"models":[]});
+        assert!(matches!(
+            serde_json::from_value::<AuthSetApiKeyResult>(v)
+                .unwrap()
+                .outcome,
+            ApiKeyOutcome::Unknown
+        ));
+    }
+
+    #[test]
+    fn auth_clear_credential_params_omit_provider_on_roundtrip() {
+        let v = serde_json::to_value(AuthClearCredentialParams::default()).unwrap();
+        assert!(v.get("provider").is_none(), "provider must be omitted: {v}");
+        let back: AuthClearCredentialParams = serde_json::from_value(v).unwrap();
+        assert!(back.provider.is_none());
+        let r = AuthClearCredentialResult {
+            provider: "opencode-go".into(),
+            cleared: false,
+        };
+        assert_eq!(serde_json::to_value(&r).unwrap()["cleared"], false);
+    }
+
+    #[test]
+    fn api_key_link_error_kind_is_a_forward_compatible_string() {
+        let e = ApiKeyLinkError {
+            kind: "unauthorized".into(),
+            message: "API Key 无效".into(),
+        };
+        let v = serde_json::to_value(&e).unwrap();
+        assert!(v["kind"].is_string(), "kind stays a String: {v}");
+        assert_eq!(v["kind"], "unauthorized");
+        assert_eq!(v["message"], "API Key 无效");
+        // A kind this build does not know must survive untouched, not fail.
+        let fwd: ApiKeyLinkError = serde_json::from_value(serde_json::json!({
+            "kind": "quota_exhausted",
+            "message": "kernel-authored"
+        }))
+        .unwrap();
+        assert_eq!(fwd.kind, "quota_exhausted");
     }
 
     #[test]
