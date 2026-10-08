@@ -6,80 +6,104 @@
 > **强制例外（跨阶段保留）**：「## 待实施」表中**尚未实施**的特性条目必须保留（状态 =
 > 待实施），不得随内容替换而删除；仅当该特性实际实施完成后才能移除（移入功能记录）。
 > 前端总结独立存放于 `summary_and_next_fe.md`；两文件内容隔离，互不写入对方文件。
-> 当前功能：**v0.28.0 CLI `run` 的 per-run 模型/provider 覆盖（后端部分）**
-> ——来源：设计 `docs/superpowers/specs/2026-10-08-agentj-cli-run-model-override-design.md`
-> + 实现计划 `docs/superpowers/plans/2026-10-08-agentj-cli-run-model-override-plan.md`（T0–T10）。
-> 后端范围：`agentj-ipc`（1 个 pub turn 入口）+ `agentj-cli`（2 个 run flag + 两条路径 + 失败退出码）
-> + `docs/guide/` + `docs/changelog/` + 版本元数据同步。
-> `PROTOCOL_VERSION` **不变**（0.17.0，26 方法 / 72 schemas）；工作区 0.27.1 → **0.28.0**。
-> 前端 surface 零变更（仅版本元数据同步），见 `summary_and_next_fe.md`。
 
-## v0.28.0（CLI run per-run 模型/provider 覆盖，后端部分）✅（本次完成）
+> 当前功能：**v0.29.0 Web/TUI 链接 opencode-go API Key（后端部分）**
+> ——来源：设计 `docs/superpowers/specs/2026-10-08-agentj-ui-opencode-go-api-key-link-design.md`
+> + 实现计划 `docs/superpowers/plans/2026-10-08-agentj-ui-opencode-go-api-key-link-plan.md`
+> （T0–T12 / T21–T22 / T23 + Phase-5 评审修复）。
+> 后端范围：`agentj-protocol`（6 个 wire 类型 + 2 方法 + 6 schemas）、`agentj-core`
+> （`ProviderRegistry::remove`）、`agentj-ipc`（trait 7 方法 + 2 dispatch 臂）、`agentj-cli`
+> （`set_api_key` / `clear_credential` + 运行期激活 helper + 内置条目 + 设备码激活）、
+> `docs/specs/ipc-protocol.md`（§8.28 / §8.29 等）、`docs/changelog/v0.29.md`、版本元数据。
+> `PROTOCOL_VERSION` 0.17.0 → **0.18.0**（26 → **28** 方法 / 72 → **78** schemas）；
+> 工作区 0.28.0 → **0.29.1**（0.29.0 功能 + 0.29.1 验收修复）。前端部分见 `summary_and_next_fe.md`。
 
-- ✅ **`agentj-ipc`**：新增公开入口 `IpcServer::run_turn_stream_with(sid, input, RunOverrides)`
-  （中性命名）；既有 `pub run_turn_stream` 退化为 `RunOverrides::default()` 薄封装；
-  原私有 `run_turn_stream_with_overrides` 收拢为公开实现，`dispatch_session_run` 改用新名。
-  **无新依赖、无 dispatch/ProviderService 变更**；3 条新单测钉住显式 provider 路由、
-  默认路径不变、空白 override 视为缺省。
-- ✅ **`agentj-cli`（flag 表面）**：`Commands::Run` 新增 `--provider <NAME>` / `--model <MODEL_ID>`
-  （均 `Option<String>`、长选项、相互独立、无 clap 交叉约束）。CLI **不做** trim/归一，
-  空白值原样透传由内核判定（设计 D6）。
-- ✅ **`agentj-cli`（embedded 路径）**：构造 `RunOverrides` 调 `run_turn_stream_with`；
-  失败时先 `signal_shutdown()` + `mcp_manager.close_all()` 清理，再 stderr 一行
-  `error: <文本>` + 退出码 `1`（此前为打印空行 + 退出码 `0`）；成功路径 `println!` 是最后输出。
-- ✅ **`agentj-cli`（`--attach` 路径）**：`run_params_json` 仅在 `Some` 时写入 `provider`/`model`
-  键（不写 `null`/`""`），`content` 转义交给 serde_json；新增 `run_error_line` 分支——
-  `-32603` → `error: <message>`、其它错误码 → `error: <message> (code <code>)`，
-  **不再吞掉 JSON-RPC `error` 而永久挂起**；两条路径退出码对齐为 `1`。
-- ✅ **文档**：`docs/guide/cli.md`（`agentj run` flag 表 + embedded/`--attach` 示例 + 空白/失败语义）、
-  `docs/guide/model-switching.md`（新增「CLI」per-run 覆盖小节，保持「未知 provider 失败不回落」口径）、
-  新建 `docs/changelog/v0.28.md` + 索引行。
-- ✅ **版本元数据**：`Cargo.toml`/`Cargo.lock`、SDK `VERSION`、desktop 三清单、
-  `package-lock.json`/`bun.lock`/`src-tauri/Cargo.lock`、`scripts/check-version.sh` 全部同步 0.28.0；
-  `PROTOCOL_VERSION` 保持 0.17.0。
+## v0.29.x（Web/TUI 链接 opencode-go API Key，后端部分）✅（0.29.0 功能 + 0.29.1 验收修复）
 
-## 验证结果（全量门禁清扫，2026-10-08）
+- ✅ **`agentj-protocol`（T0/T1/T2）**：新增 6 个 wire 类型（`AuthSetApiKeyParams` /
+  `AuthSetApiKeyResult` / `ApiKeyOutcome`，含 `#[serde(other)]` 的 `Unknown` 向前兼容 /
+  `ApiKeyLinkError` / `AuthClearCredentialParams` / `AuthClearCredentialResult`）；
+  `PROTOCOL_VERSION` → **0.18.0**，`schemas/*.json` 72 → **78**，`protocol/methods.json`
+  26 → **28** 方法（`auth/setApiKey` / `auth/clearCredential`），registry / contract / drift
+  密封测试同步。
+- ✅ **`agentj-core`（T3）**：加性方法 `ProviderRegistry::remove(name) -> bool`（移除后
+  `list()` / `get()` 不含该项，默认 provider 指向被移除项时不 panic）；既有排序 / models
+  投影用例零回归。
+- ✅ **`agentj-ipc`（T4）**：`ProviderService` trait 扩到 **7** 个 async 方法 + 2 个 dispatch 臂；
+  非法 params 结构 → `-32602`，handle 未注入 → 7 个方法统一
+  `-32603 provider_service_unavailable`；ipc 不新增 auth / model 依赖。
+- ✅ **`agentj-cli`（T5/T6）**：有效 provider 列表 = `config.model.providers` ∪ 内置
+  `opencode-go` 默认条目（`base_url = https://opencode.ai/zen/go`、无 `api_key_env`；
+  显式条目优先、不写用户 TOML），`build_providers` 与 `CliProviderService` 共用同一函数；
+  运行期激活 helper = `build_opencode_go`（api_key → `RefreshingProvider::static`，
+  OAuth → `RefreshingProvider::oauth`）+ 替换 `registry.register` / `remove` + 失效该 provider
+  的模型与用量缓存。
+- ✅ **`agentj-cli`（T7/T8/T9/T10）**：`auth/setApiKey` 一次 `GET {console}/api/v2/config`
+  完成校验 + 目录 + 缓存播种，三态 `verified`（落盘 + 激活 + `source:"account"`）/
+  `rejected`（401/403：**不落盘、不注册**，`error.kind` ∈ `unauthorized` / `entitlement`，
+  文案内核自产） / `unverified`（超时 / 网络 / 5xx / 畸形 / 200 但无 go 模型：**仍落盘**，
+  目录退 live ∩ overlay）；`effective_source` 如实回告 env 遮蔽；非法参数走 `-32602` +
+  `error.data.reason`（`invalid_params` / `unknown_provider` / `unsupported_provider`）。
+  `auth/clearCredential` 移除凭据并按剩余凭据收敛（仍有 env key → 重建注册；无 key → 注销，
+  `auth/status.authenticated=false`），无条目 → `cleared:false` 成功响应。
+  `auth/devicePoll` 的 `authorized` 分支复用同一激活路径（免重启）。
+- ✅ **E2E（T11/T12）**：`crates/agentj-cli/tests/e2e_serve.rs` 真实 socket 覆盖
+  「链接 → `model/list` 返回 `account` → 解除 → 未认证」、rejected key、未注入
+  `provider_service` 的内核、以及链接 / 解除全程 `config.toml` 未被修改。
+- ✅ **`docs/specs/ipc-protocol.md` + changelog（T23）**：§8.1 方法表 28 行；新增 §8.28 / §8.29
+  契约（params / result / 三态 / `error.data.reasons` / 领域失败即结果数据 / `effective_source` /
+  no-secret 不变式 / `ApiKeyLinkError.kind` 为 `String` 且当前只产出 `unauthorized` /
+  `entitlement` / 换入瞬间进行中轮次可能用旧凭据的风险说明）；§3.4 标注复用既有错误码 +
+  `-32603 reason:"activation_failed"`；§10 / §11.3 记 `@since 0.18.0`（0.17.0 → 0.18.0）；
+  新建 `docs/changelog/v0.29.md` + 索引行。
+- ✅ **版本元数据（T21/T22）**：`Cargo.toml` / `Cargo.lock` 与 `scripts/check-version.sh` 同步
+  **0.29.0**（`PROTOCOL_VERSION` **0.18.0**）；desktop 三清单与前端 lockfile 亦同步
+  **0.29.0**（详见 `summary_and_next_fe.md`），`check-version.sh` = `version-ok`。
+- ✅ **评审修复（Phase 5，`fix:` 提交）**：整体分支持续只读评审得 1 HIGH / 1 MEDIUM / 4 LOW，
+  全部闭合：**H1** `clear_credential` 增加 `require_kind("api_key")` 守卫——已知非 opencode-go
+  provider 返回 `-32602 unsupported_provider` 且**凭据与注册表均不被触碰**（此前会把无关 provider
+  注销或以 opencode-go 工厂误重建）；**L1** `deactivate_opencode_go` 无密钥分支补启动同款
+  `tracing::warn!`（D7）；**L2/L4** `authorized_login` 与 `save_link` 失效对应 provider 的
+  `model_cache` / `usage_cache`（协议 §8.28「两处缓存」）；`docs/specs/ipc-protocol.md`§8.29
+  能力声明由「任意已注册 provider」收窄为「仅 opencode-go」。复审 **VERDICT: PASS**。
+- ✅ **验收修复（0.29.0 → 0.29.1）**：验收（`jskill-test-acceptance`）发现 **BUG-001（high）**——
+  `api_key_env` 非空（env 遮蔽）时读侧报 `effective_source=env`，但 `save_link()` 仍用**刚提交的
+  key** 激活，`session/run` 实际发送提交值。单提交修复 `06b6e45`：改用解析后的**生效凭据**
+  （`env > 文件`，与启动路径一致）激活，并让链接结果 `credential.key_hint` 与 `effective_source`
+  一致；回归 **verified**，零新 Bug。产品 patch bump **0.29.0 → 0.29.1**（协议不变）。
+
+## 验证结果（当前树实测，2026-10-08）
 
 | 门禁 | 结果 |
 |---|---|
 | `cargo fmt --check` | clean |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 0 warnings |
-| `cargo test --workspace -- --skip permission_request_notified_and_timeout_denies` | 812 passed / 0 failed |
+| `cargo test --workspace -- --skip permission_request_notified_and_timeout_denies` | **851** passed / 0 failed（48 suites） |
 | `cargo test -p agentj-protocol -- drift` | 2 passed |
-| `git diff --exit-code -- schemas protocol/methods.json docs/specs/ipc-protocol.md` | 空（零 wire 变更） |
-| `./scripts/check-version.sh` | version-ok（**0.28.0** / `PROTOCOL_VERSION` **0.17.0**） |
-| `npm --prefix agentj-ui test --workspace=@agentj/sdk` | 54 passed |
+| `schemas/*.json` | **78** |
+| `protocol/methods.json` | **28** 方法 / `protocol_version` **0.18.0** |
+| `crates/agentj-protocol` `PROTOCOL_VERSION` | **0.18.0** |
+| `./scripts/check-version.sh` | **version-ok（0.29.1 / 0.18.0）** |
 | `node agentj-ui/apps/desktop/check-desktop-ui.mjs` | desktop-ui-ok |
+| `git diff main...HEAD -- schemas/KernelStatusResult.json` | 空（`kernel/status` 逐字不变） |
 
-## 代码评审（Phase 4，`ajteam-task-reviewer` 逐任务只读审查）
-
-- T0–T10 全部 **VERDICT PASS**（T0 ipc 入口、T1 embedded flag、T2 attach overrides + error 分支、
-  T3 指南、T4 changelog、T5 工作区版本、T6 SDK、T7 desktop 清单、T8 lockfile、
-  T9 版本门禁、T10 基线/摘要同步）。
-- 无阻塞性偏差；实现与设计文档 D1–D8、G1–G6 一致。
-- Phase 5 全分支审查：无 CRITICAL / HIGH；1 项 MEDIUM（`--attach` 连接失败经 `?` 提前返回、
-  未先 `close_all()`）经确认为**分支前既有形态**且设计已明确划出范围，仅记录不改。
-
-## 验收（`jskill-test-acceptance`，2026-10-08）
-
-- 单轮 **零 Bug**（critical 0 / high 0 / medium 0 / low 0）——无修复提交、无回归轮次。
-- tester 门禁全绿，探索式 QA 覆盖 embedded / `--attach` 两条路径、未知 provider 不回落、
-  空白=缺省、clap 用法错误（exit 2）、连接失败不挂起、破坏性输入无 panic、`--attach` wire
-  键省略、错误码映射（`-32603` vs `(code X)`）、文档-行为一致性；证据见本地
-  `.superpowers/acceptance/bugs.md`。
-- 零修复故未触发产品 patch bump；版本保持 **0.28.0**。PR 由验收流程在 `origin` 创建（用户负责合并）。
+> 本表于 Phase 8 收尾在最终树重跑；前端侧（SDK 55 · Web 652 · TUI 177 · 构建 clean）见
+> `summary_and_next_fe.md`。
 
 ## 遗留问题 / 已知限制（后端）
 
-- **预存在的 e2e 挂起（非本阶段回归）**：`crates/agentj-cli/tests/e2e_permission.rs`
-  的 `permission_request_notified_and_timeout_denies` 在无外部交互时会挂起，
-  全量测试统一以 `-- --skip permission_request_notified_and_timeout_denies` 运行。
-- **CLI 级无「模型被使用」的直接证据**（设计已记录）：唯一 key-free 的脚本化 `MockStateful`
-  忽略 `ModelOptions`，故 CLI e2e 只证明 flag 贯通与 turn 正常收尾（配置须带
-  `[permission.tools.bash] mode = "allow"`）；路由正确性由 `agentj-ipc` / `agentj-core` 层单测钉住。
-- **`--attach` 连接失败路径文案未统一**（设计已记录）：仍是 `anyhow` 默认 `Error: …` 前缀，
-  仅新增 JSON-RPC `error` 分支；非目标。
-- **退出码只区分 0/1/2**：不细分运行失败 / 连接失败 / 协议错误。
+- **时序（设计已记录）**：替换 / 注销注册与并发 `session/run` 之间无全局互斥——换入瞬间
+  **进行中的那一轮 run 可能仍使用旧凭据，新凭据从下一轮生效**。
+- **写入目标**：凭据写入**当前连接内核所在机器**的 `auth.json`（`--attach` / 远程 `serve`
+  即远端主机）；非回环 `serve --host` 必须配 `--token`（既有要求，指南重述）。
+- **不泄露**：结果只经 `redact()` 暴露 `key_hint`；完整 key 不出现在结果 / 日志 / 错误文案；
+  两个方法**不新增权限门**。
+- **不做**：多账号 / 账号切换（同 provider 重复链接 = 替换）；OS keyring；不做「从解析层 `Err`
+  反推 entitlement」（`rejected` 仅由明确 401/403 触发）。
+- **预存在的 e2e 挂起（非本阶段回归）**：`crates/agentj-cli/tests/e2e_permission.rs` 的
+  `permission_request_notified_and_timeout_denies` 在无外部交互时会挂起，全量测试统一以
+  `-- --skip permission_request_notified_and_timeout_denies` 运行。
+- **真实 Key 人工 E2E 为跟踪项（非 CI）**：步骤见 `summary_and_next_fe.md`「人工验收」小节。
 
 ## 待实施（跨阶段保留：未实施不得删除）
 
@@ -95,5 +119,6 @@
 
 ## 下一步
 
-- **v0.28.0 CLI run per-run 覆盖已落地**，全量门禁清扫通过；待 PR 由用户合并 main。
+- v0.29.1（功能 + 评审修复 + 验收修复）已落地，全门禁绿（`version-ok`）；验收通过后由验收
+  流程在 `origin` 创建 PR，用户负责合并。
 - 后端候选：上表 ①②④⑥；或前端跟进见 `summary_and_next_fe.md`。

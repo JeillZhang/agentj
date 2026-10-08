@@ -5,6 +5,9 @@ use agentj_protocol::base::{
 use agentj_protocol::file::FileListParams;
 use agentj_protocol::lifecycle::{ClientInfo, InitializeParams, InitializeResult, ServerInfo};
 use agentj_protocol::permission::PermissionRequestParams;
+use agentj_protocol::provider::{
+    ApiKeyLinkError, ApiKeyOutcome, AuthSetApiKeyParams, AuthSetApiKeyResult, CredentialSource,
+};
 use agentj_protocol::question::{
     AskOption, AskQuestionParams, QuestionRespondParams, QuestionRespondResult,
 };
@@ -338,4 +341,38 @@ fn session_run_params_wire_shape_has_provider_and_model() {
         .map(|x| x.as_str().unwrap())
         .collect();
     assert_eq!(required, vec!["session_id", "content"]);
+}
+
+#[test]
+fn auth_set_api_key_wire_shape() {
+    let params: AuthSetApiKeyParams = serde_json::from_value(serde_json::json!({
+        "api_key": "k"
+    }))
+    .unwrap();
+    assert!(params.provider.is_none(), "provider is optional");
+    assert!(params.label.is_none(), "label is optional");
+
+    let resp = ResponseMessage::Success {
+        jsonrpc: "2.0".into(),
+        id: Id::Number(21),
+        result: serde_json::to_value(AuthSetApiKeyResult {
+            provider: "opencode-go".into(),
+            saved: false,
+            outcome: ApiKeyOutcome::Rejected,
+            error: Some(ApiKeyLinkError {
+                kind: "unauthorized".into(),
+                message: "key rejected".into(),
+            }),
+            credential: None,
+            source: None,
+            effective_source: CredentialSource::Env,
+            fetched_at: 0,
+            models: vec![],
+        })
+        .unwrap(),
+    };
+    let json = serde_json::to_value(resp).unwrap();
+    assert_eq!(json["result"]["outcome"], "rejected");
+    assert_eq!(json["result"]["saved"], false);
+    assert_eq!(json["result"]["effective_source"], "env");
 }

@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 pub use write::{set_model_defaults, write_model_defaults};
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct ModelProviderConfig {
     pub name: String,
     pub base_url: String,

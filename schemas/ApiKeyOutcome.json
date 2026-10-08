@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ApiKeyOutcome",
+  "description": "Verification outcome of a stored key. `Unknown` tolerates forward values.\n@since 0.18.0",
+  "type": "string",
+  "enum": [
+    "verified",
+    "unverified",
+    "rejected"
+  ]
+}

@@ -20,12 +20,17 @@ import type { Project } from "../projectStore";
 import { firstIndex, lastIndex, tabIndexFor, useRovingFocus } from "../hooks/useRovingFocus";
 import ModalDialog from "./ModalDialog";
 import SettingsDialog from "./SettingsDialog";
+import type { AuthSetApiKeyResult } from "@agentj/protocol";
 import "./topbarmenu.css";
 
 type Props = {
   onConnect: (host: string, port: string, token: string) => void;
   onContinue: (sessionId: string) => void;
   client?: RpcClient | null;
+  /** Forwards a successful API-key link's account catalog to the app shell. */
+  onModelsLinked?: (catalog: AuthSetApiKeyResult) => void;
+  /** Forwards a confirmed credential clear, so the shell drops the linked catalog. */
+  onModelsCleared?: () => void;
 };
 
 type DialogKind = null | "continue" | "addProject" | "settings";
@@ -33,7 +38,7 @@ type FlyoutKind = null | "project" | "favorites";
 
 const FLYOUT_CLOSE_DELAY_MS = 120;
 
-export default function TopbarMenu({ onConnect, onContinue, client = null }: Props) {
+export default function TopbarMenu({ onConnect, onContinue, client = null, onModelsLinked, onModelsCleared }: Props) {
   const [open, setOpen] = useState(false);
   const [dialog, setDialog] = useState<DialogKind>(null);
   const [flyout, setFlyout] = useState<FlyoutKind>(null);
@@ -389,7 +394,13 @@ export default function TopbarMenu({ onConnect, onContinue, client = null }: Pro
       )}
 
       {dialog === "settings" && (
-        <SettingsDialog onConnect={onConnect} onClose={closeDialog} client={client} />
+        <SettingsDialog
+          onConnect={onConnect}
+          onClose={closeDialog}
+          client={client}
+          onModelsLinked={onModelsLinked}
+          onModelsCleared={onModelsCleared}
+        />
       )}
 
       {dialog === "continue" && (

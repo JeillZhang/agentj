@@ -13,10 +13,12 @@ use crate::permission::{
     PermissionDecision, PermissionRequestParams, PermissionRespondParams, PermissionRespondResult,
 };
 use crate::provider::{
+    ApiKeyLinkError, ApiKeyOutcome, AuthClearCredentialParams, AuthClearCredentialResult,
     AuthDevicePollParams, AuthDevicePollResult, AuthDeviceStartParams, AuthDeviceStartResult,
-    AuthStatusParams, AuthStatusResult, CredentialInfo, CredentialKind, CredentialSource,
-    DeviceAuthState, ModelEntry, ModelListParams, ModelListResult, ModelSource, ProviderUsageError,
-    ProviderUsageParams, ProviderUsageResult, UsageWindow, UsageWindowKind, UsageWindowStatus,
+    AuthSetApiKeyParams, AuthSetApiKeyResult, AuthStatusParams, AuthStatusResult, CredentialInfo,
+    CredentialKind, CredentialSource, DeviceAuthState, ModelEntry, ModelListParams,
+    ModelListResult, ModelSource, ProviderUsageError, ProviderUsageParams, ProviderUsageResult,
+    UsageWindow, UsageWindowKind, UsageWindowStatus,
 };
 use crate::question::{AskOption, AskQuestionParams, QuestionRespondParams, QuestionRespondResult};
 use crate::session::{
@@ -136,6 +138,24 @@ pub fn generate_schemas() -> BTreeMap<String, Schema> {
         schema_for!(AuthDevicePollResult),
     );
     m.insert("DeviceAuthState".into(), schema_for!(DeviceAuthState));
+    m.insert(
+        "AuthSetApiKeyParams".into(),
+        schema_for!(AuthSetApiKeyParams),
+    );
+    m.insert(
+        "AuthSetApiKeyResult".into(),
+        schema_for!(AuthSetApiKeyResult),
+    );
+    m.insert("ApiKeyOutcome".into(), schema_for!(ApiKeyOutcome));
+    m.insert("ApiKeyLinkError".into(), schema_for!(ApiKeyLinkError));
+    m.insert(
+        "AuthClearCredentialParams".into(),
+        schema_for!(AuthClearCredentialParams),
+    );
+    m.insert(
+        "AuthClearCredentialResult".into(),
+        schema_for!(AuthClearCredentialResult),
+    );
     m.insert("FileListParams".into(), schema_for!(FileListParams));
     m.insert("FileListResult".into(), schema_for!(FileListResult));
     m.insert("FileEntry".into(), schema_for!(FileEntry));
@@ -177,6 +197,19 @@ mod tests {
         assert!(schemas.contains_key("KernelStatusResult"));
         assert!(schemas.contains_key("SessionSubscribeParams")); // new
         assert!(schemas.contains_key("PermissionRequestParams"));
+        for name in [
+            "AuthSetApiKeyParams",
+            "AuthSetApiKeyResult",
+            "ApiKeyOutcome",
+            "ApiKeyLinkError",
+            "AuthClearCredentialParams",
+            "AuthClearCredentialResult",
+        ] {
+            assert!(
+                schemas.contains_key(name),
+                "schema {name} is not registered"
+            );
+        }
     }
 
     #[test]

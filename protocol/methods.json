@@ -1,5 +1,5 @@
 {
-  "protocol_version": "0.17.0",
+  "protocol_version": "0.18.0",
   "methods": [
     { "method": "initialize", "kind": "request", "direction": "client_to_server", "params": "InitializeParams", "result": "InitializeResult" },
     { "method": "initialized", "kind": "notification", "direction": "client_to_server", "params": null, "result": null },
@@ -26,6 +26,8 @@
     { "method": "auth/status", "kind": "request", "direction": "client_to_server", "params": "AuthStatusParams", "result": "AuthStatusResult" },
     { "method": "provider/usage", "kind": "request", "direction": "client_to_server", "params": "ProviderUsageParams", "result": "ProviderUsageResult" },
     { "method": "auth/deviceStart", "kind": "request", "direction": "client_to_server", "params": "AuthDeviceStartParams", "result": "AuthDeviceStartResult" },
-    { "method": "auth/devicePoll", "kind": "request", "direction": "client_to_server", "params": "AuthDevicePollParams", "result": "AuthDevicePollResult" }
+    { "method": "auth/devicePoll", "kind": "request", "direction": "client_to_server", "params": "AuthDevicePollParams", "result": "AuthDevicePollResult" },
+    { "method": "auth/setApiKey", "kind": "request", "direction": "client_to_server", "params": "AuthSetApiKeyParams", "result": "AuthSetApiKeyResult" },
+    { "method": "auth/clearCredential", "kind": "request", "direction": "client_to_server", "params": "AuthClearCredentialParams", "result": "AuthClearCredentialResult" }
   ]
 }

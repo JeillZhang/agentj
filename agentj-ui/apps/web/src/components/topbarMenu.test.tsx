@@ -18,6 +18,38 @@ function openProjectFlyout() {
   return trigger;
 }
 
+// Answers the subscription panel's mount reads and one verified API-key link.
+function stubClientWithVerifiedLink() {
+  const request = vi.fn(async (method: string) => {
+    if (method === METHODS.authStatus) return { authenticated: false };
+    if (method === METHODS.providerUsage) return { windows: [] };
+    if (method === METHODS.authSetApiKey) {
+      return {
+        provider: "opencode-go",
+        saved: true,
+        outcome: "verified",
+        effective_source: "file",
+        fetched_at: 1,
+        models: [
+          { id: "opencode-go/kimi-k3", verified: true, format: "anthropic" },
+          { id: "opencode-go/m3", verified: false, format: "openai-compat" },
+        ],
+      };
+    }
+    if (method === METHODS.authClearCredential) return { cleared: true };
+    return {};
+  });
+  return { request } as unknown as RpcClient;
+}
+
+async function openSettingsAndLink() {
+  openMenu();
+  fireEvent.click(screen.getByRole("menuitem", { name: "设置…" }));
+  fireEvent.click(await screen.findByRole("tab", { name: "订阅" }));
+  fireEvent.change(screen.getByLabelText(/API Key/), { target: { value: "sk-x" } });
+  fireEvent.click(screen.getByRole("button", { name: "链接" }));
+}
+
 test("first-level menu has exactly five items in order and no inline lists", () => {
   localStorage.clear();
   createProject("Alpha");
@@ -256,11 +288,21 @@ test("normalizes an empty work dir to null on project create", () => {
 
 test("forwards the client into the settings dialog", async () => {
   localStorage.clear();
-  const c = { request: vi.fn().mockResolvedValue({}) } as unknown as RpcClient;
+  const c = stubClientWithVerifiedLink();
   render(<TopbarMenu {...topbarProps} client={c} />);
   openMenu();
   fireEvent.click(screen.getByRole("menuitem", { name: "设置…" }));
   fireEvent.click(await screen.findByRole("tab", { name: "订阅" }));
   await waitFor(() => expect(c.request).toHaveBeenCalledWith(METHODS.authStatus, expect.anything()));
+  localStorage.clear();
+});
+
+test("forwards the linked catalog from the settings dialog", async () => {
+  localStorage.clear();
+  const onModelsLinked = vi.fn();
+  render(<TopbarMenu onConnect={() => {}} onContinue={() => {}}
+    client={stubClientWithVerifiedLink()} onModelsLinked={onModelsLinked} />);
+  await openSettingsAndLink();
+  await waitFor(() => expect(onModelsLinked).toHaveBeenCalledTimes(1));
   localStorage.clear();
 });

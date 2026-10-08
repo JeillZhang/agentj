@@ -44,6 +44,24 @@ fn e2e_serve_responds_to_jsonrpc_session_new() {
     );
 }
 
+/// Read stdout lines until the `session/new` reply shows up (startup warnings may precede
+/// it), or until EOF. Returns everything read, for an informative assertion message.
+#[cfg(unix)]
+fn read_until_session_reply(reader: &mut impl BufRead) -> String {
+    let mut seen = String::new();
+    loop {
+        let mut line = String::new();
+        if reader.read_line(&mut line).unwrap_or(0) == 0 {
+            break;
+        }
+        seen.push_str(&line);
+        if seen.contains(r#""session_id""#) {
+            break;
+        }
+    }
+    seen
+}
+
 // design #13: SIGTERM must trigger the same graceful shutdown chain as stdin EOF.
 // Unix-only (SIGTERM/kill semantics); cfg(unix) keeps the test portable.
 #[cfg(unix)]
@@ -76,13 +94,14 @@ fn e2e_serve_exits_gracefully_on_sigterm() {
 
     // Wait for the session/new reply before signalling: by then the serve loop — and the
     // SIGTERM handler spawned just before it — is installed, so the signal cannot race
-    // process startup (a fixed sleep flaked when startup exceeded it).
+    // process startup (a fixed sleep flaked when startup exceeded it). Startup warnings
+    // (e.g. the built-in opencode-go entry without a key) may precede the reply on stdout,
+    // so scan lines until the reply arrives instead of assuming the first line is it.
     let mut reader = BufReader::new(stdout);
-    let mut first = String::new();
-    reader.read_line(&mut first).unwrap();
+    let seen = read_until_session_reply(&mut reader);
     assert!(
-        first.contains(r#""session_id""#),
-        "expected session_id in output, got: {first}"
+        seen.contains(r#""session_id""#),
+        "expected session_id in output, got: {seen}"
     );
 
     // Send SIGTERM (kill -TERM). unsafe: raw pid syscall — safe here, child is ours.

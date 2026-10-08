@@ -19,9 +19,10 @@ use agentj_protocol::file::{FileKind, FileListParams, FileListResult};
 use agentj_protocol::lifecycle::InitializeParams;
 use agentj_protocol::permission::{PermissionRequestParams, PermissionRespondParams};
 use agentj_protocol::provider::{
-    AuthDevicePollParams, AuthDevicePollResult, AuthDeviceStartParams, AuthDeviceStartResult,
-    AuthStatusParams, AuthStatusResult, ModelListParams, ModelListResult, ProviderUsageParams,
-    ProviderUsageResult,
+    AuthClearCredentialParams, AuthClearCredentialResult, AuthDevicePollParams,
+    AuthDevicePollResult, AuthDeviceStartParams, AuthDeviceStartResult, AuthSetApiKeyParams,
+    AuthSetApiKeyResult, AuthStatusParams, AuthStatusResult, ModelListParams, ModelListResult,
+    ProviderUsageParams, ProviderUsageResult,
 };
 use agentj_protocol::question::{AskQuestionParams, QuestionRespondParams, QuestionRespondResult};
 use agentj_protocol::session::{
@@ -352,7 +353,7 @@ impl DispatchError {
         }
     }
 
-    /// Uninjected handle: the five subscription methods report this (`design D4`).
+    /// Uninjected handle: the seven subscription methods report this (`design D4`).
     pub(crate) fn provider_service_unavailable() -> Self {
         Self::internal_with_data(
             "ProviderServiceUnavailable",
@@ -412,6 +413,14 @@ pub trait ProviderService: Send + Sync {
         &self,
         params: AuthDevicePollParams,
     ) -> Result<AuthDevicePollResult, DispatchError>;
+    async fn set_api_key(
+        &self,
+        params: AuthSetApiKeyParams,
+    ) -> Result<AuthSetApiKeyResult, DispatchError>;
+    async fn clear_credential(
+        &self,
+        params: AuthClearCredentialParams,
+    ) -> Result<AuthClearCredentialResult, DispatchError>;
 }
 
 /// Serialize a subscription result, mapping a (practically impossible) failure to `-32603`.
@@ -443,7 +452,7 @@ pub struct IpcServer {
     pub question_module: Option<Arc<QuestionModule>>,
     /// Optional TrajectoryStore: run/respond recording + session/history reads.
     pub trajectory_store: Option<Arc<trajectory::TrajectoryStore>>,
-    /// Optional ProviderService: the five subscription methods dispatch into it (`design D4`).
+    /// Optional ProviderService: the seven subscription methods dispatch into it (`design D4`).
     pub provider_service: Option<Arc<dyn ProviderService>>,
 }
 
@@ -593,6 +602,8 @@ impl IpcServer {
                 "provider/usage" => self.dispatch_provider_usage(&req).await,
                 "auth/deviceStart" => self.dispatch_device_start(&req).await,
                 "auth/devicePoll" => self.dispatch_device_poll(&req).await,
+                "auth/setApiKey" => self.dispatch_set_api_key(&req).await,
+                "auth/clearCredential" => self.dispatch_clear_credential(&req).await,
                 "shutdown" => self.dispatch_shutdown(),
                 "permission/respond" => self.dispatch_permission_respond(&req, conn_id).await,
                 "question/respond" => self.dispatch_question_respond(&req, conn_id),
@@ -1317,6 +1328,21 @@ impl IpcServer {
         let svc = self.provider_service()?;
         let params = self.provider_params(req)?;
         provider_result(svc.device_poll(params).await?)
+    }
+
+    async fn dispatch_set_api_key(&self, req: &JsonRpcRequest) -> Result<Value, DispatchError> {
+        let svc = self.provider_service()?;
+        let params = self.provider_params(req)?;
+        provider_result(svc.set_api_key(params).await?)
+    }
+
+    async fn dispatch_clear_credential(
+        &self,
+        req: &JsonRpcRequest,
+    ) -> Result<Value, DispatchError> {
+        let svc = self.provider_service()?;
+        let params = self.provider_params(req)?;
+        provider_result(svc.clear_credential(params).await?)
     }
 
     /// the session `project_root`, with git porcelain statuses per file entry.
@@ -2331,7 +2357,12 @@ mod tests {
     #[derive(Default)]
     struct Recording {
         calls: std::sync::Mutex<Vec<String>>,
+        set_api_key_params: std::sync::Mutex<Vec<SetApiKeyCall>>,
+        clear_credential_params: std::sync::Mutex<Vec<Option<String>>>,
     }
+
+    /// One `set_api_key` invocation as the double observed it: `(provider, api_key, label)`.
+    type SetApiKeyCall = (Option<String>, String, Option<String>);
 
     #[async_trait]
     impl ProviderService for Recording {
@@ -2395,6 +2426,42 @@ mod tests {
                 interval: None,
                 message: None,
                 credential: None,
+            })
+        }
+        async fn set_api_key(
+            &self,
+            p: AuthSetApiKeyParams,
+        ) -> Result<AuthSetApiKeyResult, DispatchError> {
+            self.calls.lock().unwrap().push("set_api_key".into());
+            self.set_api_key_params.lock().unwrap().push((
+                p.provider.clone(),
+                p.api_key.clone(),
+                p.label.clone(),
+            ));
+            Ok(AuthSetApiKeyResult {
+                provider: p.provider.unwrap_or_else(|| "opencode-go".into()),
+                saved: true,
+                outcome: agentj_protocol::provider::ApiKeyOutcome::Verified,
+                error: None,
+                credential: None,
+                source: None,
+                effective_source: agentj_protocol::provider::CredentialSource::File,
+                fetched_at: 1,
+                models: vec![],
+            })
+        }
+        async fn clear_credential(
+            &self,
+            p: AuthClearCredentialParams,
+        ) -> Result<AuthClearCredentialResult, DispatchError> {
+            self.calls.lock().unwrap().push("clear_credential".into());
+            self.clear_credential_params
+                .lock()
+                .unwrap()
+                .push(p.provider.clone());
+            Ok(AuthClearCredentialResult {
+                provider: p.provider.unwrap_or_else(|| "opencode-go".into()),
+                cleared: true,
             })
         }
     }
@@ -2469,12 +2536,65 @@ mod tests {
                 serde_json::json!({"device_code":"dc"}),
                 "device_poll",
             ),
+            (
+                "auth/setApiKey",
+                serde_json::json!({"provider":"opencode-go","api_key":"sk-x"}),
+                "set_api_key",
+            ),
+            (
+                "auth/clearCredential",
+                serde_json::json!({"provider":"opencode-go"}),
+                "clear_credential",
+            ),
         ] {
             let v = call(&server, method, params).await;
             assert!(v.get("error").is_none(), "{method} must succeed: {v}");
             assert!(v["result"].is_object(), "{method} result must be an object");
             assert!(rec.calls.lock().unwrap().iter().any(|c| c == name));
         }
+    }
+
+    #[tokio::test]
+    async fn set_api_key_and_clear_credential_forward_to_the_service() {
+        let mut server = stub_server();
+        let rec = Arc::new(Recording::default());
+        let svc: Arc<dyn ProviderService> = rec.clone();
+        server.provider_service = Some(svc);
+
+        let v = call(
+            &server,
+            "auth/setApiKey",
+            serde_json::json!({"provider":"opencode-go","api_key":"sk-x"}),
+        )
+        .await;
+        assert!(v.get("error").is_none(), "auth/setApiKey must succeed: {v}");
+        assert_eq!(v["result"]["provider"], "opencode-go");
+        assert_eq!(v["result"]["outcome"], "verified");
+        assert!(v["result"].get("api_key").is_none());
+        assert_eq!(
+            rec.set_api_key_params.lock().unwrap().as_slice(),
+            [(Some("opencode-go".into()), "sk-x".to_string(), None)]
+        );
+
+        let v = call(
+            &server,
+            "auth/clearCredential",
+            serde_json::json!({"provider":"opencode-go"}),
+        )
+        .await;
+        assert!(
+            v.get("error").is_none(),
+            "auth/clearCredential must succeed: {v}"
+        );
+        assert_eq!(v["result"]["cleared"], true);
+        assert_eq!(
+            rec.clear_credential_params.lock().unwrap().as_slice(),
+            [Some("opencode-go".to_string())]
+        );
+        assert_eq!(
+            rec.calls.lock().unwrap().as_slice(),
+            ["set_api_key", "clear_credential"]
+        );
     }
 
     #[tokio::test]
@@ -2486,6 +2606,8 @@ mod tests {
             "provider/usage",
             "auth/deviceStart",
             "auth/devicePoll",
+            "auth/setApiKey",
+            "auth/clearCredential",
         ] {
             let v = call(&server, method, serde_json::json!({})).await;
             assert_eq!(
@@ -2506,6 +2628,19 @@ mod tests {
         )
         .await;
         assert_eq!(v["error"]["code"], -32602);
+        assert!(
+            rec.calls.lock().unwrap().is_empty(),
+            "service must not be called on bad params"
+        );
+
+        let v = call(
+            &server,
+            "auth/setApiKey",
+            serde_json::json!({"api_key": 42}),
+        )
+        .await;
+        assert_eq!(v["error"]["code"], -32602);
+        assert_eq!(v["error"]["data"]["reason"], "invalid_params");
         assert!(
             rec.calls.lock().unwrap().is_empty(),
             "service must not be called on bad params"

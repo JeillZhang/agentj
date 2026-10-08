@@ -35,6 +35,15 @@
   background: var(--aj-raised);
 }
 
+.aj-sub__btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.aj-sub__btn:disabled:hover {
+  background: transparent;
+}
+
 .aj-sub__btn:focus-visible {
   outline: 2px solid var(--aj-accent);
   outline-offset: 1px;
@@ -120,6 +129,47 @@
 .aj-sub__actions {
   display: flex;
   gap: var(--aj-space-2);
+}
+
+.aj-sub__link {
+  display: flex;
+  flex-direction: column;
+  gap: var(--aj-space-2);
+  padding: var(--aj-space-2);
+  border: 0.5px solid var(--aj-border);
+  border-radius: var(--aj-radiusCard);
+}
+
+.aj-sub__section {
+  font-weight: 600;
+  color: var(--aj-text);
+}
+
+.aj-sub__link-label {
+  color: var(--aj-textMuted);
+}
+
+.aj-sub__link-row {
+  display: flex;
+  align-items: center;
+  gap: var(--aj-space-2);
+}
+
+.aj-sub__input {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 8px;
+  border: 0.5px solid var(--aj-border);
+  border-radius: var(--aj-radiusCtl);
+  background: var(--aj-panel);
+  color: var(--aj-text);
+  font: inherit;
+  font-size: var(--aj-font-sm);
+}
+
+.aj-sub__input:focus-visible {
+  outline: 2px solid var(--aj-accent);
+  outline-offset: 1px;
 }
 
 .aj-sub__device {

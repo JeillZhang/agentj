@@ -20,6 +20,12 @@ export const ERROR_TEXT: Record<string, string> = {
   network: "网络不可达，已显示缓存数据",
 };
 
+/** Link outcome → the sentence shown under the key input; mirrors the Web panel. */
+export const OUTCOME_TEXT: Record<string, string> = {
+  verified: "已链接：密钥已保存并校验通过",
+  unverified: "网络不可达，已保存但未校验",
+};
+
 type UsageWindow = { kind: string; status?: string; percent?: number };
 type UsageError = { kind: string; message?: string };
 type UsageResult = {
@@ -31,6 +37,13 @@ type UsageResult = {
 type AuthStatus = {
   authenticated?: boolean;
   credential?: { key_hint?: string; expiring_soon?: boolean } | null;
+};
+/** `auth/setApiKey` result projection; never carries the full key (see CredentialInfo). */
+type LinkResult = {
+  saved?: boolean;
+  outcome?: string;
+  effective_source?: string;
+  error?: UsageError | null;
 };
 type DeviceStart = {
   device_code: string;
@@ -58,6 +71,15 @@ function errorSentence(err: UsageError | null | undefined, fallback: string): st
   return fallback;
 }
 
+function outcomeSentence(res: LinkResult): string {
+  if (res.outcome === "rejected") {
+    // A rejection never saves; keep the actionable reason from the shared table.
+    const known = res.error?.kind ? ERROR_TEXT[res.error.kind] : undefined;
+    return `未保存：${known ?? res.error?.message ?? "API Key 无效或已被撤销"}`;
+  }
+  return OUTCOME_TEXT[res.outcome ?? ""] ?? "链接结果未知：请刷新查看";
+}
+
 function windowLine(w: UsageWindow): string {
   const label = WINDOW_LABEL[w.kind] ?? w.kind;
   // `percent` is optional on the wire (upstream may omit it or send a non-integer);
@@ -79,6 +101,10 @@ export function SubscriptionOverlay(props: SubscriptionOverlayProps): React.Reac
   const [status, setStatus] = useState<AuthStatus | null>(null);
   const [device, setDevice] = useState<{ user_code: string; verification_uri: string } | null>(null);
   const [deviceMsg, setDeviceMsg] = useState<string | null>(null);
+  const [linkMode, setLinkMode] = useState(false);
+  const [keyBuf, setKeyBuf] = useState("");
+  const [linkMsg, setLinkMsg] = useState<string | null>(null);
+  const [envShadow, setEnvShadow] = useState(false);
   const cancelled = useRef(false);
 
   const refreshAll = async (): Promise<void> => {
@@ -163,13 +189,75 @@ export function SubscriptionOverlay(props: SubscriptionOverlayProps): React.Reac
     }
   };
 
+  // The typed key never enters the render tree: it is dropped before the request,
+  // so only the mask below is ever visible in a frame.
+  const submitKey = async (): Promise<void> => {
+    const apiKey = keyBuf;
+    if (apiKey.trim().length === 0) {
+      setLinkMsg("请输入 API Key");
+      return;
+    }
+    setKeyBuf("");
+    setLinkMode(false);
+    let res: LinkResult;
+    try {
+      res = (await client.request(METHODS.authSetApiKey, {
+        provider: "opencode-go",
+        api_key: apiKey,
+        label: "tui",
+      })) as LinkResult;
+    } catch (e) {
+      if (!cancelled.current) setLinkMsg(e instanceof Error ? e.message : String(e));
+      return;
+    }
+    if (cancelled.current) return;
+    setLinkMsg(outcomeSentence(res));
+    setEnvShadow(res.saved === true && res.effective_source === "env");
+  };
+
+  const clearCredential = async (): Promise<void> => {
+    try {
+      await client.request(METHODS.authClearCredential, { provider: "opencode-go" });
+    } catch (e) {
+      if (!cancelled.current) setLinkMsg(e instanceof Error ? e.message : String(e));
+      return;
+    }
+    await refreshAll();
+  };
+
   useKeyboard((key) => {
     const name = (key.name ?? "").toLowerCase();
+    // Link mode owns the keys first: Esc cancels the input instead of closing the overlay.
+    if (linkMode) {
+      if (name === "escape" || name === "esc") {
+        setLinkMode(false);
+        setKeyBuf("");
+        return;
+      }
+      if (name === "return" || name === "enter" || key.sequence === "\r") {
+        void submitKey();
+        return;
+      }
+      if (name === "backspace") {
+        setKeyBuf((v) => v.slice(0, -1));
+        return;
+      }
+      const ch = key.sequence ?? "";
+      if (ch.length === 1 && ch >= " " && !key.ctrl && !key.meta && !key.super) {
+        setKeyBuf((v) => v + ch);
+      }
+      return;
+    }
     if (name === "escape") {
       onClose();
       return;
     }
     if (name === "l") void startDevice();
+    else if (name === "i") {
+      setLinkMsg(null);
+      setEnvShadow(false);
+      setLinkMode(true);
+    } else if (name === "c") void clearCredential();
   });
 
   const errorLine = usage?.error ? errorSentence(usage.error, "用量错误") : null;
@@ -185,7 +273,11 @@ export function SubscriptionOverlay(props: SubscriptionOverlayProps): React.Reac
       {device ? <text>{device.user_code}</text> : null}
       {device ? <text>{device.verification_uri}</text> : null}
       {deviceMsg ? <text>{deviceMsg}</text> : null}
-      <text>l 设备码登录 · Esc 关闭</text>
+      {linkMode ? <text>{`API Key: ${"•".repeat(keyBuf.length)}`}</text> : null}
+      {linkMsg ? <text>{linkMsg}</text> : null}
+      {envShadow ? <text>环境变量当前优先，链接的密钥暂不生效</text> : null}
+      <text>i 链接 API Key · c 解除链接 · l 设备码登录 · Esc 关闭</text>
+      <text>链接的 API Key 只保存在所连接内核主机的 auth.json 中</text>
     </box>
   );
 }
