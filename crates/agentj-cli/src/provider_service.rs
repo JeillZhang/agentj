@@ -578,8 +578,20 @@ impl CliProviderService {
             )
             .map_err(credential_error)?;
         self.usage_cache.lock().unwrap().remove(&cfg.name);
-        activation::activate_opencode_go(&self.registry, cfg, key, catalog.clone(), None)
-            .map_err(activation_failed)?;
+        // D3/G7: the runtime instance must carry the same credential the read side reports.
+        // A non-blank `api_key_env` shadows the key just stored, so activation uses the
+        // *resolved* credential (env wins) rather than the submitted value — otherwise the
+        // kernel silently sends the just-stored key under an `env` banner.
+        let (effective_key, effective_source) = self.key_read_only(cfg)?;
+        let effective_key = effective_key.unwrap_or_else(|| key.to_string());
+        activation::activate_opencode_go(
+            &self.registry,
+            cfg,
+            &effective_key,
+            catalog.clone(),
+            None,
+        )
+        .map_err(activation_failed)?;
         let models = entries_of(&catalog.ids(), &catalog);
         let cached = ModelListResult {
             provider: cfg.name.clone(),
@@ -592,7 +604,14 @@ impl CliProviderService {
             .lock()
             .unwrap()
             .insert(cfg.name.clone(), (cached, now));
-        Ok(link_result(cfg, key, source, models, now))
+        Ok(link_result(
+            cfg,
+            &effective_key,
+            effective_source,
+            source,
+            models,
+            now,
+        ))
     }
 
     /// The catalog a link reports (design D2): the verified account ids, else the live probe,
@@ -704,15 +723,17 @@ fn rejected(cfg: &ProviderCfg, kind: &str, message: &str) -> AuthSetApiKeyResult
     }
 }
 
-/// The successful-link payload (design D2/D3): the redacted hint plus the catalog tier.
+/// The successful-link payload (design D2/D3): the redacted hint plus the catalog tier. `key`
+/// and `effective_source` are the *resolved* credential, so `credential.source` and
+/// `key_hint` describe the credential that actually takes effect (design D3/G7).
 fn link_result(
     cfg: &ProviderCfg,
     key: &str,
+    effective_source: CredentialSource,
     source: ModelSource,
     models: Vec<ModelEntry>,
     now: i64,
 ) -> AuthSetApiKeyResult {
-    let effective = effective_source(cfg);
     AuthSetApiKeyResult {
         provider: cfg.name.clone(),
         saved: true,
@@ -724,29 +745,17 @@ fn link_result(
         error: None,
         credential: Some(CredentialInfo {
             kind: CredentialKind::ApiKey,
-            source: effective,
+            source: effective_source,
             key_hint: Some(redact(key)),
             expires_at: None,
             expiring_soon: false,
             org_id: None,
         }),
         source: Some(source),
-        effective_source: effective,
+        effective_source,
         fetched_at: now,
         models,
     }
-}
-
-/// D3/G7: a non-blank `api_key_env` shadows the entry just written, so the result reports
-/// `env` instead of claiming the new credential is the effective one.
-fn effective_source(cfg: &ProviderCfg) -> CredentialSource {
-    if let Some(var) = cfg.api_key_env.as_deref()
-        && let Ok(v) = std::env::var(var)
-        && !v.trim().is_empty()
-    {
-        return CredentialSource::Env;
-    }
-    CredentialSource::File
 }
 
 /// A registration failure after the credential is already on disk (design D2): `-32603` with
@@ -1335,6 +1344,63 @@ mod tests {
         assert_eq!(out.effective_source, CredentialSource::Env);
         assert!(out.saved);
         unsafe { std::env::remove_var("AGENTJ_TEST_SHADOW_KEY") };
+    }
+
+    async fn mount_chat_ok(server: &wiremock::MockServer) {
+        wiremock::Mock::given(wiremock::matchers::path("/v1/chat/completions"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/event-stream")
+                    .set_body_string("data: [DONE]\n\n"),
+            )
+            .mount(server)
+            .await;
+    }
+
+    /// BUG-001: when `api_key_env` is non-empty the read side promises the stored key is
+    /// shadowed (`effective_source=env`, env `key_hint`), so the runtime instance that
+    /// `session/run` uses must be built from the *resolved* credential — not the submitted one.
+    /// Otherwise the kernel silently sends the just-stored key under an `env` banner.
+    #[tokio::test]
+    async fn env_shadow_key_is_what_the_registered_provider_sends() {
+        // SAFETY: unique test-local variable name.
+        unsafe { std::env::set_var("AGENTJ_TEST_RUNTIME_SHADOW_KEY", "sk-env-value-9") };
+        let server = wiremock::MockServer::start().await;
+        mount_v2_config(&server, 200, v2_body(&["kimi-k3"])).await;
+        mount_chat_ok(&server).await;
+        let (svc, _dir) = svc_with_console_and_env(&server.uri(), "AGENTJ_TEST_RUNTIME_SHADOW_KEY");
+        let out = svc.set_api_key(params("sk-good", None)).await.unwrap();
+        assert_eq!(out.effective_source, CredentialSource::Env);
+        assert_eq!(
+            out.credential.as_ref().unwrap().key_hint.as_deref(),
+            Some("…ue-9"),
+            "the link result must project the effective (env) key, not the submitted one"
+        );
+
+        let provider = svc.registry.get("opencode-go").expect("activated");
+        let _ = provider
+            .chat_stream(
+                vec![],
+                vec![],
+                ModelOptions {
+                    model: "opencode-go/kimi-k3".into(),
+                    ..ModelOptions::default()
+                },
+            )
+            .await;
+        let chat = server
+            .received_requests()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|r| r.url.path() == "/v1/chat/completions")
+            .expect("a chat request reached the provider base");
+        assert_eq!(
+            chat.headers.get("authorization").unwrap(),
+            "Bearer sk-env-value-9",
+            "runtime activation must carry the effective env credential"
+        );
+        unsafe { std::env::remove_var("AGENTJ_TEST_RUNTIME_SHADOW_KEY") };
     }
 
     #[tokio::test]
