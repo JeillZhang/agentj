@@ -7,6 +7,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 #[test]
@@ -620,6 +621,144 @@ async fn assert_run_reaches_the_linked_provider(
     );
 }
 
+/// T12: over a real socket — `auth/clearCredential` followed by `auth/status` reports the
+/// cleared state (AC1), a console 401 rejects the key and leaves no credential behind (AC2),
+/// a kernel without a provider handle answers `-32603 provider_service_unavailable` (AC3),
+/// and link/list/clear never rewrite `config.toml` while `auth.json` demonstrably changes
+/// (AC4, positive control). Every console call goes to a local wiremock, so the test stays
+/// deterministic and offline.
+#[tokio::test]
+async fn serve_clear_reject_unattached_and_never_touch_config() {
+    let console = wiremock::MockServer::start().await;
+    mount_v2_config(&console, 200, v2_body(&["kimi-k3"])).await;
+    assert_link_list_clear_never_touch_config(&console);
+
+    let revoked = wiremock::MockServer::start().await;
+    mount_v2_config(
+        &revoked,
+        401,
+        serde_json::json!({"error": "invalid_api_key"}),
+    )
+    .await;
+    assert_rejected_key_leaves_no_credential(&revoked).await;
+
+    assert_unattached_kernel_has_no_provider_service();
+}
+
+/// AC1 + AC4: link, list, clear and status over the socket. `config.toml` keeps its exact
+/// bytes through all four steps (design D6: credentials never migrate into the config file),
+/// while `auth.json` appears with the link and is gone after the clear.
+fn assert_link_list_clear_never_touch_config(console: &wiremock::MockServer) {
+    let (kernel, mut client) = serve_linked_kernel(&console.uri());
+    let config_path = kernel.home().join("config.toml");
+    let auth_path = kernel.auth_path();
+    let config_before = sha256_hex(&std::fs::read(&config_path).unwrap());
+    assert!(!auth_path.exists(), "the temp home starts unlinked");
+    initialize(&mut client);
+
+    let linked = client.call(
+        "auth/setApiKey",
+        serde_json::json!({"provider": "opencode-go", "api_key": "sk-good"}),
+    );
+    assert_eq!(linked["outcome"], "verified", "{linked}");
+    let auth_linked = std::fs::read(&auth_path).expect("the link persists auth.json");
+    assert!(!auth_linked.is_empty(), "the link wrote credential bytes");
+
+    let listed = client.call(
+        "model/list",
+        serde_json::json!({"provider": "opencode-go", "refresh": true}),
+    );
+    assert_eq!(listed["source"], "account", "{listed}");
+
+    let cleared = client.call(
+        "auth/clearCredential",
+        serde_json::json!({"provider": "opencode-go"}),
+    );
+    assert_eq!(cleared["cleared"], true, "{cleared}");
+    let status = client.call(
+        "auth/status",
+        serde_json::json!({"provider": "opencode-go"}),
+    );
+    assert_eq!(status["authenticated"], false, "{status}");
+
+    assert_eq!(
+        sha256_hex(&std::fs::read(&config_path).unwrap()),
+        config_before,
+        "link/list/clear must never write config.toml"
+    );
+    assert!(
+        !auth_path.exists(),
+        "clearing the last credential removes auth.json"
+    );
+}
+
+/// AC2: a console 401 rejects the key before anything is stored — no `auth.json` appears and
+/// `config.toml` stays byte-identical (design D2). The single upstream call carrying the
+/// candidate key proves the rejection came from that 401, not from local validation.
+async fn assert_rejected_key_leaves_no_credential(console: &wiremock::MockServer) {
+    let (kernel, mut client) = serve_linked_kernel(&console.uri());
+    let config_path = kernel.home().join("config.toml");
+    let config_before = sha256_hex(&std::fs::read(&config_path).unwrap());
+    initialize(&mut client);
+
+    let rejected = client.call(
+        "auth/setApiKey",
+        serde_json::json!({"provider": "opencode-go", "api_key": "sk-bad"}),
+    );
+    assert_eq!(rejected["outcome"], "rejected", "{rejected}");
+    assert_eq!(rejected["saved"], false, "{rejected}");
+    assert!(
+        !rejected.to_string().contains("sk-bad"),
+        "the rejected key never leaves the kernel: {rejected}"
+    );
+
+    let attempts: Vec<_> = console
+        .received_requests()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.url.path() == "/api/v2/config")
+        .collect();
+    assert_eq!(
+        attempts.len(),
+        1,
+        "the candidate key is probed exactly once"
+    );
+    assert_eq!(
+        attempts[0].headers.get("authorization").unwrap(),
+        "Bearer sk-bad"
+    );
+
+    assert!(
+        !kernel.auth_path().exists(),
+        "a rejected link leaves no credential file"
+    );
+    assert_eq!(
+        sha256_hex(&std::fs::read(&config_path).unwrap()),
+        config_before,
+        "a rejected link must never write config.toml"
+    );
+}
+
+/// AC3: the handle-less kernel answers the subscription method with `-32603` and the
+/// documented `data.reason` instead of a fabricated result (design D4).
+fn assert_unattached_kernel_has_no_provider_service() {
+    let (_server, mut client) = unattached_kernel();
+    let response = client.request(
+        "auth/setApiKey",
+        serde_json::json!({"provider": "opencode-go", "api_key": "sk-bad"}),
+    );
+    assert_eq!(response["error"]["code"], -32603, "{response}");
+    assert_eq!(
+        response["error"]["data"]["reason"], "provider_service_unavailable",
+        "{response}"
+    );
+    assert!(
+        !response.to_string().contains("sk-bad"),
+        "the key never reaches an unattached kernel's answer: {response}"
+    );
+}
+
 /// A per-test tempdir holding `config.toml`, the session store and `XDG_DATA_HOME`, so
 /// `auth.json` never touches the developer's real store. Removed on drop.
 struct TempHome(PathBuf);
@@ -710,6 +849,18 @@ struct ServedKernel {
     _home: TempHome,
 }
 
+impl ServedKernel {
+    /// The temp home holding `config.toml`, the session store and `auth.json`.
+    fn home(&self) -> &Path {
+        self._home.path()
+    }
+
+    /// `$XDG_DATA_HOME/agentj/auth.json` — the credential file the kernel writes (T12).
+    fn auth_path(&self) -> PathBuf {
+        self.home().join("agentj").join("auth.json")
+    }
+}
+
 /// T11 harness: a kernel whose `XDG_DATA_HOME` is a tempdir (so `auth.json` lands in the
 /// temp home) and whose console base and `opencode-go` base URL point at `console_uri`
 /// (a local wiremock). The default provider is the keyless `mock`, so startup never probes
@@ -795,4 +946,61 @@ async fn mount_chat_stream(server: &wiremock::MockServer) {
         )
         .mount(server)
         .await;
+}
+
+/// T12 harness: a real TCP kernel whose server was built without a `provider_service` — the
+/// handle-less shape `run` builds and `run --attach` targets (design D4). It runs its own
+/// runtime on a dedicated thread, otherwise the blocking `SocketClient` would starve the
+/// accept loop; the thread ends with the last connection's shutdown signal.
+fn unattached_kernel() -> (std::thread::JoinHandle<()>, SocketClient) {
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    let thread = std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        runtime.block_on(async move {
+            let kernel = agentj_core::kernel::Kernel::new();
+            let session: Arc<dyn agentj_core::module::SessionStore> =
+                Arc::new(agentj_session::InMemoryStore::new());
+            let mut server = agentj_ipc::tcp::TcpIpcServer::bind(
+                "127.0.0.1:0",
+                kernel,
+                session,
+                None,
+                None,
+                agentj_ipc::tcp::TcpBindOptions::default(),
+            )
+            .await
+            .expect("bind the unattached kernel");
+            let addr = server.local_addr().expect("local addr").to_string();
+            tx.send(addr).expect("the client waits for the address");
+            let _ = server.run().await;
+        });
+    });
+    let addr = rx
+        .recv()
+        .expect("the unattached kernel reports its address");
+    (thread, SocketClient::connect(&addr))
+}
+
+/// The TCP handshake the resident kernel expects before business methods.
+fn initialize(client: &mut SocketClient) {
+    let init = client.request(
+        "initialize",
+        serde_json::json!({
+            "protocol_version": agentj_protocol::PROTOCOL_VERSION,
+            "client_info": {"name": "e2e", "version": env!("CARGO_PKG_VERSION")},
+        }),
+    );
+    assert!(init["result"].is_object(), "initialize failed: {init}");
+}
+
+/// SHA-256 hex of a file's bytes — the "config.toml untouched" proof for T12.
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::Digest as _;
+    sha2::Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
