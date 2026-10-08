@@ -317,3 +317,122 @@ fn e2e_run_emits_todo_and_file_change_frames() {
     let _ = child.wait();
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Unique temp dir (the crate has no tempfile dev-dependency); also creates sessions/.
+fn run_temp_dir(tag: &str) -> PathBuf {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("agentj-run-{tag}-{}-{nanos}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("sessions")).unwrap();
+    dir
+}
+
+/// Key-free `mock` provider + auto-allowed `bash`: the scripted mock's first call is a
+/// `bash` tool call, so the policy must not ask (same recipe as tests/e2e_serve.rs).
+fn write_run_config(dir: &Path) -> PathBuf {
+    let cfg = dir.join("run_config.toml");
+    std::fs::write(
+        &cfg,
+        format!(
+            "[model]\nprovider = \"mock\"\n\n\
+             [[model.providers]]\nname = \"mock\"\nkind = \"mock\"\n\
+             base_url = \"mock://local\"\napi_key_env = \"\"\n\n\
+             [permission.tools.bash]\nmode = \"allow\"\n\n\
+             [session]\ndir = \"{}\"\n",
+            dir.join("sessions").display()
+        ),
+    )
+    .unwrap();
+    cfg
+}
+
+/// `agentj --config <cfg> run <args…>` from the project root, output captured.
+fn run_cli(cfg: &Path, workdir: &Path, args: &[&str]) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_agentj"))
+        .arg("--config")
+        .arg(cfg)
+        .arg("run")
+        .args(args)
+        .current_dir(workdir)
+        .output()
+        .expect("agentj run must spawn")
+}
+
+/// The response is printed last; tracing logs share stdout, so compare the last line only.
+fn last_line(s: &str) -> String {
+    s.trim_end()
+        .lines()
+        .last()
+        .unwrap_or_default()
+        .trim()
+        .to_string()
+}
+
+#[test]
+fn e2e_run_unknown_provider_fails_with_registered_names() {
+    let dir = run_temp_dir("unknown-provider");
+    let cfg = write_run_config(&dir);
+    let out = run_cli(&cfg, &dir, &["--provider", "nope", "hi"]);
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_ne!(
+        last_line(&stdout),
+        "done",
+        "a failed run must not print a final response, got {stdout:?}"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("unknown provider: nope"), "{stderr}");
+    assert!(stderr.contains("mock"), "{stderr}");
+}
+
+#[test]
+fn e2e_run_blank_provider_falls_back_to_default() {
+    let dir = run_temp_dir("blank-provider");
+    let cfg = write_run_config(&dir);
+    let out = run_cli(&cfg, &dir, &["--provider", "   ", "hi"]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(last_line(&String::from_utf8_lossy(&out.stdout)), "done");
+}
+
+#[test]
+fn e2e_run_model_override_exits_zero() {
+    let dir = run_temp_dir("model-override");
+    let cfg = write_run_config(&dir);
+    let out = run_cli(&cfg, &dir, &["--model", "custom-model", "hi"]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // the last line is the response: an echo line would follow it and fail this assertion
+    assert_eq!(last_line(&String::from_utf8_lossy(&out.stdout)), "done");
+}
+
+#[test]
+// Regression pin (also green before this task): the no-flag path keeps printing the response.
+fn e2e_run_without_flags_prints_final_response() {
+    let dir = run_temp_dir("no-flags");
+    let cfg = write_run_config(&dir);
+    let out = run_cli(&cfg, &dir, &["hi"]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(last_line(&String::from_utf8_lossy(&out.stdout)), "done");
+}

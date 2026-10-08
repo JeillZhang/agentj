@@ -54,6 +54,12 @@ enum Commands {
         /// Attach to a resident kernel instead of an embedded one (tcp://host:port).
         #[arg(long)]
         attach: Option<String>,
+        /// Provider name to use for this run only (default: the kernel's default provider).
+        #[arg(long)]
+        provider: Option<String>,
+        /// Model id to use for this run only, e.g. "opencode-go/kimi-k3" (default: model.default_model).
+        #[arg(long)]
+        model: Option<String>,
     },
     /// Serve the JSON-RPC API over stdio, or over TCP with --port (resident kernel).
     Serve {
@@ -635,7 +641,12 @@ async fn main() -> anyhow::Result<()> {
 
     match cli.command {
         Some(Commands::Auth { .. }) => {}
-        Some(Commands::Run { prompt, attach }) => {
+        Some(Commands::Run {
+            prompt,
+            attach,
+            provider,
+            model,
+        }) => {
             if let Some(url) = attach {
                 run_attached(&url, &prompt).await?;
                 mcp_manager.close_all().await;
@@ -650,8 +661,13 @@ async fn main() -> anyhow::Result<()> {
                 );
                 let signal_task = spawn_signal_task(ipc_server.kernel_sender());
                 let sid = ipc_server.create_session()?;
-                let mut rx = ipc_server.run_turn_stream(&sid, &prompt);
+                let overrides = agentj_core::types::RunOverrides {
+                    provider: provider.clone(),
+                    model: model.clone(),
+                };
+                let mut rx = ipc_server.run_turn_stream_with(&sid, &prompt, overrides);
                 let mut out = String::new();
+                let mut failed: Option<String> = None;
                 while let Some(ev) = rx.recv().await {
                     match ev {
                         agentj_core::types::AgentEvent::Delta(d) => out.push_str(&d),
@@ -660,16 +676,22 @@ async fn main() -> anyhow::Result<()> {
                             break;
                         }
                         agentj_core::types::AgentEvent::Error(e) => {
-                            eprintln!("error: {e}");
+                            failed = Some(e);
                             break;
                         }
                         _ => {}
                     }
                 }
-                println!("{out}");
+                // Shut down before reporting: the failed path exits the process, which
+                // would otherwise strand the embedded kernel and its signal task.
                 ipc_server.signal_shutdown()?;
                 drop(signal_task);
                 mcp_manager.close_all().await;
+                if let Some(e) = failed {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                }
+                println!("{out}");
             }
         }
         Some(Commands::Serve { port: None, .. }) => {
@@ -922,6 +944,93 @@ mod tests {
         match cli.command {
             Some(Commands::Serve { host, .. }) => assert_eq!(host, "0.0.0.0"),
             _ => panic!("expected serve subcommand"),
+        }
+    }
+
+    #[test]
+    fn run_parses_provider_and_model_flags() {
+        let cli = Cli::try_parse_from([
+            "agentj",
+            "run",
+            "--provider",
+            "opencode-go",
+            "--model",
+            "m1",
+            "hi",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Commands::Run {
+                prompt,
+                attach,
+                provider,
+                model,
+            }) => {
+                assert_eq!(prompt, "hi");
+                assert!(attach.is_none());
+                assert_eq!(provider.as_deref(), Some("opencode-go"));
+                assert_eq!(model.as_deref(), Some("m1"));
+            }
+            _ => panic!("expected run subcommand"),
+        }
+    }
+
+    #[test]
+    fn run_flags_absent_are_none() {
+        let cli = Cli::try_parse_from(["agentj", "run", "hi"]).unwrap();
+        match cli.command {
+            Some(Commands::Run {
+                provider, model, ..
+            }) => {
+                assert!(provider.is_none() && model.is_none());
+            }
+            _ => panic!("expected run subcommand"),
+        }
+    }
+
+    #[test]
+    fn run_model_without_provider_is_accepted() {
+        let cli = Cli::try_parse_from(["agentj", "run", "--model", "m1", "hi"]).unwrap();
+        match cli.command {
+            Some(Commands::Run {
+                provider, model, ..
+            }) => {
+                assert!(provider.is_none());
+                assert_eq!(model.as_deref(), Some("m1"));
+            }
+            _ => panic!("expected run subcommand"),
+        }
+    }
+
+    #[test]
+    fn run_provider_without_value_is_usage_error() {
+        assert!(Cli::try_parse_from(["agentj", "run", "--provider"]).is_err());
+    }
+
+    #[test]
+    fn run_blank_provider_is_passed_through() {
+        let cli = Cli::try_parse_from(["agentj", "run", "--provider", "   ", "hi"]).unwrap();
+        match cli.command {
+            Some(Commands::Run { provider, .. }) => assert_eq!(provider.as_deref(), Some("   ")),
+            _ => panic!("expected run subcommand"),
+        }
+    }
+
+    #[test]
+    fn run_empty_provider_is_passed_through() {
+        let cli = Cli::try_parse_from(["agentj", "run", "--provider", "", "hi"]).unwrap();
+        match cli.command {
+            Some(Commands::Run { provider, .. }) => assert_eq!(provider.as_deref(), Some("")),
+            _ => panic!("expected run subcommand"),
+        }
+    }
+
+    #[test]
+    fn run_blank_model_is_passed_through() {
+        let cli = Cli::try_parse_from(["agentj", "run", "--model", "   ", "hi"]).unwrap();
+        match cli.command {
+            Some(Commands::Run { model, .. }) => assert_eq!(model.as_deref(), Some("   ")),
+            _ => panic!("expected run subcommand"),
         }
     }
 
