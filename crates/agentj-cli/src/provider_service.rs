@@ -462,33 +462,56 @@ impl CliProviderService {
                 state(DeviceAuthState::Error, None, Some(msg), None)
             }
             agentj_auth::oauth::PollOutcome::Authorized(t) => {
-                self.store
-                    .set(
-                        &cfg.name,
-                        Credential::OAuth {
-                            access: t.access,
-                            refresh: t.refresh,
-                            expires: t.expires_at,
-                            account_id: None,
-                            org_id: t.org_id.clone(),
-                        },
-                    )
-                    .map_err(credential_error)?;
-                state(
-                    DeviceAuthState::Authorized,
-                    None,
-                    None,
-                    Some(CredentialInfo {
-                        kind: CredentialKind::OAuth,
-                        source: CredentialSource::File,
-                        key_hint: None,
-                        expires_at: Some(t.expires_at),
-                        expiring_soon: false,
-                        org_id: t.org_id,
-                    }),
-                )
+                self.authorized_login(&cfg, t).await?
             }
         })
+    }
+
+    /// Persist the credential the device flow minted and register `opencode-go` with it
+    /// (design G3), so a completed login works without restarting the kernel.
+    async fn authorized_login(
+        &self,
+        cfg: &ProviderCfg,
+        t: agentj_auth::oauth::Tokens,
+    ) -> Result<AuthDevicePollResult, DispatchError> {
+        let access = t.access.clone();
+        self.store
+            .set(
+                &cfg.name,
+                Credential::OAuth {
+                    access: t.access,
+                    refresh: t.refresh,
+                    expires: t.expires_at,
+                    account_id: None,
+                    org_id: t.org_id.clone(),
+                },
+            )
+            .map_err(credential_error)?;
+        let catalog = self.go_catalog_best_effort(cfg).await;
+        activation::activate_opencode_go(
+            &self.registry,
+            cfg,
+            &access,
+            catalog,
+            Some(activation::OAuthRefresh {
+                store: self.store.clone(),
+                console_base: self.console_base.clone(),
+            }),
+        )
+        .map_err(activation_failed)?;
+        Ok(state(
+            DeviceAuthState::Authorized,
+            None,
+            None,
+            Some(CredentialInfo {
+                kind: CredentialKind::OAuth,
+                source: CredentialSource::File,
+                key_hint: None,
+                expires_at: Some(t.expires_at),
+                expiring_soon: false,
+                org_id: t.org_id,
+            }),
+        ))
     }
 
     pub async fn set_api_key(
@@ -586,6 +609,12 @@ impl CliProviderService {
             ),
             Err(_) => (overlay, ModelSource::Overlay),
         }
+    }
+
+    /// The catalog an activation uses (design D3): the live ∩ overlay ids, else the committed
+    /// overlay. It never fabricates an id and never fails the caller.
+    async fn go_catalog_best_effort(&self, cfg: &ProviderCfg) -> ModelCatalog {
+        self.link_catalog(cfg, None).await.0
     }
 
     /// Remove the stored credential and converge the registration with what still resolves
@@ -1841,6 +1870,71 @@ mod tests {
                 .await
                 .unwrap()
                 .cleared
+        );
+    }
+
+    /// A service over the mock console base plus the temp dir and registry it was built with,
+    /// so a device-code login is observable through both the store and the registration.
+    fn svc_with_device_flow(
+        console: &str,
+    ) -> (CliProviderService, tempfile::TempDir, Arc<ProviderRegistry>) {
+        let reg = empty_registry();
+        let dir = tempfile::tempdir().unwrap();
+        let svc = CliProviderService::new(
+            AuthStore::with_path(dir.path().join("auth.json")),
+            vec![go_cfg(console)],
+            "opencode-go".into(),
+            console.into(),
+            80,
+            reg.clone(),
+        );
+        (svc, dir, reg)
+    }
+
+    fn poll_params(device_code: &str) -> AuthDevicePollParams {
+        AuthDevicePollParams {
+            provider: None,
+            device_code: device_code.into(),
+        }
+    }
+
+    async fn mount_token_success(server: &wiremock::MockServer, access: &str) {
+        wiremock::Mock::given(wiremock::matchers::path("/auth/device/token"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "access_token": access, "refresh_token": "new-refresh", "expires_in": 600,
+                "org_id": "org_1" })),
+            )
+            .mount(server)
+            .await;
+    }
+
+    #[tokio::test]
+    async fn authorized_device_poll_also_registers_the_provider() {
+        let server = wiremock::MockServer::start().await;
+        mount_token_success(&server, "access-1").await;
+        let (svc, dir, reg) = svc_with_device_flow(&server.uri());
+        let out = svc.device_poll(poll_params("dev-code")).await.unwrap();
+        assert_eq!(out.state, DeviceAuthState::Authorized);
+        assert!(dir.path().join("auth.json").exists());
+        assert!(reg.get("opencode-go").is_some(), "no restart needed");
+    }
+
+    #[tokio::test]
+    async fn pending_device_poll_leaves_the_registry_untouched() {
+        let server = wiremock::MockServer::start().await;
+        mount_device_token(
+            &server,
+            400,
+            serde_json::json!({"error":"authorization_pending"}),
+        )
+        .await;
+        let (svc, _dir, reg) = svc_with_device_flow(&server.uri());
+        let out = svc.device_poll(poll_params("dev-code")).await.unwrap();
+        assert_eq!(out.state, DeviceAuthState::Pending);
+        assert!(
+            reg.get("opencode-go").is_none(),
+            "pending must not activate"
         );
     }
 }
