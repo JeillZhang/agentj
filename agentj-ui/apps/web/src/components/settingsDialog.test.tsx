@@ -2,7 +2,31 @@ import { expect, test, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import { render, screen, fireEvent, within, waitFor } from "@testing-library/react";
 import type { RpcClient } from "@agentj/sdk";
+import { METHODS } from "@agentj/sdk";
 import SettingsDialog from "./SettingsDialog";
+
+// Answers the subscription panel's mount reads and one verified API-key link.
+function stubClientWithVerifiedLink() {
+  const request = vi.fn(async (method: string) => {
+    if (method === METHODS.authStatus) return { authenticated: false };
+    if (method === METHODS.providerUsage) return { windows: [] };
+    if (method === METHODS.authSetApiKey) {
+      return {
+        provider: "opencode-go",
+        saved: true,
+        outcome: "verified",
+        effective_source: "file",
+        fetched_at: 1,
+        models: [
+          { id: "opencode-go/kimi-k3", verified: true, format: "anthropic" },
+          { id: "opencode-go/m3", verified: false, format: "openai-compat" },
+        ],
+      };
+    }
+    return {};
+  });
+  return { request } as unknown as RpcClient;
+}
 
 test("defaults to the 连接 tab, uses the wide card and switches categories via the tablist", () => {
   localStorage.clear();
@@ -117,4 +141,35 @@ test("renders a connect hint when no client exists", () => {
   render(<SettingsDialog onConnect={() => {}} onClose={() => {}} client={null} />);
   fireEvent.click(screen.getByRole("tab", { name: "订阅" }));
   expect(screen.getByText(/先连接内核/)).toBeInTheDocument();
+});
+
+test("forwards the linked catalog to its parent", async () => {
+  localStorage.clear();
+  const onModelsLinked = vi.fn();
+  render(<SettingsDialog onConnect={() => {}} onClose={() => {}}
+    client={stubClientWithVerifiedLink()} onModelsLinked={onModelsLinked} />);
+  fireEvent.click(screen.getByRole("tab", { name: "订阅" }));
+  fireEvent.change(screen.getByLabelText(/API Key/), { target: { value: "sk-x" } });
+  fireEvent.click(screen.getByRole("button", { name: "链接" }));
+  await waitFor(() => expect(onModelsLinked).toHaveBeenCalledTimes(1));
+  expect(onModelsLinked).toHaveBeenCalledWith(expect.objectContaining({
+    saved: true,
+    outcome: "verified",
+    models: [
+      { id: "opencode-go/kimi-k3", verified: true, format: "anthropic" },
+      { id: "opencode-go/m3", verified: false, format: "openai-compat" },
+    ],
+  }));
+});
+
+test("keeps the five categories while a callback is threaded through", () => {
+  localStorage.clear();
+  render(<SettingsDialog onConnect={() => {}} onClose={() => {}} client={null}
+    onModelsLinked={() => {}} />);
+  expect(screen.getAllByRole("tab").map((t) => t.textContent))
+    .toEqual(["连接", "显示", "项目", "演示数据", "订阅"]);
+  const demo = screen.getByRole("tab", { name: "演示数据" });
+  demo.focus();
+  fireEvent.keyDown(demo, { key: "ArrowDown" });
+  expect(screen.getByRole("tab", { name: "订阅" })).toHaveAttribute("aria-selected", "true");
 });

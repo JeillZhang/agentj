@@ -1,6 +1,6 @@
 # AGENTS.md
 
-> **当前版本 0.28.0** · `PROTOCOL_VERSION` **0.17.0**（26 方法 / 72 schemas / 18 crates）
+> **当前版本 0.29.1** · `PROTOCOL_VERSION` **0.18.0**（28 方法 / 78 schemas / 18 crates）
 > 本文件只记录**约束、入口与基线**（Setup / Commands / Architecture / Conventions / Rules）。
 > **逐版本变更与历史决策不写在这里** —— 见 [`docs/changelog/`](docs/changelog/)、
 > [`docs/guide/`](docs/guide/)、[`docs/specs/`](docs/specs/) 与 `.agents/summary/`。
@@ -68,8 +68,8 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
 > 下文 `agentj-*` 均为 `crates/agentj-*`，`@agentj/*` 为 `agentj-ui` 包。
 
 - `agentj-protocol`（leaf）：IPC 协议权威 wire 类型（JSON-RPC 2.0、错误码、
-  26 方法 params/result、流式/订阅/权限/提问/文件列举/订阅服务类型），serde + schemars，
-  零内核耦合。协议版本 `0.17.0`，72 schemas。
+  28 方法 params/result、流式/订阅/权限/提问/文件列举/订阅服务类型），serde + schemars，
+  零内核耦合。协议版本 `0.18.0`，78 schemas。
 - `agentj-core`（内核）：Kernel 混合总线 + 模块 trait 注册表
   + ServiceRegistry（同步/异步） + TurnRunner 总线化 turn 编排
   + `ToolCallContext`（会话根上下文，工具相对路径重定基）
@@ -102,8 +102,8 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
 - `agentj-plugin`：插件系统（manifest + 状态机 + 依赖图 + libloading）。
 - `agentj-ipc`：JSON-RPC IPC（stdio/TCP/WS + 同端口分类器 + WsConnection
   + 注入式 `ProviderService` handle（`model/list` / `auth/status` / `provider/usage` /
-  `auth/deviceStart` / `auth/devicePoll`；未注入统一 `-32603
-  provider_service_unavailable`，ipc 不依赖 auth/model）
+  `auth/deviceStart` / `auth/devicePoll` / `auth/setApiKey` / `auth/clearCredential`；
+  未注入统一 `-32603 provider_service_unavailable`，ipc 不依赖 auth/model）
   + WsServerState/ws_router/serve_http + per-session 路由
   + `file/list` dispatch（沙箱 + git 状态；目录聚合后代最高优先级字母；`query` 子树搜索
   独立访问预算 20000 + rank + Top-100 + `total`）+ question notifier/settle hook 接线
@@ -137,9 +137,9 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
   （显式 flag → cwd `agentj-ui/apps/web/dist` → exe 相对两档四级发现），
   启动打印 `http://<host>:<port>/` 并输出 `web_config().startup_warnings()`。
 - `agentj-plugin-fixture`（dev-only）：插件 cdylib 测试夹具。
-- `schemas/*.json`：72 JSON Schema（schemars 生成，提交件 + drift 门禁）。
-- `protocol/methods.json`：方法注册表（method ↔ schema/方向/类型；26 方法，
-  protocol_version 0.17.0）。
+- `schemas/*.json`：78 JSON Schema（schemars 生成，提交件 + drift 门禁）。
+- `protocol/methods.json`：方法注册表（method ↔ schema/方向/类型；28 方法，
+  protocol_version 0.18.0）。
 - `docs/specs/ipc-protocol.md`：人类可读协议规范——**错误码表、WS/HTTP 鉴权
   通道、各方法参数/结果契约的权威来源**。
 

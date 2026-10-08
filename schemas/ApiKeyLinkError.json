@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ApiKeyLinkError",
+  "description": "Why a key could not be linked. `kind` stays a `String` for forward compatibility\n(precedent: [`ProviderUsageError::kind`]); `message` is always kernel-authored.\n@since 0.18.0",
+  "type": "object",
+  "properties": {
+    "kind": {
+      "type": "string"
+    },
+    "message": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "kind",
+    "message"
+  ]
+}

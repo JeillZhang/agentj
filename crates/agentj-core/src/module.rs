@@ -487,6 +487,12 @@ impl ProviderRegistry {
         self.providers.read().get(name).cloned()
     }
 
+    /// Remove a provider (additive, `@since 0.29.0`). `get_default` resolves through the map,
+    /// so a dangling default name already yields None.
+    pub fn remove(&self, name: &str) -> bool {
+        self.providers.write().remove(name).is_some()
+    }
+
     pub fn list(&self) -> Vec<String> {
         self.providers.read().keys().cloned().collect()
     }
@@ -1320,6 +1326,25 @@ mod tests {
                 ("b".to_string(), vec!["m2".into(), "m1".into()])
             ]
         );
+    }
+
+    #[test]
+    fn remove_drops_only_the_named_provider() {
+        let reg = ProviderRegistry::new();
+        reg.register("opencode-go".into(), Arc::new(StubProvider(None)));
+        reg.register("deepseek".into(), Arc::new(NoModelsProvider));
+        assert!(reg.remove("opencode-go"));
+        assert!(reg.get("opencode-go").is_none());
+        assert_eq!(reg.list().len(), 1);
+        assert!(!reg.remove("opencode-go"));
+    }
+
+    #[test]
+    fn removing_the_default_provider_leaves_get_default_none() {
+        let reg = ProviderRegistry::new();
+        reg.register("only".into(), Arc::new(StubProvider(None)));
+        assert!(reg.remove("only"));
+        assert!(reg.get_default().is_none());
     }
 
     #[test]

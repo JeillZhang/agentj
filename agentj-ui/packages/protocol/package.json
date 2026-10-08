@@ -3,6 +3,11 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
+  "exports": {
+    ".": {
+      "types": "./types.d.ts"
+    }
+  },
   "scripts": {
     "generate": "node generate.mjs",
     "build": "tsc --noEmit"

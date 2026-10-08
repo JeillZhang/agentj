@@ -1,5 +1,8 @@
 import type {
+  ApiKeyOutcome,
+  AuthClearCredentialResult,
   AuthDevicePollResult,
+  AuthSetApiKeyParams,
   CredentialInfo,
   InitializeParams,
   ModelEntry,
@@ -48,4 +51,15 @@ test("subscription methods expose the new result shapes", () => {
   const poll: AuthDevicePollResult = { state: "pending" };
   const cred: CredentialInfo = { kind: "api_key", source: "file", expiring_soon: false };
   void [catalog, usage, poll, cred];
+});
+
+test("api key linking types are exposed", () => {
+  const params: AuthSetApiKeyParams = { provider: "opencode-go", api_key: "sk-x" };
+  const outcome: ApiKeyOutcome = "verified";
+  const cleared: AuthClearCredentialResult = { provider: "opencode-go", cleared: true };
+  expectTypeOf(params).toHaveProperty("api_key");
+  expectTypeOf(outcome).toMatchTypeOf<ApiKeyOutcome>();
+  // `Unknown` is #[serde(other)] + #[schemars(skip)]: the generated union is the three literals
+  expectTypeOf<ApiKeyOutcome>().toEqualTypeOf<"verified" | "unverified" | "rejected">();
+  expectTypeOf(cleared).toHaveProperty("cleared");
 });

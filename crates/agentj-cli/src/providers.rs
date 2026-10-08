@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use agentj_auth::credential::Credential;
 use agentj_auth::{AuthStore, resolve_credential};
-use agentj_config::AgentJConfig;
+use agentj_config::{AgentJConfig, ModelProviderConfig};
 use agentj_core::module::ModelProvider;
 use agentj_model::catalog::ModelCatalog;
 use agentj_model::factory::ProviderFactory;
@@ -14,6 +14,31 @@ use crate::refreshing_provider::{Builder as RefreshingBuilder, RefreshingProvide
 
 /// Kinds that require a resolvable key; everything else (mock*) is key-free.
 const KEY_REQUIRED_KINDS: [&str; 4] = ["openai-compat", "responses", "anthropic", "opencode-go"];
+
+/// Base URL of the built-in opencode-go entry (design D5).
+pub const BUILTIN_OPENCODE_GO_BASE: &str = "https://opencode.ai/zen/go";
+
+/// `config.model.providers` ∪ the built-in opencode-go entry (design D5): convention over
+/// configuration. An explicit `kind = "opencode-go"` entry wins, so a user's `base_url` /
+/// `api_key_env` keeps applying and no duplicate entry is appended.
+pub fn effective_provider_cfgs(config: &AgentJConfig) -> Vec<ModelProviderConfig> {
+    let mut out = config.model.providers.clone();
+    if !out.iter().any(|p| p.kind == "opencode-go") {
+        out.push(ModelProviderConfig {
+            name: "opencode-go".into(),
+            kind: "opencode-go".into(),
+            api_key_env: None,
+            base_url: BUILTIN_OPENCODE_GO_BASE.into(),
+        });
+    }
+    out
+}
+
+/// The cfg list `CliProviderService` is built from — the startup derivation itself, so the
+/// provider set the UI sees can never drift from the set the kernel assembles (design D5).
+pub fn service_cfgs(config: &AgentJConfig) -> Vec<ModelProviderConfig> {
+    effective_provider_cfgs(config)
+}
 
 pub struct Assembly {
     pub providers: Vec<(String, Arc<dyn ModelProvider>)>,
@@ -38,7 +63,7 @@ where
 {
     let mut providers: Vec<(String, Arc<dyn ModelProvider>)> = vec![];
     let mut warnings: Vec<String> = vec![];
-    for pcfg in &config.model.providers {
+    for pcfg in &effective_provider_cfgs(config) {
         if !KEY_REQUIRED_KINDS.contains(&pcfg.kind.as_str()) {
             let provider =
                 ProviderFactory::create(&pcfg.kind, &pcfg.name, &pcfg.base_url, String::new())
@@ -52,10 +77,14 @@ where
             {
                 Some(r) => r,
                 None => {
-                    warnings.push(format!(
+                    let mut warning = format!(
                         "provider {} 无可用密钥（api_key_env={:?}），已跳过",
                         pcfg.name, pcfg.api_key_env
-                    ));
+                    );
+                    if pcfg.kind == "opencode-go" {
+                        warning.push_str("；可在设置 · 订阅中链接 API Key");
+                    }
+                    warnings.push(warning);
                     continue;
                 }
             };
@@ -395,6 +424,77 @@ mod tests {
             1,
             "the decorator refreshes once before the first chat"
         );
+    }
+
+    #[test]
+    fn builtin_opencode_go_entry_is_appended_when_config_has_none() {
+        let cfgs = effective_provider_cfgs(&config_with(vec![provider("mock", "mock", "")]));
+        let og: Vec<_> = cfgs.iter().filter(|c| c.kind == "opencode-go").collect();
+        assert_eq!(og.len(), 1);
+        assert_eq!(og[0].base_url, "https://opencode.ai/zen/go");
+        assert!(og[0].api_key_env.is_none());
+    }
+
+    #[test]
+    fn explicit_opencode_go_entry_wins_over_the_builtin() {
+        let explicit = provider_base(
+            "opencode-go",
+            "opencode-go",
+            "AGENTJ_TEST_OG_ENV",
+            "https://custom.invalid",
+        );
+        let cfgs = effective_provider_cfgs(&config_with(vec![explicit]));
+        let og: Vec<_> = cfgs.iter().filter(|c| c.kind == "opencode-go").collect();
+        assert_eq!(og.len(), 1, "the built-in entry must not be appended");
+        assert_eq!(og[0].base_url, "https://custom.invalid");
+        assert_eq!(og[0].api_key_env.as_deref(), Some("AGENTJ_TEST_OG_ENV"));
+    }
+
+    #[test]
+    fn startup_and_service_derive_the_same_entry() {
+        let config = config_with(vec![provider("mock", "mock", "")]);
+        let from_startup = effective_provider_cfgs(&config);
+        let from_service = service_cfgs(&config);
+        assert_eq!(from_startup, from_service, "one derivation source (D5)");
+    }
+
+    #[tokio::test]
+    async fn builtin_entry_without_a_key_warns_with_a_link_hint() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = AuthStore::with_path(dir.path().join("auth.json"));
+        let asm = build_providers(
+            &config_with(vec![provider("mock", "mock", "")]),
+            None,
+            &store,
+            || async { Ok(None) },
+            "https://opencode.ai/console",
+        )
+        .await
+        .unwrap();
+        assert!(
+            asm.warnings
+                .iter()
+                .any(|w| w.contains("订阅") && w.contains("API Key")),
+            "{:?}",
+            asm.warnings
+        );
+    }
+
+    #[tokio::test]
+    async fn stored_credential_registers_the_builtin_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store_with_api_key(dir.path(), "sk-builtin");
+        let asm = build_providers(
+            &config_with(vec![provider("mock", "mock", "")]),
+            None,
+            &store,
+            || async { Ok(None) },
+            "https://opencode.ai/console",
+        )
+        .await
+        .unwrap();
+        let names: Vec<&str> = asm.providers.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(names.contains(&"opencode-go"), "{:?}", names);
     }
 
     #[tokio::test]

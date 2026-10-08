@@ -2,12 +2,49 @@
 
 AgentJ 把 [OpenCode Go](https://opencode.ai/docs/go/) 订阅作为一等 provider：登录一次、
 凭据落盘，内核启动时发现订阅里的真实模型目录，Web / TUI 直接展示并高亮默认模型，
-请求自带厂商要求的客户端标识头。本版本把订阅做成**可运维**：看得到用量、用设备码登录、
-拿到账号级真实目录，并让只有 600s 生命的 OAuth access token 在长驻内核里自动保鲜。
+请求自带厂商要求的客户端标识头。本版本把订阅做成**可运维**：在 Web 设置 · 订阅（或 TUI
+overlay）里粘贴 API Key 即可链接、看得到用量、用设备码登录、拿到账号级真实目录，并让只有
+600s 生命的 OAuth access token 在长驻内核里自动保鲜。
 
 ## 两种登录方式
 
 ### 1. 工作区 API Key（长期密钥）
+
+#### 在界面中链接（推荐）
+
+**Web**：顶栏「设置…」→「订阅」tab →「链接方式」区块，把控制台复制的 Key 粘进输入框
+（`type="password"` + `autoComplete="off"`，屏幕只显示圆点），点「链接」。
+**TUI**：palette 运行 `subscription` 打开浮层，按 `i` 进入输入（逐字符只渲染遮罩），
+`Enter` 提交、`Esc` 取消；按 `c` 解除链接。
+
+- 输入**不写入 `localStorage`**，提交后立即清空输入框；完整 Key 既不出现在界面/帧里，
+  也不出现在结果、日志或错误文案中（只回显 `redact()` 的 `…后 4 位`）。
+- 凭据写入**当前连接内核所在机器**的 `auth.json`（`--attach` / 远程 `serve` 场景下即远端主机）。
+  非回环 `serve --host` **必须配 `--token`**，否则任何能访问该端口的人都能录入 / 解除凭据。
+- **链接成功即生效、免重启内核**：provider 当场重建并替换注册，模型目录立即刷新，
+  当前未选 opencode-go 时自动选中首个账号条目（per-run 覆盖，**不改 `config.toml`**）。
+  唯一时序例外：换入瞬间**进行中的那一轮 run 可能仍用旧凭据**，新凭据从下一轮生效。
+
+一次「链接」= 一次 `auth/setApiKey` 调用（内核向 `GET {console}/api/v2/config` 发一次请求），
+结果三态：
+
+| 结果 | 触发条件 | 是否落盘 | 界面回显 |
+|---|---|---|---|
+| `verified` | `200` 且解析出账号级目录 | 落盘 + 立即激活 | 「已链接：密钥已保存并验证通过」；目录 `source: account` |
+| `unverified` | 超时 / 网络不可达 / 5xx / 畸形响应 / `200` 但解析不出 go 模型 | **仍然落盘** | 「密钥已保存，但未校验：上游暂时无法确认，首次使用时才会暴露问题」；目录退到 live ∩ overlay，**绝不编造** |
+| `rejected` | `401` / `403` | **不落盘、不激活** | 「未保存：密钥无效或已被撤销…」/「未保存：该工作区没有 OpenCode Go 订阅」；文案内核自产，**不回显上游正文** |
+
+- **环境变量遮蔽**：若该 provider 的 `api_key_env` 已设置且非空，刚存的 Key **不会生效**，
+  面板显示「已保存；环境变量当前优先，链接的密钥暂不生效」。优先级不变：
+  `--api-key` flag > `api_key_env`（非空）> `auth.json`。
+- **替换语义**：同一 provider 再次链接 = **替换**原凭据；已有 OAuth 凭据时提交前显示
+  「将替换现有 OAuth 凭据」。不做多账号。
+- **解除链接**：点「解除链接」（TUI `c`）→ `auth/clearCredential`。移除后若仍有 env key，
+  则以该 key 重建 provider（仍可用）；无任何 key 时 provider 从注册表移除，
+  `auth/status.authenticated` 变 `false`，目录回退 live / overlay；原本没有条目则回显
+  「当前没有已保存的凭据」。
+
+#### 用 CLI 写入（脚本 / 无界面场景）
 
 ```bash
 agentj auth login --api-key <WORKSPACE_API_KEY>          # 写入凭据
