@@ -53,9 +53,21 @@
 
 ## 代码评审（Phase 4，`ajteam-task-reviewer` 逐任务只读审查）
 
-- T0–T9 全部 **VERDICT PASS**（T0 ipc 入口、T1 embedded flag、T2 attach overrides + error 分支、
-  T3 指南、T4 changelog、T5 工作区版本、T6 SDK、T7 desktop 清单、T8 lockfile、T9 版本门禁）。
+- T0–T10 全部 **VERDICT PASS**（T0 ipc 入口、T1 embedded flag、T2 attach overrides + error 分支、
+  T3 指南、T4 changelog、T5 工作区版本、T6 SDK、T7 desktop 清单、T8 lockfile、
+  T9 版本门禁、T10 基线/摘要同步）。
 - 无阻塞性偏差；实现与设计文档 D1–D8、G1–G6 一致。
+- Phase 5 全分支审查：无 CRITICAL / HIGH；1 项 MEDIUM（`--attach` 连接失败经 `?` 提前返回、
+  未先 `close_all()`）经确认为**分支前既有形态**且设计已明确划出范围，仅记录不改。
+
+## 验收（`jskill-test-acceptance`，2026-10-08）
+
+- 单轮 **零 Bug**（critical 0 / high 0 / medium 0 / low 0）——无修复提交、无回归轮次。
+- tester 门禁全绿，探索式 QA 覆盖 embedded / `--attach` 两条路径、未知 provider 不回落、
+  空白=缺省、clap 用法错误（exit 2）、连接失败不挂起、破坏性输入无 panic、`--attach` wire
+  键省略、错误码映射（`-32603` vs `(code X)`）、文档-行为一致性；证据见本地
+  `.superpowers/acceptance/bugs.md`。
+- 零修复故未触发产品 patch bump；版本保持 **0.28.0**。PR 由验收流程在 `origin` 创建（用户负责合并）。
 
 ## 遗留问题 / 已知限制（后端）
 
