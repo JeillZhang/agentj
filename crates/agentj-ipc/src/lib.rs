@@ -485,13 +485,12 @@ impl IpcServer {
     }
 
     pub fn run_turn_stream(&self, sid: &str, input: &str) -> mpsc::Receiver<AgentEvent> {
-        self.run_turn_stream_with_overrides(sid, input, RunOverrides::default())
+        self.run_turn_stream_with(sid, input, RunOverrides::default())
     }
 
-    /// Turn entry carrying per-run overrides parsed from `session/run` (T9).
-    /// Kept separate from `run_turn_stream` so non-dispatch callers (CLI `run`)
-    /// keep the override-free signature and today's behavior.
-    fn run_turn_stream_with_overrides(
+    /// Turn entry carrying per-run overrides. `session/run` dispatch and the CLI `run`
+    /// path both use it; `RunOverrides::default()` reproduces the pre-0.26 behavior.
+    pub fn run_turn_stream_with(
         &self,
         sid: &str,
         input: &str,
@@ -875,7 +874,7 @@ impl IpcServer {
                 content: content.to_string(),
             },
         );
-        let mut rx = self.run_turn_stream_with_overrides(sid, content, overrides);
+        let mut rx = self.run_turn_stream_with(sid, content, overrides);
         let mut text = String::new();
         let mut tc_list = vec![];
         let mut usage_opt: Option<serde_json::Value> = None;
@@ -3336,6 +3335,72 @@ mod tests {
             .expect("dispatch returns a JSON-RPC line");
         let resp: Value = serde_json::from_str(&line).expect("response is JSON");
         (resp, caps)
+    }
+
+    #[tokio::test]
+    async fn run_turn_stream_with_routes_to_explicit_provider() {
+        let (server, caps) = capturing_run_server();
+        let sid = server.create_session().unwrap();
+        let mut rx = server.run_turn_stream_with(
+            &sid,
+            "hi",
+            RunOverrides {
+                provider: Some("other".into()),
+                model: Some("m1".into()),
+            },
+        );
+        while let Some(ev) = rx.recv().await {
+            if matches!(ev, AgentEvent::Done { .. } | AgentEvent::Error(_)) {
+                break;
+            }
+        }
+        assert_eq!(caps.other.lock().unwrap().last().unwrap().model, "m1");
+        assert!(
+            caps.mock.lock().unwrap().is_empty(),
+            "the default provider must not serve a turn named for another provider"
+        );
+    }
+
+    #[tokio::test]
+    // Regression pin (also green before this task): proves the default path is unchanged.
+    async fn run_turn_stream_default_matches_overrides_default() {
+        let (server, caps) = capturing_run_server();
+        let sid = server.create_session().unwrap();
+        let mut rx = server.run_turn_stream(&sid, "hi");
+        while let Some(ev) = rx.recv().await {
+            if matches!(ev, AgentEvent::Done { .. } | AgentEvent::Error(_)) {
+                break;
+            }
+        }
+        assert_eq!(
+            caps.mock.lock().unwrap().last().unwrap().model,
+            "deepseek-chat"
+        );
+        assert!(caps.other.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn run_turn_stream_with_blank_overrides_are_absent() {
+        let (server, caps) = capturing_run_server();
+        let sid = server.create_session().unwrap();
+        let mut rx = server.run_turn_stream_with(
+            &sid,
+            "hi",
+            RunOverrides {
+                provider: Some("   ".into()),
+                model: Some(String::new()),
+            },
+        );
+        while let Some(ev) = rx.recv().await {
+            if matches!(ev, AgentEvent::Done { .. } | AgentEvent::Error(_)) {
+                break;
+            }
+        }
+        assert_eq!(
+            caps.mock.lock().unwrap().last().unwrap().model,
+            "deepseek-chat"
+        );
+        assert!(caps.other.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
