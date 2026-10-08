@@ -5,6 +5,7 @@
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -540,4 +541,258 @@ fn serve_exposes_the_subscription_methods() {
         unsupported["error"]["data"]["reason"],
         "unsupported_provider"
     );
+}
+
+/// T11: over a real socket, link an API key, read the account catalog, and prove the linked
+/// provider is routable by the next run without restarting the kernel (design AC2/AC3).
+/// The kernel's console base and `opencode-go` base URL both point at the local wiremock, so
+/// the test is deterministic and offline.
+#[tokio::test]
+async fn serve_links_and_lists_the_account_catalog() {
+    let console = wiremock::MockServer::start().await;
+    mount_v2_config(&console, 200, v2_body(&["kimi-k3"])).await;
+    mount_chat_stream(&console).await;
+    let (_kernel, mut client) = serve_linked_kernel(&console.uri());
+
+    let init = client.request(
+        "initialize",
+        serde_json::json!({
+            "protocol_version": agentj_protocol::PROTOCOL_VERSION,
+            "client_info": {"name": "e2e", "version": "0.29.0"},
+        }),
+    );
+    assert!(init["result"].is_object(), "initialize failed: {init}");
+
+    let linked = client.call(
+        "auth/setApiKey",
+        serde_json::json!({"provider": "opencode-go", "api_key": "sk-good"}),
+    );
+    assert_eq!(linked["outcome"], "verified", "{linked}");
+    assert_eq!(linked["saved"], true, "{linked}");
+    assert_eq!(linked["source"], "account", "{linked}");
+    assert!(
+        !linked.to_string().contains("sk-good"),
+        "the full key never leaves the kernel: {linked}"
+    );
+
+    let listed = client.call(
+        "model/list",
+        serde_json::json!({"provider": "opencode-go", "refresh": true}),
+    );
+    assert_eq!(listed["source"], "account", "{listed}");
+    assert_eq!(listed["models"][0]["id"], "opencode-go/kimi-k3", "{listed}");
+
+    assert_run_reaches_the_linked_provider(&console, &mut client).await;
+}
+
+/// AC3: the same kernel already serves the freshly linked provider — the run is accepted and
+/// the linked key reaches the provider base URL without a restart.
+async fn assert_run_reaches_the_linked_provider(
+    console: &wiremock::MockServer,
+    client: &mut SocketClient,
+) {
+    let new = client.call("session/new", serde_json::json!({}));
+    let session_id = new["session_id"].as_str().expect("session id").to_string();
+    let run = client.call(
+        "session/run",
+        serde_json::json!({
+            "session_id": session_id,
+            "content": "say hello",
+            "provider": "opencode-go",
+            "model": "opencode-go/kimi-k3",
+        }),
+    );
+    assert!(
+        run["content"].as_str().is_some_and(|c| c.contains("Hello")),
+        "the linked provider must answer the run: {run}"
+    );
+    let chats: Vec<_> = console
+        .received_requests()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.url.path() == "/v1/chat/completions")
+        .collect();
+    assert_eq!(chats.len(), 1, "the provider base URL must receive the run");
+    assert_eq!(
+        chats[0].headers.get("authorization").unwrap(),
+        "Bearer sk-good"
+    );
+}
+
+/// A per-test tempdir holding `config.toml`, the session store and `XDG_DATA_HOME`, so
+/// `auth.json` never touches the developer's real store. Removed on drop.
+struct TempHome(PathBuf);
+
+impl TempHome {
+    fn new(tag: &str) -> Self {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir =
+            std::env::temp_dir().join(format!("agentj-e2e-{tag}-{}-{nanos}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        Self(dir)
+    }
+
+    fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for TempHome {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// One NDJSON JSON-RPC client over the resident server's TCP socket. Reads skip
+/// `$/progress` notifications until the response carrying the request id arrives.
+struct SocketClient {
+    writer: TcpStream,
+    reader: BufReader<TcpStream>,
+    next_id: u64,
+}
+
+impl SocketClient {
+    fn connect(addr: &str) -> Self {
+        let stream = TcpStream::connect(addr).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(20)))
+            .unwrap();
+        Self {
+            writer: stream.try_clone().unwrap(),
+            reader: BufReader::new(stream),
+            next_id: 1,
+        }
+    }
+
+    /// Send one request and return its `result`; a JSON-RPC error fails the test.
+    fn call(&mut self, method: &str, params: serde_json::Value) -> serde_json::Value {
+        let response = self.request(method, params);
+        if let Some(error) = response.get("error") {
+            panic!("{method} failed: {error}");
+        }
+        response["result"].clone()
+    }
+
+    /// Send one request and return the whole response envelope (error included).
+    fn request(&mut self, method: &str, params: serde_json::Value) -> serde_json::Value {
+        let id = self.next_id;
+        self.next_id += 1;
+        let request = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": method,
+            "params": params,
+        });
+        writeln!(self.writer, "{request}").unwrap();
+        let mut seen: Vec<String> = Vec::new();
+        loop {
+            let line = read_socket_line(&mut self.reader, &seen);
+            let value: serde_json::Value = serde_json::from_str(&line).unwrap();
+            if value["id"] == id {
+                return value;
+            }
+            seen.push(line);
+        }
+    }
+}
+
+/// A served kernel plus the handles that keep it and its temp home alive: the child is
+/// reaped on drop, the stdout pipe stays open (a closed pipe would fail the server's
+/// later prints), and the tempdir (config + sessions + `auth.json`) is removed last.
+struct ServedKernel {
+    _child: AutoReap,
+    _server_stdout: BufReader<std::process::ChildStdout>,
+    _home: TempHome,
+}
+
+/// T11 harness: a kernel whose `XDG_DATA_HOME` is a tempdir (so `auth.json` lands in the
+/// temp home) and whose console base and `opencode-go` base URL point at `console_uri`
+/// (a local wiremock). The default provider is the keyless `mock`, so startup never probes
+/// the real network and never needs a credential.
+fn serve_linked_kernel(console_uri: &str) -> (ServedKernel, SocketClient) {
+    let home = TempHome::new("link");
+    let sessions = home.path().join("sessions");
+    std::fs::create_dir_all(&sessions).unwrap();
+    let cfg = home.path().join("config.toml");
+    std::fs::write(
+        &cfg,
+        format!(
+            "[model]\nprovider = \"mock\"\nconsole_base_url = \"{console_uri}\"\n\n\
+             [[model.providers]]\nname = \"mock\"\nkind = \"mock\"\n\
+             base_url = \"mock://local\"\napi_key_env = \"\"\n\n\
+             [[model.providers]]\nname = \"opencode-go\"\nkind = \"opencode-go\"\n\
+             base_url = \"{console_uri}\"\napi_key_env = \"AGENTJ_E2E_LINK_UNSET_KEY\"\n\n\
+             [session]\ndir = \"{}\"\n",
+            sessions.display()
+        ),
+    )
+    .unwrap();
+    let mut child = AutoReap(
+        Command::new(env!("CARGO_BIN_EXE_agentj"))
+            .args(["--config", cfg.to_str().unwrap(), "serve", "--port", "0"])
+            .env("XDG_DATA_HOME", home.path())
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let stdout = child.0.stdout.take().unwrap();
+    let mut server_stdout = BufReader::new(stdout);
+    let addr = read_listening_addr(&mut server_stdout);
+    let client = SocketClient::connect(&addr);
+    (
+        ServedKernel {
+            _child: child,
+            _server_stdout: server_stdout,
+            _home: home,
+        },
+        client,
+    )
+}
+
+/// The account catalog a console key can read: one go-scoped provider carrying `ids`.
+fn v2_body(ids: &[&str]) -> serde_json::Value {
+    let models: serde_json::Map<String, serde_json::Value> = ids
+        .iter()
+        .map(|id| ((*id).to_string(), serde_json::json!({})))
+        .collect();
+    serde_json::json!({"providers": {"opencode": {
+        "name": "opencode",
+        "settings": {"baseURL": "https://opencode.ai/zen/go"},
+        "models": models,
+    }}})
+}
+
+/// Mount the console catalog endpoint (`GET /api/v2/config`).
+async fn mount_v2_config(server: &wiremock::MockServer, status: u16, body: serde_json::Value) {
+    wiremock::Mock::given(wiremock::matchers::path("/api/v2/config"))
+        .respond_with(wiremock::ResponseTemplate::new(status).set_body_json(body))
+        .mount(server)
+        .await;
+}
+
+/// A text-only SSE completion for the linked provider's chat endpoint.
+async fn mount_chat_stream(server: &wiremock::MockServer) {
+    let sse = concat!(
+        "data: {\"id\":\"1\",\"object\":\"chat.completion.chunk\",\"choices\":",
+        "[{\"delta\":{\"content\":\"Hello\"},\"index\":0}]}\n\n",
+        "data: {\"id\":\"2\",\"object\":\"chat.completion.chunk\",\"choices\":",
+        "[{\"delta\":{\"content\":\" world\"},\"index\":0}]}\n\n",
+        "data: [DONE]\n\n",
+    );
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path("/v1/chat/completions"))
+        .respond_with(
+            wiremock::ResponseTemplate::new(200)
+                .set_body_string(sse)
+                .insert_header("content-type", "text/event-stream"),
+        )
+        .mount(server)
+        .await;
 }
