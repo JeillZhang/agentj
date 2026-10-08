@@ -27,9 +27,8 @@ use agentj_skills::load_skills;
 use agentj_tools::builtins::register_builtins;
 
 // Runtime (de)registration of the opencode-go provider, shared by startup and the
-// credential handlers (design D1/G3). `deactivate_opencode_go` is only reached from tests
-// until `clear_credential` lands, so the module still allows dead code (T9 removes it).
-#[allow(dead_code)]
+// credential handlers (design D1/G3): `activate_opencode_go` backs `auth/setApiKey` and
+// `deactivate_opencode_go` backs `auth/clearCredential`.
 mod activation;
 mod auth;
 mod license;

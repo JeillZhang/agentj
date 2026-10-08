@@ -588,16 +588,22 @@ impl CliProviderService {
         }
     }
 
+    /// Remove the stored credential and converge the registration with what still resolves
+    /// (design D7): both per-provider caches are invalidated, then the `opencode-go` instance
+    /// is rebuilt from a remaining env/flag key or unregistered when nothing is left.
     pub async fn clear_credential(
         &self,
         p: AuthClearCredentialParams,
     ) -> Result<AuthClearCredentialResult, DispatchError> {
-        let cfg = self.cfg(p.provider.as_deref())?;
-        // T9: replace with the real convergence (store removal, cache invalidation,
-        // deregistration) — the placeholder keeps the wire contract compilable.
+        let cfg = self.cfg(p.provider.as_deref())?.clone();
+        let cleared = self.store.remove(&cfg.name).map_err(credential_error)?;
+        self.usage_cache.lock().unwrap().remove(&cfg.name);
+        self.model_cache.lock().unwrap().remove(&cfg.name);
+        activation::deactivate_opencode_go(&self.registry, &cfg, &self.store, None)
+            .map_err(activation_failed)?;
         Ok(AuthClearCredentialResult {
-            provider: cfg.name.clone(),
-            cleared: false,
+            provider: cfg.name,
+            cleared,
         })
     }
 }
@@ -1744,6 +1750,97 @@ mod tests {
         assert!(
             !s.store.path().exists(),
             "no credential may be written on transport failure"
+        );
+    }
+
+    /// A provider base that refuses connections, so no upstream call is observable.
+    const DEAD_BASE: &str = "http://127.0.0.1:9";
+
+    fn empty_store() -> AuthStore {
+        let dir = tempfile::tempdir().unwrap();
+        AuthStore::with_path(dir.path().join("auth.json"))
+    }
+
+    /// A store pre-seeded with an `api_key` entry for `opencode-go`.
+    fn pre_seeded(dir: &tempfile::TempDir, key: &str) -> AuthStore {
+        let store = AuthStore::with_path(dir.path().join("auth.json"));
+        store
+            .set(
+                "opencode-go",
+                Credential::ApiKey {
+                    key: key.into(),
+                    label: None,
+                    created_at: None,
+                },
+            )
+            .unwrap();
+        store
+    }
+
+    /// A service over `base` plus the registry it was built with, so a clear can be observed
+    /// through both the credential store and the registration.
+    fn svc_with_store_and_registry(
+        store: AuthStore,
+        base: &str,
+    ) -> (CliProviderService, Arc<ProviderRegistry>) {
+        let reg = empty_registry();
+        let svc = CliProviderService::new(
+            store,
+            vec![go_cfg(base)],
+            "opencode-go".into(),
+            base.into(),
+            80,
+            reg.clone(),
+        );
+        (svc, reg)
+    }
+
+    fn clear_params(provider: Option<&str>) -> AuthClearCredentialParams {
+        AuthClearCredentialParams {
+            provider: provider.map(str::to_string),
+        }
+    }
+
+    fn default_params() -> AuthStatusParams {
+        AuthStatusParams { provider: None }
+    }
+
+    /// Register a stub under the opencode-go name without any upstream call.
+    fn activate_seeded_opencode_go(reg: &ProviderRegistry) {
+        reg.register(
+            "opencode-go".into(),
+            Arc::new(StubProvider(vec!["opencode-go/kimi-k3".into()])),
+        );
+    }
+
+    #[tokio::test]
+    async fn clear_credential_unregisters_when_no_key_remains() {
+        let dir = tempfile::tempdir().unwrap();
+        let (svc, reg) = svc_with_store_and_registry(pre_seeded(&dir, "sk-x"), DEAD_BASE);
+        activate_seeded_opencode_go(&reg); // explicit pre-seed, no upstream call
+        let out = svc
+            .clear_credential(clear_params(Some("opencode-go")))
+            .await
+            .unwrap();
+        assert!(out.cleared);
+        assert!(!dir.path().join("auth.json").exists());
+        assert!(reg.get("opencode-go").is_none());
+        assert!(
+            !svc.auth_status(default_params())
+                .await
+                .unwrap()
+                .authenticated
+        );
+    }
+
+    #[tokio::test]
+    async fn clear_credential_absent_entry_reports_false() {
+        let (svc, _reg) = svc_with_store_and_registry(empty_store(), DEAD_BASE);
+        assert!(
+            !svc.clear_credential(clear_params(None))
+                .await
+                .unwrap()
+                .cleared
         );
     }
 }
