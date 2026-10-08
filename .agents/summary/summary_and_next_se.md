@@ -16,9 +16,9 @@
 > （`set_api_key` / `clear_credential` + 运行期激活 helper + 内置条目 + 设备码激活）、
 > `docs/specs/ipc-protocol.md`（§8.28 / §8.29 等）、`docs/changelog/v0.29.md`、版本元数据。
 > `PROTOCOL_VERSION` 0.17.0 → **0.18.0**（26 → **28** 方法 / 72 → **78** schemas）；
-> 工作区 0.28.0 → **0.29.0**。前端部分见 `summary_and_next_fe.md`。
+> 工作区 0.28.0 → **0.29.1**（0.29.0 功能 + 0.29.1 验收修复）。前端部分见 `summary_and_next_fe.md`。
 
-## v0.29.0（Web/TUI 链接 opencode-go API Key，后端部分）✅（T0–T12 / T21–T22 / T23 + 评审修复）
+## v0.29.x（Web/TUI 链接 opencode-go API Key，后端部分）✅（0.29.0 功能 + 0.29.1 验收修复）
 
 - ✅ **`agentj-protocol`（T0/T1/T2）**：新增 6 个 wire 类型（`AuthSetApiKeyParams` /
   `AuthSetApiKeyResult` / `ApiKeyOutcome`，含 `#[serde(other)]` 的 `Unknown` 向前兼容 /
@@ -66,6 +66,11 @@
   `tracing::warn!`（D7）；**L2/L4** `authorized_login` 与 `save_link` 失效对应 provider 的
   `model_cache` / `usage_cache`（协议 §8.28「两处缓存」）；`docs/specs/ipc-protocol.md`§8.29
   能力声明由「任意已注册 provider」收窄为「仅 opencode-go」。复审 **VERDICT: PASS**。
+- ✅ **验收修复（0.29.0 → 0.29.1）**：验收（`jskill-test-acceptance`）发现 **BUG-001（high）**——
+  `api_key_env` 非空（env 遮蔽）时读侧报 `effective_source=env`，但 `save_link()` 仍用**刚提交的
+  key** 激活，`session/run` 实际发送提交值。单提交修复 `06b6e45`：改用解析后的**生效凭据**
+  （`env > 文件`，与启动路径一致）激活，并让链接结果 `credential.key_hint` 与 `effective_source`
+  一致；回归 **verified**，零新 Bug。产品 patch bump **0.29.0 → 0.29.1**（协议不变）。
 
 ## 验证结果（当前树实测，2026-10-08）
 
@@ -78,7 +83,7 @@
 | `schemas/*.json` | **78** |
 | `protocol/methods.json` | **28** 方法 / `protocol_version` **0.18.0** |
 | `crates/agentj-protocol` `PROTOCOL_VERSION` | **0.18.0** |
-| `./scripts/check-version.sh` | **version-ok（0.29.0 / 0.18.0）** |
+| `./scripts/check-version.sh` | **version-ok（0.29.1 / 0.18.0）** |
 | `node agentj-ui/apps/desktop/check-desktop-ui.mjs` | desktop-ui-ok |
 | `git diff main...HEAD -- schemas/KernelStatusResult.json` | 空（`kernel/status` 逐字不变） |
 
@@ -114,6 +119,6 @@
 
 ## 下一步
 
-- v0.29.0 后端 + 评审修复已落地，全门禁绿（`version-ok`）；自动验收（`jskill-test-acceptance`）
-  通过后由验收流程在 `origin` 创建 PR，用户负责合并。
+- v0.29.1（功能 + 评审修复 + 验收修复）已落地，全门禁绿（`version-ok`）；验收通过后由验收
+  流程在 `origin` 创建 PR，用户负责合并。
 - 后端候选：上表 ①②④⑥；或前端跟进见 `summary_and_next_fe.md`。

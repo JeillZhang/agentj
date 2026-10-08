@@ -15,10 +15,10 @@
 > 前端范围：`packages/protocol`（78 schemas 类型重生成）+ `packages/sdk`（METHODS 28 + 版本常量）
 > + `apps/web`（订阅面板「链接方式」区块）+ `apps/tui`（订阅 overlay 链接模式）
 > + `apps/desktop`（版本清单）。
-> 工作区 0.28.0 → **0.29.0**；`PROTOCOL_VERSION` 0.17.0 → **0.18.0**。后端部分见
+> 工作区 0.28.0 → **0.29.1**（0.29.0 功能 + 0.29.1 验收修复）；`PROTOCOL_VERSION` 0.17.0 → **0.18.0**。后端部分见
 > `summary_and_next_se.md`。
 
-## v0.29.0（Web/TUI 链接 opencode-go API Key，前端部分）✅（T13–T22 / T24–T25 + 评审修复）
+## v0.29.x（Web/TUI 链接 opencode-go API Key，前端部分）✅（0.29.0 功能 + 0.29.1 验收修复）
 
 - ✅ **`packages/protocol`**：`schemas/*.json` 72 → **78**（`AuthSetApiKeyParams` /
   `AuthSetApiKeyResult` / `ApiKeyOutcome` / `ApiKeyLinkError` / `AuthClearCredentialParams` /
@@ -51,6 +51,10 @@
   `App.dropLinkedCatalog`）立即丢弃已链接目录并回退非内核提供的选中项，`App.test.tsx` 断言
   链接 id 消失；**L3** `SubscriptionPanel` 不再本地重声明协议类型（改用 `@agentj/protocol`
   生成类型，不再丢失 `source`）。复审 **VERDICT: PASS**。
+- ✅ **验收（0.29.0 → 0.29.1）**：验收发现 1 个 high Bug（BUG-001，后端 `save_link` 在 env 遮蔽时
+  用错凭据），已在后端修复（见 `summary_and_next_se.md`），前端面**零变更**；回归 verified、零新 Bug。
+  产品 patch bump **0.29.0 → 0.29.1**（`@agentj/sdk` `VERSION` → 0.29.1，desktop 三清单与 lockfile
+  同步；`PROTOCOL_VERSION` 保持 0.18.0）。
 
 ## 验证结果（当前树实测，2026-10-08）
 
@@ -62,7 +66,7 @@
 | `npm --prefix agentj-ui run build --workspace=@agentj/web` | clean（仅 chunk > 500 kB 提示） |
 | `bun --cwd agentj-ui/apps/tui test` | 177 passed（21 files） |
 | `node agentj-ui/apps/desktop/check-desktop-ui.mjs` | desktop-ui-ok |
-| `./scripts/check-version.sh` | **version-ok（0.29.0 / 0.18.0）** |
+| `./scripts/check-version.sh` | **version-ok（0.29.1 / 0.18.0）** |
 
 > 本表于 Phase 8 收尾在最终树重跑并全部通过；后端侧（cargo 851）见 `summary_and_next_se.md`。
 
@@ -90,9 +94,8 @@
 
 ## 下一步
 
-- v0.29.0 前端（含 M1/L3 评审修复）已落地，全门禁绿（SDK 55 · Web 652 · TUI 177 ·
-  `version-ok` · `desktop-ui-ok`）；自动验收（`jskill-test-acceptance`）通过后由验收流程在
-  `origin` 创建 PR，用户负责合并。
+- v0.29.1 前端（含 M1/L3 评审修复 + 后端 BUG-001 验收修复）已落地，全门禁绿（SDK 55 · Web 652 ·
+  TUI 177 · `version-ok` · `desktop-ui-ok`）；验收通过后由验收流程在 `origin` 创建 PR，用户负责合并。
 - 前端候选：③ Web 接入服务端搜索；或订阅状态常驻指示（需先定义新鲜度语义，见设计 D10 的非目标）；
   或清理 `TopbarMenu` / `SettingsDialog` 测试里的重复 stub helper。
 - 后端候选见 `summary_and_next_se.md`。
