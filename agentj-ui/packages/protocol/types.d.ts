@@ -1,4 +1,21 @@
 /**
+ * Why a key could not be linked. `kind` stays a `String` for forward compatibility
+ * (precedent: [`ProviderUsageError::kind`]); `message` is always kernel-authored.
+ * @since 0.18.0
+ */
+export interface ApiKeyLinkError {
+  kind: string;
+  message: string;
+  [k: string]: unknown;
+}
+
+/**
+ * Verification outcome of a stored key. `Unknown` tolerates forward values.
+ * @since 0.18.0
+ */
+export type ApiKeyOutcome = "verified" | "unverified" | "rejected";
+
+/**
  * One selectable answer option. @since 0.13.0
  */
 export interface AskOption {
@@ -46,6 +63,27 @@ export interface Attachment {
   content?: string | null;
   mime?: string | null;
   path?: string | null;
+  [k: string]: unknown;
+}
+
+/**
+ * `auth/clearCredential` params. @since 0.18.0
+ */
+export interface AuthClearCredentialParams {
+  /**
+   * Provider name; omitted means the configured default provider. @since 0.18.0
+   */
+  provider?: string | null;
+  [k: string]: unknown;
+}
+
+/**
+ * `auth/clearCredential` result; `cleared: false` means no stored entry existed.
+ * @since 0.18.0
+ */
+export interface AuthClearCredentialResult {
+  cleared: boolean;
+  provider: string;
   [k: string]: unknown;
 }
 
@@ -124,6 +162,77 @@ export interface AuthDeviceStartResult {
   provider: string;
   user_code: string;
   verification_uri: string;
+  [k: string]: unknown;
+}
+
+/**
+ * `auth/setApiKey` params. @since 0.18.0
+ */
+export interface AuthSetApiKeyParams {
+  api_key: string;
+  /**
+   * Free-form user label stored next to the credential. @since 0.18.0
+   */
+  label?: string | null;
+  /**
+   * Provider name; omitted means the configured default provider. @since 0.18.0
+   */
+  provider?: string | null;
+  [k: string]: unknown;
+}
+
+/**
+ * Credential kind. `Unknown` tolerates forward values. @since 0.17.0
+ */
+/**
+ * Where the credential came from. `Unknown` tolerates forward values. @since 0.17.0
+ */
+/**
+ * Verification outcome of a stored key. `Unknown` tolerates forward values.
+ * @since 0.18.0
+ */
+/**
+ * Catalog tier (account → live → overlay; static for non-go providers).
+ * `Unknown` tolerates forward values; the schema lists only the known tiers.
+ * @since 0.17.0
+ */
+export type ModelSource = "account" | "live" | "overlay" | "static";
+
+/**
+ * `auth/setApiKey` result. Never carries a full key — see [`CredentialInfo`];
+ * `effective_source` is where the live credential actually resolved from.
+ * @since 0.18.0
+ */
+export interface AuthSetApiKeyResult {
+  credential?: CredentialInfo | null;
+  effective_source: CredentialSource;
+  error?: ApiKeyLinkError | null;
+  fetched_at: number;
+  models: ModelEntry[];
+  outcome: ApiKeyOutcome;
+  provider: string;
+  saved: boolean;
+  source?: ModelSource | null;
+  [k: string]: unknown;
+}
+/**
+ * Redacted credential projection. `key_hint` is the api_key's last four characters
+ * (`…1234`); OAuth credentials are identified by `org_id`/`expires_at` instead.
+ * @since 0.17.0
+ */
+/**
+ * Why a key could not be linked. `kind` stays a `String` for forward compatibility
+ * (precedent: [`ProviderUsageError::kind`]); `message` is always kernel-authored.
+ * @since 0.18.0
+ */
+/**
+ * One catalog entry. `verified: false` means the route was synthesized, not known.
+ * @since 0.17.0
+ */
+export interface ModelEntry {
+  format: string;
+  id: string;
+  verified: boolean;
   [k: string]: unknown;
 }
 
@@ -455,12 +564,6 @@ export interface ProviderInfo {
  * One catalog entry. `verified: false` means the route was synthesized, not known.
  * @since 0.17.0
  */
-export interface ModelEntry {
-  format: string;
-  id: string;
-  verified: boolean;
-  [k: string]: unknown;
-}
 
 /**
  * `model/list` params. @since 0.17.0
@@ -482,7 +585,6 @@ export interface ModelListParams {
  * `Unknown` tolerates forward values; the schema lists only the known tiers.
  * @since 0.17.0
  */
-export type ModelSource = "account" | "live" | "overlay" | "static";
 
 /**
  * `model/list` result — catalog plus the tier it came from. @since 0.17.0
