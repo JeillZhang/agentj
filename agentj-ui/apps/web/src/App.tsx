@@ -10,12 +10,12 @@ import {
   parseProgress,
 } from "@agentj/sdk";
 import type { NotificationHandler } from "@agentj/sdk";
+import type { AuthSetApiKeyResult, ModelEntry as CatalogEntry } from "@agentj/protocol";
 import { Moon, Sun, Monitor, Menu, PanelRight } from "lucide-react";
 import ApprovalDialog from "./ApprovalDialog";
 import type { ApprovalRequest } from "./ApprovalDialog";
 import RunPanel from "./RunPanel";
 import type { ModelEntry } from "./components/ComposerOptions";
-import type { AuthSetApiKeyResult, ModelEntry as LinkedModelEntry } from "./components/SubscriptionPanel";
 import TopbarMenu from "./components/TopbarMenu";
 import ConnectionStatus from "./components/ConnectionStatus";
 import UnifiedSidebar from "./components/UnifiedSidebar";
@@ -118,8 +118,19 @@ export function isProtocolCompatible(clientVersion: string, serverVersion: strin
 /** Provider id the linked catalog belongs to when the payload omits it. */
 const LINKED_PROVIDER = "opencode-go";
 
-function linkedEntry(entry: LinkedModelEntry, provider: string): ModelEntry {
+function linkedEntry(entry: CatalogEntry, provider: string): ModelEntry {
   return { name: entry.id, provider };
+}
+
+/** `true` while the kernel list still serves this exact name+provider pair. */
+function kernelServes(models: ModelEntry[], entry: ModelEntry | null): boolean {
+  if (!entry) return false;
+  return models.some((row) => row.name === entry.name && row.provider === entry.provider);
+}
+
+/** Fallback after a clear: the kernel-default row, else the first served row. */
+function kernelDefaultEntry(models: ModelEntry[], defaultModel: string | null): ModelEntry | null {
+  return models.find((row) => row.name === defaultModel) ?? models[0] ?? null;
 }
 
 /** First catalog row as a composer entry — the auto-selection target after a link. */
@@ -346,6 +357,18 @@ export default function App() {
     setLinkedCatalog(res);
     setSelectedModel((prev) => prev ?? firstEntryOf(res));
   }, []);
+
+  /**
+   * A clear drops the linked catalog, so the kernel-served rows come back. A selection
+   * that only the catalog offered falls back to the kernel default entry; a user who had
+   * picked nothing stays unselected (a run then still sends no provider/model).
+   */
+  const dropLinkedCatalog = useCallback(() => {
+    setLinkedCatalog(null);
+    setSelectedModel((prev) =>
+      prev && !kernelServes(models, prev) ? kernelDefaultEntry(models, modelName) : prev,
+    );
+  }, [models, modelName]);
   const { pending, approvalError, respond, close } = useApproval(sharedClient, activeSessionId);
   const [theme, setTheme] = useState<ThemeMode>(storedThemeMode() ?? "system");
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -586,6 +609,7 @@ export default function App() {
             onContinue={setActiveSessionIdAndHydrate}
             client={sharedClient}
             onModelsLinked={applyLinkedCatalog}
+            onModelsCleared={dropLinkedCatalog}
           />
           <button type="button" aria-label="toggle sessions" className="aj-button aj-drawer-toggle" aria-expanded={drawerOpen} aria-controls="aj-sidebar" onClick={() => setDrawerOpen((o) => !o)}><Menu size={16} aria-hidden="true" /></button>
           <button type="button" aria-label="toggle theme" className="aj-icon-btn" onClick={() => setTheme((t) => THEME_CYCLE[t])}>

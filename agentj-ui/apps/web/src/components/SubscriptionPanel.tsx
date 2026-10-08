@@ -1,23 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import { METHODS, RpcClient } from "@agentj/sdk";
+import type { AuthSetApiKeyResult } from "@agentj/protocol";
 import "./subscriptionPanel.css";
-
-export type ModelEntry = { id: string; verified: boolean; format: string };
-export type AuthSetApiKeyResult = {
-  provider?: string;
-  saved: boolean;
-  outcome: string;
-  effective_source?: string;
-  fetched_at?: number;
-  models?: ModelEntry[] | null;
-  credential?: CredentialInfo | null;
-  error?: { kind?: string; message?: string } | null;
-};
 
 type Props = {
   client: RpcClient;
   onClose: () => void;
   onLinked?: (result: AuthSetApiKeyResult) => void;
+  /** Fired once the kernel removed a stored credential, so the shell drops its catalog. */
+  onCleared?: () => void;
 };
 
 type UsageWindow = { kind: string; status?: string; percent?: number | null; resets_at?: string | null };
@@ -114,7 +105,7 @@ function UsageBlock({ usage }: { usage: ProviderUsage }) {
   );
 }
 
-export default function SubscriptionPanel({ client, onClose, onLinked }: Props) {
+export default function SubscriptionPanel({ client, onClose, onLinked, onCleared }: Props) {
   const [status, setStatus] = useState<AuthStatus | null>(null);
   const [usage, setUsage] = useState<ProviderUsage | null>(null);
   const [device, setDevice] = useState<DeviceView | null>(null);
@@ -219,6 +210,9 @@ export default function SubscriptionPanel({ client, onClose, onLinked }: Props) 
       setLinkMsg(linkClearText(cleared));
       setEnvShadow(false);
     }
+    // Reported even if the panel unmounted mid-request: the kernel did drop the credential,
+    // so the shell must not keep serving the account catalog.
+    if (cleared) onCleared?.();
     void loadStatus();
   };
 

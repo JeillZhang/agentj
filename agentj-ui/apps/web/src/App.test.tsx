@@ -296,6 +296,19 @@ async function linkFromSettings(catalog: {
   fireEvent.click(screen.getByRole("button", { name: "close" }));
 }
 
+/**
+ * Walks the real settings → 订阅 → 解除链接 path so the App-level clear behaviour is
+ * exercised end to end (the kernel confirms it removed a stored credential).
+ */
+async function clearFromSettings(): Promise<void> {
+  fireEvent.click(screen.getByRole("button", { name: "更多" }));
+  fireEvent.click(screen.getByText("设置…"));
+  fireEvent.click(screen.getByRole("tab", { name: "订阅" }));
+  fireEvent.click(screen.getByRole("button", { name: "解除链接" }));
+  await screen.findByText(/已解除链接/);
+  fireEvent.click(screen.getByRole("button", { name: "close" }));
+}
+
 describe("App with mocked SDK transport", () => {
   beforeEach(() => {
     shared.lastWsUrl.value = "";
@@ -732,6 +745,35 @@ describe("App with mocked SDK transport", () => {
     fireEvent.click(screen.getByRole("option", { name: /deepseek-chat/ }));
     await linkFromSettings({ models: [
       { id: "opencode-go/kimi-k3", verified: true, format: "anthropic" }] });
+    const prompt = screen.getByLabelText(/prompt/i);
+    fireEvent.change(prompt, { target: { value: "hi" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+    await waitFor(() => expect(shared.lastRunParams.value).toMatchObject({
+      provider: "deepseek-chat", model: "deepseek-chat" }));
+    shared.kernelStatusResult.value = null;
+  });
+
+  it("drops the linked catalog and its selection after 解除链接", async () => {
+    shared.kernelStatusResult.value = {
+      modules: [{ id: "test-mod", state: "running" }],
+      default_model: "deepseek-chat",
+      providers: [
+        { id: "deepseek-chat", models: ["deepseek-chat"] },
+        { id: "opencode-go", models: ["opencode-go/old"] },
+      ],
+    };
+    render(<App />);
+    await createActiveSession();
+    await linkFromSettings({ models: [
+      { id: "opencode-go/kimi-k3", verified: true, format: "anthropic" },
+      { id: "opencode-go/m3", verified: false, format: "openai-compat" }] });
+    await clearFromSettings();
+    // the linked ids are no longer offered, and the trigger fell back to the kernel default
+    expect(screen.queryByRole("button", { name: /kimi-k3/ })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /deepseek-chat/ }));
+    expect(screen.getAllByRole("option").map((option) => option.querySelector(".nm")?.textContent))
+      .toEqual(["deepseek-chat", "opencode-go/old"]);
+    fireEvent.click(screen.getByRole("button", { name: /deepseek-chat/ }));
     const prompt = screen.getByLabelText(/prompt/i);
     fireEvent.change(prompt, { target: { value: "hi" } });
     fireEvent.click(screen.getByRole("button", { name: "发送" }));

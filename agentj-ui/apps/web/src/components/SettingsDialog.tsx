@@ -7,7 +7,8 @@ import { firstIndex, lastIndex, moveSelection, tabIndexFor } from "../hooks/useR
 import ModalDialog from "./ModalDialog";
 import SettingsDisplayPanel from "./SettingsDisplayPanel";
 import SettingsProjectPanel from "./SettingsProjectPanel";
-import SubscriptionPanel, { type AuthSetApiKeyResult } from "./SubscriptionPanel";
+import SubscriptionPanel from "./SubscriptionPanel";
+import type { AuthSetApiKeyResult } from "@agentj/protocol";
 import "./settingsDialog.css";
 
 type Props = {
@@ -16,6 +17,8 @@ type Props = {
   client?: RpcClient | null;
   /** Forwards a successful API-key link's account catalog to the app shell. */
   onModelsLinked?: (catalog: AuthSetApiKeyResult) => void;
+  /** Forwards a confirmed credential clear, so the shell drops the linked catalog. */
+  onModelsCleared?: () => void;
 };
 
 type CategoryId = "connection" | "display" | "project" | "demo" | "subscription";
@@ -37,7 +40,7 @@ function tabId(id: CategoryId): string {
   return `aj-settings-tab-${id}`;
 }
 
-export default function SettingsDialog({ onConnect, onClose, client = null, onModelsLinked }: Props) {
+export default function SettingsDialog({ onConnect, onClose, client = null, onModelsLinked, onModelsCleared }: Props) {
   const [active, setActive] = useState<CategoryId>("connection");
   const [demo, setDemo] = useState(isDemoEnabled);
   const tabRefs = useRef(new Map<CategoryId, HTMLButtonElement | null>());
@@ -125,7 +128,8 @@ export default function SettingsDialog({ onConnect, onClose, client = null, onMo
           )}
           {active === "subscription" &&
             (client ? (
-              <SubscriptionPanel client={client} onClose={onClose} onLinked={onModelsLinked} />
+              <SubscriptionPanel client={client} onClose={onClose} onLinked={onModelsLinked}
+                onCleared={onModelsCleared} />
             ) : (
               <p className="aj-hint">先连接内核</p>
             ))}

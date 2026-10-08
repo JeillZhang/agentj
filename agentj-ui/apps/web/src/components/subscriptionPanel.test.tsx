@@ -3,7 +3,8 @@ import "@testing-library/jest-dom/vitest";
 import { fireEvent, render, screen, act, waitFor } from "@testing-library/react";
 import type { RpcClient } from "@agentj/sdk";
 import { METHODS } from "@agentj/sdk";
-import SubscriptionPanel, { type AuthSetApiKeyResult } from "./SubscriptionPanel";
+import type { AuthSetApiKeyResult } from "@agentj/protocol";
+import SubscriptionPanel from "./SubscriptionPanel";
 
 const client = (responses: Record<string, unknown>, sequences: Record<string, unknown[]> = {}) => {
   const requests: string[] = [];
@@ -202,6 +203,30 @@ it("clears the stored credential and reloads the status", async () => {
     METHODS.authClearCredential, { provider: "opencode-go" }));
   await waitFor(() => expect(
     c.requests.filter((m) => m === METHODS.authStatus).length).toBe(before + 1));
+});
+
+it("reports a cleared credential so the parent can drop its account catalog", async () => {
+  const onCleared = vi.fn();
+  const c = linkClient({ provider: "opencode-go", saved: true, outcome: "verified",
+    effective_source: "file", fetched_at: 1, models: [] },
+    { authenticated: true, credential: { kind: "api_key", key_hint: "…1234" } });
+  render(<SubscriptionPanel client={c} onClose={() => {}} onCleared={onCleared} />);
+  expect(await screen.findByText("…1234")).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "解除链接" }));
+  await waitFor(() => expect(onCleared).toHaveBeenCalledTimes(1));
+});
+
+it("reports no clear when the kernel held no credential", async () => {
+  const onCleared = vi.fn();
+  const c = client({
+    [METHODS.authStatus]: { authenticated: false },
+    [METHODS.providerUsage]: { windows: [] },
+    [METHODS.authClearCredential]: { provider: "opencode-go", cleared: false },
+  });
+  render(<SubscriptionPanel client={c} onClose={() => {}} onCleared={onCleared} />);
+  fireEvent.click(screen.getByRole("button", { name: "解除链接" }));
+  expect(await screen.findByText(/当前没有已保存的凭据/)).toBeInTheDocument();
+  expect(onCleared).not.toHaveBeenCalled();
 });
 
 it("clears the pending poll timer on unmount", async () => {
