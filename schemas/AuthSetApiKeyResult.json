@@ -1,0 +1,181 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AuthSetApiKeyResult",
+  "description": "`auth/setApiKey` result. Never carries a full key — see [`CredentialInfo`];\n`effective_source` is where the live credential actually resolved from.\n@since 0.18.0",
+  "type": "object",
+  "properties": {
+    "credential": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CredentialInfo"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "effective_source": {
+      "$ref": "#/$defs/CredentialSource"
+    },
+    "error": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ApiKeyLinkError"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "fetched_at": {
+      "type": "integer",
+      "format": "int64"
+    },
+    "models": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/ModelEntry"
+      }
+    },
+    "outcome": {
+      "$ref": "#/$defs/ApiKeyOutcome"
+    },
+    "provider": {
+      "type": "string"
+    },
+    "saved": {
+      "type": "boolean"
+    },
+    "source": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ModelSource"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "provider",
+    "saved",
+    "outcome",
+    "effective_source",
+    "fetched_at",
+    "models"
+  ],
+  "$defs": {
+    "ApiKeyLinkError": {
+      "description": "Why a key could not be linked. `kind` stays a `String` for forward compatibility\n(precedent: [`ProviderUsageError::kind`]); `message` is always kernel-authored.\n@since 0.18.0",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "message"
+      ]
+    },
+    "ApiKeyOutcome": {
+      "description": "Verification outcome of a stored key. `Unknown` tolerates forward values.\n@since 0.18.0",
+      "type": "string",
+      "enum": [
+        "verified",
+        "unverified",
+        "rejected"
+      ]
+    },
+    "CredentialInfo": {
+      "description": "Redacted credential projection. `key_hint` is the api_key's last four characters\n(`…1234`); OAuth credentials are identified by `org_id`/`expires_at` instead.\n@since 0.17.0",
+      "type": "object",
+      "properties": {
+        "expires_at": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        },
+        "expiring_soon": {
+          "type": "boolean"
+        },
+        "key_hint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "$ref": "#/$defs/CredentialKind"
+        },
+        "org_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "$ref": "#/$defs/CredentialSource"
+        }
+      },
+      "required": [
+        "kind",
+        "source",
+        "expiring_soon"
+      ]
+    },
+    "CredentialKind": {
+      "description": "Credential kind. `Unknown` tolerates forward values. @since 0.17.0",
+      "type": "string",
+      "enum": [
+        "api_key",
+        "oauth"
+      ]
+    },
+    "CredentialSource": {
+      "description": "Where the credential came from. `Unknown` tolerates forward values. @since 0.17.0",
+      "type": "string",
+      "enum": [
+        "flag",
+        "env",
+        "file"
+      ]
+    },
+    "ModelEntry": {
+      "description": "One catalog entry. `verified: false` means the route was synthesized, not known.\n@since 0.17.0",
+      "type": "object",
+      "properties": {
+        "format": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "verified": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "verified",
+        "format"
+      ]
+    },
+    "ModelSource": {
+      "description": "Catalog tier (account → live → overlay; static for non-go providers).\n`Unknown` tolerates forward values; the schema lists only the known tiers.\n@since 0.17.0",
+      "type": "string",
+      "enum": [
+        "account",
+        "live",
+        "overlay",
+        "static"
+      ]
+    }
+  }
+}

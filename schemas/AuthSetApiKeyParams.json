@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AuthSetApiKeyParams",
+  "description": "`auth/setApiKey` params. @since 0.18.0",
+  "type": "object",
+  "properties": {
+    "api_key": {
+      "type": "string"
+    },
+    "label": {
+      "description": "Free-form user label stored next to the credential. @since 0.18.0",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "provider": {
+      "description": "Provider name; omitted means the configured default provider. @since 0.18.0",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "api_key"
+  ]
+}
