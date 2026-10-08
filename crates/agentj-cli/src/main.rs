@@ -366,7 +366,47 @@ async fn serve_tcp(
     Ok(())
 }
 
-async fn run_attached(url: &str, prompt: &str) -> anyhow::Result<()> {
+/// NDJSON `session/run` request for the attached path: `provider`/`model` are
+/// only serialized when set, so an absent flag leaves the remote default alone.
+fn run_params_json(sid: &str, prompt: &str, provider: Option<&str>, model: Option<&str>) -> String {
+    let mut params = serde_json::Map::new();
+    params.insert("session_id".into(), serde_json::Value::from(sid));
+    params.insert("content".into(), serde_json::Value::from(prompt));
+    if let Some(p) = provider {
+        params.insert("provider".into(), serde_json::Value::from(p));
+    }
+    if let Some(m) = model {
+        params.insert("model".into(), serde_json::Value::from(m));
+    }
+    serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "session/run",
+        "params": serde_json::Value::Object(params),
+    })
+    .to_string()
+}
+
+/// Human-readable line for a JSON-RPC error reply, or `None` for a non-error
+/// reply. `-32603` (internal error) is the kernel's generic failure carrier,
+/// so its code adds no information; any other code is appended.
+fn run_error_line(v: &serde_json::Value) -> Option<String> {
+    let err = v.get("error")?;
+    let msg = err["message"].as_str().unwrap_or_default();
+    let code = err["code"].as_i64().unwrap_or_default();
+    Some(if code == -32603 {
+        format!("error: {msg}")
+    } else {
+        format!("error: {msg} (code {code})")
+    })
+}
+
+async fn run_attached(
+    url: &str,
+    prompt: &str,
+    provider: Option<&str>,
+    model: Option<&str>,
+) -> anyhow::Result<Option<String>> {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     let target = url.strip_prefix("tcp://").unwrap_or(url);
     let stream = tokio::net::TcpStream::connect(target).await?;
@@ -387,10 +427,7 @@ async fn run_attached(url: &str, prompt: &str) -> anyhow::Result<()> {
         .ok_or_else(|| anyhow::anyhow!("session/new failed: {line}"))?
         .to_string();
 
-    let run_line = format!(
-        r#"{{"jsonrpc":"2.0","id":2,"method":"session/run","params":{{"session_id":"{sid}","content":{}}}}}"#,
-        serde_json::to_string(prompt)?,
-    );
+    let run_line = run_params_json(&sid, prompt, provider, model);
     w.write_all(run_line.as_bytes()).await?;
     w.write_all(b"\n").await?;
     loop {
@@ -402,12 +439,17 @@ async fn run_attached(url: &str, prompt: &str) -> anyhow::Result<()> {
             Ok(v) => v,
             Err(_) => continue,
         };
+        // Checked before the result branch: an error reply has no
+        // `result.content`, so ignoring it would spin here forever.
+        if let Some(failure) = run_error_line(&v) {
+            return Ok(Some(failure));
+        }
         if let Some(text) = v["result"]["content"].as_str() {
             println!("{text}");
             break;
         }
     }
-    Ok(())
+    Ok(None)
 }
 
 #[tokio::main]
@@ -648,8 +690,13 @@ async fn main() -> anyhow::Result<()> {
             model,
         }) => {
             if let Some(url) = attach {
-                run_attached(&url, &prompt).await?;
+                let failure =
+                    run_attached(&url, &prompt, provider.as_deref(), model.as_deref()).await?;
                 mcp_manager.close_all().await;
+                if let Some(line) = failure {
+                    eprintln!("{line}");
+                    std::process::exit(1);
+                }
             } else {
                 let ipc_server = build_ipc_server(
                     kernel,
@@ -1177,5 +1224,61 @@ mod tests {
             }
             _ => panic!("expected dashboard subcommand"),
         }
+    }
+
+    #[test]
+    fn run_params_json_omits_absent_overrides() {
+        let line = run_params_json("s1", "hi", None, None);
+        let v: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(v["method"], "session/run");
+        assert_eq!(v["id"], 2);
+        assert_eq!(v["params"].as_object().unwrap().len(), 2);
+        assert!(v["params"].get("provider").is_none());
+        assert!(v["params"].get("model").is_none());
+    }
+
+    #[test]
+    fn run_params_json_carries_overrides() {
+        let line = run_params_json("s1", "say \"hi\"", Some("opencode-go"), None);
+        let v: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(v["params"]["provider"], "opencode-go");
+        assert_eq!(v["params"]["content"], "say \"hi\"");
+        assert!(v["params"].get("model").is_none());
+    }
+
+    #[test]
+    fn run_error_line_omits_code_for_internal() {
+        let v: serde_json::Value = serde_json::from_str(
+            r#"{"jsonrpc":"2.0","id":2,"error":{"code":-32603,"message":"boom"}}"#,
+        )
+        .unwrap();
+        assert_eq!(run_error_line(&v).as_deref(), Some("error: boom"));
+    }
+
+    #[test]
+    fn run_error_line_includes_other_codes() {
+        let cancelled: serde_json::Value = serde_json::from_str(
+            r#"{"jsonrpc":"2.0","id":2,"error":{"code":-32800,"message":"boom"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            run_error_line(&cancelled).as_deref(),
+            Some("error: boom (code -32800)")
+        );
+        let invalid: serde_json::Value = serde_json::from_str(
+            r#"{"jsonrpc":"2.0","id":2,"error":{"code":-32602,"message":"boom"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            run_error_line(&invalid).as_deref(),
+            Some("error: boom (code -32602)")
+        );
+    }
+
+    #[test]
+    fn run_error_line_is_none_for_result() {
+        let v: serde_json::Value =
+            serde_json::from_str(r#"{"jsonrpc":"2.0","id":2,"result":{"content":"x"}}"#).unwrap();
+        assert!(run_error_line(&v).is_none());
     }
 }

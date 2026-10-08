@@ -436,3 +436,92 @@ fn e2e_run_without_flags_prints_final_response() {
     );
     assert_eq!(last_line(&String::from_utf8_lossy(&out.stdout)), "done");
 }
+
+// ---- T2: `--attach` carries the run overrides and surfaces JSON-RPC errors ----
+
+/// Reaps the spawned kernel on every exit path, panics included (pattern from tests/e2e_serve.rs).
+struct AutoReap(std::process::Child);
+impl Drop for AutoReap {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// Read server stdout lines until the resident kernel prints `listening on <addr>`
+/// (copy of tests/e2e_serve.rs::read_listening_addr, which must stay in sync).
+fn read_listening_addr<R: BufRead>(reader: &mut R) -> String {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    let mut line = String::new();
+    while std::time::Instant::now() < deadline {
+        line.clear();
+        match reader.read_line(&mut line) {
+            Ok(0) => break,
+            Ok(_) => {
+                if let Some(rest) = line.trim().strip_prefix("listening on ") {
+                    return rest.trim().to_string();
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    panic!("resident kernel did not print a listening address");
+}
+
+#[test]
+fn e2e_run_attach_surfaces_unknown_provider() {
+    let dir = run_temp_dir("attach-unknown-provider");
+    let cfg = write_run_config(&dir);
+    let mut kernel = AutoReap(
+        Command::new(env!("CARGO_BIN_EXE_agentj"))
+            .args(["--config", cfg.to_str().unwrap(), "serve", "--port", "0"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let stdout = kernel.0.stdout.take().unwrap();
+    let mut reader = BufReader::new(stdout);
+    // `reader` stays alive for the rest of the test so kernel log lines keep draining
+    let addr = read_listening_addr(&mut reader);
+
+    let errfile = dir.join("attach-stderr.txt");
+    let mut attach = Command::new(env!("CARGO_BIN_EXE_agentj"))
+        .args([
+            "--config",
+            cfg.to_str().unwrap(),
+            "run",
+            "--attach",
+            &format!("tcp://{addr}"),
+            "--provider",
+            "nope",
+            "hi",
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::from(std::fs::File::create(&errfile).unwrap()))
+        .spawn()
+        .unwrap();
+
+    // A swallowed error reply would wait forever; bound the child so the test fails, not hangs.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let status = loop {
+        if let Some(s) = attach.try_wait().unwrap() {
+            break s;
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = attach.kill();
+            let _ = attach.wait();
+            panic!("agentj run --attach hung instead of surfacing the JSON-RPC error");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    assert_eq!(
+        status.code(),
+        Some(1),
+        "stderr: {}",
+        std::fs::read_to_string(&errfile).unwrap_or_default()
+    );
+    let stderr = std::fs::read_to_string(&errfile).unwrap();
+    assert!(stderr.contains("unknown provider: nope"), "{stderr}");
+}
