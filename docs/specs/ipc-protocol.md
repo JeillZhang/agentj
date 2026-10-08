@@ -1162,7 +1162,7 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 
 ### 8.29 auth/clearCredential（请求，`@since 0.18.0`）
 
-- **能力声明**：凭据解除能力，对**任意已注册 provider** 有效（不限于 opencode-go）。需注入 `provider_service` handle；未注入 → `-32603` + `data{reason:"provider_service_unavailable"}`。
+- **能力声明**：凭据解除能力，**仅 opencode-go** 支持（不支持时 `capability` 为 `api_key`，与 §8.28 一致）。需注入 `provider_service` handle；未注入 → `-32603` + `data{reason:"provider_service_unavailable"}`。
 - **请求**：`AuthClearCredentialParams`。
 
 ```json
@@ -1191,7 +1191,7 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 - **风险说明（时序）**：与 §8.28 相同——注销 / 替换注册没有全局互斥，**进行中的一轮 run 可能仍持有旧实例**，下一轮生效。
 - **不泄露（no-secret 不变式）**：结果只含 `provider` / `cleared`，不含任何凭据字段（含 `key_hint` 也不返回）。
 - **部分结果**：无。
-- **error.data**：未知 provider → `-32602` + `{ "field": "provider", "reason": "unknown_provider", "registered": ["<名>", …] }`；params 结构畸形 → `-32602` + `{ "reason": "invalid_params", "detail": "<原文>" }`；凭据文件不可读 / 权限不合规 / 落盘失败 → `-32603` + `{ "reason": "<原文>" }`；收敛（注销 / 重建注册）失败 → `-32603` + `{ "reason": "activation_failed", "detail": "<自产原因>" }`；handle 未注入 → `-32603` + `{ "reason": "provider_service_unavailable" }`。
+- **error.data**：未知 provider → `-32602` + `{ "field": "provider", "reason": "unknown_provider", "registered": ["<名>", …] }`；provider 已知但非 opencode-go → `-32602` + `{ "field": "provider", "reason": "unsupported_provider", "capability": "api_key" }`（**凭据与注册表均不被触碰**，与 §8.28 同值）；params 结构畸形 → `-32602` + `{ "reason": "invalid_params", "detail": "<原文>" }`；凭据文件不可读 / 权限不合规 / 落盘失败 → `-32603` + `{ "reason": "<原文>" }`；收敛（注销 / 重建注册）失败 → `-32603` + `{ "reason": "activation_failed", "detail": "<自产原因>" }`；handle 未注入 → `-32603` + `{ "reason": "provider_service_unavailable" }`。
 
 ## 9. 值枚举与未知值宽容
 

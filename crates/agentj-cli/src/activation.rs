@@ -98,6 +98,10 @@ pub fn deactivate_opencode_go(
         Some(_) => {}
         None => {
             registry.remove(&cfg.name);
+            tracing::warn!(
+                "provider {} 已解除链接：暂无可用密钥，已从注册表移除；可在设置 · 订阅中重新链接 API Key",
+                cfg.name
+            );
         }
     }
     Ok(())

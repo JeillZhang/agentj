@@ -468,7 +468,8 @@ impl CliProviderService {
     }
 
     /// Persist the credential the device flow minted and register `opencode-go` with it
-    /// (design G3), so a completed login works without restarting the kernel.
+    /// (design G3), so a completed login works without restarting the kernel. The provider
+    /// model cache is invalidated so the next `model/list` reflects the new credential.
     async fn authorized_login(
         &self,
         cfg: &ProviderCfg,
@@ -499,6 +500,10 @@ impl CliProviderService {
             }),
         )
         .map_err(activation_failed)?;
+        self.model_cache.lock().unwrap().remove(&cfg.name);
+        // Protocol 8.28: the device-poll activation shares the link path, so both per-provider
+        // caches are dropped (a pre-login `no_credential` usage snapshot must not survive).
+        self.usage_cache.lock().unwrap().remove(&cfg.name);
         Ok(state(
             DeviceAuthState::Authorized,
             None,
@@ -551,7 +556,8 @@ impl CliProviderService {
     }
 
     /// Persist the link, activate the provider and seed the catalog reuse window (design
-    /// D2/D3/D7): `account` is `Some` only for a verified console catalog.
+    /// D2/D3/D7): `account` is `Some` only for a verified console catalog. The provider usage
+    /// cache is invalidated, so `provider/usage` cannot keep a pre-link error for its 300s TTL.
     async fn save_link(
         &self,
         cfg: &ProviderCfg,
@@ -571,6 +577,7 @@ impl CliProviderService {
                 },
             )
             .map_err(credential_error)?;
+        self.usage_cache.lock().unwrap().remove(&cfg.name);
         activation::activate_opencode_go(&self.registry, cfg, key, catalog.clone(), None)
             .map_err(activation_failed)?;
         let models = entries_of(&catalog.ids(), &catalog);
@@ -618,13 +625,15 @@ impl CliProviderService {
     }
 
     /// Remove the stored credential and converge the registration with what still resolves
-    /// (design D7): both per-provider caches are invalidated, then the `opencode-go` instance
-    /// is rebuilt from a remaining env/flag key or unregistered when nothing is left.
+    /// (design D7) for `opencode-go`: both per-provider caches are invalidated, then the
+    /// `opencode-go` instance is rebuilt from a remaining env/flag key or unregistered when
+    /// nothing is left. A known non-go provider is rejected before anything is touched.
     pub async fn clear_credential(
         &self,
         p: AuthClearCredentialParams,
     ) -> Result<AuthClearCredentialResult, DispatchError> {
         let cfg = self.cfg(p.provider.as_deref())?.clone();
+        self.require_kind(&cfg, "api_key")?;
         let cleared = self.store.remove(&cfg.name).map_err(credential_error)?;
         self.usage_cache.lock().unwrap().remove(&cfg.name);
         self.model_cache.lock().unwrap().remove(&cfg.name);
@@ -1258,6 +1267,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn verified_link_invalidates_the_cached_usage_error() {
+        let server = wiremock::MockServer::start().await;
+        mount_v2_config(&server, 200, v2_body(&["kimi-k3"])).await;
+        mount_usage(
+            &server,
+            200,
+            serde_json::json!({"usage":{
+                "rolling":{"status":"ok","percent":4,"resetsAt":"2026-08-13T16:27:38Z"},
+                "weekly":{"status":"ok","percent":3,"resetsAt":"2026-08-17T00:00:00Z"},
+                "monthly":{"status":"ok","percent":0,"resetsAt":"x"}}}),
+        )
+        .await;
+        let (svc, _dir) = svc_with_console(&server.uri());
+        let before = svc
+            .usage(ProviderUsageParams {
+                provider: None,
+                refresh: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(before.error.unwrap().kind, "no_credential");
+        assert!(
+            server.received_requests().await.unwrap().is_empty(),
+            "no credential means no upstream call"
+        );
+
+        let linked = svc.set_api_key(params("sk-good", None)).await.unwrap();
+        assert!(linked.saved && matches!(linked.outcome, ApiKeyOutcome::Verified));
+
+        let after = svc
+            .usage(ProviderUsageParams {
+                provider: None,
+                refresh: None,
+            })
+            .await
+            .unwrap();
+        assert!(
+            after.error.is_none(),
+            "a verified link must not keep serving the cached no_credential error"
+        );
+        assert_eq!(after.windows.len(), 3);
+        assert_eq!(server.received_requests().await.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
     async fn unverified_after_500_still_saves_and_never_invents_catalog() {
         let server = wiremock::MockServer::start().await;
         mount_v2_config(&server, 500, serde_json::json!({})).await;
@@ -1873,6 +1927,52 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn clear_credential_rejects_non_go_providers_and_leaves_them_registered() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = AuthStore::with_path(dir.path().join("auth.json"));
+        store
+            .set(
+                "deepseek-chat",
+                Credential::ApiKey {
+                    key: "sk-deep".into(),
+                    label: None,
+                    created_at: None,
+                },
+            )
+            .unwrap();
+        let reg = registry_with(&["deepseek-chat"]);
+        let svc = CliProviderService::new(
+            store,
+            vec![ProviderCfg {
+                name: "deepseek-chat".into(),
+                kind: "openai-compat".into(),
+                base_url: DEAD_BASE.into(),
+                api_key_env: None,
+            }],
+            "deepseek-chat".into(),
+            DEAD_BASE.into(),
+            80,
+            reg.clone(),
+        );
+        let err = svc
+            .clear_credential(clear_params(Some("deepseek-chat")))
+            .await
+            .unwrap_err();
+        let data = err.data.clone().unwrap();
+        assert_eq!(err.code, -32602);
+        assert_eq!(data["reason"], "unsupported_provider");
+        assert_eq!(data["capability"], "api_key");
+        assert!(
+            reg.get("deepseek-chat").is_some(),
+            "a non-go provider must stay registered"
+        );
+        assert!(
+            svc.store.get("deepseek-chat").unwrap().is_some(),
+            "a non-go provider's credential must stay on disk"
+        );
+    }
+
     /// A service over the mock console base plus the temp dir and registry it was built with,
     /// so a device-code login is observable through both the store and the registration.
     fn svc_with_device_flow(
@@ -1918,6 +2018,57 @@ mod tests {
         assert_eq!(out.state, DeviceAuthState::Authorized);
         assert!(dir.path().join("auth.json").exists());
         assert!(reg.get("opencode-go").is_some(), "no restart needed");
+    }
+
+    /// A pre-login `model/list` snapshot, inserted to observe cache invalidation.
+    fn seeded_model_list(provider: &str) -> (ModelListResult, i64) {
+        (
+            ModelListResult {
+                provider: provider.into(),
+                default_model: provider.into(),
+                source: ModelSource::Overlay,
+                fetched_at: 0,
+                models: vec![],
+            },
+            0,
+        )
+    }
+
+    /// A pre-login `provider/usage` snapshot, inserted to observe cache invalidation.
+    fn seeded_usage(provider: &str) -> ProviderUsageResult {
+        ProviderUsageResult {
+            provider: provider.into(),
+            fetched_at: 0,
+            stale: false,
+            warn_percent: 80,
+            windows: vec![],
+            error: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn authorized_device_poll_invalidates_the_model_cache() {
+        let server = wiremock::MockServer::start().await;
+        mount_token_success(&server, "access-1").await;
+        let (svc, _dir, _reg) = svc_with_device_flow(&server.uri());
+        svc.model_cache
+            .lock()
+            .unwrap()
+            .insert("opencode-go".into(), seeded_model_list("opencode-go"));
+        svc.usage_cache
+            .lock()
+            .unwrap()
+            .insert("opencode-go".into(), (seeded_usage("opencode-go"), 0));
+        let out = svc.device_poll(poll_params("dev-code")).await.unwrap();
+        assert_eq!(out.state, DeviceAuthState::Authorized);
+        assert!(
+            svc.model_cache.lock().unwrap().get("opencode-go").is_none(),
+            "a completed login must drop the pre-login catalog"
+        );
+        assert!(
+            svc.usage_cache.lock().unwrap().get("opencode-go").is_none(),
+            "a completed login must drop the pre-login usage snapshot (protocol 8.28: both caches)"
+        );
     }
 
     #[tokio::test]
