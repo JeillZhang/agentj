@@ -1,9 +1,9 @@
 import { expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
-import { fireEvent, render, screen, act } from "@testing-library/react";
+import { fireEvent, render, screen, act, waitFor } from "@testing-library/react";
 import type { RpcClient } from "@agentj/sdk";
 import { METHODS } from "@agentj/sdk";
-import SubscriptionPanel from "./SubscriptionPanel";
+import SubscriptionPanel, { type AuthSetApiKeyResult } from "./SubscriptionPanel";
 
 const client = (responses: Record<string, unknown>, sequences: Record<string, unknown[]> = {}) => {
   const requests: string[] = [];
@@ -85,6 +85,123 @@ it("polls the device flow, honours slow_down, refreshes and stops", async () => 
   } finally {
     vi.useRealTimers();
   }
+});
+
+const linkClient = (result: unknown, status: unknown = { authenticated: false }) =>
+  client({
+    [METHODS.authStatus]: status,
+    [METHODS.providerUsage]: { windows: [] },
+    [METHODS.authSetApiKey]: result,
+    [METHODS.authClearCredential]: { provider: "opencode-go", cleared: true },
+  });
+
+const submitKey = async (value: string) => {
+  const input = screen.getByLabelText(/API Key/);
+  fireEvent.change(input, { target: { value } });
+  fireEvent.click(screen.getByRole("button", { name: "链接" }));
+  return input;
+};
+
+it("links with a masked api key and never echoes it", async () => {
+  const c = { request: vi.fn() };
+  c.request.mockImplementation(async (m: string) => {
+    if (m === METHODS.authStatus) return { authenticated: false };
+    if (m === METHODS.providerUsage) return { windows: [] };
+    if (m === METHODS.authSetApiKey) {
+      return {
+        provider: "opencode-go", saved: true, outcome: "verified",
+        effective_source: "file", fetched_at: 1,
+        models: [{ id: "opencode-go/kimi-k3", verified: true, format: "anthropic" }],
+        credential: { kind: "api_key", key_hint: "…k3" },
+      } as AuthSetApiKeyResult;
+    }
+    return {};
+  });
+  const onLinked = vi.fn();
+  render(<SubscriptionPanel client={c as unknown as RpcClient} onClose={() => {}} onLinked={onLinked} />);
+  const input = screen.getByLabelText(/API Key/);
+  expect(input).toHaveAttribute("type", "password");
+  fireEvent.change(input, { target: { value: "sk-secret-value" } });
+  fireEvent.click(screen.getByRole("button", { name: "链接" }));
+  await waitFor(() => expect(c.request).toHaveBeenCalledWith(METHODS.authSetApiKey,
+    { provider: "opencode-go", api_key: "sk-secret-value", label: "web" }));
+  await waitFor(() => expect(screen.getByText(/已链接/)).toBeInTheDocument());
+  // the input is the leak surface that matters; a cleared masked field + clean storage is the proof
+  expect((input as HTMLInputElement).value).toBe("");
+  expect(screen.queryByText(/sk-secret-value/)).toBeNull();
+  expect(window.localStorage.length).toBe(0);
+  expect(onLinked).toHaveBeenCalledTimes(1);
+  expect(onLinked.mock.calls[0][0]).toMatchObject({ models: [{ id: "opencode-go/kimi-k3" }] });
+});
+
+it("keeps the link button disabled until a key is typed", () => {
+  const c = linkClient({ provider: "opencode-go", saved: true, outcome: "verified",
+    effective_source: "file", fetched_at: 1, models: [] });
+  render(<SubscriptionPanel client={c} onClose={() => {}} />);
+  const input = screen.getByLabelText(/API Key/);
+  expect(input).toHaveAttribute("type", "password");
+  expect(input).toHaveAttribute("autocomplete", "off");
+  const button = screen.getByRole("button", { name: "链接" });
+  expect(button).toBeDisabled();
+  fireEvent.change(input, { target: { value: "sk-x" } });
+  expect(button).toBeEnabled();
+  fireEvent.change(input, { target: { value: "   " } });
+  expect(button).toBeDisabled();
+});
+
+it("warns before replacing an existing OAuth credential", async () => {
+  const c = linkClient(
+    { provider: "opencode-go", saved: true, outcome: "verified",
+      effective_source: "file", fetched_at: 1, models: [] },
+    { authenticated: true, credential: { kind: "oauth", org_id: "org-1" } });
+  render(<SubscriptionPanel client={c} onClose={() => {}} />);
+  expect(await screen.findByText(/将替换现有 OAuth 凭据/)).toBeInTheDocument();
+});
+
+it("says the key lives on the kernel host and tells when the environment wins", async () => {
+  const c = linkClient({ provider: "opencode-go", saved: true, outcome: "verified",
+    effective_source: "env", fetched_at: 1, models: [] });
+  render(<SubscriptionPanel client={c} onClose={() => {}} />);
+  expect(screen.getByText(/内核主机/)).toBeInTheDocument();
+  await submitKey("sk-x");
+  expect(await screen.findByText(/环境变量/)).toBeInTheDocument();
+  expect(screen.getByText(/优先/)).toBeInTheDocument();
+  expect(screen.getByText(/已链接/)).toBeInTheDocument();
+});
+
+it("marks an unverified save as unchecked", async () => {
+  const c = linkClient({ provider: "opencode-go", saved: true, outcome: "unverified",
+    effective_source: "file", fetched_at: 1, models: [],
+    error: { kind: "unavailable", message: "m" } });
+  render(<SubscriptionPanel client={c} onClose={() => {}} />);
+  await submitKey("sk-x");
+  expect(await screen.findByText(/已保存/)).toBeInTheDocument();
+  expect(screen.getByText(/未校验/)).toBeInTheDocument();
+});
+
+it("maps a rejected outcome through ERROR_TEXT and reports nothing was saved", async () => {
+  const c = linkClient({ provider: "opencode-go", saved: false, outcome: "rejected",
+    effective_source: "file", fetched_at: 1, models: [],
+    error: { kind: "unauthorized", message: "m" } });
+  render(<SubscriptionPanel client={c} onClose={() => {}} />);
+  await submitKey("sk-x");
+  expect(await screen.findByText(/未保存/)).toBeInTheDocument();
+  expect(screen.getByText(/密钥无效或已被撤销/)).toBeInTheDocument();
+  expect((screen.getByLabelText(/API Key/) as HTMLInputElement).value).toBe("");
+});
+
+it("clears the stored credential and reloads the status", async () => {
+  const c = linkClient({ provider: "opencode-go", saved: true, outcome: "verified",
+    effective_source: "file", fetched_at: 1, models: [] },
+    { authenticated: true, credential: { kind: "api_key", key_hint: "…1234" } });
+  render(<SubscriptionPanel client={c} onClose={() => {}} />);
+  expect(await screen.findByText("…1234")).toBeInTheDocument();
+  const before = c.requests.filter((m) => m === METHODS.authStatus).length;
+  fireEvent.click(screen.getByRole("button", { name: "解除链接" }));
+  await waitFor(() => expect(c.request).toHaveBeenCalledWith(
+    METHODS.authClearCredential, { provider: "opencode-go" }));
+  await waitFor(() => expect(
+    c.requests.filter((m) => m === METHODS.authStatus).length).toBe(before + 1));
 });
 
 it("clears the pending poll timer on unmount", async () => {
