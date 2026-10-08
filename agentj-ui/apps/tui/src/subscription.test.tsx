@@ -18,8 +18,11 @@ function getInput(setup: TestRendererSetup) {
   return input as { press: (k: string) => void };
 }
 
+type RecordedCall = { method: string; params: Record<string, unknown> };
+
 type FakeClient = RpcClient & {
   calls: string[];
+  params: RecordedCall[];
   queue: (method: string, replies: unknown[]) => void;
 };
 
@@ -27,14 +30,17 @@ type FakeClient = RpcClient & {
 // Web panel's test client (subscriptionPanel.test.tsx).
 function fakeClient(responses: Record<string, unknown>): FakeClient {
   const calls: string[] = [];
+  const params: RecordedCall[] = [];
   const queues = new Map<string, unknown[]>();
   const client = {
     calls,
+    params,
     queue(method: string, replies: unknown[]) {
       queues.set(method, [...replies]);
     },
-    async request(method: string): Promise<unknown> {
+    async request(method: string, p: Record<string, unknown> = {}): Promise<unknown> {
       calls.push(method);
+      params.push({ method, params: p });
       const q = queues.get(method);
       if (q && q.length > 0) return q.shift();
       return responses[method];
@@ -208,5 +214,202 @@ describe("SubscriptionOverlay", () => {
       await setup.flush();
     });
     expect(client.calls.filter((m) => m === METHODS.authDevicePoll)).toHaveLength(0);
+  });
+});
+
+describe("SubscriptionOverlay link mode", () => {
+  function linkClient(overrides: Record<string, unknown> = {}): FakeClient {
+    return fakeClient({
+      [METHODS.authStatus]: { provider: "opencode-go", authenticated: false },
+      [METHODS.providerUsage]: { provider: "opencode-go", fetched_at: 1, windows: [] },
+      ...overrides,
+    });
+  }
+
+  /** Enter link mode with `i` and type the key one character at a time. */
+  async function typeKey(setup: TestRendererSetup, text: string): Promise<void> {
+    await act(async () => {
+      getInput(setup).press("i");
+      await setup.flush();
+    });
+    await act(async () => {
+      for (const ch of text) setup.mockInput.pressKey(ch);
+      await setup.flush();
+    });
+  }
+
+  async function submit(setup: TestRendererSetup): Promise<void> {
+    await act(async () => {
+      getInput(setup).press("enter");
+      await setup.flush();
+    });
+  }
+
+  // Esc is dispatched only after the stdin parser's escape-sequence timeout, so
+  // give it the same settle window app.test.tsx uses in its pressEscape helper.
+  async function pressEscape(setup: TestRendererSetup): Promise<void> {
+    await act(async () => {
+      setup.mockInput.pressEscape();
+      await setup.flush();
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      await setup.flush();
+    });
+  }
+
+  // A keyboard-driven state change lands without a new frame; force one (app.test.tsx
+  // repaint helper) before asserting on captured text.
+  async function repaint(setup: TestRendererSetup): Promise<void> {
+    setup.resize(setup.renderer.width, setup.renderer.height);
+    await act(async () => {
+      await setup.flush();
+    });
+  }
+
+  const verified = {
+    provider: "opencode-go",
+    saved: true,
+    outcome: "verified",
+    effective_source: "file",
+    fetched_at: 1,
+    models: [],
+  };
+
+  test("masks the api key and links on enter", async () => {
+    const client = linkClient({ [METHODS.authSetApiKey]: verified });
+    const setup = await testRender(<SubscriptionOverlay client={client} onClose={() => {}} />, {});
+    await typeKey(setup, "sk-secret");
+    await setup.waitFor(() => setup.captureCharFrame().includes("•••••••••"));
+    expect(setup.captureCharFrame()).not.toContain("sk-secret");
+    await submit(setup);
+    await setup.waitFor(() => client.calls.includes(METHODS.authSetApiKey));
+    await repaint(setup);
+    const frame = setup.captureCharFrame();
+    expect(frame).not.toContain("sk-secret");
+    // submit clears the buffer, so the mask is gone too
+    expect(frame).not.toContain("•");
+    expect(frame).toContain("已链接");
+    expect(client.params.filter((c) => c.method === METHODS.authSetApiKey)).toEqual([
+      {
+        method: METHODS.authSetApiKey,
+        params: { provider: "opencode-go", api_key: "sk-secret", label: "tui" },
+      },
+    ]);
+    act(() => setup.renderer.destroy());
+  });
+
+  test("renders the saved-but-unverified sentence", async () => {
+    const client = linkClient({
+      [METHODS.authSetApiKey]: { ...verified, outcome: "unverified", effective_source: "overlay" },
+    });
+    const setup = await testRender(<SubscriptionOverlay client={client} onClose={() => {}} />, {});
+    await typeKey(setup, "sk-x");
+    await submit(setup);
+    await repaint(setup);
+    const frame = setup.captureCharFrame();
+    expect(frame).toContain("未校验");
+    expect(frame).toContain("已保存");
+    expect(frame).not.toContain("sk-x");
+    act(() => setup.renderer.destroy());
+  });
+
+  test("renders the not-saved sentence and the actionable reason for a rejection", async () => {
+    const client = linkClient({
+      [METHODS.authSetApiKey]: {
+        ...verified,
+        saved: false,
+        outcome: "rejected",
+        error: { kind: "unauthorized", message: "upstream said 401" },
+      },
+    });
+    const setup = await testRender(<SubscriptionOverlay client={client} onClose={() => {}} />, {});
+    await typeKey(setup, "sk-bad");
+    await submit(setup);
+    await repaint(setup);
+    const frame = setup.captureCharFrame();
+    expect(frame).toContain("未保存");
+    expect(frame).toContain("密钥无效或已被撤销");
+    expect(client.calls).not.toContain(METHODS.authDeviceStart);
+    act(() => setup.renderer.destroy());
+  });
+
+  test("states that the environment variable currently wins", async () => {
+    const client = linkClient({
+      [METHODS.authSetApiKey]: { ...verified, effective_source: "env" },
+    });
+    const setup = await testRender(<SubscriptionOverlay client={client} onClose={() => {}} />, {});
+    await typeKey(setup, "sk-env");
+    await submit(setup);
+    await repaint(setup);
+    const frame = setup.captureCharFrame();
+    expect(frame).toContain("优先");
+    expect(frame).toContain("环境变量");
+    act(() => setup.renderer.destroy());
+  });
+
+  test("states that the key is stored on the connected kernel host", async () => {
+    const client = linkClient();
+    const setup = await testRender(<SubscriptionOverlay client={client} onClose={() => {}} />, {});
+    await setup.waitFor(() => setup.captureCharFrame().includes("内核主机"));
+    const frame = setup.captureCharFrame();
+    expect(frame).toContain("i 链接 API Key");
+    expect(frame).toContain("c 解除链接");
+    act(() => setup.renderer.destroy());
+  });
+
+  test("clears the stored credential and reloads the status", async () => {
+    const client = linkClient({
+      [METHODS.authClearCredential]: { provider: "opencode-go", cleared: true },
+    });
+    client.queue(METHODS.authStatus, [
+      {
+        provider: "opencode-go",
+        authenticated: true,
+        credential: { kind: "api_key", source: "file", key_hint: "…1234" },
+      },
+      { provider: "opencode-go", authenticated: false },
+    ]);
+    const setup = await testRender(<SubscriptionOverlay client={client} onClose={() => {}} />, {});
+    await setup.waitFor(() => setup.captureCharFrame().includes("…1234"));
+    await act(async () => {
+      getInput(setup).press("c");
+      await setup.flush();
+    });
+    await setup.waitFor(() => client.calls.includes(METHODS.authClearCredential));
+    // the reload is the observable proof that the status was re-read
+    await setup.waitFor(
+      () => client.calls.filter((m) => m === METHODS.authStatus).length >= 2,
+    );
+    await repaint(setup);
+    expect(setup.captureCharFrame()).not.toContain("…1234");
+    act(() => setup.renderer.destroy());
+  });
+
+  test("keeps the device flow off while link mode owns the keys", async () => {
+    const client = linkClient();
+    const setup = await testRender(<SubscriptionOverlay client={client} onClose={() => {}} />, {});
+    // `l` is the device-login binding outside link mode; here it is just key material
+    await typeKey(setup, "skl");
+    await repaint(setup);
+    expect(setup.captureCharFrame()).toContain("•••");
+    expect(client.calls).not.toContain(METHODS.authDeviceStart);
+    act(() => setup.renderer.destroy());
+  });
+
+  test("cancels link mode with Esc without sending the key", async () => {
+    const client = linkClient();
+    let closed = false;
+    const setup = await testRender(
+      <SubscriptionOverlay client={client} onClose={() => { closed = true; }} />,
+      {},
+    );
+    await typeKey(setup, "sk-secret");
+    await setup.waitFor(() => setup.captureCharFrame().includes("•••••••••"));
+    await pressEscape(setup);
+    await repaint(setup);
+    expect(setup.captureCharFrame()).not.toContain("•");
+    expect(client.calls).not.toContain(METHODS.authSetApiKey);
+    expect(closed).toBe(false);
+    expect(setup.captureCharFrame()).toContain("订阅");
+    act(() => setup.renderer.destroy());
   });
 });
