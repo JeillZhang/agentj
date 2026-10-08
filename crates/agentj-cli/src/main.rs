@@ -26,6 +26,10 @@ use agentj_session::FileBackedStore;
 use agentj_skills::load_skills;
 use agentj_tools::builtins::register_builtins;
 
+// Runtime (de)registration of the opencode-go provider. The credential handlers that call
+// its helpers are wired later in this phase, so they are only exercised by tests for now.
+#[allow(dead_code)]
+mod activation;
 mod auth;
 mod license;
 mod logging;
