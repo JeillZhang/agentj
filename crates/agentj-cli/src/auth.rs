@@ -5,7 +5,7 @@ use std::path::Path;
 use agentj_auth::{AuthStore, Credential, ResolvedKey, redact, resolve_credential};
 use clap::Subcommand;
 
-pub const OPENCODE_GO_BASE: &str = "https://opencode.ai/zen/go";
+pub const OPENCODE_GO_BASE: &str = agentj_model::catalog::OPENCODE_GO_BASE;
 
 #[derive(Subcommand)]
 pub enum AuthAction {
