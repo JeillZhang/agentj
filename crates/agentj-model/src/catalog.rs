@@ -2,6 +2,10 @@ use std::collections::HashMap;
 
 use serde::Deserialize;
 
+/// Canonical opencode-go API base — the origin the endpoint table
+/// (`https://opencode.ai/docs/go/#api-endpoints`) publishes.
+pub const OPENCODE_GO_BASE: &str = "https://opencode.ai/zen/go";
+
 /// Wire format a model speaks. Used by the OpenCodeGoProvider facade to route to the
 /// correct transport (design 4.1/4.3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -27,7 +31,6 @@ impl WireFormat {
 pub struct CatalogEntry {
     pub id: String,
     pub format: WireFormat,
-    pub endpoint: String,
     /// False for live-discovered ids whose wire format was synthesized (design D3).
     pub verified: bool,
 }
@@ -40,10 +43,12 @@ pub struct ModelCatalog {
 }
 
 impl ModelCatalog {
-    /// Load the committed artifact at compile time (drift gate: any manual edit that
-    /// breaks the format fails the T22 validation tests).
+    /// Load the generated artifact at compile time. Regenerate with
+    /// `cargo run -p agentj-model --bin gen_opencode_catalog` (design D3); never hand-edit —
+    /// the file is a snapshot of `GET /v1/models` ∩ the models.dev wire-format metadata, and
+    /// the catalog tests fail if the routes below drift.
     pub fn builtin() -> Self {
-        Self::from_json(include_str!("../../../models/opencode-go.json"))
+        Self::from_json(include_str!("../data/opencode-go.json"))
     }
 
     pub fn from_json(json: &str) -> Self {
@@ -51,7 +56,6 @@ impl ModelCatalog {
         struct RawEntry {
             id: String,
             format: String,
-            endpoint: String,
             #[serde(default = "default_true")]
             verified: bool,
         }
@@ -72,7 +76,6 @@ impl ModelCatalog {
                         CatalogEntry {
                             id: m.id,
                             format,
-                            endpoint: m.endpoint,
                             verified: m.verified,
                         },
                     )
@@ -128,7 +131,6 @@ impl ModelCatalog {
             let entry = overlay.lookup(&id).cloned().unwrap_or(CatalogEntry {
                 id: id.clone(),
                 format: WireFormat::OpenAiCompat,
-                endpoint: "/v1/chat/completions".into(),
                 verified: false,
             });
             entries.insert(id, entry);
@@ -174,11 +176,6 @@ mod tests {
                 entry.id
             );
             assert!(
-                !entry.endpoint.is_empty(),
-                "empty endpoint for {}",
-                entry.id
-            );
-            assert!(
                 entry.id.starts_with("opencode-go/"),
                 "id must be namespaced: {}",
                 entry.id
@@ -189,19 +186,38 @@ mod tests {
     #[test]
     fn catalog_lookup_routes_formats() {
         let catalog = ModelCatalog::builtin();
-        assert_eq!(
-            catalog.lookup("opencode-go/kimi-k3").unwrap().format,
-            WireFormat::OpenAiCompat
-        );
-        assert_eq!(
-            catalog.lookup("opencode-go/grok-4.5").unwrap().format,
-            WireFormat::Responses
-        );
-        assert_eq!(
-            catalog.lookup("opencode-go/minimax-m3").unwrap().format,
-            WireFormat::Anthropic
-        );
+        // Routes mirror the official endpoint table; a regeneration that loses one of these
+        // would silently send the model to the wrong endpoint.
+        for (id, format) in [
+            ("opencode-go/kimi-k3", WireFormat::OpenAiCompat),
+            ("opencode-go/longcat-2.0", WireFormat::OpenAiCompat),
+            ("opencode-go/grok-4.5", WireFormat::Responses),
+            ("opencode-go/grok-4.7", WireFormat::Responses),
+            ("opencode-go/gpt-6-luna", WireFormat::Responses),
+            (
+                "opencode-go/muse-spark-1.2-contributor",
+                WireFormat::Responses,
+            ),
+            ("opencode-go/minimax-m3", WireFormat::Anthropic),
+            ("opencode-go/claude-haiku-5-5", WireFormat::Anthropic),
+            ("opencode-go/qwen3.8-flash", WireFormat::Anthropic),
+        ] {
+            let entry = catalog.lookup(id).expect(id);
+            assert_eq!(entry.format, format, "{id}");
+            assert!(entry.verified, "{id} must be resolved from models.dev");
+        }
         assert!(catalog.lookup("opencode-go/no-such-model").is_none());
+    }
+
+    #[test]
+    fn catalog_builtin_marks_unresolved_ids_unverified() {
+        let catalog = ModelCatalog::builtin();
+        // Ids `GET /v1/models` still advertises but models.dev does not cover.
+        for id in ["opencode-go/glm-5", "opencode-go/omen-alpha"] {
+            let entry = catalog.lookup(id).expect(id);
+            assert_eq!(entry.format, WireFormat::OpenAiCompat);
+            assert!(!entry.verified, "{id} must stay unverified");
+        }
     }
 }
 
@@ -210,7 +226,7 @@ mod from_sources_tests {
     use super::*;
 
     const OVERLAY: &str = r#"{"base_url":"https://opencode.ai/zen/go","models":[
-        {"id":"opencode-go/b","format":"anthropic","endpoint":"/v1/messages","verified":true}]}"#;
+        {"id":"opencode-go/b","format":"anthropic","verified":true}]}"#;
 
     #[test]
     fn unknown_live_id_is_synthesized_as_unverified_openai_compat() {

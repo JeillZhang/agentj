@@ -4,7 +4,7 @@ AI 编码代理工具（Rust）——Linux 内核式「内核调度 + 可插拔�
 内核通过统一的 JSON-RPC 2.0 协议（stdio / TCP / WebSocket）对外暴露能力；
 CLI、TUI、Web、Desktop 均作为协议消费者接入，任意语言可开发前端。
 
-> 当前版本：**v0.29.1**
+> 当前版本：**v0.29.3**
 > · 变更记录：[`docs/changelog/`](docs/changelog/)
 > · 用户指南：[`docs/guide/`](docs/guide/)
 > · 协议规范：[`docs/specs/ipc-protocol.md`](docs/specs/ipc-protocol.md)
@@ -73,6 +73,7 @@ crates/                    # 18 个 workspace crate（统一目录）
   agentj-session/          # 会话生命周期（FileBackedStore + 过期清理 + project_root）
   agentj-question/         # 提问通道（QuestionModule + AskTool）
   agentj-model/            # 模型提供方（DeepSeek/opencode-go/Ollama/Mock）
+                           #   data/opencode-go.json = 生成的路由快照（gen_opencode_catalog）
   agentj-tools/            # 内置工具（bash/glob/grep/read/write + todo）
   agentj-permission/       # 权限系统
   agentj-context/          # 上下文管线
@@ -93,7 +94,6 @@ agentj-ui/                 # 前端 monorepo（npm workspaces，frontend stays i
     web/                   # Web 三栏工作台
     tui/                   # TUI（Bun + @opentui/react）
     desktop/               # Tauri 壳（套 web/dist）
-models/                    # models/opencode-go.json
 schemas/                   # 78 JSON Schema（机器事实来源）
 protocol/                  # methods.json 方法注册表
 docs/                      # 用户指南（guide/）+ 变更记录（changelog/）+ 规范（specs/）+ 设计（superpowers/）

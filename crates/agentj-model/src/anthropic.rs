@@ -38,6 +38,15 @@ impl AnthropicProvider {
         }
     }
 
+    /// Attach the auth headers for `/v1/messages`: `x-api-key` (Anthropic convention —
+    /// the opencode-go gateway answers a bare `Bearer` with 401 `Missing API key`) plus
+    /// `Authorization: Bearer` for proxies that only accept bearer tokens.
+    fn auth_headers(&self, rb: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        rb.header("x-api-key", &self.api_key)
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .header("anthropic-version", "2023-06-01")
+    }
+
     /// Attach the configured session header when both the header name and the turn's
     /// session id are present.
     fn with_session<'a>(
@@ -272,10 +281,7 @@ impl ModelProvider for AnthropicProvider {
     ) -> Result<ChatResponse, ModelError> {
         let url = format!("{}/v1/messages", self.base_url);
         let rb = self
-            .client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .header("anthropic-version", "2023-06-01")
+            .auth_headers(self.client.post(&url))
             .json(&self.request_body(&messages, &[], &options, false));
         let response = self
             .with_session(rb, &options)
@@ -313,10 +319,7 @@ impl AnthropicProvider {
     ) -> Result<BoxStream<'static, Result<ModelEvent, ModelError>>, ModelError> {
         let url = format!("{}/v1/messages", self.base_url);
         let rb = self
-            .client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .header("anthropic-version", "2023-06-01")
+            .auth_headers(self.client.post(&url))
             .json(&self.request_body(messages, tools, options, true));
         let response = self
             .with_session(rb, options)
@@ -365,6 +368,7 @@ mod tests {
 
         Mock::given(method("POST"))
             .and(path("/v1/messages"))
+            .and(header("x-api-key", "sk-test"))
             .and(header("authorization", "Bearer sk-test"))
             .respond_with(
                 ResponseTemplate::new(200)

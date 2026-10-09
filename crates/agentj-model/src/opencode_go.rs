@@ -162,7 +162,6 @@ mod tests {
             CatalogEntry {
                 id: "opencode-go/kimi-k3".into(),
                 format: WireFormat::OpenAiCompat,
-                endpoint: "/v1/chat/completions".into(),
                 verified: true,
             },
         );
@@ -171,7 +170,6 @@ mod tests {
             CatalogEntry {
                 id: "opencode-go/grok-4.5".into(),
                 format: WireFormat::Responses,
-                endpoint: "/v1/responses".into(),
                 verified: true,
             },
         );
@@ -180,7 +178,6 @@ mod tests {
             CatalogEntry {
                 id: "opencode-go/minimax-m3".into(),
                 format: WireFormat::Anthropic,
-                endpoint: "/v1/messages".into(),
                 verified: true,
             },
         );
@@ -274,7 +271,7 @@ mod tests {
     }
 
     const OVERLAY_X: &str = r#"{"base_url":"https://opencode.ai/zen/go","models":[
-        {"id":"opencode-go/x","format":"anthropic","endpoint":"/v1/messages","verified":true}]}"#;
+        {"id":"opencode-go/x","format":"anthropic","verified":true}]}"#;
 
     #[test]
     fn with_catalog_exposes_models_and_keeps_routing() {
