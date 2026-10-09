@@ -7,14 +7,15 @@
 > 待实施），不得随内容替换而删除；仅当该特性实际实施完成后才能移除（移入功能记录）。
 > 前端总结独立存放于 `summary_and_next_fe.md`；两文件内容隔离，互不写入对方文件。
 
-> 当前功能：**v0.29.2 opencode-go 路由改为 API 派生（后端部分）**
+> 当前功能：**v0.29.2 模型路由 API 化 + v0.29.3 `/v1/messages` 鉴权头修复（后端部分）**
 > ——来源：用户提出「`models/` 目录是否可删 / 端点配置能否不写死」，
-> 以官方[端点表](https://opencode.ai/docs/go/#api-endpoints) + models.dev 实测核对后实施。
+> 以官方[端点表](https://opencode.ai/docs/go/#api-endpoints) + models.dev 实测核对后实施；
+> 核对过程中发现 `/v1/messages` 的凭据头缺陷，一并以 patch 修复。
 > 后端范围：`agentj-model`（`catalog` / `catalog_gen` / `bin/gen_opencode_catalog` /
-> `data/opencode-go.json`）、`agentj-cli`（base_url 单一真源）、
+> `data/opencode-go.json` / `anthropic`）、`agentj-cli`（base_url 单一真源）、
 > `docs/guide/subscription.md`、`docs/changelog/v0.29.md`、`AGENTS.md` / `README.md` 基线、版本元数据。
 > 协议 wire 面**不变**（`PROTOCOL_VERSION` 仍 **0.18.0** / 28 方法 / 78 schemas）；
-> 工作区 0.29.1 → **0.29.2**。
+> 工作区 0.29.1 → **0.29.3**（0.29.2 路由 API 化 + 0.29.3 鉴权头）。
 
 ## v0.29.2（opencode-go 路由 API 化）✅
 
@@ -55,7 +56,26 @@
   `docs/changelog/v0.29.md`（0.29.2 小节）、`AGENTS.md`（当前版本 + `agentj-model` catalog 说明）、
   `README.md`（版本行 + 目录树去 `models/`）、`scripts/check-version.sh`。
 
-### 已完成（0.29.0 / 0.29.1，详见 `docs/changelog/v0.29.md`）
+## v0.29.3（`/v1/messages` 鉴权头）✅
+
+- ✅ **实测口径**（2026-10-09 匿名探测；`Missing API key.` = 未读到凭据，`Invalid API key.` = 读到但无效）：
+
+  | 端点 | `Authorization: Bearer` | `x-api-key` |
+  |---|---|---|
+  | `/v1/messages` | ❌ `Missing API key.` | ✅ `Invalid API key.` |
+  | `/v1/responses` | ✅ | ❌ `Missing API key.` |
+  | `/v1/chat/completions` | ✅ | ❌ |
+  | `/v1/usage` | ✅ `Unauthorized` | ❌ |
+
+- ✅ **修复**：`AnthropicProvider` 新增 `auth_headers()`（`chat` / `open_stream` 共用单一发送点），
+  同时发 `x-api-key` + `Authorization: Bearer`（用户选定「双发」策略：既满足 Anthropic /
+  opencode-go 网关的凭据位，也兼容只认 bearer 的第三方兼容网关），保留 `anthropic-version`。
+  修后按同样的三头组合实测 `/v1/messages` 返回 `Invalid API key.`（即凭据已被读到）。
+- ✅ **单测**：`anthropic_provider_streams_text_events` 的 wiremock 匹配由「仅 `authorization`」
+  改为「`x-api-key` + `authorization` 双断言」（此前同形假头部掩盖了缺陷）。
+- ✅ 未动 `/v1/responses` / `/v1/chat/completions` / `/v1/usage`（`bearer_auth`，与实测一致）。
+
+## 已完成（0.29.0 / 0.29.1，详见 `docs/changelog/v0.29.md`）
 
 - ✅ v0.29.0：Web/TUI 链接 opencode-go API Key（`auth/setApiKey` / `auth/clearCredential`，
   协议 0.18.0 / 28 方法 / 78 schemas）+ 运行期激活 + 内置 provider 条目；评审 1H/1M/4L 全闭合。
@@ -67,23 +87,21 @@
 |---|---|
 | `cargo fmt --check` | clean |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 0 warnings |
-| `cargo test --workspace` | **853** passed / 0 failed（48 suites，含 permission e2e） |
+| `cargo test --workspace` | **853** passed / 0 failed（48 suites，含 permission e2e）；0.29.3 后 `-p agentj-model` 复跑 63 passed |
 | `cargo test -p agentj-protocol -- drift` | 2 passed |
 | `cargo run -p agentj-model --bin gen_opencode_catalog -- --check` | exit 0（快照未过期） |
 | 路由冒烟（live ∩ 快照，真实网络） | 45 模型；官方端点表 12 条非 chat 路由 **0 不匹配**，其余 10 条 unverified |
+| 鉴权头冒烟（真实网关，匿名） | `/v1/messages` 仅 Bearer → `Missing API key.`；三头组合（x-api-key + Bearer + anthropic-version）→ `Invalid API key.`（已读凭据） |
 | `schemas/*.json` / `protocol/methods.json` | 78 / 28 方法 · `protocol_version` 0.18.0 |
-| `./scripts/check-version.sh` | **version-ok（0.29.2 / 0.18.0）** |
+| `./scripts/check-version.sh` | **version-ok（0.29.3 / 0.18.0）** |
 | `node agentj-ui/apps/desktop/check-desktop-ui.mjs` | desktop-ui-ok |
 
 ## 遗留问题 / 已知限制（后端）
 
-- **`/v1/messages` 鉴权头（新发现，未修，待裁决）**：实测 `POST /zen/go/v1/messages`
-  **只认 `x-api-key`**（仅 `Authorization: Bearer` → 401 `Missing API key`；仅 `x-api-key` →
-  401 `Invalid API key`），而 `/v1/responses` 与 `/v1/chat/completions` 认 Bearer。
-  `crates/agentj-model/src/anthropic.rs` 目前发的是 `Authorization: Bearer`（单测用 wiremock
-  匹配同形头部，无法暴露）⇒ opencode-go 的 anthropic 路由（`claude-haiku-5-5` / `minimax-m2.7` /
-  `minimax-m3` / `qwen3.7-plus` / `qwen3.8-flash` / `qwen3.8-max`）在真实网关上预计 401。
-  **本阶段未改动**（属鉴权语义，需用户决定：`x-api-key` 与 `Authorization` 双发，或仅 `x-api-key`）。
+- **`/v1/messages` 鉴权头（已修，0.29.3）**：实测该端点只认 `x-api-key`；`anthropic.rs` 原发
+  `Authorization: Bearer` → 401。现 `auth_headers()` 双发（`x-api-key` + `Authorization: Bearer`）
+  并保留 `anthropic-version`；单测双断言。**唯一残留不确定性**：客户端行为已按网关口径校正，
+  但**真实有效 key 的 200 往返未在本机验证**（无凭据），仍属人工 E2E 跟踪项。
 - **2 条 legacy 路由变更**：`qwen3.6-plus` / `qwen3.7-max` 现按 models.dev 判为
   `openai-compat`（旧手写表标 `anthropic`）；二者均不在官方在售列表内。如实测不符，
   重新加回一条种子即可（改动面 = `build_overlay` 之前的一次 map）。
@@ -114,7 +132,8 @@
 
 ## 下一步
 
-- v0.29.2（路由 API 化 + 生成器缺陷修复）已落地，全门禁绿（`version-ok`）。
-- 待用户裁决：**`/v1/messages` 头部策略**（`x-api-key` 双发 / 仅 `x-api-key`）——确认后为
-  单点改动（`anthropic.rs` 两处请求）+ 单测改断言 `header("x-api-key", ...)`，建议同版本内 patch。
+- v0.29.2（路由 API 化 + 生成器缺陷修复）与 v0.29.3（`/v1/messages` 鉴权头）已落地，
+  全门禁绿（`version-ok`）；两次提交待推送 / PR（用户负责合并）。
+- 待人工 E2E（需真实 key）：以 opencode-go 凭据跑一轮 **anthropic 模型**（如 `minimax-m3`）
+  确认 `/v1/messages` 200 往返——这是 0.29.3 唯一未在本机闭环的环节。
 - 后端候选：上表 ①②④⑥；或前端跟进见 `summary_and_next_fe.md`。
