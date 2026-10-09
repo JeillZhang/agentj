@@ -400,7 +400,7 @@ mod tests {
     fn factory_create_with_catalog_keeps_legacy_create_working() {
         use crate::catalog::ModelCatalog;
         const OVERLAY_X: &str = r#"{"base_url":"https://opencode.ai/zen/go","models":[
-            {"id":"opencode-go/x","format":"anthropic","endpoint":"/v1/messages","verified":true}]}"#;
+            {"id":"opencode-go/x","format":"anthropic","verified":true}]}"#;
         let catalog = ModelCatalog::from_sources(OVERLAY_X, None);
         let created = ProviderFactory::create_with_catalog(
             "opencode-go",

@@ -1,31 +1,31 @@
 //! Pure overlay builder for `bin/gen_opencode_catalog` (design D3).
 //!
-//! Resolution order per live id: explicit `overrides` > models.dev npm hint >
-//! `openai-compat` + `verified = false`. Never invents a verified route.
-
-use std::collections::BTreeMap;
+//! Wire format comes from models.dev, the machine-readable mirror of the official endpoint
+//! table (`https://opencode.ai/docs/go/#api-endpoints`): a model-level `provider.npm`
+//! override wins, otherwise the provider-level `npm` applies (opencode-go's default is
+//! `@ai-sdk/openai-compatible`).
+//!
+//! Resolution order per live id: models.dev npm → `openai-compat` + `verified = false`.
+//! An id models.dev does not list is never guessed (never invent a verified route).
+//! Endpoint paths are owned by the transports (`WireFormat`), not by the catalog.
 
 use crate::catalog::{CatalogEntry, WireFormat};
 
-/// Build catalog entries from live ids plus metadata sources.
-pub fn build_overlay(
-    live_ids: &[String],
-    models_dev: &serde_json::Value,
-    overrides: &BTreeMap<String, WireFormat>,
-) -> Vec<CatalogEntry> {
+/// models.dev provider key holding the opencode-go catalog.
+const DEV_PROVIDER: &str = "opencode-go";
+
+/// Build catalog entries from the live id list plus models.dev metadata.
+pub fn build_overlay(live_ids: &[String], models_dev: &serde_json::Value) -> Vec<CatalogEntry> {
     let mut ids: Vec<String> = live_ids.to_vec();
     ids.sort();
     ids.dedup();
     ids.into_iter()
         .map(|id| {
-            let from_dev = dev_format(models_dev, &id);
-            let (format, verified) = match (overrides.get(&id), from_dev) {
-                (Some(f), _) => (*f, true),
-                (None, Some(f)) => (f, true),
-                (None, None) => (WireFormat::OpenAiCompat, false),
+            let (format, verified) = match dev_format(models_dev, &id) {
+                Some(format) => (format, true),
+                None => (WireFormat::OpenAiCompat, false),
             };
             CatalogEntry {
-                endpoint: endpoint_for(format).into(),
                 id,
                 format,
                 verified,
@@ -34,9 +34,20 @@ pub fn build_overlay(
         .collect()
 }
 
-/// models.dev npm package → wire format (design D3 metadata source).
+/// models.dev wire format for a namespaced id: the model-level `provider.npm` override,
+/// else the provider-level `npm`. `None` when models.dev does not list the id at all.
 fn dev_format(dev: &serde_json::Value, id: &str) -> Option<WireFormat> {
-    let npm = dev["opencode-go"]["models"][id.strip_prefix("opencode-go/")?]["npm"].as_str()?;
+    let provider = &dev[DEV_PROVIDER];
+    let bare = id.strip_prefix("opencode-go/")?;
+    let model = provider["models"].get(bare)?;
+    let npm = model["provider"]["npm"]
+        .as_str()
+        .or_else(|| provider["npm"].as_str())?;
+    npm_wire_format(npm)
+}
+
+/// AI SDK package → wire format; the package names are what the endpoint table publishes.
+fn npm_wire_format(npm: &str) -> Option<WireFormat> {
     match npm {
         "@ai-sdk/anthropic" => Some(WireFormat::Anthropic),
         "@ai-sdk/openai" => Some(WireFormat::Responses),
@@ -53,7 +64,6 @@ pub fn overlay_json(base_url: &str, entries: &[CatalogEntry]) -> String {
             serde_json::json!({
                 "id": e.id,
                 "format": format_name(e.format),
-                "endpoint": e.endpoint,
                 "verified": e.verified,
             })
         })
@@ -74,50 +84,76 @@ pub fn format_name(format: WireFormat) -> &'static str {
     }
 }
 
-/// Endpoint path for a wire format.
-pub fn endpoint_for(format: WireFormat) -> &'static str {
-    match format {
-        WireFormat::OpenAiCompat => "/v1/chat/completions",
-        WireFormat::Responses => "/v1/responses",
-        WireFormat::Anthropic => "/v1/messages",
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeMap;
 
-    #[test]
-    fn overrides_win_and_unknown_defaults_to_unverified_openai_compat() {
-        let mut overrides = BTreeMap::new();
-        overrides.insert("opencode-go/b".to_string(), WireFormat::Anthropic);
-        let entries = build_overlay(
-            &["opencode-go/a".into(), "opencode-go/b".into()],
-            &serde_json::json!({}),
-            &overrides,
-        );
-        let a = entries.iter().find(|e| e.id == "opencode-go/a").unwrap();
-        let b = entries.iter().find(|e| e.id == "opencode-go/b").unwrap();
-        assert_eq!((a.format, a.verified), (WireFormat::OpenAiCompat, false));
-        assert_eq!((b.format, b.verified), (WireFormat::Anthropic, true));
+    fn dev() -> serde_json::Value {
+        serde_json::json!({"opencode-go": {
+            "npm": "@ai-sdk/openai-compatible",
+            "models": {
+                "plain": {},
+                "anthropic-x": {"provider": {"npm": "@ai-sdk/anthropic"}},
+                "openai-x": {"provider": {"npm": "@ai-sdk/openai"}},
+            }
+        }})
     }
 
     #[test]
-    fn models_dev_npm_maps_wire_format() {
+    fn model_override_wins_and_provider_default_is_inherited() {
+        let entries = build_overlay(
+            &[
+                "opencode-go/plain".into(),
+                "opencode-go/anthropic-x".into(),
+                "opencode-go/openai-x".into(),
+            ],
+            &dev(),
+        );
+        let get = |id: &str| entries.iter().find(|e| e.id == id).unwrap();
+        assert_eq!(
+            (
+                get("opencode-go/plain").format,
+                get("opencode-go/plain").verified
+            ),
+            (WireFormat::OpenAiCompat, true)
+        );
+        assert_eq!(
+            (
+                get("opencode-go/anthropic-x").format,
+                get("opencode-go/anthropic-x").verified
+            ),
+            (WireFormat::Anthropic, true)
+        );
+        assert_eq!(
+            (
+                get("opencode-go/openai-x").format,
+                get("opencode-go/openai-x").verified
+            ),
+            (WireFormat::Responses, true)
+        );
+    }
+
+    #[test]
+    fn id_absent_from_models_dev_is_never_guessed() {
+        let entries = build_overlay(&["opencode-go/unknown".into()], &dev());
+        assert_eq!(entries[0].format, WireFormat::OpenAiCompat);
+        assert!(!entries[0].verified);
+    }
+
+    #[test]
+    fn unknown_npm_falls_back_to_unverified() {
         let dev =
-            serde_json::json!({"opencode-go": {"models": {"c": {"npm": "@ai-sdk/anthropic"}}}});
-        let entries = build_overlay(&["opencode-go/c".into()], &dev, &BTreeMap::new());
-        assert_eq!(entries[0].format, WireFormat::Anthropic);
-        assert!(entries[0].verified);
+            serde_json::json!({"opencode-go": {"npm": "@ai-sdk/whatever", "models": {"x": {}}}});
+        let entries = build_overlay(&["opencode-go/x".into()], &dev);
+        assert_eq!(entries[0].format, WireFormat::OpenAiCompat);
+        assert!(!entries[0].verified);
     }
 
     #[test]
     fn duplicates_collapse() {
         let entries = build_overlay(
-            &["opencode-go/a".into(), "opencode-go/a".into()],
-            &serde_json::json!({}),
-            &BTreeMap::new(),
+            &["opencode-go/plain".into(), "opencode-go/plain".into()],
+            &dev(),
         );
         assert_eq!(entries.len(), 1);
     }
@@ -127,7 +163,6 @@ mod tests {
         let entries = vec![CatalogEntry {
             id: "opencode-go/x".into(),
             format: WireFormat::Anthropic,
-            endpoint: "/v1/messages".into(),
             verified: true,
         }];
         let json = overlay_json("https://example.test", &entries);

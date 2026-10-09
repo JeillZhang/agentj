@@ -15,8 +15,9 @@ use crate::refreshing_provider::{Builder as RefreshingBuilder, RefreshingProvide
 /// Kinds that require a resolvable key; everything else (mock*) is key-free.
 const KEY_REQUIRED_KINDS: [&str; 4] = ["openai-compat", "responses", "anthropic", "opencode-go"];
 
-/// Base URL of the built-in opencode-go entry (design D5).
-pub const BUILTIN_OPENCODE_GO_BASE: &str = "https://opencode.ai/zen/go";
+/// Base URL of the built-in opencode-go entry (design D5). Single source of truth lives in
+/// `agentj_model::catalog` beside the generated endpoint catalog.
+pub const BUILTIN_OPENCODE_GO_BASE: &str = agentj_model::catalog::OPENCODE_GO_BASE;
 
 /// `config.model.providers` ∪ the built-in opencode-go entry (design D5): convention over
 /// configuration. An explicit `kind = "opencode-go"` entry wins, so a user's `base_url` /

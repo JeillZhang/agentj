@@ -1,6 +1,6 @@
 # AGENTS.md
 
-> **当前版本 0.29.1** · `PROTOCOL_VERSION` **0.18.0**（28 方法 / 78 schemas / 18 crates）
+> **当前版本 0.29.3** · `PROTOCOL_VERSION` **0.18.0**（28 方法 / 78 schemas / 18 crates）
 > 本文件只记录**约束、入口与基线**（Setup / Commands / Architecture / Conventions / Rules）。
 > **逐版本变更与历史决策不写在这里** —— 见 [`docs/changelog/`](docs/changelog/)、
 > [`docs/guide/`](docs/guide/)、[`docs/specs/`](docs/specs/) 与 `.agents/summary/`。
@@ -91,7 +91,10 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
   `timeout_s` 可空、`set_notifier`/`set_settle_hook` 统一结算一次）。
 - `agentj-model`：模型提供方（三线 wire-format + opencode-go + Mock + Ollama）
   + `usage`（防御式 `GET /v1/usage`：三窗口、未知键忽略、`percent==0` 丢弃占位 reset）
-  + `console_catalog`（`GET /api/v2/config` 账号级目录，失败即 Err 以便回退）。
+  + `console_catalog`（`GET /api/v2/config` 账号级目录，失败即 Err 以便回退）
+  + `catalog`（`data/opencode-go.json` 为 `gen_opencode_catalog` 由 live `/v1/models` 与
+  models.dev `provider.npm` 生成的**路由快照**，经 `from_overlay_and_live` 与 live 合并；
+  models.dev 未收录的 id 一律 `openai-compat` + `verified:false`，不猜路由）。
 - `agentj-tools`：内置工具（bash/glob/grep/read/write + `todo`，共 6 个）。
 - `agentj-context`：上下文管线。
 - `agentj-stats`：用量统计 UsageCollector。
