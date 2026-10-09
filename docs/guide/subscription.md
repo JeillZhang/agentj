@@ -128,18 +128,26 @@ agentj auth login --device          # 与 --api-key 互斥
 1. **`account`（账号级）**：`GET https://opencode.ai/console/api/v2/config`
    （`Bearer <key|access>`；OAuth 凭据额外带 `x-org-id`）。它反映该 workspace
    **真实可选**的模型，因此**工作区被禁用的模型不会出现**——这正是它比匿名列表更可信的原因。
-2. **`live`**：`GET https://opencode.ai/zen/go/v1/models`（匿名可读）∩ 提交件 overlay。
-3. **`overlay`**：仓库提交件 `models/opencode-go.json` 的路由映射全集（离线兜底）。
+2. **`live`**：`GET https://opencode.ai/zen/go/v1/models`（匿名可读）∩ 生成本地快照。
+3. **`overlay`**：`crates/agentj-model/data/opencode-go.json` 的路由映射全集（离线兜底）。
 4. 非 opencode-go provider：**`static`**，直接用 provider 自己上报的列表，不发任何网络请求。
 
-合并规则：id 命中 overlay 则沿用其 `format` 与 `verified`；未命中（账号级 / live 新出现）
+合并规则：id 命中快照则沿用其 `format` 与 `verified`；未命中（账号级 / live 新出现）
 合成为 `openai-compat` + `verified: false`，并在启动日志标注「路由未验证」——
 **绝不按名字猜路由**。目录结果有 **60s 复用窗口**，`refresh: true` 强制重拉。
 
-刷新提交件 overlay（需要联网，手动 / CI）：
+### 路由映射从哪来
+
+`/v1/models` 只返回 id（无元数据），因此 `format` 取自 **models.dev**（`https://models.dev/api.json`）
+——它是官方[端点表](https://opencode.ai/docs/go/#api-endpoints)「AI SDK 包」一列的机器可读镜像：
+模型级 `provider.npm` 覆盖优先，否则继承 provider 级 `npm`（opencode-go 默认
+`@ai-sdk/openai-compatible` ⇒ `/v1/chat/completions`）。models.dev 未收录的 id 不猜路由，
+一律 `openai-compat` + `verified: false`。
+
+生成器把两个来源烘焙成提交件（**产物，不要手改**）：
 
 ```bash
-cargo run -p agentj-model --bin gen_opencode_catalog            # 重新生成
+cargo run -p agentj-model --bin gen_opencode_catalog            # 重新生成（需联网）
 cargo run -p agentj-model --bin gen_opencode_catalog -- --check # 校验是否过期
 ```
 

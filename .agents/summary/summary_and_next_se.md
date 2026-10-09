@@ -7,102 +7,97 @@
 > 待实施），不得随内容替换而删除；仅当该特性实际实施完成后才能移除（移入功能记录）。
 > 前端总结独立存放于 `summary_and_next_fe.md`；两文件内容隔离，互不写入对方文件。
 
-> 当前功能：**v0.29.0 Web/TUI 链接 opencode-go API Key（后端部分）**
-> ——来源：设计 `docs/superpowers/specs/2026-10-08-agentj-ui-opencode-go-api-key-link-design.md`
-> + 实现计划 `docs/superpowers/plans/2026-10-08-agentj-ui-opencode-go-api-key-link-plan.md`
-> （T0–T12 / T21–T22 / T23 + Phase-5 评审修复）。
-> 后端范围：`agentj-protocol`（6 个 wire 类型 + 2 方法 + 6 schemas）、`agentj-core`
-> （`ProviderRegistry::remove`）、`agentj-ipc`（trait 7 方法 + 2 dispatch 臂）、`agentj-cli`
-> （`set_api_key` / `clear_credential` + 运行期激活 helper + 内置条目 + 设备码激活）、
-> `docs/specs/ipc-protocol.md`（§8.28 / §8.29 等）、`docs/changelog/v0.29.md`、版本元数据。
-> `PROTOCOL_VERSION` 0.17.0 → **0.18.0**（26 → **28** 方法 / 72 → **78** schemas）；
-> 工作区 0.28.0 → **0.29.1**（0.29.0 功能 + 0.29.1 验收修复）。前端部分见 `summary_and_next_fe.md`。
+> 当前功能：**v0.29.2 opencode-go 路由改为 API 派生（后端部分）**
+> ——来源：用户提出「`models/` 目录是否可删 / 端点配置能否不写死」，
+> 以官方[端点表](https://opencode.ai/docs/go/#api-endpoints) + models.dev 实测核对后实施。
+> 后端范围：`agentj-model`（`catalog` / `catalog_gen` / `bin/gen_opencode_catalog` /
+> `data/opencode-go.json`）、`agentj-cli`（base_url 单一真源）、
+> `docs/guide/subscription.md`、`docs/changelog/v0.29.md`、`AGENTS.md` / `README.md` 基线、版本元数据。
+> 协议 wire 面**不变**（`PROTOCOL_VERSION` 仍 **0.18.0** / 28 方法 / 78 schemas）；
+> 工作区 0.29.1 → **0.29.2**。
 
-## v0.29.x（Web/TUI 链接 opencode-go API Key，后端部分）✅（0.29.0 功能 + 0.29.1 验收修复）
+## v0.29.2（opencode-go 路由 API 化）✅
 
-- ✅ **`agentj-protocol`（T0/T1/T2）**：新增 6 个 wire 类型（`AuthSetApiKeyParams` /
-  `AuthSetApiKeyResult` / `ApiKeyOutcome`，含 `#[serde(other)]` 的 `Unknown` 向前兼容 /
-  `ApiKeyLinkError` / `AuthClearCredentialParams` / `AuthClearCredentialResult`）；
-  `PROTOCOL_VERSION` → **0.18.0**，`schemas/*.json` 72 → **78**，`protocol/methods.json`
-  26 → **28** 方法（`auth/setApiKey` / `auth/clearCredential`），registry / contract / drift
-  密封测试同步。
-- ✅ **`agentj-core`（T3）**：加性方法 `ProviderRegistry::remove(name) -> bool`（移除后
-  `list()` / `get()` 不含该项，默认 provider 指向被移除项时不 panic）；既有排序 / models
-  投影用例零回归。
-- ✅ **`agentj-ipc`（T4）**：`ProviderService` trait 扩到 **7** 个 async 方法 + 2 个 dispatch 臂；
-  非法 params 结构 → `-32602`，handle 未注入 → 7 个方法统一
-  `-32603 provider_service_unavailable`；ipc 不新增 auth / model 依赖。
-- ✅ **`agentj-cli`（T5/T6）**：有效 provider 列表 = `config.model.providers` ∪ 内置
-  `opencode-go` 默认条目（`base_url = https://opencode.ai/zen/go`、无 `api_key_env`；
-  显式条目优先、不写用户 TOML），`build_providers` 与 `CliProviderService` 共用同一函数；
-  运行期激活 helper = `build_opencode_go`（api_key → `RefreshingProvider::static`，
-  OAuth → `RefreshingProvider::oauth`）+ 替换 `registry.register` / `remove` + 失效该 provider
-  的模型与用量缓存。
-- ✅ **`agentj-cli`（T7/T8/T9/T10）**：`auth/setApiKey` 一次 `GET {console}/api/v2/config`
-  完成校验 + 目录 + 缓存播种，三态 `verified`（落盘 + 激活 + `source:"account"`）/
-  `rejected`（401/403：**不落盘、不注册**，`error.kind` ∈ `unauthorized` / `entitlement`，
-  文案内核自产） / `unverified`（超时 / 网络 / 5xx / 畸形 / 200 但无 go 模型：**仍落盘**，
-  目录退 live ∩ overlay）；`effective_source` 如实回告 env 遮蔽；非法参数走 `-32602` +
-  `error.data.reason`（`invalid_params` / `unknown_provider` / `unsupported_provider`）。
-  `auth/clearCredential` 移除凭据并按剩余凭据收敛（仍有 env key → 重建注册；无 key → 注销，
-  `auth/status.authenticated=false`），无条目 → `cleared:false` 成功响应。
-  `auth/devicePoll` 的 `authorized` 分支复用同一激活路径（免重启）。
-- ✅ **E2E（T11/T12）**：`crates/agentj-cli/tests/e2e_serve.rs` 真实 socket 覆盖
-  「链接 → `model/list` 返回 `account` → 解除 → 未认证」、rejected key、未注入
-  `provider_service` 的内核、以及链接 / 解除全程 `config.toml` 未被修改。
-- ✅ **`docs/specs/ipc-protocol.md` + changelog（T23）**：§8.1 方法表 28 行；新增 §8.28 / §8.29
-  契约（params / result / 三态 / `error.data.reasons` / 领域失败即结果数据 / `effective_source` /
-  no-secret 不变式 / `ApiKeyLinkError.kind` 为 `String` 且当前只产出 `unauthorized` /
-  `entitlement` / 换入瞬间进行中轮次可能用旧凭据的风险说明）；§3.4 标注复用既有错误码 +
-  `-32603 reason:"activation_failed"`；§10 / §11.3 记 `@since 0.18.0`（0.17.0 → 0.18.0）；
-  新建 `docs/changelog/v0.29.md` + 索引行。
-- ✅ **版本元数据（T21/T22）**：`Cargo.toml` / `Cargo.lock` 与 `scripts/check-version.sh` 同步
-  **0.29.0**（`PROTOCOL_VERSION` **0.18.0**）；desktop 三清单与前端 lockfile 亦同步
-  **0.29.0**（详见 `summary_and_next_fe.md`），`check-version.sh` = `version-ok`。
-- ✅ **评审修复（Phase 5，`fix:` 提交）**：整体分支持续只读评审得 1 HIGH / 1 MEDIUM / 4 LOW，
-  全部闭合：**H1** `clear_credential` 增加 `require_kind("api_key")` 守卫——已知非 opencode-go
-  provider 返回 `-32602 unsupported_provider` 且**凭据与注册表均不被触碰**（此前会把无关 provider
-  注销或以 opencode-go 工厂误重建）；**L1** `deactivate_opencode_go` 无密钥分支补启动同款
-  `tracing::warn!`（D7）；**L2/L4** `authorized_login` 与 `save_link` 失效对应 provider 的
-  `model_cache` / `usage_cache`（协议 §8.28「两处缓存」）；`docs/specs/ipc-protocol.md`§8.29
-  能力声明由「任意已注册 provider」收窄为「仅 opencode-go」。复审 **VERDICT: PASS**。
-- ✅ **验收修复（0.29.0 → 0.29.1）**：验收（`jskill-test-acceptance`）发现 **BUG-001（high）**——
-  `api_key_env` 非空（env 遮蔽）时读侧报 `effective_source=env`，但 `save_link()` 仍用**刚提交的
-  key** 激活，`session/run` 实际发送提交值。单提交修复 `06b6e45`：改用解析后的**生效凭据**
-  （`env > 文件`，与启动路径一致）激活，并让链接结果 `credential.key_hint` 与 `effective_source`
-  一致；回归 **verified**，零新 Bug。产品 patch bump **0.29.0 → 0.29.1**（协议不变）。
+### 核对结论（2026-10-09 实测，全部可复现）
 
-## 验证结果（当前树实测，2026-10-08）
+| 来源 | 内容 | 是否含端点元数据 |
+|---|---|---|
+| `GET /zen/go/v1/models` | 45 条，字段仅 `id` / `object` / `created` / `owned_by` | ❌ 无 |
+| `GET /zen/v1/models` | 87 条，同上四字段 | ❌ 无 |
+| `GET {console}/api/v2/config` | provider → 模型 **id 键** | ❌ 无 |
+| `GET /zen/go/v1/models/{id}`、`/zen/go/models`、`/api/models` | 404 | — |
+| `GET https://models.dev/api.json` | `opencode-go.models.<id>.provider.npm`（模型级覆盖）+ provider 级 `npm` 默认 | ✅ 有 |
+
+- models.dev 解析结果与官方端点表「AI SDK 包」列 **12/12 非 chat 模型零冲突**，20 条 chat 模型
+  经 provider 级 `@ai-sdk/openai-compatible` **继承**后亦逐条吻合 ⇒ 端点路由**完全可由 API 派生**。
+- `npm` 到 endpoint 的映射（协议事实，非逐模型配置）：`@ai-sdk/anthropic` → `/v1/messages`、
+  `@ai-sdk/openai` → `/v1/responses`、`@ai-sdk/openai-compatible` → `/v1/chat/completions`。
+
+### 已完成
+
+- ✅ **修 `catalog_gen::dev_format` 路径（原为静默失效）**：原读 `models.<id>.npm`，真实形状是
+  `models.<id>.provider.npm`；旧单测 fixture 用同形状假数据掩盖 → 该分支恒空，路由实际全靠手写种子。
+  现按「模型级覆盖 → provider 默认」解析；未收录 id 一律 `openai-compat` + `verified:false`（不猜）。
+- ✅ **删除手写路由表**：`bin/gen_opencode_catalog.rs` 的 `overrides()` 20 条 id→format 种子整体移除。
+- ✅ **快照迁入 crate + 重新生成**：`models/opencode-go.json` → `crates/agentj-model/data/opencode-go.json`
+  （45 条 / **35 verified** / 10 unverified；`include_str!("../data/...")` 去掉 `../../../` 反向引用；
+  根目录 `models/` 删除）。生成门禁：`gen_opencode_catalog [--check]`。
+- ✅ **`CatalogEntry.endpoint` 删除**：该字段从未被消费（各 transport 自持 `/v1/...` 路径），属重复端点配置；
+  快照不再写 `endpoint`（`overlay_json` / `from_json` / 单测同步）。
+- ✅ **base_url 单一真源**：新增 `agentj_model::catalog::OPENCODE_GO_BASE`；`agentj-cli` 的
+  `OPENCODE_GO_BASE`（auth）/ `BUILTIN_OPENCODE_GO_BASE`（providers）改为引用它。
+- ✅ **修复 7 条错误路由**（旧快照缺失 → 被合成为 `openai-compat`）：`claude-haiku-5-5`、
+  `qwen3.8-flash`（→ `/v1/messages`）与 `grok-4.6`、`grok-4.7`、`gpt-6-luna`、
+  `muse-spark-1.2/1.3-contributor`（→ `/v1/responses`）；由 `catalog_lookup_routes_formats` 锁定。
+- ✅ **单测**：`catalog_gen`（覆盖继承 / 未收录不猜 / 未知 npm 降级 / 去重 / JSON 往返）、
+  `catalog`（12 条官方路由 + 未解析降级为 unverified）；旧 `overrides` 相关测试随种子一并删除。
+- ✅ **文档与基线**：`docs/guide/subscription.md`（新增「路由映射从哪来」小节 + 快照路径/生成命令）、
+  `docs/changelog/v0.29.md`（0.29.2 小节）、`AGENTS.md`（当前版本 + `agentj-model` catalog 说明）、
+  `README.md`（版本行 + 目录树去 `models/`）、`scripts/check-version.sh`。
+
+### 已完成（0.29.0 / 0.29.1，详见 `docs/changelog/v0.29.md`）
+
+- ✅ v0.29.0：Web/TUI 链接 opencode-go API Key（`auth/setApiKey` / `auth/clearCredential`，
+  协议 0.18.0 / 28 方法 / 78 schemas）+ 运行期激活 + 内置 provider 条目；评审 1H/1M/4L 全闭合。
+- ✅ v0.29.1：验收 BUG-001（env 遮蔽时读侧/发送侧不一致）单提交修复，回归 verified。
+
+## 验证结果（当前树实测，2026-10-09）
 
 | 门禁 | 结果 |
 |---|---|
 | `cargo fmt --check` | clean |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 0 warnings |
-| `cargo test --workspace -- --skip permission_request_notified_and_timeout_denies` | **851** passed / 0 failed（48 suites） |
+| `cargo test --workspace` | **853** passed / 0 failed（48 suites，含 permission e2e） |
 | `cargo test -p agentj-protocol -- drift` | 2 passed |
-| `schemas/*.json` | **78** |
-| `protocol/methods.json` | **28** 方法 / `protocol_version` **0.18.0** |
-| `crates/agentj-protocol` `PROTOCOL_VERSION` | **0.18.0** |
-| `./scripts/check-version.sh` | **version-ok（0.29.1 / 0.18.0）** |
+| `cargo run -p agentj-model --bin gen_opencode_catalog -- --check` | exit 0（快照未过期） |
+| 路由冒烟（live ∩ 快照，真实网络） | 45 模型；官方端点表 12 条非 chat 路由 **0 不匹配**，其余 10 条 unverified |
+| `schemas/*.json` / `protocol/methods.json` | 78 / 28 方法 · `protocol_version` 0.18.0 |
+| `./scripts/check-version.sh` | **version-ok（0.29.2 / 0.18.0）** |
 | `node agentj-ui/apps/desktop/check-desktop-ui.mjs` | desktop-ui-ok |
-| `git diff main...HEAD -- schemas/KernelStatusResult.json` | 空（`kernel/status` 逐字不变） |
-
-> 本表于 Phase 8 收尾在最终树重跑；前端侧（SDK 55 · Web 652 · TUI 177 · 构建 clean）见
-> `summary_and_next_fe.md`。
 
 ## 遗留问题 / 已知限制（后端）
 
+- **`/v1/messages` 鉴权头（新发现，未修，待裁决）**：实测 `POST /zen/go/v1/messages`
+  **只认 `x-api-key`**（仅 `Authorization: Bearer` → 401 `Missing API key`；仅 `x-api-key` →
+  401 `Invalid API key`），而 `/v1/responses` 与 `/v1/chat/completions` 认 Bearer。
+  `crates/agentj-model/src/anthropic.rs` 目前发的是 `Authorization: Bearer`（单测用 wiremock
+  匹配同形头部，无法暴露）⇒ opencode-go 的 anthropic 路由（`claude-haiku-5-5` / `minimax-m2.7` /
+  `minimax-m3` / `qwen3.7-plus` / `qwen3.8-flash` / `qwen3.8-max`）在真实网关上预计 401。
+  **本阶段未改动**（属鉴权语义，需用户决定：`x-api-key` 与 `Authorization` 双发，或仅 `x-api-key`）。
+- **2 条 legacy 路由变更**：`qwen3.6-plus` / `qwen3.7-max` 现按 models.dev 判为
+  `openai-compat`（旧手写表标 `anthropic`）；二者均不在官方在售列表内。如实测不符，
+  重新加回一条种子即可（改动面 = `build_overlay` 之前的一次 map）。
 - **时序（设计已记录）**：替换 / 注销注册与并发 `session/run` 之间无全局互斥——换入瞬间
   **进行中的那一轮 run 可能仍使用旧凭据，新凭据从下一轮生效**。
 - **写入目标**：凭据写入**当前连接内核所在机器**的 `auth.json`（`--attach` / 远程 `serve`
   即远端主机）；非回环 `serve --host` 必须配 `--token`（既有要求，指南重述）。
 - **不泄露**：结果只经 `redact()` 暴露 `key_hint`；完整 key 不出现在结果 / 日志 / 错误文案；
-  两个方法**不新增权限门**。
+  两个 auth 方法**不新增权限门**。
 - **不做**：多账号 / 账号切换（同 provider 重复链接 = 替换）；OS keyring；不做「从解析层 `Err`
   反推 entitlement」（`rejected` 仅由明确 401/403 触发）。
 - **预存在的 e2e 挂起（非本阶段回归）**：`crates/agentj-cli/tests/e2e_permission.rs` 的
-  `permission_request_notified_and_timeout_denies` 在无外部交互时会挂起，全量测试统一以
-  `-- --skip permission_request_notified_and_timeout_denies` 运行。
+  `permission_request_notified_and_timeout_denies` 在无外部交互时可能挂起；本次全量运行该用例
+  通过（60s 内），如需可继续用 `-- --skip` 兜底。
 - **真实 Key 人工 E2E 为跟踪项（非 CI）**：步骤见 `summary_and_next_fe.md`「人工验收」小节。
 
 ## 待实施（跨阶段保留：未实施不得删除）
@@ -119,6 +114,7 @@
 
 ## 下一步
 
-- v0.29.1（功能 + 评审修复 + 验收修复）已落地，全门禁绿（`version-ok`）；验收通过后由验收
-  流程在 `origin` 创建 PR，用户负责合并。
+- v0.29.2（路由 API 化 + 生成器缺陷修复）已落地，全门禁绿（`version-ok`）。
+- 待用户裁决：**`/v1/messages` 头部策略**（`x-api-key` 双发 / 仅 `x-api-key`）——确认后为
+  单点改动（`anthropic.rs` 两处请求）+ 单测改断言 `header("x-api-key", ...)`，建议同版本内 patch。
 - 后端候选：上表 ①②④⑥；或前端跟进见 `summary_and_next_fe.md`。
