@@ -579,6 +579,17 @@ export default function App() {
       .catch(() => {});
   }, [sharedClient]);
 
+  // BUG-004: a run outlives a client disconnect (spec 8.11 异常断开 — the reconnecting
+  // client observes it via session/subscribe rather than retrying session/run).
+  // Subscribing is idempotent and read-only, so every (re)connect and every session
+  // switch re-attaches — mirroring the TUI's Connection.resubscribe() on open.
+  useEffect(() => {
+    if (!sharedClient || !activeSessionId) return;
+    void sharedClient
+      .request(METHODS.sessionSubscribe, { session_id: activeSessionId })
+      .catch(() => {});
+  }, [sharedClient, activeSessionId]);
+
   useEffect(() => {
     if (!rightDrawerOpen) return;
     const onKey = (event: KeyboardEvent) => {

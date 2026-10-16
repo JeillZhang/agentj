@@ -1,6 +1,6 @@
 # AGENTS.md
 
-> **当前版本 0.29.5** · `PROTOCOL_VERSION` **0.18.0**（28 方法 / 78 schemas / 18 crates）
+> **当前版本 0.29.6** · `PROTOCOL_VERSION` **0.18.0**（28 方法 / 78 schemas / 18 crates）
 > 本文件只记录**约束、入口与基线**（Setup / Commands / Architecture / Conventions / Rules）。
 > **逐版本变更与历史决策不写在这里** —— 见 [`docs/changelog/`](docs/changelog/)、
 > [`docs/guide/`](docs/guide/)、[`docs/specs/`](docs/specs/) 与 `.agents/summary/`。
@@ -113,6 +113,7 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
   + WsServerState/ws_router/serve_http + per-session 路由
   + `file/list` dispatch（沙箱 + git 状态；目录聚合后代最高优先级字母；`query` 子树搜索
   独立访问预算 20000 + rank + Top-100 + `total`）+ question notifier/settle hook 接线
+  + owner 断连结算（question 与 permission 待决项）
   + `error.data` 透传 + 非法结构请求回显可确定 id（可确定 id → `-32600`；语法错误
   → `-32700` + `id:null`）。**错误码表与鉴权通道契约以
   [`docs/specs/ipc-protocol.md`](docs/specs/ipc-protocol.md) 为准**，本文件不复述。

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { RpcClient } from "../client.js";
-import { PROTOCOL_VERSION, VERSION } from "../config.js";
+import { PROTOCOL_VERSION } from "../config.js";
 import type { RpcTransport } from "../router.js";
 
 class CaptureTransport implements RpcTransport {
@@ -31,7 +31,6 @@ describe("B-001 RpcClient.initialize default", () => {
     expect(transport.lastMethod).toBe("initialize");
     expect(transport.lastParams?.protocol_version).toBe(PROTOCOL_VERSION);
     expect(PROTOCOL_VERSION).toBe("0.18.0");
-    expect(VERSION).toBe("0.29.1");
   });
 
   it("allows explicit override still works", async () => {

@@ -446,15 +446,48 @@ mod tests {
         }
     }
 
-    fn capture() -> (CaptureWriter, tracing::subscriber::DefaultGuard) {
-        let buf = CaptureWriter::default();
-        let sub = tracing_subscriber::fmt()
-            .with_writer(buf.clone())
-            .with_ansi(false)
-            .with_max_level(tracing::Level::DEBUG)
-            .finish();
-        let guard = tracing::subscriber::set_default(sub);
-        (buf, guard)
+    /// Serializes the log-capture tests (see [`capture`] for why the subscriber is
+    /// process-global rather than thread-local).
+    static LOG_CAPTURE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Process-wide log sink, installed once by the first [`capture`].
+    static CAPTURE_SINK: std::sync::OnceLock<CaptureWriter> = std::sync::OnceLock::new();
+
+    /// One capture session.
+    ///
+    /// The subscriber is installed as the **process-global** default (once) instead of a
+    /// thread-local one: `tracing::subscriber::set_default` rebuilds the global
+    /// callsite-interest cache on every set/drop, which races with the other tests logging
+    /// in parallel and can drop an event (seen as `info expected:` without the `login ok`
+    /// line, ~1/30 stress runs). The shared sink is cleared per session under
+    /// `LOG_CAPTURE`, so the two capture tests stay serialized; log lines from other tests
+    /// may interleave into the buffer, which `contains`-style assertions tolerate.
+    struct Capture {
+        buf: CaptureWriter,
+        _serial: std::sync::MutexGuard<'static, ()>,
+    }
+
+    fn capture() -> Capture {
+        let serial = LOG_CAPTURE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let buf = CAPTURE_SINK
+            .get_or_init(|| {
+                let buf = CaptureWriter::default();
+                let sub = tracing_subscriber::fmt()
+                    .with_writer(buf.clone())
+                    .with_ansi(false)
+                    .with_max_level(tracing::Level::DEBUG)
+                    .finish();
+                let _ = tracing::subscriber::set_global_default(sub);
+                buf
+            })
+            .clone();
+        buf.0.lock().unwrap_or_else(|p| p.into_inner()).clear();
+        Capture {
+            buf,
+            _serial: serial,
+        }
     }
 
     fn captured(buf: &CaptureWriter) -> String {
@@ -463,7 +496,7 @@ mod tests {
 
     #[test]
     fn lockout_emits_warn_and_success_emits_info() {
-        let (buf, _guard) = capture();
+        let capture = capture();
         let limiter = LoginLimiter::with_policy(Policy {
             free_attempts: 1,
             ..Policy::default()
@@ -472,7 +505,7 @@ mod tests {
         let ip = ip("203.0.113.5");
         let _ = limiter.record_failure(ip, t0);
         limiter.record_success(ip);
-        let out = captured(&buf);
+        let out = captured(&capture.buf);
         assert!(out.contains("login lockout"), "warn expected: {out}");
         assert!(out.contains("ip=203.0.113.5"), "ip field expected: {out}");
         assert!(
@@ -488,7 +521,7 @@ mod tests {
 
     #[test]
     fn ordinary_failure_and_blocked_attempt_emit_debug_lines() {
-        let (buf, _guard) = capture();
+        let capture = capture();
         let limiter = LoginLimiter::with_policy(Policy {
             free_attempts: 3,
             ..Policy::default()
@@ -502,7 +535,7 @@ mod tests {
             limiter.check(who, at(t0, 3)),
             Throttle::Locked { .. }
         ));
-        let out = captured(&buf);
+        let out = captured(&capture.buf);
         let failure_line = out
             .lines()
             .find(|line| line.contains("login failure"))
