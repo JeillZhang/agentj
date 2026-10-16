@@ -8,15 +8,22 @@
 > 待实施），不得随内容替换而删除；仅当该特性实际实施完成后才能移除（移入功能记录）。
 > 后端总结独立存放于 `summary_and_next_se.md`；两文件内容隔离，互不写入对方文件。
 
-> 当前功能：**v0.29.6 断连重连后的 `SessionBusy`（前端部分）**
-> ——来源：用户报告「断连后，重新连接会话，任务中断，提示继续后，提示 sessionbusy」；
-> 后端部分（owner 断连结算待审批）见 `summary_and_next_se.md`。
-> 前端范围：`agentj-ui/apps/web/src/{App.tsx,App.test.tsx,RunPanel.tsx,RunPanel.test.tsx}`
-> + `agentj-ui/packages/sdk` 两处陈旧版本断言的硬化。
-> 工作区 0.29.5 → **0.29.6**（纯修复）；`PROTOCOL_VERSION` 仍 **0.18.0** / 28 方法 /
-> 78 schemas（无协议变更、无类型重生成、无 METHODS 变更）。
+> 当前功能：**v0.29.7 版本元数据同步（纯版本号，无前端变更）**
+> ——v0.29.7 是**纯后端修复**（上下文预算，见 `summary_and_next_se.md`）：Web / TUI /
+> desktop / SDK 前端代码零改动。本文件本阶段仅记录版本同步：工作区 0.29.6 → **0.29.7**
+> tips：`@agentj/sdk` `VERSION`、desktop 三清单与 lockfile、`scripts/check-version.sh`；
+> `PROTOCOL_VERSION` 仍 **0.18.0** / 28 方法 / 78 schemas（无协议变更、无类型/METHODS 重生成）。
+> 上一个前端功能（v0.29.6 重连重新订阅 + `SessionBusy` 友好提示）见下节，已随 PR 合入 main。
 
-## v0.29.6（Web 重连即重新订阅；`SessionBusy` 友好提示）🚧
+## v0.29.7 —— 前端面零变更（仅版本号同步至 0.29.7）
+
+- `agentj-ui/packages/sdk/src/config.ts`：`VERSION` 0.29.6 → **0.29.7**（`PROTOCOL_VERSION`
+  不变）。
+- `agentj-ui/apps/desktop/{package.json,src-tauri/tauri.conf.json,src-tauri/Cargo.toml}` 与
+  `agentj-ui/apps/desktop/src-tauri/Cargo.lock`：版本同步至 0.29.7。
+- 门禁重跑均绿（见下方验证结果）：Web 655 / SDK 55 / TUI 177 / Web build clean / drift 2。
+
+## v0.29.6（Web 重连即重新订阅；`SessionBusy` 友好提示）✅
 
 ### 缺陷与根因
 
@@ -53,7 +60,7 @@
 `src/__tests__/config.test.ts` 改为从仓库根 `Cargo.toml` 读版本并断言相等（真正的不变量），
 `src/__tests__/init-default.test.ts` 删除重复的版本断言。
 
-## 验证结果（0.29.6，2026-10-16）
+## 验证结果（0.29.7 / 0.29.6，2026-10-16）
 
 | 门禁 | 结果 |
 |---|---|
@@ -62,11 +69,11 @@
 | `npm --prefix agentj-ui run build --workspace=@agentj/web` | clean（仅既有 chunk > 500 kB 提示） |
 | `bun --cwd agentj-ui/apps/tui test` | 177 passed（21 files，未受本阶段改动影响） |
 | `cargo test -p agentj-protocol -- drift` | 2 passed（协议面无漂移） |
-| `./scripts/check-version.sh` | **version-ok（0.29.6 / 0.18.0）** |
+| `./scripts/check-version.sh` | **version-ok（0.29.7 / 0.18.0）** |
 
-> 后端侧门禁（`cargo test --workspace` 865 passed / clippy 0 warning）见 `summary_and_next_se.md`。
+> 后端侧门禁（`cargo test --workspace` 877 passed / clippy 0 warning）见 `summary_and_next_se.md`。
 
-## 已完成（0.29.0 – 0.29.5，详见 `docs/changelog/v0.29.md`）
+## 已完成（0.29.0 – 0.29.7，详见 `docs/changelog/v0.29.md`）
 
 - ✅ **0.29.0 功能（前端）**：Web/TUI 链接 opencode-go API Key——`packages/protocol` 78 schemas
   类型重生成、`packages/sdk` `METHODS` 28 + 版本常量；Web `SubscriptionPanel`「链接方式」区块
@@ -75,8 +82,11 @@
   （`i`/`Enter`/`c`，逐字符 `•` 遮罩）。Phase-5 评审修复 M1（解除链接立即丢弃目录）/ L3
   （改用 `@agentj/protocol` 生成类型）。
 - ✅ **0.29.1**：验收 BUG-001（后端 `save_link` 在 env 遮蔽时用错凭据）修复，前端面零变更。
-- ✅ **0.29.2 – 0.29.5**：纯后端修复阶段 + 纯版本号同步（工作区 0.29.2 → 0.29.5：
-  `@agentj/sdk` `VERSION`、desktop 三清单与 lockfile、`check-version.sh`），**无前端功能变更**。
+- ✅ **0.29.2 – 0.29.6**：纯后端修复阶段 + 纯版本号同步（工作区 0.29.2 → 0.29.6：
+  `@agentj/sdk` `VERSION`、desktop 三清单与 lockfile、`check-version.sh`）；其中
+  0.29.6 含前端功能面（Web 重连重新 `session/subscribe` + `RunPanel.sessionBusyMessage`
+  友好文案，3 条新单测），其余为 **无前端功能变更**。
+- ✅ **0.29.7**：纯后端修复（上下文预算）+ 纯版本号同步至 0.29.7，前端面零变更。
 
 ## 遗留问题 / 已知限制（前端）
 
