@@ -7,6 +7,10 @@ kind = "mock"
 base_url = "mock://local"
 api_key_env = ""
 
+[permission]
+# Test-only: keep the auto-deny inside the e2e deadline (design default is 60s).
+timeout_ms = 800
+
 [permission.tools.bash]
 mode = "ask"
 

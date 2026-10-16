@@ -1,6 +1,6 @@
 # AGENTS.md
 
-> **当前版本 0.29.3** · `PROTOCOL_VERSION` **0.18.0**（28 方法 / 78 schemas / 18 crates）
+> **当前版本 0.29.4** · `PROTOCOL_VERSION` **0.18.0**（28 方法 / 78 schemas / 18 crates）
 > 本文件只记录**约束、入口与基线**（Setup / Commands / Architecture / Conventions / Rules）。
 > **逐版本变更与历史决策不写在这里** —— 见 [`docs/changelog/`](docs/changelog/)、
 > [`docs/guide/`](docs/guide/)、[`docs/specs/`](docs/specs/) 与 `.agents/summary/`。
@@ -24,6 +24,8 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
 
 - `cargo test --workspace` — 全量测试（含 bus 密封 + FileBackedStore/Config/CLI 单测
   + e2e_cli/e2e_permission/e2e_serve/e2e_ws/e2e_http_static 密封测试）
+  > 内循环用 `cargo test -p <crate> --lib` 只跑单测；全量 e2e 现已秒级（`e2e_permission`
+  > 曾因硬编码 session id 读阻塞而无限挂起，2026-10-16 修复并改用 `timeout_ms = 800`）。
 - `cargo clippy --workspace --all-targets -- -D warnings` — lint 门禁（零警告）
 - `cargo bench -p agentj-model` — 模型流式基准（criterion）
 - `cargo run -p agentj-protocol --bin gen_schemas` — 重新生成 `schemas/*.json`
@@ -76,6 +78,7 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
   + `TurnArtifact`（FileChange/Todo 产出 + 自研 unified diff，per-run `run_id`/`seq`）
   + 事件总线重入防护（EventGuard thread_local + MAX_EVENT_DEPTH=16）。
 - `agentj-config`：TOML 配置（[model]/[permission]/[session]/[license]/[[mcp.servers]]；
+  `[permission] timeout_ms` 调整 `ask` 自动拒绝等待预算（默认 60s，e2e fixture 调至 800ms）；
   `toml_edit` 定点写回 `[model]` 保留注释）。
 - `agentj-auth`：订阅凭据（`Credential` api_key/oauth + `AuthStore`
   XDG 路径 / 目录 0700 / 文件 0600 / 原子写 / 权限与 JSON 校验拒绝降级

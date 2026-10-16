@@ -61,11 +61,26 @@ pub(crate) fn namespaced(id: &str) -> String {
     }
 }
 
+/// Strip the `opencode-go/` namespace prefix; bare upstream ids are returned unchanged.
+///
+/// The namespace is agentj-internal routing metadata (`catalog_source::namespaced`) and must
+/// never be sent to the gateway, which keys on the bare id. @since 0.29.4
+pub(crate) fn bare_id(id: &str) -> &str {
+    id.strip_prefix(NAMESPACE).unwrap_or(id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[test]
+    fn bare_id_strips_namespace_once() {
+        assert_eq!(bare_id("opencode-go/kimi-k3"), "kimi-k3");
+        assert_eq!(bare_id("kimi-k3"), "kimi-k3");
+        assert_eq!(bare_id("space-bunny"), "space-bunny");
+    }
 
     #[tokio::test]
     async fn live_models_are_sorted_and_deduped() {

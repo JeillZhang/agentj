@@ -52,18 +52,6 @@ impl ResponsesProvider {
         }
     }
 
-    /// Build a `ModelError::Api` with the upstream error type surfaced and an actionable
-    /// re-login hint for 401/403 (design D8).
-    fn api_error(status: u16, body: String) -> ModelError {
-        let parsed = crate::gateway_error::parse_gateway_error(status, &body);
-        let message = if status == 401 || status == 403 {
-            format!("{parsed}（请运行 agentj auth login 重新获取凭据）")
-        } else {
-            parsed
-        };
-        ModelError::Api { status, message }
-    }
-
     fn request_body(
         &self,
         messages: &[ChatMessage],
@@ -175,8 +163,12 @@ impl ResponsesChunkParser {
         };
         match json["type"].as_str().unwrap_or("") {
             "response.output_text.delta" => {
-                // clippy collapsible_if: nested if → let-chain (edition 2024)
-                if let Some(text) = json["delta"]["text"].as_str()
+                // Wire spec: `delta` is a plain string. Tolerate the legacy
+                // `{"text": …}` object form that early fixtures assumed (0.29.4).
+                let text = json["delta"]
+                    .as_str()
+                    .or_else(|| json["delta"]["text"].as_str());
+                if let Some(text) = text
                     && !text.is_empty()
                 {
                     out.push(Ok(ModelEvent::Delta(text.to_string())));
@@ -198,10 +190,14 @@ impl ResponsesChunkParser {
                 }
             }
             "response.function_call_arguments.delta" => {
-                // clippy collapsible_if: nested if-let → let-chain (edition 2024)
+                // Wire spec: `delta` is the raw JSON-fragment string; tolerate the
+                // legacy `{"arguments": …}` object form (0.29.4).
                 let item_id = json["item_id"].as_str().unwrap_or("");
+                let args = json["delta"]
+                    .as_str()
+                    .or_else(|| json["delta"]["arguments"].as_str());
                 if let Some(pc) = self.pending.get_mut(item_id)
-                    && let Some(args) = json["delta"]["arguments"].as_str()
+                    && let Some(args) = args
                 {
                     pc.args.push_str(args);
                 }
@@ -276,21 +272,17 @@ impl ModelProvider for ResponsesProvider {
         options: ModelOptions,
     ) -> Result<ChatResponse, ModelError> {
         let url = format!("{}/v1/responses", self.base_url);
-        let rb = self
-            .client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .json(&self.request_body(&messages, &[], &options, false));
-        let response = self
-            .with_session(rb, &options)
-            .send()
-            .await
-            .map_err(|e| ModelError::Network(e.to_string()))?;
-        let status = response.status().as_u16();
-        if status != 200 {
-            let body = response.text().await.unwrap_or_default();
-            return Err(Self::api_error(status, body));
-        }
+        let body = self.request_body(&messages, &[], &options, false);
+        let response = crate::retry::send(&body, |b| {
+            self.with_session(
+                self.client
+                    .post(&url)
+                    .header("Authorization", format!("Bearer {}", self.api_key))
+                    .json(b),
+                &options,
+            )
+        })
+        .await?;
         let json: Value = response
             .json()
             .await
@@ -321,30 +313,17 @@ impl ResponsesProvider {
         options: &ModelOptions,
     ) -> Result<BoxStream<'static, Result<ModelEvent, ModelError>>, ModelError> {
         let url = format!("{}/v1/responses", self.base_url);
-        let rb = self
-            .client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .json(&self.request_body(messages, tools, options, true));
-        let response = self
-            .with_session(rb, options)
-            .send()
-            .await
-            .map_err(|e| ModelError::Network(e.to_string()))?;
-        let status = response.status().as_u16();
-        if status == 429 {
-            let retry_after = response
-                .headers()
-                .get("retry-after")
-                .and_then(|v| v.to_str().ok())
-                .and_then(|s| s.parse::<u64>().ok())
-                .map(Duration::from_secs);
-            return Err(ModelError::RateLimited { retry_after });
-        }
-        if status != 200 {
-            let body = response.text().await.unwrap_or_default();
-            return Err(Self::api_error(status, body));
-        }
+        let body = self.request_body(messages, tools, options, true);
+        let response = crate::retry::send(&body, |b| {
+            self.with_session(
+                self.client
+                    .post(&url)
+                    .header("Authorization", format!("Bearer {}", self.api_key))
+                    .json(b),
+                options,
+            )
+        })
+        .await?;
         let byte_stream = response.bytes_stream();
         let mut parser = ResponsesChunkParser::new();
         let stream = crate::sse::sse_event_stream(byte_stream, move |line, out| {
@@ -365,8 +344,8 @@ mod tests {
     async fn responses_provider_streams_text_events() {
         let server = MockServer::start().await;
         let sse_body = concat!(
-            "data: {\"type\":\"response.output_text.delta\",\"output_index\":0,\"delta\":{\"text\":\"Hello\"}}\n\n",
-            "data: {\"type\":\"response.output_text.delta\",\"output_index\":0,\"delta\":{\"text\":\" world\"}}\n\n",
+            "data: {\"type\":\"response.output_text.delta\",\"output_index\":1,\"content_index\":0,\"delta\":\"Hello\"}\n\n",
+            "data: {\"type\":\"response.output_text.delta\",\"output_index\":1,\"content_index\":0,\"delta\":\" world\"}\n\n",
             "data: {\"type\":\"response.completed\"}\n\n",
             "data: [DONE]\n\n"
         );
@@ -406,12 +385,100 @@ mod tests {
         assert_eq!(chunks.join(""), "Hello world");
     }
 
+    /// Legacy proxies that wrapped the delta as `{"text": "…"}` must keep working
+    /// (additive tolerance, 0.29.4).
+    #[tokio::test]
+    async fn responses_tolerates_object_delta_shape() {
+        let server = MockServer::start().await;
+        let sse_body = concat!(
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":{\"text\":\"Hello\"}}\n\n",
+            "data: {\"type\":\"response.completed\"}\n\n",
+            "data: [DONE]\n\n"
+        );
+        Mock::given(method("POST"))
+            .and(path("/v1/responses"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(sse_body)
+                    .insert_header("content-type", "text/event-stream"),
+            )
+            .mount(&server)
+            .await;
+
+        let provider = ResponsesProvider::new(server.uri(), "sk-test".into());
+        let mut stream = provider
+            .chat_stream(
+                vec![ChatMessage::user("hi")],
+                vec![],
+                ModelOptions {
+                    model: "opencode-go/grok-4.5".into(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        let mut chunks = vec![];
+        while let Some(result) = stream.next().await {
+            match result.unwrap() {
+                ModelEvent::Delta(text) => chunks.push(text),
+                ModelEvent::Done => break,
+                _ => {}
+            }
+        }
+        assert_eq!(chunks.join(""), "Hello");
+    }
+
+    /// Reasoning-summary deltas share the `delta` key but must never surface as content.
+    #[tokio::test]
+    async fn responses_ignores_reasoning_deltas() {
+        let server = MockServer::start().await;
+        let sse_body = concat!(
+            "data: {\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"thinking…\"}\n\n",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"pong\"}\n\n",
+            "data: {\"type\":\"response.completed\"}\n\n",
+            "data: [DONE]\n\n"
+        );
+        Mock::given(method("POST"))
+            .and(path("/v1/responses"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(sse_body)
+                    .insert_header("content-type", "text/event-stream"),
+            )
+            .mount(&server)
+            .await;
+
+        let provider = ResponsesProvider::new(server.uri(), "sk-test".into());
+        let mut stream = provider
+            .chat_stream(
+                vec![ChatMessage::user("hi")],
+                vec![],
+                ModelOptions {
+                    model: "opencode-go/grok-4.5".into(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        let mut chunks = vec![];
+        while let Some(result) = stream.next().await {
+            match result.unwrap() {
+                ModelEvent::Delta(text) => chunks.push(text),
+                ModelEvent::Done => break,
+                _ => {}
+            }
+        }
+        assert_eq!(chunks.join(""), "pong");
+    }
+
     #[tokio::test]
     async fn responses_provider_assembles_function_call() {
         let server = MockServer::start().await;
         let sse_body = concat!(
             "data: {\"type\":\"response.output_item.added\",\"output_index\":1,\"item\":{\"type\":\"function_call\",\"id\":\"fc_1\",\"call_id\":\"call_1\",\"name\":\"bash\",\"arguments\":\"\"}}\n\n",
-            "data: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc_1\",\"output_index\":1,\"delta\":{\"arguments\":\"{\\\"cmd\\\":\\\"ls\\\"}\"}}\n\n",
+            "data: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc_1\",\"output_index\":1,\"delta\":\"{\\\"cmd\\\":\\\"ls\\\"}\"}\n\n",
             "data: {\"type\":\"response.output_item.done\",\"output_index\":1,\"item\":{\"type\":\"function_call\",\"id\":\"fc_1\",\"call_id\":\"call_1\",\"name\":\"bash\",\"arguments\":\"{\\\"cmd\\\":\\\"ls\\\"}\"}}\n\n",
             "data: {\"type\":\"response.completed\"}\n\n",
             "data: [DONE]\n\n"

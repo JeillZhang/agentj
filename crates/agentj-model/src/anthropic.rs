@@ -61,18 +61,6 @@ impl AnthropicProvider {
         }
     }
 
-    /// Build a `ModelError::Api` with the upstream error type surfaced and an actionable
-    /// re-login hint for 401/403 (design D8).
-    fn api_error(status: u16, body: String) -> ModelError {
-        let parsed = crate::gateway_error::parse_gateway_error(status, &body);
-        let message = if status == 401 || status == 403 {
-            format!("{parsed}（请运行 agentj auth login 重新获取凭据）")
-        } else {
-            parsed
-        };
-        ModelError::Api { status, message }
-    }
-
     fn request_body(
         &self,
         messages: &[ChatMessage],
@@ -280,19 +268,11 @@ impl ModelProvider for AnthropicProvider {
         options: ModelOptions,
     ) -> Result<ChatResponse, ModelError> {
         let url = format!("{}/v1/messages", self.base_url);
-        let rb = self
-            .auth_headers(self.client.post(&url))
-            .json(&self.request_body(&messages, &[], &options, false));
-        let response = self
-            .with_session(rb, &options)
-            .send()
-            .await
-            .map_err(|e| ModelError::Network(e.to_string()))?;
-        let status = response.status().as_u16();
-        if status != 200 {
-            let body = response.text().await.unwrap_or_default();
-            return Err(Self::api_error(status, body));
-        }
+        let body = self.request_body(&messages, &[], &options, false);
+        let response = crate::retry::send(&body, |b| {
+            self.with_session(self.auth_headers(self.client.post(&url)).json(b), &options)
+        })
+        .await?;
         let json: Value = response
             .json()
             .await
@@ -318,28 +298,11 @@ impl AnthropicProvider {
         options: &ModelOptions,
     ) -> Result<BoxStream<'static, Result<ModelEvent, ModelError>>, ModelError> {
         let url = format!("{}/v1/messages", self.base_url);
-        let rb = self
-            .auth_headers(self.client.post(&url))
-            .json(&self.request_body(messages, tools, options, true));
-        let response = self
-            .with_session(rb, options)
-            .send()
-            .await
-            .map_err(|e| ModelError::Network(e.to_string()))?;
-        let status = response.status().as_u16();
-        if status == 429 {
-            let retry_after = response
-                .headers()
-                .get("retry-after")
-                .and_then(|v| v.to_str().ok())
-                .and_then(|s| s.parse::<u64>().ok())
-                .map(Duration::from_secs);
-            return Err(ModelError::RateLimited { retry_after });
-        }
-        if status != 200 {
-            let body = response.text().await.unwrap_or_default();
-            return Err(Self::api_error(status, body));
-        }
+        let body = self.request_body(messages, tools, options, true);
+        let response = crate::retry::send(&body, |b| {
+            self.with_session(self.auth_headers(self.client.post(&url)).json(b), options)
+        })
+        .await?;
         let byte_stream = response.bytes_stream();
         let mut parser = AnthropicChunkParser::new();
         let stream = crate::sse::sse_event_stream(byte_stream, move |line, out| {
@@ -498,5 +461,63 @@ mod tests {
                 completion_tokens: 4
             }
         );
+    }
+
+    /// Models that deprecated `temperature` (e.g. `claude-haiku-5-5`) answer 400; the
+    /// transport must retry once without the field instead of failing the turn (0.29.4).
+    #[tokio::test]
+    async fn anthropic_retries_without_temperature_when_rejected() {
+        let server = MockServer::start().await;
+        let sse_body = concat!(
+            "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hi\"}}\n\n",
+            "data: {\"type\":\"message_stop\"}\n\n",
+            "data: [DONE]\n\n"
+        );
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(400).set_body_string(
+                r#"{"type":"error","error":{"type":"invalid_request_error","message":"`temperature` is deprecated for this model."}}"#,
+            ))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(sse_body)
+                    .insert_header("content-type", "text/event-stream"),
+            )
+            .mount(&server)
+            .await;
+
+        let provider = AnthropicProvider::new(server.uri(), "sk-test".into());
+        let mut stream = provider
+            .chat_stream(
+                vec![ChatMessage::user("hi")],
+                vec![],
+                ModelOptions {
+                    model: "opencode-go/claude-haiku-5-5".into(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let mut chunks = vec![];
+        while let Some(result) = stream.next().await {
+            match result.unwrap() {
+                ModelEvent::Delta(text) => chunks.push(text),
+                ModelEvent::Done => break,
+                _ => {}
+            }
+        }
+        assert_eq!(chunks.join(""), "Hi");
+
+        let reqs = server.received_requests().await.unwrap();
+        assert_eq!(reqs.len(), 2, "exactly one retry");
+        let first = String::from_utf8_lossy(&reqs[0].body);
+        let second = String::from_utf8_lossy(&reqs[1].body);
+        assert!(first.contains("temperature"), "default request keeps it");
+        assert!(!second.contains("temperature"), "retry drops it");
     }
 }
