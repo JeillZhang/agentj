@@ -7,86 +7,90 @@
 > 待实施），不得随内容替换而删除；仅当该特性实际实施完成后才能移除（移入功能记录）。
 > 前端总结独立存放于 `summary_and_next_fe.md`；两文件内容隔离，互不写入对方文件。
 
-> 当前功能：**v0.29.4 opencode-go 订阅真实 key 端到端调测适配 + `e2e_permission` 挂起修复（后端部分）**
-> ——来源：用户给出测试用订阅 key，要求完成 opencode-go 订阅的端到端调测适配
-> （`space-bunny-free` 不存在，实为 `space-bunny` + 轮换的 `*-free`）。
-> 后端范围：`agentj-model`（`opencode_go` / `catalog_source` / `responses` / `openai_compat` /
-> `anthropic` / `gateway_error` / 新增 `retry`）、`agentj-permission`（`[permission] timeout_ms`）、
-> `agentj-cli`（`permission_timeout` + e2e fixture）、`docs/changelog/v0.29.md`、
-> `docs/guide/configuration.md`、版本元数据。
+> 当前功能：**v0.29.5 `serve` / `dashboard` 不再强制预先配置密钥（修复）**
+> ——来源：用户报告「启动 `agentj serve` 时不要强制配置 key，该 key 应可以从 Web/TUI 等
+> 客户端通过设置配置」。
+> 后端范围：`crates/agentj-cli`（`providers.rs` / `main.rs` / `tests/e2e_auth.rs` /
+> `tests/e2e_serve.rs`）、`docs/changelog/v0.29.md`、`docs/guide/subscription.md`、
+> 版本元数据。
 > 协议 wire 面**不变**（`PROTOCOL_VERSION` 仍 **0.18.0** / 28 方法 / 78 schemas）；
-> 工作区 0.29.3 → **0.29.4**（纯修复，无新增方法 / schema）。
+> 工作区 0.29.4 → **0.29.5**（纯修复，无新增方法 / schema）。
 
-## v0.29.4（真实 key 端到端调测：4 个上游缺陷 + 1 个测试挂起）✅
+## v0.29.5（`serve` 无密钥可启动，密钥由客户端录入）🚧
 
-### 缺陷与修复
+### 缺陷与根因
 
-| # | 缺陷 | 根因 | 修复 |
-|---|---|---|---|
-| 1 | 命名空间 model id 泄漏到上游 wire（三条路由全中） | `OpenCodeGoProvider::route()` 只返回 wire format，`options.model` 原样透传 → 网关收到 `opencode-go/space-bunny` 并回 `unknown model` | `catalog_source::bare_id()`（`pub(crate)`）去掉 `opencode-go/` 前缀后再发送 |
-| 2 | `/v1/responses` 输出恒为空 | 解析 `json["delta"]["text"]`，真实 wire 是 `{"type":"response.output_text.delta","delta":"<text>"}`（`delta` 为**字符串**） | 改为「字符串优先、旧对象形状容忍」 |
-| 3 | `/v1/responses` 工具参数恒为空 | 解析 `json["delta"]["arguments"]`，真实 wire 是 `"delta":"{\"pattern\":\"*.rs\"}"` | 同上 |
-| 4 | `temperature` 被部分模型拒绝（400） | `claude-haiku-5-5`（messages）/ `gpt-6-luna`（responses）不支持该参数 | 新增 `retry::send()`：仅「温度类 400」→ 去字段**重试一次** |
-| 5 | `e2e_permission` 无限挂起 → `cargo test --workspace` **永不终止** | 用例把 `session_id` 硬编码为 `"s1"`，而 `session/new` 返回真实 UUID → `session/run` 回 `session error: session 's1' is inactive`，随后裸 `read_line` 在无匹配回复时**永久阻塞** | 从 `session/new` 回复取真实 id + 所有读取改带 20s 截止的通道接收 |
+`serve` / `dashboard` 的承诺（0.29.0 设计 D2/D3/D7）是「客户端链接 Key 即生效、免重启」，
+但启动装配一旦解析不到任何密钥就**直接报错退出**，首次部署必须先跑一次
+`agentj auth login` 才能起服务——与「在 Web/TUI 设置里链接」自相矛盾。
 
-- 附带收敛：三个 transport 各自私有的 `api_error` → `gateway_error::api_error`（`pub(crate)`）；
-  同一入口补齐 `429` → `ModelError::RateLimited`（含 `Retry-After`）。
-- 新增 `agentj_model::retry`：`pub(crate) async fn send<F>(body, post)` /
-  `temperature_unsupported(status, body)` / `without_temperature(body)`。
-- 行为变化：`chat()` 的 `429` 现映射为 `RateLimited`（原为 `Api { status: 429, .. }`）；无测试依赖旧行为。
-- `responses` 解析器新增容错断言：`responses_tolerates_object_delta_shape` /
-  `responses_ignores_reasoning_deltas`；`anthropic_retries_without_temperature_when_rejected`
-  用 2 个 mock（400 `.up_to_n_times(1)` → 200）并比对 `received_requests()` 断言重试体无 `temperature`。
+| 位置 | 缺陷 |
+|---|---|
+| `crates/agentj-cli/src/providers.rs` | `build_providers` 在 provider 集合为空时 `return Err("no usable model provider：未解析到任何密钥，见 agentj auth status")` |
+| `crates/agentj-cli/src/main.rs` | 该 `Err` 对**除 `run --attach` 外**的所有命令直接 `bail!`，`serve` / `dashboard` 因此进不了「客户端录入密钥」路径 |
 
-### 真实 key 端到端实测（2026-10-16，9 模型全绿）
+### 修复（收窄 fatal 边界）
 
-| 路由 | 模型 | 结果 |
+- `build_providers` **不再**把空集合当错误：改为 `warnings.push(NO_USABLE_PROVIDER.to_string())`
+  并返回 `Ok(Assembly { providers: vec![], warnings })`；新增
+  `pub const NO_USABLE_PROVIDER: &str` 作为该文案的**唯一来源**（`main` 复用）。
+- `main.rs`：把 `inject_subscription` 的 `matches!(Serve | Dashboard)` 判定**上提**为
+  `serves_clients`（先于装配），装配后新增：
+  `if assembly.providers.is_empty() && !serves_clients { anyhow::bail!("{}", providers::NO_USABLE_PROVIDER); }`
+  随后 `let inject_subscription = serves_clients;`。
+- 结果语义：
+  - `serve` / `dashboard`：启动继续，逐个 provider 打印「无可用密钥…已跳过」+ 一条汇总警告；
+    客户端「设置 · 订阅」链接 Key 后当场重建并替换 provider（免重启）。
+  - `run`（含无子命令的裸 `agentj`）：**与修复前完全一致**，无密钥仍启动即报错退出非 0
+    （其消息仍含 `no usable model provider`），避免无凭据的上游请求。
+  - `run --attach`：不变（`attached` 短路，不要求本地 provider）。
+  - `agentj auth login`：不受影响（`main.rs:470` 在装配前即 `return`）。
+
+### 测试
+
+| 文件 | 变更 | RED 证据 |
 |---|---|---|
-| `/v1/chat/completions` | `space-bunny` / `beam-free` / `longcat-2.5-preview-free` | ✅ 文本往返 |
-| `/v1/messages` | `minimax-m3` / `qwen3.8-flash` | ✅ 200 往返（**闭环 0.29.3 遗留的「真实 key 200 往返未验证」**） |
-| `/v1/messages` | `claude-haiku-5-5` | ✅（走温度降级重试） |
-| `/v1/responses` | `grok-4.7` / `gpt-6-luna` / `muse-spark-1.3-contributor` | ✅ 文本往返 |
-| 工具调用（三路由） | `glob`；`grok-4.7` 以 `*.txt` 命中唯一标记文件 `./UNIQUE_MARKER_7f3a.txt` | ✅ 参数非空（缺陷 3 的端到端证据） |
+| `crates/agentj-cli/src/providers.rs` | `no_usable_provider_is_a_hard_error` → `keyless_provider_set_is_reported_not_fatal`（断言 `Ok` + 空集合 + 警告含 `no usable model provider`） | `called Result::unwrap() on an Err value: "no usable model provider：…"` @ `providers.rs:249` |
+| `crates/agentj-cli/tests/e2e_serve.rs` | 新增 `keyless_provider_set_still_boots_serve`：隔离 `XDG_DATA_HOME`/`HOME`、`api_key_env = "AGENTJ_E2E_KEYLESS"` + `env_remove`、`base_url = "https://example.invalid"`（绝不触网）、`serve --port 0` 期望 `read_listening_addr` 成功且进程常驻 | `panicked at crates/agentj-cli/tests/e2e_serve.rs:96:5: server did not print a listening address` |
+| `crates/agentj-cli/tests/e2e_auth.rs` | `keyless_real_provider_fails_startup` → `keyless_real_provider_fails_run`（改用 `run "hi"` 保留断言：失败 + 文案 + 未触网 `example.invalid`） | 旧用例断言的正是缺陷行为，改后即绿 |
 
-- 环境：`/tmp/aj-e2e/config.toml`（`[model] provider = "opencode-go"`、
-  `default_model = "opencode-go/space-bunny"`）+ `XDG_DATA_HOME=/tmp/aj-e2e/data`；
-  真实 key 经本地 auth store（`$XDG_DATA_HOME/agentj/auth.json`，`type = "api_key"`）注入。
-- 事实澄清：`space-bunny-free` **不存在**；免费模型为**轮换制**，`/v1/models` 的 id 会变，
-  旧 id 报 `unknown model` 属正常轮换而非缺陷（本期免费位为 `longcat-2.5-preview-free` / `beam-free`）。
-- `agentj run` 触发**需审批**工具（`bash`）在非 TTY 下会一直等待审批（无 `--yes` 开关）；
-  只读工具（`read`/`glob`/`grep`/`todo`/`ask`）按 `crates/agentj-permission/src/policy.rs:68`
-  的 `builtin_default_mode` 自动放行，故工具调用 E2E 用 `glob` 完成。
+> 命令提示：`agentj-cli` **没有 lib target**（`cargo test -p agentj-cli --lib` 报
+> `no library targets found`）；单测用 `cargo test -p agentj-cli --bin agentj <filter>`。
 
-### 测试速度（用户提出的优化项）
+### 验证结果（0.29.5，2026-10-16）
 
-- 根因即缺陷 5：挂起使 `cargo test --workspace` 永不返回，而非单纯「慢」。
-- 修复后 `e2e_permission` **0.85s** 完成；全量 `cargo test --workspace` 约 **31s**（含增量编译）。
-- 新增 `[permission] timeout_ms`（见下）使审批超时可在 fixture 中降到 800ms，避免再花 60s。
+| 门禁 | 结果 |
+|---|---|
+| `cargo test -p agentj-cli --bin agentj keyless` | 3 passed |
+| `cargo test -p agentj-cli --test e2e_serve` | 8 passed（含新增 1 条），1.81s |
+| `cargo test -p agentj-cli --test e2e_auth` | 2 passed |
+| `cargo test --workspace` | 全绿（各 suite `0 failed`） |
+| `cargo clippy --workspace --all-targets -- -D warnings` | 0 warnings |
+| `cargo fmt --all` | clean |
+| 真实二进制手测（无密钥，`XDG_DATA_HOME=/tmp/aj-repro/data HOME=/tmp/aj-repro`） | `serve --port 0` 打印 `listening on 127.0.0.1:46377`、进程常驻、`GET /version` → **200**（修复前 `Error: no usable model provider…` / EXIT=1） |
+| `./scripts/check-version.sh` | 待重跑（版本已 bump 至 0.29.5） |
 
-## 已完成（0.29.0 – 0.29.3，详见 `docs/changelog/v0.29.md`）
+## 已完成（0.29.0 – 0.29.4，详见 `docs/changelog/v0.29.md`）
 
 - ✅ 0.29.0：Web/TUI 链接 opencode-go API Key（协议 0.18.0 / 28 方法 / 78 schemas）。
 - ✅ 0.29.1：验收 BUG-001（env 遮蔽时读侧 / 发送侧不一致）。
 - ✅ 0.29.2：opencode-go 路由改为 API 派生（models.dev `provider.npm`），删除手写路由表；
   快照迁入 `crates/agentj-model/data/opencode-go.json`（45 条 / 35 verified）。
 - ✅ 0.29.3：`/v1/messages` 鉴权头改双发（`x-api-key` + `Authorization: Bearer`）。
-
-## 验证结果（0.29.4，2026-10-16）
-
-| 门禁 | 结果 |
-|---|---|
-| `cargo fmt --check` | clean |
-| `cargo clippy --workspace --all-targets -- -D warnings` | 0 warnings |
-| `cargo test --workspace` | 全绿；`e2e_permission` **0.85s**（修复前无限挂起） |
-| `cargo test -p agentj-protocol -- drift` | 通过（无协议漂移） |
-| `cargo test -p agentj-model --lib` | 70 passed |
-| `./scripts/check-version.sh` | version-ok（0.29.4 / 0.18.0） |
-| 真实 key 端到端 | 9 模型 × 3 路由全绿（上表） |
+- ✅ 0.29.4：真实 key 端到端调测适配（4 个上游缺陷 + 1 个测试挂起）——合成 agentj-model
+  部分：`catalog_source::bare_id()` 去 `opencode-go/` 前缀（三条路由的 model id 泄漏）；
+  `responses` 文本/工具 delta 改「字符串优先、旧对象形状容忍」；新增 `retry::send()` 温度类
+  400 去参数重试一次；`gateway_error::api_error` 收敛三份私有副本 + `429` → `RateLimited`；
+  `[permission] timeout_ms` 使 e2e fixture 审批超时降到 800ms，
+  `crates/agentj-cli/tests/e2e_permission.rs` 改用真实 `session_id` + 20s 截止通道
+  （修复前该用例**无限挂起**导致 `cargo test --workspace` 永不终止，现 0.85s）。
+  真实 key 实测 9 模型 × 3 路由全绿（含 `glob` 工具调用命中唯一标记文件
+  `./UNIQUE_MARKER_7f3a.txt`）。
 
 ## 遗留问题 / 已知限制（后端）
 
 - **`agentj run` 非 TTY 下遇需审批工具会一直等待**：无自动拒绝、无 `--yes` 开关，也没有上限
-  （本次以只读工具绕过，未改该行为）。跟进项：加 `run --yes` 或非 TTY 自动拒绝。
+  （0.29.4 以只读工具绕过，未改该行为）。跟进项：加 `run --yes` 或非 TTY 自动拒绝。
 - **`[permission] timeout_ms` 未做下界校验**：`0` 语义为「立即自动拒绝」，当前不视为非法配置。
 - **2 条 legacy 路由**：`qwen3.6-plus` / `qwen3.7-max` 按 models.dev 判为 `openai-compat`
   （旧手写表标 `anthropic`），二者均不在官方在售列表内；如实测不符，加回一条种子即可。
@@ -96,6 +100,8 @@
   可能仍使用旧凭据，新凭据从下一轮生效。
 - **写入目标**：凭据写入**当前连接内核所在机器**的 `auth.json`（`--attach` / 远程 `serve` 即远端主机）；
   非回环 `serve --host` 必须配 `--token`。
+- **`e2e_cli` / `e2e_permission` 未隔离 `XDG_DATA_HOME`**（仅 `e2e_auth.rs` / `e2e_serve.rs` 隔离）：
+  实测在「注入假凭据 + `AGENTJ_OPENCODE_GO_API_KEY`」的环境下仍全绿，非必须但可硬化。
 - **不泄露**：结果只经 `redact()` 暴露 `key_hint`；完整 key 不出现在结果 / 日志 / 错误文案 /
   前端持久化中；两个 auth 方法**不新增权限门**。
 - **不做**：多账号 / 账号切换（同 provider 重复链接 = 替换）；OS keyring；不做「从解析层 `Err`
@@ -115,6 +121,9 @@
 
 ## 下一步
 
-- v0.29.4 已落地，全门禁绿（`version-ok` 0.29.4 / 0.18.0）；提交待推送 / PR（用户负责合并）。
+- v0.29.5 代码 + 文档 + 版本已落地；剩余：重跑 `./scripts/check-version.sh`
+  （0.29.5 / 0.18.0）→ 提交 → 推送**两个远端**（`origin` = GitHub 权威 + `gitcode` 镜像）
+  → 在 GitHub 开 PR（用户负责合并）。
 - 后端候选：上表 ①②④⑥；或前端跟进见 `summary_and_next_fe.md`。
-- 可选跟进：为 `run` 增加 `--yes`（或非 TTY 自动拒绝），让 CI / 自动化能跑需审批工具路径。
+- 可选跟进：为 `run` 增加 `--yes`（或非 TTY 自动拒绝），让 CI / 自动化能跑需审批工具路径；
+  以及把 `serve` 的「无 provider」从 WARN 提升为 `/version` 可见的启动警告（目前仅日志）。
