@@ -448,6 +448,67 @@ fn e2e_tcp_session_history_replays_run_events() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A kernel whose providers all lack a credential must still boot: the operator links a key
+/// from the client afterwards (Settings · Subscription → `auth/setApiKey`), which activates
+/// the provider at runtime (design D2/D3/D7). Regression guard for the bug where `serve`
+/// refused to start and demanded a key up front.
+#[test]
+fn keyless_provider_set_still_boots_serve() {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!(
+        "agentj-e2e-keyless-{}-{}",
+        std::process::id(),
+        nanos
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("sessions")).unwrap();
+    // No credential anywhere: the builtin opencode-go entry resolves through the auth store,
+    // and XDG_DATA_HOME/HOME point at the temp dir so a developer's real auth.json cannot
+    // leak in and turn this into a networked test.
+    let cfg = dir.join("keyless_config.toml");
+    std::fs::write(
+        &cfg,
+        format!(
+            "[model]\nprovider = \"opencode-go\"\n\n\
+             [[model.providers]]\nname = \"opencode-go\"\nkind = \"opencode-go\"\n\
+             base_url = \"https://example.invalid\"\n\
+             api_key_env = \"AGENTJ_E2E_KEYLESS\"\n\n\
+             [session]\ndir = \"{}\"\n",
+            dir.join("sessions").display()
+        ),
+    )
+    .unwrap();
+
+    let mut child = AutoReap(
+        Command::new(env!("CARGO_BIN_EXE_agentj"))
+            .args(["--config", cfg.to_str().unwrap(), "serve", "--port", "0"])
+            .env("XDG_DATA_HOME", dir.join("data"))
+            .env("HOME", dir.join("home"))
+            .env_remove("AGENTJ_E2E_KEYLESS")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let stdout = child.0.stdout.take().unwrap();
+    let mut reader = BufReader::new(stdout);
+    // Panics if the server exits instead of booting — the regression this guards.
+    let addr = read_listening_addr(&mut reader);
+    assert!(addr.contains("127.0.0.1:"), "unexpected address: {addr}");
+    assert!(
+        child.0.try_wait().unwrap().is_none(),
+        "serve must stay resident without a credential"
+    );
+
+    let _ = child.0.kill();
+    let _ = child.0.wait();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// T21: a resident `serve --port` process exposes the five subscription methods through the
 /// injected `CliProviderService`, and still reports an unsupported provider as -32602.
 #[test]

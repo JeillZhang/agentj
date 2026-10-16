@@ -509,7 +509,9 @@ async fn main() -> anyhow::Result<()> {
     let session: Arc<dyn SessionStore> = session_store.clone() as Arc<dyn SessionStore>;
 
     // design 4.3 + D7: assemble providers with credential resolution; keyless real
-    // providers are skipped (never an empty Bearer) and an empty registry is fatal.
+    // providers are skipped (never an empty Bearer). An empty registry is fatal only where no
+    // IPC client can link a credential later (`run`); `serve`/`dashboard` boot on and let
+    // Settings · Subscription activate a provider at runtime.
     // `run --attach` talks to a remote kernel, so local providers are not required.
     let attached = matches!(
         &cli.command,
@@ -517,6 +519,12 @@ async fn main() -> anyhow::Result<()> {
             attach: Some(_),
             ..
         })
+    );
+    // design D4: only the IPC-serving commands expose the subscription methods; `run` has no
+    // IPC server and `run --attach` targets a remote kernel whose own handle serves them.
+    let serves_clients = matches!(
+        &cli.command,
+        Some(Commands::Serve { .. }) | Some(Commands::Dashboard { .. })
     );
     if !attached {
         let auth_store =
@@ -542,6 +550,12 @@ async fn main() -> anyhow::Result<()> {
         )
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
+        // An empty provider set is fatal only where no client can link a credential later:
+        // `serve`/`dashboard` boot on and let Settings · Subscription activate a provider at
+        // runtime (design D2/D3/D7), while `run` has no IPC client and must fail fast.
+        if assembly.providers.is_empty() && !serves_clients {
+            anyhow::bail!("{}", providers::NO_USABLE_PROVIDER);
+        }
         for warning in &assembly.warnings {
             tracing::warn!("{warning}");
         }
@@ -550,12 +564,7 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    // design D4: only the IPC-serving commands expose the subscription methods; `run` has no
-    // IPC server and `run --attach` targets a remote kernel whose own handle serves them.
-    let inject_subscription = matches!(
-        &cli.command,
-        Some(Commands::Serve { .. }) | Some(Commands::Dashboard { .. })
-    );
+    let inject_subscription = serves_clients;
     let provider_service: Option<Arc<dyn agentj_ipc::ProviderService>> = if inject_subscription {
         let store =
             agentj_auth::AuthStore::with_default_path().map_err(|e| anyhow::anyhow!("{e}"))?;
