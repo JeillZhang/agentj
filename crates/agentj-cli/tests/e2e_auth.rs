@@ -89,8 +89,10 @@ fn login_status_logout_roundtrip() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
+/// A keyless real provider makes one-shot `run` fail: there is no client to link a
+/// credential into this kernel later, so the failure must land before any HTTP attempt.
 #[test]
-fn keyless_real_provider_fails_startup() {
+fn keyless_real_provider_fails_run() {
     let home = e2e_temp_dir("keyless");
     let cfg = write_cfg(
         &home,
@@ -98,8 +100,8 @@ fn keyless_real_provider_fails_startup() {
          kind = \"openai-compat\"\nbase_url = \"https://example.invalid\"\n\
          api_key_env = \"AGENTJ_MISSING_KEY\"\n",
     );
-    let out = run(&home, &["--config", cfg.to_str().unwrap(), "serve"]);
-    assert!(!out.status.success(), "keyless startup must fail");
+    let out = run(&home, &["--config", cfg.to_str().unwrap(), "run", "hi"]);
+    assert!(!out.status.success(), "keyless run must fail");
     assert!(
         String::from_utf8_lossy(&out.stderr).contains("no usable model provider"),
         "stderr: {}",

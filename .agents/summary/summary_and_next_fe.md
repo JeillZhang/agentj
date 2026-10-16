@@ -18,8 +18,10 @@
 > 工作区 0.28.0 → **0.29.1**（0.29.0 功能 + 0.29.1 验收修复）；`PROTOCOL_VERSION` 0.17.0 → **0.18.0**。后端部分见
 > `summary_and_next_se.md`。
 >
-> **元数据同步（2026-10-16，v0.29.4，纯版本号）**：后端 v0.29.4 修复阶段（opencode-go 真实 key
-> 端到端调测适配）仅将工作区版本 0.29.3 → **0.29.4**（`@agentj/sdk` `VERSION`、desktop 三清单
+> **元数据同步（2026-10-16，v0.29.4 / v0.29.5，纯版本号）**：后端两个修复阶段
+> （v0.29.4 = opencode-go 真实 key 端到端调测适配；v0.29.5 = `serve` / `dashboard` 无密钥
+> 可启动，密钥改由 Web/TUI 客户端设置录入）均仅将工作区版本 0.29.3 → **0.29.5**
+> （`@agentj/sdk` `VERSION`、desktop 三清单
 > 与 lockfile、`check-version.sh`），**无任何前端功能变更**；`PROTOCOL_VERSION` 仍 **0.18.0**
 > / 28 方法 / 78 schemas。
 
@@ -71,7 +73,7 @@
 | `npm --prefix agentj-ui run build --workspace=@agentj/web` | clean（仅 chunk > 500 kB 提示） |
 | `bun --cwd agentj-ui/apps/tui test` | 177 passed（21 files） |
 | `node agentj-ui/apps/desktop/check-desktop-ui.mjs` | desktop-ui-ok |
-| `./scripts/check-version.sh` | **version-ok（0.29.4 / 0.18.0）** |
+| `./scripts/check-version.sh` | **version-ok（0.29.5 / 0.18.0）** |
 
 > 本表于 Phase 8 收尾在最终树重跑并全部通过；后端侧（cargo 851）见 `summary_and_next_se.md`。
 
