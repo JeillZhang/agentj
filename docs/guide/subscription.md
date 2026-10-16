@@ -75,8 +75,10 @@ agentj auth login --device          # 与 --api-key 互斥
 无需打开终端。
 
 > **密钥优先级**（两种方式共用）：`--api-key` > 该 provider 的 `api_key_env`（非空）
-> > `auth.json`。解析不到密钥的**真实 provider 不会注册**（绝不发送空 `Bearer`）；
-> 若最终没有任何可用 provider，内核启动直接报 `no usable model provider` 并退出非 0。
+> > `auth.json`。解析不到密钥的**真实 provider 不会注册**（绝不发送空 `Bearer`），
+> 内核照常启动并打印一条 `no usable model provider` 汇总警告；`serve` / `dashboard`
+> 随后可在客户端「设置 · 订阅」链接 Key，**当场激活、免重启**。只有一次性 `run`
+> （无 IPC 客户端可录入凭据）仍以该文案启动即报错退出非 0。
 > 免密钥的 `mock*` kind 不受影响。
 
 ## 凭据生命周期

@@ -15,6 +15,13 @@ use crate::refreshing_provider::{Builder as RefreshingBuilder, RefreshingProvide
 /// Kinds that require a resolvable key; everything else (mock*) is key-free.
 const KEY_REQUIRED_KINDS: [&str; 4] = ["openai-compat", "responses", "anthropic", "opencode-go"];
 
+/// Reported (never fatal here) when nothing resolved. An IPC-serving command must still boot
+/// so a client can link a credential at runtime (design D2/D3/D7), while one-shot `run` has no
+/// such client and turns this into its startup error — `main` owns that decision.
+/// Single source of the message so both paths read identically.
+pub const NO_USABLE_PROVIDER: &str =
+    "no usable model provider：未解析到任何密钥，见 agentj auth status";
+
 /// Base URL of the built-in opencode-go entry (design D5). Single source of truth lives in
 /// `agentj_model::catalog` beside the generated endpoint catalog.
 pub const BUILTIN_OPENCODE_GO_BASE: &str = agentj_model::catalog::OPENCODE_GO_BASE;
@@ -49,8 +56,10 @@ pub struct Assembly {
 /// Build the provider registry entries, skipping keyless real providers with a warning.
 ///
 /// A provider that needs a key but cannot resolve one is never registered, so no
-/// request is ever issued with an empty `Authorization` header. If nothing usable
-/// remains, this is a hard error (design D7 / G2).
+/// request is ever issued with an empty `Authorization` header. An empty registry is
+/// returned as an empty [`Assembly`] carrying [`NO_USABLE_PROVIDER`] among its warnings;
+/// whether that is fatal is the caller's decision (`serve`/`dashboard` boot on and let a
+/// client link a key, `run` does not).
 pub async fn build_providers<F, Fut>(
     config: &AgentJConfig,
     flag: Option<&str>,
@@ -163,7 +172,7 @@ where
         );
     }
     if providers.is_empty() {
-        return Err("no usable model provider：未解析到任何密钥，见 agentj auth status".into());
+        warnings.push(NO_USABLE_PROVIDER.to_string());
     }
     Ok(Assembly {
         providers,
@@ -230,7 +239,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn no_usable_provider_is_a_hard_error() {
+    async fn keyless_provider_set_is_reported_not_fatal() {
         let dir = tempfile::tempdir().unwrap();
         let store = AuthStore::with_path(dir.path().join("auth.json"));
         let config = config_with(vec![provider(
@@ -238,7 +247,7 @@ mod tests {
             "openai-compat",
             "AGENTJ_MISSING",
         )]);
-        let err = match build_providers(
+        let out = build_providers(
             &config,
             None,
             &store,
@@ -246,11 +255,18 @@ mod tests {
             "https://opencode.ai/console",
         )
         .await
-        {
-            Err(e) => e,
-            Ok(_) => panic!("expected a hard error"),
-        };
-        assert!(err.contains("no usable model provider"), "{err}");
+        .unwrap();
+        assert!(
+            out.providers.is_empty(),
+            "nothing resolved, so nothing is registered"
+        );
+        assert!(
+            out.warnings
+                .iter()
+                .any(|w| w.contains("no usable model provider")),
+            "the empty assembly must still be reported: {:?}",
+            out.warnings
+        );
     }
 
     #[tokio::test]
