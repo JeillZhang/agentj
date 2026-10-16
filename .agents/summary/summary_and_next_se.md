@@ -7,116 +7,99 @@
 > 待实施），不得随内容替换而删除；仅当该特性实际实施完成后才能移除（移入功能记录）。
 > 前端总结独立存放于 `summary_and_next_fe.md`；两文件内容隔离，互不写入对方文件。
 
-> 当前功能：**v0.29.2 模型路由 API 化 + v0.29.3 `/v1/messages` 鉴权头修复（后端部分）**
-> ——来源：用户提出「`models/` 目录是否可删 / 端点配置能否不写死」，
-> 以官方[端点表](https://opencode.ai/docs/go/#api-endpoints) + models.dev 实测核对后实施；
-> 核对过程中发现 `/v1/messages` 的凭据头缺陷，一并以 patch 修复。
-> 后端范围：`agentj-model`（`catalog` / `catalog_gen` / `bin/gen_opencode_catalog` /
-> `data/opencode-go.json` / `anthropic`）、`agentj-cli`（base_url 单一真源）、
-> `docs/guide/subscription.md`、`docs/changelog/v0.29.md`、`AGENTS.md` / `README.md` 基线、版本元数据。
+> 当前功能：**v0.29.4 opencode-go 订阅真实 key 端到端调测适配 + `e2e_permission` 挂起修复（后端部分）**
+> ——来源：用户给出测试用订阅 key，要求完成 opencode-go 订阅的端到端调测适配
+> （`space-bunny-free` 不存在，实为 `space-bunny` + 轮换的 `*-free`）。
+> 后端范围：`agentj-model`（`opencode_go` / `catalog_source` / `responses` / `openai_compat` /
+> `anthropic` / `gateway_error` / 新增 `retry`）、`agentj-permission`（`[permission] timeout_ms`）、
+> `agentj-cli`（`permission_timeout` + e2e fixture）、`docs/changelog/v0.29.md`、
+> `docs/guide/configuration.md`、版本元数据。
 > 协议 wire 面**不变**（`PROTOCOL_VERSION` 仍 **0.18.0** / 28 方法 / 78 schemas）；
-> 工作区 0.29.1 → **0.29.3**（0.29.2 路由 API 化 + 0.29.3 鉴权头）。
+> 工作区 0.29.3 → **0.29.4**（纯修复，无新增方法 / schema）。
 
-## v0.29.2（opencode-go 路由 API 化）✅
+## v0.29.4（真实 key 端到端调测：4 个上游缺陷 + 1 个测试挂起）✅
 
-### 核对结论（2026-10-09 实测，全部可复现）
+### 缺陷与修复
 
-| 来源 | 内容 | 是否含端点元数据 |
+| # | 缺陷 | 根因 | 修复 |
+|---|---|---|---|
+| 1 | 命名空间 model id 泄漏到上游 wire（三条路由全中） | `OpenCodeGoProvider::route()` 只返回 wire format，`options.model` 原样透传 → 网关收到 `opencode-go/space-bunny` 并回 `unknown model` | `catalog_source::bare_id()`（`pub(crate)`）去掉 `opencode-go/` 前缀后再发送 |
+| 2 | `/v1/responses` 输出恒为空 | 解析 `json["delta"]["text"]`，真实 wire 是 `{"type":"response.output_text.delta","delta":"<text>"}`（`delta` 为**字符串**） | 改为「字符串优先、旧对象形状容忍」 |
+| 3 | `/v1/responses` 工具参数恒为空 | 解析 `json["delta"]["arguments"]`，真实 wire 是 `"delta":"{\"pattern\":\"*.rs\"}"` | 同上 |
+| 4 | `temperature` 被部分模型拒绝（400） | `claude-haiku-5-5`（messages）/ `gpt-6-luna`（responses）不支持该参数 | 新增 `retry::send()`：仅「温度类 400」→ 去字段**重试一次** |
+| 5 | `e2e_permission` 无限挂起 → `cargo test --workspace` **永不终止** | 用例把 `session_id` 硬编码为 `"s1"`，而 `session/new` 返回真实 UUID → `session/run` 回 `session error: session 's1' is inactive`，随后裸 `read_line` 在无匹配回复时**永久阻塞** | 从 `session/new` 回复取真实 id + 所有读取改带 20s 截止的通道接收 |
+
+- 附带收敛：三个 transport 各自私有的 `api_error` → `gateway_error::api_error`（`pub(crate)`）；
+  同一入口补齐 `429` → `ModelError::RateLimited`（含 `Retry-After`）。
+- 新增 `agentj_model::retry`：`pub(crate) async fn send<F>(body, post)` /
+  `temperature_unsupported(status, body)` / `without_temperature(body)`。
+- 行为变化：`chat()` 的 `429` 现映射为 `RateLimited`（原为 `Api { status: 429, .. }`）；无测试依赖旧行为。
+- `responses` 解析器新增容错断言：`responses_tolerates_object_delta_shape` /
+  `responses_ignores_reasoning_deltas`；`anthropic_retries_without_temperature_when_rejected`
+  用 2 个 mock（400 `.up_to_n_times(1)` → 200）并比对 `received_requests()` 断言重试体无 `temperature`。
+
+### 真实 key 端到端实测（2026-10-16，9 模型全绿）
+
+| 路由 | 模型 | 结果 |
 |---|---|---|
-| `GET /zen/go/v1/models` | 45 条，字段仅 `id` / `object` / `created` / `owned_by` | ❌ 无 |
-| `GET /zen/v1/models` | 87 条，同上四字段 | ❌ 无 |
-| `GET {console}/api/v2/config` | provider → 模型 **id 键** | ❌ 无 |
-| `GET /zen/go/v1/models/{id}`、`/zen/go/models`、`/api/models` | 404 | — |
-| `GET https://models.dev/api.json` | `opencode-go.models.<id>.provider.npm`（模型级覆盖）+ provider 级 `npm` 默认 | ✅ 有 |
+| `/v1/chat/completions` | `space-bunny` / `beam-free` / `longcat-2.5-preview-free` | ✅ 文本往返 |
+| `/v1/messages` | `minimax-m3` / `qwen3.8-flash` | ✅ 200 往返（**闭环 0.29.3 遗留的「真实 key 200 往返未验证」**） |
+| `/v1/messages` | `claude-haiku-5-5` | ✅（走温度降级重试） |
+| `/v1/responses` | `grok-4.7` / `gpt-6-luna` / `muse-spark-1.3-contributor` | ✅ 文本往返 |
+| 工具调用（三路由） | `glob`；`grok-4.7` 以 `*.txt` 命中唯一标记文件 `./UNIQUE_MARKER_7f3a.txt` | ✅ 参数非空（缺陷 3 的端到端证据） |
 
-- models.dev 解析结果与官方端点表「AI SDK 包」列 **12/12 非 chat 模型零冲突**，20 条 chat 模型
-  经 provider 级 `@ai-sdk/openai-compatible` **继承**后亦逐条吻合 ⇒ 端点路由**完全可由 API 派生**。
-- `npm` 到 endpoint 的映射（协议事实，非逐模型配置）：`@ai-sdk/anthropic` → `/v1/messages`、
-  `@ai-sdk/openai` → `/v1/responses`、`@ai-sdk/openai-compatible` → `/v1/chat/completions`。
+- 环境：`/tmp/aj-e2e/config.toml`（`[model] provider = "opencode-go"`、
+  `default_model = "opencode-go/space-bunny"`）+ `XDG_DATA_HOME=/tmp/aj-e2e/data`；
+  真实 key 经本地 auth store（`$XDG_DATA_HOME/agentj/auth.json`，`type = "api_key"`）注入。
+- 事实澄清：`space-bunny-free` **不存在**；免费模型为**轮换制**，`/v1/models` 的 id 会变，
+  旧 id 报 `unknown model` 属正常轮换而非缺陷（本期免费位为 `longcat-2.5-preview-free` / `beam-free`）。
+- `agentj run` 触发**需审批**工具（`bash`）在非 TTY 下会一直等待审批（无 `--yes` 开关）；
+  只读工具（`read`/`glob`/`grep`/`todo`/`ask`）按 `crates/agentj-permission/src/policy.rs:68`
+  的 `builtin_default_mode` 自动放行，故工具调用 E2E 用 `glob` 完成。
 
-### 已完成
+### 测试速度（用户提出的优化项）
 
-- ✅ **修 `catalog_gen::dev_format` 路径（原为静默失效）**：原读 `models.<id>.npm`，真实形状是
-  `models.<id>.provider.npm`；旧单测 fixture 用同形状假数据掩盖 → 该分支恒空，路由实际全靠手写种子。
-  现按「模型级覆盖 → provider 默认」解析；未收录 id 一律 `openai-compat` + `verified:false`（不猜）。
-- ✅ **删除手写路由表**：`bin/gen_opencode_catalog.rs` 的 `overrides()` 20 条 id→format 种子整体移除。
-- ✅ **快照迁入 crate + 重新生成**：`models/opencode-go.json` → `crates/agentj-model/data/opencode-go.json`
-  （45 条 / **35 verified** / 10 unverified；`include_str!("../data/...")` 去掉 `../../../` 反向引用；
-  根目录 `models/` 删除）。生成门禁：`gen_opencode_catalog [--check]`。
-- ✅ **`CatalogEntry.endpoint` 删除**：该字段从未被消费（各 transport 自持 `/v1/...` 路径），属重复端点配置；
-  快照不再写 `endpoint`（`overlay_json` / `from_json` / 单测同步）。
-- ✅ **base_url 单一真源**：新增 `agentj_model::catalog::OPENCODE_GO_BASE`；`agentj-cli` 的
-  `OPENCODE_GO_BASE`（auth）/ `BUILTIN_OPENCODE_GO_BASE`（providers）改为引用它。
-- ✅ **修复 7 条错误路由**（旧快照缺失 → 被合成为 `openai-compat`）：`claude-haiku-5-5`、
-  `qwen3.8-flash`（→ `/v1/messages`）与 `grok-4.6`、`grok-4.7`、`gpt-6-luna`、
-  `muse-spark-1.2/1.3-contributor`（→ `/v1/responses`）；由 `catalog_lookup_routes_formats` 锁定。
-- ✅ **单测**：`catalog_gen`（覆盖继承 / 未收录不猜 / 未知 npm 降级 / 去重 / JSON 往返）、
-  `catalog`（12 条官方路由 + 未解析降级为 unverified）；旧 `overrides` 相关测试随种子一并删除。
-- ✅ **文档与基线**：`docs/guide/subscription.md`（新增「路由映射从哪来」小节 + 快照路径/生成命令）、
-  `docs/changelog/v0.29.md`（0.29.2 小节）、`AGENTS.md`（当前版本 + `agentj-model` catalog 说明）、
-  `README.md`（版本行 + 目录树去 `models/`）、`scripts/check-version.sh`。
+- 根因即缺陷 5：挂起使 `cargo test --workspace` 永不返回，而非单纯「慢」。
+- 修复后 `e2e_permission` **0.85s** 完成；全量 `cargo test --workspace` 约 **31s**（含增量编译）。
+- 新增 `[permission] timeout_ms`（见下）使审批超时可在 fixture 中降到 800ms，避免再花 60s。
 
-## v0.29.3（`/v1/messages` 鉴权头）✅
+## 已完成（0.29.0 – 0.29.3，详见 `docs/changelog/v0.29.md`）
 
-- ✅ **实测口径**（2026-10-09 匿名探测；`Missing API key.` = 未读到凭据，`Invalid API key.` = 读到但无效）：
+- ✅ 0.29.0：Web/TUI 链接 opencode-go API Key（协议 0.18.0 / 28 方法 / 78 schemas）。
+- ✅ 0.29.1：验收 BUG-001（env 遮蔽时读侧 / 发送侧不一致）。
+- ✅ 0.29.2：opencode-go 路由改为 API 派生（models.dev `provider.npm`），删除手写路由表；
+  快照迁入 `crates/agentj-model/data/opencode-go.json`（45 条 / 35 verified）。
+- ✅ 0.29.3：`/v1/messages` 鉴权头改双发（`x-api-key` + `Authorization: Bearer`）。
 
-  | 端点 | `Authorization: Bearer` | `x-api-key` |
-  |---|---|---|
-  | `/v1/messages` | ❌ `Missing API key.` | ✅ `Invalid API key.` |
-  | `/v1/responses` | ✅ | ❌ `Missing API key.` |
-  | `/v1/chat/completions` | ✅ | ❌ |
-  | `/v1/usage` | ✅ `Unauthorized` | ❌ |
-
-- ✅ **修复**：`AnthropicProvider` 新增 `auth_headers()`（`chat` / `open_stream` 共用单一发送点），
-  同时发 `x-api-key` + `Authorization: Bearer`（用户选定「双发」策略：既满足 Anthropic /
-  opencode-go 网关的凭据位，也兼容只认 bearer 的第三方兼容网关），保留 `anthropic-version`。
-  修后按同样的三头组合实测 `/v1/messages` 返回 `Invalid API key.`（即凭据已被读到）。
-- ✅ **单测**：`anthropic_provider_streams_text_events` 的 wiremock 匹配由「仅 `authorization`」
-  改为「`x-api-key` + `authorization` 双断言」（此前同形假头部掩盖了缺陷）。
-- ✅ 未动 `/v1/responses` / `/v1/chat/completions` / `/v1/usage`（`bearer_auth`，与实测一致）。
-
-## 已完成（0.29.0 / 0.29.1，详见 `docs/changelog/v0.29.md`）
-
-- ✅ v0.29.0：Web/TUI 链接 opencode-go API Key（`auth/setApiKey` / `auth/clearCredential`，
-  协议 0.18.0 / 28 方法 / 78 schemas）+ 运行期激活 + 内置 provider 条目；评审 1H/1M/4L 全闭合。
-- ✅ v0.29.1：验收 BUG-001（env 遮蔽时读侧/发送侧不一致）单提交修复，回归 verified。
-
-## 验证结果（当前树实测，2026-10-09）
+## 验证结果（0.29.4，2026-10-16）
 
 | 门禁 | 结果 |
 |---|---|
 | `cargo fmt --check` | clean |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 0 warnings |
-| `cargo test --workspace` | **853** passed / 0 failed（48 suites，含 permission e2e）；0.29.3 后 `-p agentj-model` 复跑 63 passed |
-| `cargo test -p agentj-protocol -- drift` | 2 passed |
-| `cargo run -p agentj-model --bin gen_opencode_catalog -- --check` | exit 0（快照未过期） |
-| 路由冒烟（live ∩ 快照，真实网络） | 45 模型；官方端点表 12 条非 chat 路由 **0 不匹配**，其余 10 条 unverified |
-| 鉴权头冒烟（真实网关，匿名） | `/v1/messages` 仅 Bearer → `Missing API key.`；三头组合（x-api-key + Bearer + anthropic-version）→ `Invalid API key.`（已读凭据） |
-| `schemas/*.json` / `protocol/methods.json` | 78 / 28 方法 · `protocol_version` 0.18.0 |
-| `./scripts/check-version.sh` | **version-ok（0.29.3 / 0.18.0）** |
-| `node agentj-ui/apps/desktop/check-desktop-ui.mjs` | desktop-ui-ok |
+| `cargo test --workspace` | 全绿；`e2e_permission` **0.85s**（修复前无限挂起） |
+| `cargo test -p agentj-protocol -- drift` | 通过（无协议漂移） |
+| `cargo test -p agentj-model --lib` | 70 passed |
+| `./scripts/check-version.sh` | version-ok（0.29.4 / 0.18.0） |
+| 真实 key 端到端 | 9 模型 × 3 路由全绿（上表） |
 
 ## 遗留问题 / 已知限制（后端）
 
-- **`/v1/messages` 鉴权头（已修，0.29.3）**：实测该端点只认 `x-api-key`；`anthropic.rs` 原发
-  `Authorization: Bearer` → 401。现 `auth_headers()` 双发（`x-api-key` + `Authorization: Bearer`）
-  并保留 `anthropic-version`；单测双断言。**唯一残留不确定性**：客户端行为已按网关口径校正，
-  但**真实有效 key 的 200 往返未在本机验证**（无凭据），仍属人工 E2E 跟踪项。
-- **2 条 legacy 路由变更**：`qwen3.6-plus` / `qwen3.7-max` 现按 models.dev 判为
-  `openai-compat`（旧手写表标 `anthropic`）；二者均不在官方在售列表内。如实测不符，
-  重新加回一条种子即可（改动面 = `build_overlay` 之前的一次 map）。
-- **时序（设计已记录）**：替换 / 注销注册与并发 `session/run` 之间无全局互斥——换入瞬间
-  **进行中的那一轮 run 可能仍使用旧凭据，新凭据从下一轮生效**。
-- **写入目标**：凭据写入**当前连接内核所在机器**的 `auth.json`（`--attach` / 远程 `serve`
-  即远端主机）；非回环 `serve --host` 必须配 `--token`（既有要求，指南重述）。
-- **不泄露**：结果只经 `redact()` 暴露 `key_hint`；完整 key 不出现在结果 / 日志 / 错误文案；
-  两个 auth 方法**不新增权限门**。
+- **`agentj run` 非 TTY 下遇需审批工具会一直等待**：无自动拒绝、无 `--yes` 开关，也没有上限
+  （本次以只读工具绕过，未改该行为）。跟进项：加 `run --yes` 或非 TTY 自动拒绝。
+- **`[permission] timeout_ms` 未做下界校验**：`0` 语义为「立即自动拒绝」，当前不视为非法配置。
+- **2 条 legacy 路由**：`qwen3.6-plus` / `qwen3.7-max` 按 models.dev 判为 `openai-compat`
+  （旧手写表标 `anthropic`），二者均不在官方在售列表内；如实测不符，加回一条种子即可。
+- **温度降级只重试一次**：`retry::send` 仅处理「仅 temperature 不支持」的 400；若模型同时拒绝
+  其他参数，仍按原错误上抛（不盲目剥参）。
+- **凭据时序**：替换 / 注销注册与并发 `session/run` 之间无全局互斥——换入瞬间进行中的那一轮 run
+  可能仍使用旧凭据，新凭据从下一轮生效。
+- **写入目标**：凭据写入**当前连接内核所在机器**的 `auth.json`（`--attach` / 远程 `serve` 即远端主机）；
+  非回环 `serve --host` 必须配 `--token`。
+- **不泄露**：结果只经 `redact()` 暴露 `key_hint`；完整 key 不出现在结果 / 日志 / 错误文案 /
+  前端持久化中；两个 auth 方法**不新增权限门**。
 - **不做**：多账号 / 账号切换（同 provider 重复链接 = 替换）；OS keyring；不做「从解析层 `Err`
   反推 entitlement」（`rejected` 仅由明确 401/403 触发）。
-- **预存在的 e2e 挂起（非本阶段回归）**：`crates/agentj-cli/tests/e2e_permission.rs` 的
-  `permission_request_notified_and_timeout_denies` 在无外部交互时可能挂起；本次全量运行该用例
-  通过（60s 内），如需可继续用 `-- --skip` 兜底。
-- **真实 Key 人工 E2E 为跟踪项（非 CI）**：步骤见 `summary_and_next_fe.md`「人工验收」小节。
 
 ## 待实施（跨阶段保留：未实施不得删除）
 
@@ -132,8 +115,6 @@
 
 ## 下一步
 
-- v0.29.2（路由 API 化 + 生成器缺陷修复）与 v0.29.3（`/v1/messages` 鉴权头）已落地，
-  全门禁绿（`version-ok`）；两次提交待推送 / PR（用户负责合并）。
-- 待人工 E2E（需真实 key）：以 opencode-go 凭据跑一轮 **anthropic 模型**（如 `minimax-m3`）
-  确认 `/v1/messages` 200 往返——这是 0.29.3 唯一未在本机闭环的环节。
+- v0.29.4 已落地，全门禁绿（`version-ok` 0.29.4 / 0.18.0）；提交待推送 / PR（用户负责合并）。
 - 后端候选：上表 ①②④⑥；或前端跟进见 `summary_and_next_fe.md`。
+- 可选跟进：为 `run` 增加 `--yes`（或非 TTY 自动拒绝），让 CI / 自动化能跑需审批工具路径。

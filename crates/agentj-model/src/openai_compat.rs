@@ -59,18 +59,6 @@ impl OpenAICompatibleProvider {
         }
     }
 
-    /// Build a `ModelError::Api` with the upstream error type surfaced and an actionable
-    /// re-login hint for 401/403 (design D8).
-    fn api_error(status: u16, body: String) -> ModelError {
-        let parsed = crate::gateway_error::parse_gateway_error(status, &body);
-        let message = if status == 401 || status == 403 {
-            format!("{parsed}（请运行 agentj auth login 重新获取凭据）")
-        } else {
-            parsed
-        };
-        ModelError::Api { status, message }
-    }
-
     fn request_body(
         &self,
         messages: &[ChatMessage],
@@ -102,32 +90,18 @@ impl OpenAICompatibleProvider {
         options: &ModelOptions,
     ) -> Result<BoxStream<'static, Result<ModelEvent, ModelError>>, ModelError> {
         let url = format!("{}/v1/chat/completions", self.base_url);
-        let rb = self
-            .client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .header("Content-Type", "application/json")
-            .json(&self.request_body(messages, tools, options));
-        let response = self
-            .with_session(rb, options)
-            .send()
-            .await
-            .map_err(|e| ModelError::Network(e.to_string()))?;
-
-        let status = response.status().as_u16();
-        if status == 429 {
-            let retry_after = response
-                .headers()
-                .get("retry-after")
-                .and_then(|v| v.to_str().ok())
-                .and_then(|v| v.trim().parse::<u64>().ok())
-                .map(Duration::from_secs);
-            return Err(ModelError::RateLimited { retry_after });
-        }
-        if status != 200 {
-            let body = response.text().await.unwrap_or_default();
-            return Err(Self::api_error(status, body));
-        }
+        let body = self.request_body(messages, tools, options);
+        let response = crate::retry::send(&body, |b| {
+            self.with_session(
+                self.client
+                    .post(&url)
+                    .header("Authorization", format!("Bearer {}", self.api_key))
+                    .header("Content-Type", "application/json")
+                    .json(b),
+                options,
+            )
+        })
+        .await?;
 
         let byte_stream = response.bytes_stream();
         let mut parser = OpenAiChunkParser::new();
@@ -338,19 +312,17 @@ impl ModelProvider for OpenAICompatibleProvider {
         options: ModelOptions,
     ) -> Result<ChatResponse, ModelError> {
         let url = format!("{}/v1/chat/completions", self.base_url);
-        let rb = self.client.post(&url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .json(&serde_json::json!({ "model": options.model, "messages": map_messages(&messages), "stream": false }));
-        let response = self
-            .with_session(rb, &options)
-            .send()
-            .await
-            .map_err(|e| ModelError::Network(e.to_string()))?;
-        let status = response.status().as_u16();
-        if status != 200 {
-            let body = response.text().await.unwrap_or_default();
-            return Err(Self::api_error(status, body));
-        }
+        let body = serde_json::json!({ "model": options.model, "messages": map_messages(&messages), "stream": false });
+        let response = crate::retry::send(&body, |b| {
+            self.with_session(
+                self.client
+                    .post(&url)
+                    .header("Authorization", format!("Bearer {}", self.api_key))
+                    .json(b),
+                &options,
+            )
+        })
+        .await?;
         let json: Value = response
             .json()
             .await

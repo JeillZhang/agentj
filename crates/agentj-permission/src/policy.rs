@@ -73,6 +73,11 @@ pub fn builtin_default_mode(tool: &str) -> PermissionMode {
 /// Top-level [permission] section: per-tool policies keyed by tool name.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct PermissionConfig {
+    /// Approval wait budget in milliseconds before an `ask` auto-denies.
+    /// `None` keeps the design default (60s); e2e fixtures lower it so the
+    /// auto-deny path does not dominate a workspace test run.
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
     #[serde(default)]
     pub tools: HashMap<String, ToolPolicy>,
 }

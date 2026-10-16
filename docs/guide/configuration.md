@@ -48,8 +48,9 @@ env = { FOO = "bar" }
 ## `[permission]`
 
 - 全局与逐工具 `mode`（如 `ask`）。
+- `timeout_ms`：`ask` 审批的自动拒绝等待预算（毫秒；省略 = 60s 默认）。
 - `[[permission.tools.<tool>.command_rules]]`：按命令前缀设置 `effect`
-  （`deny` / `allow` 等）。权限决策引擎含 60s 超时自动 Deny 与 `allow_always`
+  （`deny` / `allow` 等）。权限决策引擎含超时自动 Deny 与 `allow_always`
   会话级记忆；取消即拒绝。
 
 ## `[session]`

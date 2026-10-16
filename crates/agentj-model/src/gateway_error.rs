@@ -4,6 +4,20 @@
 //! them as `"T: M"` so quota/auth failures stay distinguishable, and fall back to the
 //! raw body so a message is always non-empty.
 
+use agentj_core::error::ModelError;
+
+/// Map a non-2xx upstream response to [`ModelError::Api`], appending a re-login hint for
+/// 401/403 (design D8, shared by all three subscription transports). @since 0.29.4
+pub(crate) fn api_error(status: u16, body: String) -> ModelError {
+    let parsed = parse_gateway_error(status, &body);
+    let message = if status == 401 || status == 403 {
+        format!("{parsed}（请运行 agentj auth login 重新获取凭据）")
+    } else {
+        parsed
+    };
+    ModelError::Api { status, message }
+}
+
 /// Parse an upstream error body into a human-readable message.
 pub fn parse_gateway_error(_status: u16, body: &str) -> String {
     serde_json::from_str::<serde_json::Value>(body)

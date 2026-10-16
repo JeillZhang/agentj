@@ -113,6 +113,14 @@ fn permission_policies_from_config(
     cfg.inner().permission.clone().unwrap_or_default().tools
 }
 
+/// Approval wait budget from `[permission] timeout_ms`, defaulting to the
+/// design's 60s. Tests lower it so the auto-deny path stays fast.
+fn permission_timeout(cfg: &agentj_permission::PermissionConfig) -> std::time::Duration {
+    cfg.timeout_ms
+        .map(std::time::Duration::from_millis)
+        .unwrap_or_else(|| std::time::Duration::from_secs(60))
+}
+
 fn resolve_session_dir(cfg: &agentj_config::Config) -> std::path::PathBuf {
     if let Some(dir) = cfg.inner().session.as_ref().and_then(|s| s.dir.clone()) {
         return dir;
@@ -629,7 +637,7 @@ async fn main() -> anyhow::Result<()> {
     // and hand the module to the IPC server for permission/respond.
     let permission_module = Arc::new(agentj_permission::PermissionModule::new(
         permission_policies,
-        std::time::Duration::from_secs(60),
+        permission_timeout(&permission_cfg),
     ));
     ctx.tools.set_permission_checker(permission_module.clone());
     kernel.register_module(
@@ -867,6 +875,23 @@ mod tests {
         let cfg = load_test_config("");
         let policies = permission_policies_from_config(&cfg);
         assert!(policies.is_empty()); // engine falls back to factory defaults
+    }
+
+    #[test]
+    fn permission_timeout_defaults_to_60s_and_honors_config() {
+        let bare = load_test_config("");
+        let bare = bare.inner().permission.clone().unwrap_or_default();
+        assert_eq!(
+            permission_timeout(&bare),
+            std::time::Duration::from_secs(60)
+        );
+
+        let tuned = load_test_config("[permission]\ntimeout_ms = 800");
+        let tuned = tuned.inner().permission.clone().unwrap_or_default();
+        assert_eq!(
+            permission_timeout(&tuned),
+            std::time::Duration::from_millis(800)
+        );
     }
 
     #[test]

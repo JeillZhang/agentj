@@ -7,6 +7,7 @@ use std::collections::HashMap;
 
 use crate::anthropic::AnthropicProvider;
 use crate::catalog::{ModelCatalog, WireFormat};
+use crate::catalog_source::bare_id;
 use crate::openai_compat::OpenAICompatibleProvider;
 use crate::responses::ResponsesProvider;
 
@@ -69,7 +70,9 @@ impl OpenCodeGoProvider {
         }
     }
 
-    fn route(&self, model: &str) -> Result<(&dyn ModelProvider, WireFormat), ModelError> {
+    /// Resolve the catalog entry and the transport that speaks its wire format, returning the
+    /// transport plus the **bare** upstream id (the agentj `opencode-go/` namespace stripped).
+    fn route(&self, model: &str) -> Result<(&dyn ModelProvider, String), ModelError> {
         let entry = self
             .catalog
             .lookup(model)
@@ -81,7 +84,7 @@ impl OpenCodeGoProvider {
             .transports
             .get(&entry.format)
             .ok_or_else(|| ModelError::Stream(format!("no transport for {:?}", entry.format)))?;
-        Ok((transport.as_ref(), entry.format))
+        Ok((transport.as_ref(), bare_id(model).to_string()))
     }
 }
 
@@ -93,8 +96,10 @@ impl ModelProvider for OpenCodeGoProvider {
         tools: Vec<ToolDefinition>,
         options: ModelOptions,
     ) -> Result<BoxStream<'static, Result<ModelEvent, ModelError>>, ModelError> {
-        let (transport, _) = self.route(&options.model)?;
-        transport.chat_stream(messages, tools, options).await
+        let (transport, model) = self.route(&options.model)?;
+        transport
+            .chat_stream(messages, tools, ModelOptions { model, ..options })
+            .await
     }
 
     async fn chat(
@@ -102,8 +107,10 @@ impl ModelProvider for OpenCodeGoProvider {
         messages: Vec<ChatMessage>,
         options: ModelOptions,
     ) -> Result<ChatResponse, ModelError> {
-        let (transport, _) = self.route(&options.model)?;
-        transport.chat(messages, options).await
+        let (transport, model) = self.route(&options.model)?;
+        transport
+            .chat(messages, ModelOptions { model, ..options })
+            .await
     }
 
     fn models(&self) -> Vec<String> {
@@ -119,9 +126,11 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
 
-    /// Records which format a transport was invoked for (route test probe).
+    /// Records which transport label was invoked (route probe) and the model id it received.
     struct RecordingTransport {
+        label: WireFormat,
         hits: Arc<Mutex<Vec<WireFormat>>>,
+        models: Arc<Mutex<Vec<String>>>,
     }
     #[async_trait]
     impl ModelProvider for RecordingTransport {
@@ -131,7 +140,8 @@ mod tests {
             _t: Vec<ToolDefinition>,
             o: ModelOptions,
         ) -> Result<BoxStream<'static, Result<ModelEvent, ModelError>>, ModelError> {
-            self.hits.lock().unwrap().push(format_of(&o.model));
+            self.hits.lock().unwrap().push(self.label);
+            self.models.lock().unwrap().push(o.model);
             Ok(Box::pin(stream::iter(vec![Ok(ModelEvent::Done)])))
         }
         async fn chat(
@@ -139,7 +149,8 @@ mod tests {
             _m: Vec<ChatMessage>,
             o: ModelOptions,
         ) -> Result<ChatResponse, ModelError> {
-            self.hits.lock().unwrap().push(format_of(&o.model));
+            self.hits.lock().unwrap().push(self.label);
+            self.models.lock().unwrap().push(o.model);
             Ok(ChatResponse {
                 content: String::new(),
                 tool_calls: vec![],
@@ -147,12 +158,26 @@ mod tests {
         }
     }
 
-    fn format_of(model: &str) -> WireFormat {
-        match model {
-            "opencode-go/grok-4.5" => WireFormat::Responses,
-            "opencode-go/minimax-m3" => WireFormat::Anthropic,
-            _ => WireFormat::OpenAiCompat,
+    fn recording_transports(
+        hits: &Arc<Mutex<Vec<WireFormat>>>,
+        models: &Arc<Mutex<Vec<String>>>,
+    ) -> HashMap<WireFormat, Box<dyn ModelProvider>> {
+        let mut transports: HashMap<WireFormat, Box<dyn ModelProvider>> = HashMap::new();
+        for label in [
+            WireFormat::OpenAiCompat,
+            WireFormat::Responses,
+            WireFormat::Anthropic,
+        ] {
+            transports.insert(
+                label,
+                Box::new(RecordingTransport {
+                    label,
+                    hits: hits.clone(),
+                    models: models.clone(),
+                }),
+            );
         }
+        transports
     }
 
     fn test_catalog() -> ModelCatalog {
@@ -190,20 +215,11 @@ mod tests {
     #[tokio::test]
     async fn facade_routes_by_catalog() {
         let hits = Arc::new(Mutex::new(Vec::new()));
-        let mut transports = HashMap::new();
-        transports.insert(
-            WireFormat::OpenAiCompat,
-            Box::new(RecordingTransport { hits: hits.clone() }) as Box<dyn ModelProvider>,
+        let models = Arc::new(Mutex::new(Vec::new()));
+        let provider = OpenCodeGoProvider::with_catalog_and_transports(
+            test_catalog(),
+            recording_transports(&hits, &models),
         );
-        transports.insert(
-            WireFormat::Responses,
-            Box::new(RecordingTransport { hits: hits.clone() }),
-        );
-        transports.insert(
-            WireFormat::Anthropic,
-            Box::new(RecordingTransport { hits: hits.clone() }),
-        );
-        let provider = OpenCodeGoProvider::with_catalog_and_transports(test_catalog(), transports);
 
         let _ = provider
             .chat_stream(
@@ -247,6 +263,39 @@ mod tests {
                 WireFormat::Responses,
                 WireFormat::Anthropic,
             ]
+        );
+    }
+
+    /// The upstream gateway keys on the bare id; the `opencode-go/` namespace is an
+    /// agentj-internal routing prefix and must never leak onto the wire (0.29.4).
+    #[tokio::test]
+    async fn facade_forwards_bare_model_ids() {
+        let hits = Arc::new(Mutex::new(Vec::new()));
+        let models = Arc::new(Mutex::new(Vec::new()));
+        let provider = OpenCodeGoProvider::with_catalog_and_transports(
+            test_catalog(),
+            recording_transports(&hits, &models),
+        );
+        for id in [
+            "opencode-go/kimi-k3",
+            "opencode-go/grok-4.5",
+            "opencode-go/minimax-m3",
+        ] {
+            let _ = provider
+                .chat_stream(
+                    vec![],
+                    vec![],
+                    ModelOptions {
+                        model: id.into(),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            models.lock().unwrap().clone(),
+            vec!["kimi-k3", "grok-4.5", "minimax-m3"]
         );
     }
 
