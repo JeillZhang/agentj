@@ -1,10 +1,14 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { PROTOCOL_VERSION, VERSION, resolveWsUrl } from "../config.js";
 import { METHODS } from "../methods.js";
 
 describe("config", () => {
-  it("version bumped to 0.29.1", () => {
-    expect(VERSION).toBe("0.29.1");
+  it("VERSION tracks the workspace Cargo.toml version", () => {
+    const cargo = readFileSync(new URL("../../../../../Cargo.toml", import.meta.url), "utf8");
+    const workspace = /^version = "([^"]+)"/m.exec(cargo)?.[1];
+    expect(workspace).toBeTruthy();
+    expect(VERSION).toBe(workspace);
     expect(PROTOCOL_VERSION).toBe("0.18.0");
   });
 

@@ -90,6 +90,16 @@ export function isQuotaLimitError(text: string): boolean {
   return text.includes("GoUsageLimitError");
 }
 
+/// BUG-004: a run is not aborted by a client disconnect (spec 8.11 异常断开 — the
+/// reconnecting client observes it via session/subscribe), so a reconnected client
+/// can legitimately find the session busy. Explain it instead of surfacing the raw
+/// `-32805: SessionBusy` code.
+export function sessionBusyMessage(text: string): string | null {
+  return text.includes("-32805") || text.includes("SessionBusy")
+    ? "该会话已有任务在运行（SessionBusy）：它可能仍在继续输出，请稍候再发送，或先等待其结束。"
+    : null;
+}
+
 export function fmtDuration(ms: number): string {
   return ms < 1000 ? `${Math.round(ms)}ms` : `${(ms / 1000).toFixed(2)}s`;
 }
@@ -739,7 +749,7 @@ export default function RunPanel({
         }
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        setEntries((prev) => failRun(prev, message));
+        setEntries((prev) => failRun(prev, sessionBusyMessage(message) ?? message));
       }
     } finally {
       setElapsedMs(performance.now() - startedAt);

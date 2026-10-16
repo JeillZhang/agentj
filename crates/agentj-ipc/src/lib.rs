@@ -176,6 +176,13 @@ impl ConnectionRegistry {
             .map(|(sid, _)| sid.clone())
             .collect()
     }
+    /// Forget the sessions a vanished connection owned. Called when the connection
+    /// ends and *before* in-flight runs are drained: an approval issued later in the
+    /// drain must be denied (no reachable owner) instead of being routed to a writer
+    /// that is already gone, which would only surface as the approval timing out.
+    pub fn clear_owner(&mut self, conn_id: &str) {
+        self.session_owner.retain(|_, owner| owner != conn_id);
+    }
     /// Record that a connection passed `initialize` auth (token-gated mode).
     pub fn mark_authorized(&mut self, conn_id: &str) {
         self.authorized.insert(conn_id.to_string());
@@ -471,6 +478,10 @@ impl Drop for RunGuard {
         }
     }
 }
+
+/// Reason attached to approvals denied because their owning connection went
+/// away. Mirrors the `cancelled` reason that `$/cancelRequest` uses.
+pub(crate) const DISCONNECTED_REASON: &str = "disconnected";
 
 impl IpcServer {
     pub fn new(mut kernel: Kernel, session_store: Arc<dyn SessionStore>) -> Self {
@@ -1596,9 +1607,26 @@ impl IpcServer {
         serve_result
     }
 
-    /// Unregister a closed connection and settle the pending questions of every
-    /// session it owned (design 错误处理: owner disconnect → skipped).
+    /// Unregister a closed connection and settle whatever its sessions were
+    /// waiting on.
     fn cleanup_connection(&self, conn_id: &str) {
+        self.settle_owner_pending(conn_id);
+        if let Ok(mut reg) = self.registry.write() {
+            reg.unregister(conn_id);
+        }
+    }
+
+    /// Settle everything still waiting on this connection's sessions: only the
+    /// owner may answer a question or an approval (设计决策 #5), so once the owner is
+    /// gone nothing can ever resolve them (design 错误处理: owner disconnect →
+    /// skipped). Must run while `session_owner` still maps those sessions to
+    /// `conn_id`, i.e. *before* `unregister`, and at the moment the connection ends
+    /// rather than after in-flight runs are drained — a run waiting on an approval
+    /// is itself part of that drain, so settling later would deadlock it until the
+    /// approval timeout. Ownership is dropped here as well, so approvals raised
+    /// later *during* the drain are denied at once instead of being routed to a
+    /// connection that is already gone.
+    fn settle_owner_pending(&self, conn_id: &str) {
         let owned = self
             .registry
             .read()
@@ -1606,22 +1634,27 @@ impl IpcServer {
             .map(|r| r.sessions_owned_by(conn_id))
             .unwrap_or_default();
         if let Ok(mut reg) = self.registry.write() {
-            reg.unregister(conn_id);
+            reg.clear_owner(conn_id);
         }
         if let Some(module) = &self.question_module {
-            for sid in owned {
-                let _ = module.cancel_session(&sid);
+            for sid in &owned {
+                let _ = module.cancel_session(sid);
+            }
+        }
+        if let Some(module) = &self.permission_module {
+            for sid in &owned {
+                module.cancel_session(sid, DISCONNECTED_REASON);
             }
         }
     }
 
-    /// Per-connection request loop body. The connection stays owned by this
-    /// loop for its whole lifetime (reader half for `recv`), while the
-    /// registry holds a detached `ConnectionWriter` handle — so an idle
-    /// subscriber never drops out of broadcast reach, and no std RwLock guard
-    /// is held across an await. Each request is spawned into its own task so
-    /// a long-running `session/run` does not block `permission/respond` or
-    /// `$/cancelRequest` on the same connection.
+    /// Serve one connection to its end: pump requests, then settle whatever the
+    /// vanished client can no longer answer and drain the runs it left behind.
+    ///
+    /// Both settling and dropping ownership happen *before* the drain, so a run
+    /// blocked on an approval — or one that asks for a second approval later in the
+    /// drain — is denied at once instead of waiting for the approval timeout and
+    /// keeping the session busy for a reconnecting client.
     async fn serve_connection_requests(
         self: Arc<Self>,
         mut conn: Box<dyn Connection>,
@@ -1629,20 +1662,44 @@ impl IpcServer {
     ) -> Result<(), IpcError> {
         let conn_id_owned = conn_id.to_string();
         let mut pending = tokio::task::JoinSet::new();
+        // Borrow the connection: it must outlive the drain below. Dropping it ends the
+        // transport's write path (e.g. tokio's `OwnedWriteHalf` shuts the socket's write
+        // direction down on drop), so a response produced by a request spawned just before
+        // the disconnect would be lost — the peer would see EOF instead of its answer.
+        let outcome = self
+            .pump_requests(&mut pending, &mut conn, &conn_id_owned)
+            .await;
+        self.settle_owner_pending(&conn_id_owned);
+        while pending.join_next().await.is_some() {}
+        outcome
+    }
+
+    /// Per-connection request loop. The connection stays owned by this loop for its
+    /// whole lifetime (reader half for `recv`), while the registry holds a detached
+    /// `ConnectionWriter` handle — so an idle subscriber never drops out of broadcast
+    /// reach, and no std RwLock guard is held across an await. Each request is spawned
+    /// into its own task so a long-running `session/run` does not block
+    /// `permission/respond` or `$/cancelRequest` on the same connection.
+    ///
+    /// Returns when the peer goes away (EOF or transport error) or a shutdown is
+    /// requested; the caller settles the departing owner's pending work and drains.
+    async fn pump_requests(
+        self: &Arc<Self>,
+        pending: &mut tokio::task::JoinSet<()>,
+        conn: &mut Box<dyn Connection>,
+        conn_id: &str,
+    ) -> Result<(), IpcError> {
         loop {
             let Some(line) = conn.recv().await else {
-                break; // EOF — connection dropped here; unregistered by the caller
+                return Ok(());
             };
-            let trimmed = match line {
-                Ok(l) => l.trim().to_string(),
-                Err(e) => return Err(e),
-            };
+            let trimmed = line?.trim().to_string();
             if trimmed.is_empty() {
                 continue;
             }
-            let this = Arc::clone(&self);
+            let this = Arc::clone(self);
             let registry = Arc::clone(&self.registry);
-            let cid = conn_id_owned.clone();
+            let cid = conn_id.to_string();
             let trimmed_owned = trimmed.clone();
             pending.spawn(async move {
                 let response = this
@@ -1660,19 +1717,21 @@ impl IpcServer {
                 }
             });
             if self.shutdown_requested() {
-                break;
+                return Ok(());
             }
         }
-        while pending.join_next().await.is_some() {}
-        Ok(())
     }
 
     /// Route $/permissionRequest notifications to the session owner through
-    /// the registry (决策 #5). stdio falls back to stdout because its sentinel
-    /// connection IS stdout. Attach once per transport entry point.
+    /// the registry (决策 #5). stdio needs no special case: its sentinel
+    /// connection is the session owner and `send_to` writes to it. A request
+    /// with no reachable owner can never be answered, so it is denied at once
+    /// instead of waiting out the approval timeout. Attach once per transport
+    /// entry point.
     pub(crate) fn attach_permission_notifier(&self) {
         if let Some(module) = &self.permission_module {
             let registry = Arc::clone(&self.registry);
+            let permission = Arc::clone(module);
             let notifier = Arc::new(move |p: &PermissionRequestParams, session_id: &str| {
                 let key = session_id.to_string();
                 let owner = registry
@@ -1691,7 +1750,12 @@ impl IpcServer {
                         "session_id": p.session_id,
                     },
                 });
-                if let Some(owner_id) = owner
+                if owner.is_none() {
+                    // 设计决策 #5: only the owner connection may answer, so with no
+                    // owner at all the request can never be resolved — deny it now
+                    // instead of letting the run wait out the whole timeout.
+                    permission.cancel_session(session_id, DISCONNECTED_REASON);
+                } else if let Some(owner_id) = owner
                     && let Ok(r) = registry.read()
                 {
                     let _ = r.send_to(&owner_id, &msg.to_string());
@@ -2335,6 +2399,14 @@ mod tests {
     use std::sync::Arc;
 
     fn permission_server() -> (IpcServer, Arc<agentj_permission::PermissionModule>) {
+        permission_server_with(std::time::Duration::from_millis(50))
+    }
+
+    /// `permission_server` with an explicit approval timeout, so a test can hold
+    /// an approval pending long enough to observe *how* it gets settled.
+    fn permission_server_with(
+        timeout: std::time::Duration,
+    ) -> (IpcServer, Arc<agentj_permission::PermissionModule>) {
         let mut policies = std::collections::HashMap::new();
         policies.insert(
             "bash".to_string(),
@@ -2344,10 +2416,7 @@ mod tests {
                 command_rules: vec![],
             },
         );
-        let module = Arc::new(agentj_permission::PermissionModule::new(
-            policies,
-            std::time::Duration::from_millis(50),
-        ));
+        let module = Arc::new(agentj_permission::PermissionModule::new(policies, timeout));
         let mut server = IpcServer::new(Kernel::new(), stub_session());
         server.permission_module = Some(module.clone());
         (server, module)
@@ -2658,6 +2727,15 @@ mod tests {
     /// mock script emits a `bash` ToolCall — so a session/run genuinely blocks
     /// on a permission Ask while in-flight (the real cancel scenario).
     fn blocking_run_server() -> (IpcServer, Arc<agentj_permission::PermissionModule>) {
+        blocking_run_server_with(1)
+    }
+
+    /// As [`blocking_run_server`], but the mock script emits `tool_calls` `bash` calls
+    /// in ONE model round: the run then asks for that many approvals in sequence (a
+    /// later one arrives only after the previous is settled, i.e. during the drain).
+    fn blocking_run_server_with(
+        tool_calls: usize,
+    ) -> (IpcServer, Arc<agentj_permission::PermissionModule>) {
         let mut policies = std::collections::HashMap::new();
         policies.insert(
             "bash".to_string(),
@@ -2676,16 +2754,16 @@ mod tests {
         let tools = Arc::new(ToolRegistry::new());
         tools.set_permission_checker(module.clone());
         let providers = Arc::new(ProviderRegistry::new());
-        providers.register(
-            "mock".into(),
-            Arc::new(MockModelProvider::new(vec![Ok(ModelEvent::ToolCall(
-                ToolCall {
-                    id: "call_1".into(),
+        let script = (0..tool_calls)
+            .map(|i| {
+                Ok(ModelEvent::ToolCall(ToolCall {
+                    id: format!("call_{i}"),
                     name: "bash".into(),
                     arguments: serde_json::json!({"command": "curl x"}),
-                },
-            ))])),
-        );
+                }))
+            })
+            .collect();
+        providers.register("mock".into(), Arc::new(MockModelProvider::new(script)));
         let ctx = KernelContext {
             session: session_dyn.clone(),
             tools: tools.clone(),
@@ -2848,6 +2926,54 @@ mod tests {
         } else {
             panic!("expected Ask");
         }
+    }
+
+    /// BUG-004: only the session owner may answer an approval (design 决策 #5),
+    /// so once that connection is gone nobody ever can — the approval must be
+    /// settled at disconnect (`PermissionModule::cancel_session` documents
+    /// "session termination / $/cancelRequest / client disconnect"). Left
+    /// pending, the orphan run blocks for the whole approval timeout (60s
+    /// default) and the session stays busy for a reconnecting client.
+    #[tokio::test]
+    async fn owner_disconnect_denies_pending_approval() {
+        let (server, _module) = permission_server_with(std::time::Duration::from_secs(30));
+        let module = server.permission_module.clone().unwrap();
+        let ctx = PermissionContext {
+            session_id: "s1".into(),
+            tool: "bash".into(),
+            source: ToolSource::Builtin,
+            args: serde_json::json!({"command": "curl x"}),
+            workspace_root: std::path::PathBuf::from("/ws"),
+        };
+        assert!(
+            server
+                .registry
+                .write()
+                .unwrap()
+                .try_acquire_run(&"s1".to_string())
+        );
+        server
+            .registry
+            .write()
+            .unwrap()
+            .set_session_owner(&"s1".to_string(), "conn-a");
+        let PermissionDecision::Ask { request_id } = module.check(&ctx) else {
+            panic!("expected Ask");
+        };
+        let module2 = module.clone();
+        let handle = tokio::spawn(async move { module2.await_approval(&request_id).await });
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        server.cleanup_connection("conn-a");
+        let decision = tokio::time::timeout(std::time::Duration::from_millis(500), handle)
+            .await
+            .expect("owner disconnect must settle the pending approval")
+            .unwrap();
+        assert_eq!(
+            decision,
+            PermissionDecision::Deny {
+                reason: "disconnected".into()
+            }
+        );
     }
 
     /// Fixture: an IpcServer wired to a fresh QuestionModule (notifier not yet attached).
@@ -4506,6 +4632,14 @@ mod tests {
         v["result"]["session_id"].as_str().unwrap().to_string()
     }
 
+    /// `request_id` of a `$/permissionRequest` notification.
+    fn request_id(notification: &str) -> String {
+        serde_json::from_str::<serde_json::Value>(notification).unwrap()["params"]["request_id"]
+            .as_str()
+            .expect("request_id")
+            .to_string()
+    }
+
     /// Wait until `predicate` matches a message the connection has sent.
     async fn wait_for_line(log: &SharedLog, predicate: impl Fn(&str) -> bool) -> String {
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
@@ -5331,6 +5465,164 @@ mod tests {
             .await
             .unwrap();
         let _ = run_task.await;
+    }
+
+    /// BUG-004 (backend half): the owner is the only connection allowed to answer an
+    /// approval (设计决策 #5), and it is the in-flight `session/run` that waits on it.
+    /// So the approval must be settled the moment the connection ends — not after
+    /// `serve_connection_requests` drains that very run, which would leave an
+    /// orphaned run blocked until the approval timeout.
+    #[tokio::test]
+    async fn serve_connection_end_of_input_denies_pending_approval() {
+        let (server, module) = blocking_run_server();
+        let server = Arc::new(server);
+        server.attach_permission_notifier();
+        let (conn, log, tx) = scripted_conn("tcp-A");
+        let s = Arc::clone(&server);
+        let serving = tokio::spawn(async move { s.serve_connection(Box::new(conn)).await });
+
+        tx.send(r#"{"jsonrpc":"2.0","id":1,"method":"session/new"}"#.to_string())
+            .await
+            .unwrap();
+        let new_resp = wait_for_line(&log, |l| l.contains("session_id")).await;
+        let sid = extract_sid(&new_resp);
+        tx.send(format!(
+            r#"{{"jsonrpc":"2.0","id":2,"method":"session/run","params":{{"session_id":"{sid}","content":"hi"}}}}"#
+        ))
+        .await
+        .unwrap();
+        wait_for_pending_run(&server, &sid)
+            .await
+            .expect("run must be in flight");
+        let approval = wait_for_line(&log, |l| l.contains("$/permissionRequest")).await;
+        let rid = request_id(&approval);
+
+        drop(tx); // EOF — the client goes away while the run waits for approval
+
+        // 1) the approval is settled by the disconnect, not by the 10s timeout
+        let settled = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while module.view(&rid).is_some() {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await;
+        assert!(
+            settled.is_ok(),
+            "owner disconnect must settle the pending approval at once"
+        );
+        // 2) and the orphaned run is released, so a reconnect can run again
+        let released = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while server.registry.read().unwrap().pending_runs.contains(&sid) {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await;
+        assert!(
+            released.is_ok(),
+            "the run must be released at disconnect, not by the approval timeout"
+        );
+        let finished = tokio::time::timeout(std::time::Duration::from_secs(5), serving).await;
+        assert!(
+            finished.is_ok(),
+            "serve_connection must return once the orphaned run is released"
+        );
+        finished.unwrap().unwrap().unwrap();
+        let log_dump = log.lock().unwrap().clone();
+        assert!(
+            log_dump.iter().any(|l| l.contains("\"id\":2")),
+            "the released run must still answer its caller: {log_dump:?}"
+        );
+    }
+
+    /// BUG-004 (backend half): the disconnect must also cover approvals raised *while*
+    /// the run is being drained. The mock script emits two `bash` calls in one model
+    /// round, so once the first approval is settled at EOF the run immediately asks for
+    /// a second one — with no owner left it must be denied, not routed to the dead
+    /// connection (which would stall the run for the whole approval timeout and keep
+    /// the session busy after a reconnect).
+    #[tokio::test]
+    async fn approvals_during_drain_are_denied_at_once() {
+        let (server, module) = blocking_run_server_with(2);
+        let server = Arc::new(server);
+        server.attach_permission_notifier();
+        let (conn, log, tx) = scripted_conn("tcp-A");
+        let s = Arc::clone(&server);
+        let serving = tokio::spawn(async move { s.serve_connection(Box::new(conn)).await });
+
+        tx.send(r#"{"jsonrpc":"2.0","id":1,"method":"session/new"}"#.to_string())
+            .await
+            .unwrap();
+        let new_resp = wait_for_line(&log, |l| l.contains("session_id")).await;
+        let sid = extract_sid(&new_resp);
+        tx.send(format!(
+            r#"{{"jsonrpc":"2.0","id":2,"method":"session/run","params":{{"session_id":"{sid}","content":"hi"}}}}"#
+        ))
+        .await
+        .unwrap();
+        wait_for_pending_run(&server, &sid)
+            .await
+            .expect("run must be in flight");
+        let approval = wait_for_line(&log, |l| l.contains("$/permissionRequest")).await;
+        let rid = request_id(&approval);
+
+        drop(tx); // EOF while the run waits on the first of the two approvals
+
+        // The run can only answer `id:2` once it is done, i.e. once BOTH approvals are
+        // settled — and `wait_for_line` gives up after 5s, far below the fixture's 10s
+        // approval timeout, so a stall shows up as a failed wait.
+        let done = wait_for_line(&log, |l| l.contains("\"id\":2")).await;
+        assert!(
+            module.view(&rid).is_none(),
+            "first approval must be settled"
+        );
+        assert!(
+            !done.contains("\"error\""),
+            "the orphaned run must finish normally: {done}"
+        );
+        let released = tokio::time::timeout(std::time::Duration::from_secs(5), serving).await;
+        assert!(released.is_ok(), "serve_connection must return");
+        released.unwrap().unwrap().unwrap();
+    }
+
+    /// BUG-004 (backend half): an approval that cannot reach its owner can never be
+    /// answered, so it must be denied at once instead of stalling the run for the
+    /// whole approval timeout.
+    #[tokio::test]
+    async fn approval_without_reachable_owner_is_denied_immediately() {
+        let (server, module) = permission_server_with(std::time::Duration::from_secs(30));
+        let server = Arc::new(server);
+        server.attach_permission_notifier();
+        let ctx = PermissionContext {
+            session_id: "s1".into(),
+            tool: "bash".into(),
+            source: ToolSource::Builtin,
+            args: serde_json::json!({"command": "curl x"}),
+            workspace_root: std::path::PathBuf::from("/ws"),
+        };
+        let PermissionDecision::Ask { request_id } = module.check(&ctx) else {
+            panic!("expected Ask");
+        };
+        let decision = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            module.await_approval(&request_id),
+        )
+        .await
+        .expect("no owner must be settled at once, not after the 30s timeout");
+        // A deny is the only possible outcome — and it must not be the timeout one.
+        // (`register_ask` invokes the notifier synchronously, so the request is
+        // already consumed by the time `await_approval` looks it up: whatever the
+        // settling caller, that lookup reports a plain deny rather than a stall.)
+        let PermissionDecision::Deny { reason } = &decision else {
+            panic!("no reachable owner must deny at once, got {decision:?}");
+        };
+        assert_ne!(
+            reason, "timeout",
+            "no reachable owner must deny at once, not time out"
+        );
+        assert!(
+            module.view(&request_id).is_none(),
+            "the approval must be settled, not left pending"
+        );
     }
 
     #[tokio::test]

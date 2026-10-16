@@ -82,7 +82,7 @@ WebSocket 与 raw TCP 同端口共存，通过连接分类器按首字节区分 
 - **进程退出**：客户端发送 `shutdown`（请求）后，服务端返回结果并开始优雅关闭；随后客户端发送 `exit`（通知），服务端进程退出。`exit` MUST 在 `shutdown` 之后发送。
 - **stdio EOF**：stdin 到达 EOF 视为对端主动断开。若发生在优雅关闭流程之外，服务端 SHOULD 完成当前请求处理后退出，MUST NOT 再写入输出。
 - **多客户端语义（v0.4 常驻内核，`@since 0.3.0`）**：多客户端模式下，`shutdown` 请求触发**全局**内核优雅关闭链（SIGINT/SIGTERM 信号仍可强制，决策 #13 语义不变）；**最后一条连接断开**同样触发内核优雅关闭链。单个客户端断开（非最后一条）不影响其它连接。
-- **异常断开**：任一侧可随时关闭传输；对端 MUST 将任何未完成的请求视为已失败，且不应重试不可重试的请求（如 `session/run`）。常驻内核下，断线客户端的 run 继续执行，重连者用 `session/subscribe` 观测而非重试。
+- **异常断开**：任一侧可随时关闭传输；对端 MUST 将任何未完成的请求视为已失败，且不应重试不可重试的请求（如 `session/run`）。常驻内核下，断线客户端的 run 继续执行，重连者用 `session/subscribe` 观测而非重试。该连接拥有会话的**待审批权限**（reason `disconnected`）与**待答提问**在断开时即被结算（不再等满审批超时），run 随之继续而非悬挂。
 - 服务端退出前 SHOULD 关闭传输流（刷新 stdout、关闭 stdin）。
 
 ## 3. 基础协议
@@ -385,6 +385,7 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 - **60s 默认超时 → 自动 Deny**：内核等待审批默认 60s；超时未收到 `permission/respond`，该工具调用自动以 `Deny` 裁决（错误链 `RequestTimeout` → `Deny`），`session/run` 继续而非挂起。
 - **allow_always 会话级作用域（内存态）**：`allow_always` 仅写入当前 session 的 `SessionAllowState`（会话级内存态），**会话结束即失效，永不写回 `[permission]` 配置**；跨会话白名单须显式配置 `[permission]` 规则（见 `agentj-permission` 设计）。
 - **取消即拒绝**：`$/cancelRequest` 取消进行中的 `session/run` 时，该 session 所有**待审批**请求解析为 `Deny`（reason `cancelled`），不悬挂审批。
+- **断连即拒绝（`@since 0.29.6`）**：owner 连接断开时，该 session 所有待审批请求解析为 `Deny`（reason `disconnected`），run 随之继续而非悬挂；审批请求发出时若该 session 已无 owner 连接可达，同样立即结算为 `Deny`，不等满超时（该请求在结算的同一时刻即被消费，等待方读到的是「请求已不存在」的拒绝结果，而非 `disconnected`）。
 - **定向与归属**：`$/permissionRequest` 定向发送给发起该 run 的客户端连接（`session_owner`）；非 owner 连接调用 `permission/respond` → `-32806 NotAuthorized`（多客户端语义见 §4.5 与守护内核设计）。
 - **内置工具默认策略**：`bash` / `write` = **Ask**；`read` / `glob` / `grep` = **Allow**；MCP / 插件工具 = **Ask**（未知工具保守 Ask）。均可经 `[permission]` 配置覆盖。
 

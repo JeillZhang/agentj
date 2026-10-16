@@ -376,6 +376,27 @@ describe("App with mocked SDK transport", () => {
     );
   });
 
+  // BUG-004 regression: a run outlives a client disconnect (spec 8.11 异常断开 —
+  // 重连者用 session/subscribe 观测而非重试 session/run), but the Web client only
+  // subscribed when a session was selected. After a reconnect the live run looked
+  // interrupted and the next send hit -32805 SessionBusy. Re-attaching must happen
+  // for every new client, exactly like the TUI's Connection.resubscribe on open.
+  it("re-subscribes the active session after a reconnect", async () => {
+    render(<App />);
+    await createActiveSession();
+    await waitFor(() => expect(shared.requests.value).toContain("session/subscribe"));
+    const before = shared.requests.value.filter((m) => m === "session/subscribe").length;
+    fireEvent.click(screen.getByRole("button", { name: "更多" }));
+    fireEvent.click(screen.getByText("设置…"));
+    const bar = screen.getByLabelText("connection");
+    fireEvent.change(within(bar).getByLabelText("Host"), { target: { value: "127.0.0.1" } });
+    fireEvent.change(within(bar).getByLabelText("Port"), { target: { value: "4096" } });
+    fireEvent.click(within(bar).getByRole("button", { name: /connect/i }));
+    await waitFor(() =>
+      expect(shared.requests.value.filter((m) => m === "session/subscribe").length).toBeGreaterThan(before),
+    );
+  });
+
   it("shows version mismatch banner on major drift expected 0.12.1 got 1.9.0", async () => {
     shared.initVersion.value = "1.9.0";
     render(<App />);

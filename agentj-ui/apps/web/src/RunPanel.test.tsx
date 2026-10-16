@@ -969,3 +969,36 @@ describe("RunPanel quota hint", () => {
     expect(screen.getAllByText(/设置 · 订阅/)).toHaveLength(1);
   });
 });
+
+// BUG-004: a run keeps going after a client disconnect (spec 8.11 异常断开), so a
+// reconnected client can legitimately find the session busy. The user must get an
+// explanation, not the raw `-32805: SessionBusy` code.
+describe("RunPanel session busy hint", () => {
+  function failingClient(message: string) {
+    return {
+      setNotificationHandler: () => {},
+      removeNotificationHandler: () => {},
+      request: async (method: string) => {
+        if (method === METHODS.sessionRun) throw new Error(message);
+        return null;
+      },
+    } as unknown as Parameters<typeof RunPanel>[0]["client"];
+  }
+
+  async function submit(client: Parameters<typeof RunPanel>[0]["client"]) {
+    render(<RunPanel client={client} activeSessionId="s1" />);
+    fireEvent.change(screen.getByLabelText(/prompt/i), { target: { value: "继续" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+  }
+
+  it("explains -32805 SessionBusy instead of showing the raw code", async () => {
+    await submit(failingClient("-32805: SessionBusy"));
+    expect(await screen.findByText(/该会话已有任务在运行/)).toBeInTheDocument();
+    expect(screen.queryByText(/^-32805/)).not.toBeInTheDocument();
+  });
+
+  it("passes other failures through unchanged", async () => {
+    await submit(failingClient("API error (500): upstream broke"));
+    expect(await screen.findByText(/API error \(500\): upstream broke/)).toBeInTheDocument();
+  });
+});
