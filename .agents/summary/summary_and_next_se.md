@@ -7,70 +7,89 @@
 > 待实施），不得随内容替换而删除；仅当该特性实际实施完成后才能移除（移入功能记录）。
 > 前端总结独立存放于 `summary_and_next_fe.md`；两文件内容隔离，互不写入对方文件。
 
-> 当前功能：**v0.29.5 `serve` / `dashboard` 不再强制预先配置密钥（修复）**
-> ——来源：用户报告「启动 `agentj serve` 时不要强制配置 key，该 key 应可以从 Web/TUI 等
-> 客户端通过设置配置」。
-> 后端范围：`crates/agentj-cli`（`providers.rs` / `main.rs` / `tests/e2e_auth.rs` /
-> `tests/e2e_serve.rs`）、`docs/changelog/v0.29.md`、`docs/guide/subscription.md`、
-> 版本元数据。
+> 当前功能：**v0.29.6 断连重连后的 `SessionBusy`（修复）**
+> ——来源：用户报告「断连后，重新连接会话，任务中断，提示继续后，提示 sessionbusy」。
+> 后端范围：`crates/agentj-ipc/src/lib.rs`；前端配套见 `summary_and_next_fe.md`。
 > 协议 wire 面**不变**（`PROTOCOL_VERSION` 仍 **0.18.0** / 28 方法 / 78 schemas）；
-> 工作区 0.29.4 → **0.29.5**（纯修复，无新增方法 / schema）。
+> 工作区 0.29.5 → **0.29.6**（纯修复，无新增方法 / schema）。
 
-## v0.29.5（`serve` 无密钥可启动，密钥由客户端录入）🚧
+## v0.29.6（owner 断连即结算待审批；Web 重连即重新订阅）🚧
 
 ### 缺陷与根因
 
-`serve` / `dashboard` 的承诺（0.29.0 设计 D2/D3/D7）是「客户端链接 Key 即生效、免重启」，
-但启动装配一旦解析不到任何密钥就**直接报错退出**，首次部署必须先跑一次
-`agentj auth login` 才能起服务——与「在 Web/TUI 设置里链接」自相矛盾。
+`docs/specs/ipc-protocol.md` 异常断开一节明确：**断线客户端的 run 继续执行**，重连者用
+`session/subscribe` 观测而非重试 `session/run`。内核与 Web 两侧都没跟上这条契约：
 
 | 位置 | 缺陷 |
 |---|---|
-| `crates/agentj-cli/src/providers.rs` | `build_providers` 在 provider 集合为空时 `return Err("no usable model provider：未解析到任何密钥，见 agentj auth status")` |
-| `crates/agentj-cli/src/main.rs` | 该 `Err` 对**除 `run --attach` 外**的所有命令直接 `bail!`，`serve` / `dashboard` 因此进不了「客户端录入密钥」路径 |
+| `crates/agentj-ipc/src/lib.rs` `serve_connection_requests` | EOF 后先 `while pending.join_next().await.is_some() {}` **排空在飞 run**，`cleanup_connection` 在排空**之后**才执行 → owner 已断连，该会话的待审批权限无人可答，孤儿 run 只能等 `[permission] timeout_ms`（默认 60s）自动拒绝；多轮工具调用可反复叠加（最多 `agent.max_tool_iterations` 轮），会话长时间「忙」 |
+| `crates/agentj-ipc/src/lib.rs` `attach_permission_notifier` | 找不到 owner 连接时**静默丢弃**审批请求，同样干等到超时 |
+| 同上（排空期间） | `session_owner[sid]` 只在 `unregister`（排空**之后**）清除，故排空期间新发起的审批仍会 `send_to` 已消失的连接（`Ok(())` 静默丢弃）→ 仍干等整个审批超时（多轮工具调用「反复叠加」的真实来源）；且 EOF 之外的收尾路径（传输错误 / shutdown）完全未走结算 |
+| `agentj-ui/apps/web`（前端，配套） | 重连后不重新 `session/subscribe`，把仍在运行的 run 显示成「任务中断」，用户点继续即撞上 `-32805 SessionBusy` |
 
-### 修复（收窄 fatal 边界）
+### 修复
 
-- `build_providers` **不再**把空集合当错误：改为 `warnings.push(NO_USABLE_PROVIDER.to_string())`
-  并返回 `Ok(Assembly { providers: vec![], warnings })`；新增
-  `pub const NO_USABLE_PROVIDER: &str` 作为该文案的**唯一来源**（`main` 复用）。
-- `main.rs`：把 `inject_subscription` 的 `matches!(Serve | Dashboard)` 判定**上提**为
-  `serves_clients`（先于装配），装配后新增：
-  `if assembly.providers.is_empty() && !serves_clients { anyhow::bail!("{}", providers::NO_USABLE_PROVIDER); }`
-  随后 `let inject_subscription = serves_clients;`。
-- 结果语义：
-  - `serve` / `dashboard`：启动继续，逐个 provider 打印「无可用密钥…已跳过」+ 一条汇总警告；
-    客户端「设置 · 订阅」链接 Key 后当场重建并替换 provider（免重启）。
-  - `run`（含无子命令的裸 `agentj`）：**与修复前完全一致**，无密钥仍启动即报错退出非 0
-    （其消息仍含 `no usable model provider`），避免无凭据的上游请求。
-  - `run --attach`：不变（`attached` 短路，不要求本地 provider）。
-  - `agentj auth login`：不受影响（`main.rs:470` 在装配前即 `return`）。
+- 新增 `pub(crate) const DISCONNECTED_REASON: &str = "disconnected";` 与
+  `IpcServer::settle_owner_pending(&self, conn_id)`：把该连接所拥有会话（`sessions_owned_by`）
+  的 question 与 permission 待决项一并结算（`question_module.cancel_session` +
+  `permission_module.cancel_session(sid, DISCONNECTED_REASON)`）。
+- `serve_connection_requests` 拆出 `pump_requests`（请求循环），在**每条**收尾路径（EOF /
+  传输错误 / shutdown）上先 `settle_owner_pending` 再排空在飞 run；`cleanup_connection` 复用
+  同一逻辑后再 `unregister`（不重复实现）。
+- 新增 `ConnectionRegistry::clear_owner(conn_id)`（`session_owner.retain(|_, owner| owner != conn_id)`），
+  在 `settle_owner_pending` 里于排空**之前**调用：排空期间新发起的审批走 `owner.is_none()`
+  分支立即被拒，而不是发给已消失的连接。
+- `attach_permission_notifier`：`owner.is_none()` 时改为立刻
+  `cancel_session(session_id, DISCONNECTED_REASON)`（对齐 question 模块「owner 断连即 skip」）。
+- 语义保持：run 本身**不取消**（顺 `$/progress` 继续走完），只是不再有「等人审批」的僵局；
+  重连者仍按契约重新 `session/subscribe` 观测。
+- 规范同步：`docs/specs/ipc-protocol.md` 异常断开一节 + §7.5 新增「断连即拒绝
+  （`@since 0.29.6`）」；`docs/guide/web.md` 补充「重连自动重新订阅 + `-32805` 友好提示」。
+- 代码评审（`jskill-bug-fix` Phase 5）：修复了评审提出的 B1（排空期间新审批仍发往死连接）、
+  S1（shutdown 收尾路径未结算）、S3（传输错误 `?` 提前返回导致排空被取消）；S2 按实现
+  改写 spec（无 owner 用例理由为「请求已不存在」）；N5 修正 `attach_permission_notifier`
+  陈旧注释（原「stdio falls back to stdout」与实际不符，stdio 靠 sentinel 连接即 owner）。
+- **排空期间连接必须存活**：`pump_requests` 改为借用 `&mut Box<dyn Connection>`。一次回归：
+  按值传递会让函数返回即析构 `TcpConnection`，tokio 的 `OwnedWriteHalf` 析构会 shutdown
+  写方向 → 「EOF 前已受理、响应尚未写完」的请求被对端看成 EOF（服务器侧写入得到
+  `BrokenPipe`），`serve --port` 下表现为紧随其后的 TCP 连接收到空响应。守护用例：
+  `crates/agentj-cli/tests/e2e_ws.rs::serve_port_accepts_ws_clients_and_keeps_tcp_attach`
+  （修复前 12 次里失败 3 次以上，修复后 12/12 通过）。
+- **测试稳定性（非本缺陷引入）**：`crates/agentj-ipc/src/login_limiter.rs` 两个日志捕获用例
+  原先用 `tracing::subscriber::set_default`（线程本地），其 set/drop 会重建全局 callsite
+  interest 缓存并与同一测试二进制内并行测试的日志竞争，偶发丢掉 `record_success` 的
+  `login ok` 事件。现改为进程级 `set_global_default`（`OnceLock` 只装一次）+ 互斥量串行化
+  两个捕获用例：`--test-threads=8` 下 40 次压力原为 5 次失败，改后 0 次。
 
-### 测试
+### 测试（RED → GREEN）
 
-| 文件 | 变更 | RED 证据 |
+| 测试 | 文件 | RED 证据 |
 |---|---|---|
-| `crates/agentj-cli/src/providers.rs` | `no_usable_provider_is_a_hard_error` → `keyless_provider_set_is_reported_not_fatal`（断言 `Ok` + 空集合 + 警告含 `no usable model provider`） | `called Result::unwrap() on an Err value: "no usable model provider：…"` @ `providers.rs:249` |
-| `crates/agentj-cli/tests/e2e_serve.rs` | 新增 `keyless_provider_set_still_boots_serve`：隔离 `XDG_DATA_HOME`/`HOME`、`api_key_env = "AGENTJ_E2E_KEYLESS"` + `env_remove`、`base_url = "https://example.invalid"`（绝不触网）、`serve --port 0` 期望 `read_listening_addr` 成功且进程常驻 | `panicked at crates/agentj-cli/tests/e2e_serve.rs:96:5: server did not print a listening address` |
-| `crates/agentj-cli/tests/e2e_auth.rs` | `keyless_real_provider_fails_startup` → `keyless_real_provider_fails_run`（改用 `run "hi"` 保留断言：失败 + 文案 + 未触网 `example.invalid`） | 旧用例断言的正是缺陷行为，改后即绿 |
+| `owner_disconnect_denies_pending_approval` | `crates/agentj-ipc/src/lib.rs` | `panicked … owner disconnect must settle the pending approval: Elapsed(())` |
+| `serve_connection_end_of_input_denies_pending_approval`（真实链路：`scripted_conn` + `serve_connection`：session/new → session/run → 观测 `$/permissionRequest` → drop 输入发送端 = EOF → 2s 内结算 + 5s 内释放 run + run 响应仍送达客户端） | 同上 | 关闭生产修复后：`owner disconnect must settle the pending approval at once` |
+| `approvals_during_drain_are_denied_at_once`（fixture `blocking_run_server_with(2)`：mock 一次模型轮返回两个 `bash` 调用 → 第二个审批在排空期间发起） | 同上 | 去掉 `clear_owner` 后：`timed out waiting for a connection log line: Elapsed(())`（第二个审批干等 10s 审批预算，run 无法在 5s 内回 `id:2`） |
+| `approval_without_reachable_owner_is_denied_immediately` | 同上 | `no owner must be settled at once, not after the 30s timeout: Elapsed(())` |
 
-> 命令提示：`agentj-cli` **没有 lib target**（`cargo test -p agentj-cli --lib` 报
-> `no library targets found`）；单测用 `cargo test -p agentj-cli --bin agentj <filter>`。
+> 细节：`PermissionModule::register_ask` 在插入 pending 后**同步**调用 notifier，故无 owner 用例
+> 收到的 reason 是 `request not found`（条目已被取消）而非 `disconnected`——断言写成
+> `assert_ne!(reason, "timeout")` + `module.view(&request_id).is_none()`，避免绑定实现细节。
+> 首版 `settle_owner_pending` 里误留 `unregister(conn_id)`，会在排空前摘掉 writer，导致孤儿 run
+> 的最终响应**静默丢失**（`send_to` 对缺失 writer 返回 `Ok(())`）——被第 2 条测试捕获后删除。
 
-### 验证结果（0.29.5，2026-10-16）
+### 验证结果（0.29.6，2026-10-16）
 
 | 门禁 | 结果 |
 |---|---|
-| `cargo test -p agentj-cli --bin agentj keyless` | 3 passed |
-| `cargo test -p agentj-cli --test e2e_serve` | 8 passed（含新增 1 条），1.81s |
-| `cargo test -p agentj-cli --test e2e_auth` | 2 passed |
-| `cargo test --workspace` | 全绿（各 suite `0 failed`） |
+| `cargo test -p agentj-ipc --lib`（4 条新增） | 193 passed，0.03s |
+| `cargo test -p agentj-cli --test e2e_ws` | 12/12 通过（排空生命周期回归守护） |
+| `login_limiter` 捕获用例压力（`--test-threads=8` × 40） | 修复前 5/40 失败 → 修复后 0/40 |
+| `cargo test --workspace` | 48 套件 / **866 passed, 0 failed** |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 0 warnings |
 | `cargo fmt --all` | clean |
-| 真实二进制手测（无密钥，`XDG_DATA_HOME=/tmp/aj-repro/data HOME=/tmp/aj-repro`） | `serve --port 0` 打印 `listening on 127.0.0.1:46377`、进程常驻、`GET /version` → **200**（修复前 `Error: no usable model provider…` / EXIT=1） |
-| `./scripts/check-version.sh` | 待重跑（版本已 bump 至 0.29.5） |
+| Web（`npm --prefix agentj-ui test --workspace=@agentj/web`） | 53 文件 / 655 passed（含新增 3 条） |
+| `./scripts/check-version.sh` | `version-ok`（0.29.6 / 0.18.0） |
 
-## 已完成（0.29.0 – 0.29.4，详见 `docs/changelog/v0.29.md`）
+## 已完成（0.29.0 – 0.29.5，详见 `docs/changelog/v0.29.md`）
 
 - ✅ 0.29.0：Web/TUI 链接 opencode-go API Key（协议 0.18.0 / 28 方法 / 78 schemas）。
 - ✅ 0.29.1：验收 BUG-001（env 遮蔽时读侧 / 发送侧不一致）。
@@ -86,6 +105,8 @@
   （修复前该用例**无限挂起**导致 `cargo test --workspace` 永不终止，现 0.85s）。
   真实 key 实测 9 模型 × 3 路由全绿（含 `glob` 工具调用命中唯一标记文件
   `./UNIQUE_MARKER_7f3a.txt`）。
+- ✅ 0.29.5：`serve` / `dashboard` 不再强制预先配置密钥（`providers::NO_USABLE_PROVIDER`
+  只作为警告，`main.rs` 仅对无可录入客户端凭据的命令 fatal；`run` 行为不变）。
 
 ## 遗留问题 / 已知限制（后端）
 
@@ -121,9 +142,10 @@
 
 ## 下一步
 
-- v0.29.5 代码 + 文档 + 版本已落地；剩余：重跑 `./scripts/check-version.sh`
-  （0.29.5 / 0.18.0）→ 提交 → 推送**两个远端**（`origin` = GitHub 权威 + `gitcode` 镜像）
-  → 在 GitHub 开 PR（用户负责合并）。
+- v0.29.6 代码 + 测试已落地，版本元数据已收尾（`Cargo.lock` / desktop `Cargo.lock` 已刷到
+  0.29.6，`./scripts/check-version.sh` 已过）；剩余：重跑全量门禁 → 提交 →
+  推送**两个远端**（本机 `github` = GitHub 权威、`origin` = GitCode 镜像；注意 AGENTS.md 的
+  远端命名与本机相反）→ 在 GitHub 开 PR（用户负责合并）。
 - 后端候选：上表 ①②④⑥；或前端跟进见 `summary_and_next_fe.md`。
 - 可选跟进：为 `run` 增加 `--yes`（或非 TTY 自动拒绝），让 CI / 自动化能跑需审批工具路径；
   以及把 `serve` 的「无 provider」从 WARN 提升为 `/version` 可见的启动警告（目前仅日志）。
