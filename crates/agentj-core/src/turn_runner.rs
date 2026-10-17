@@ -5,7 +5,8 @@ use futures::StreamExt;
 use tokio::sync::mpsc;
 
 use crate::artifacts::TurnArtifact;
-use crate::error::ModuleError;
+use crate::budget::{self, DEFAULT_CONTEXT_TOKENS, MAX_OVERFLOW_RETRIES};
+use crate::error::{ModelError, ModuleError};
 use crate::kernel::KernelSender;
 use crate::module::{ContextPipeline, KernelContext, KernelMessage, ToolExecutionOutcome};
 use crate::types::{
@@ -223,11 +224,34 @@ impl TurnRunner {
         };
         let mut cancelled = false;
         let mut usage: Option<TokenUsage> = None;
+        // 上下文预算（design §上下文预算）：发送前把装配好的请求裁到预算内，上游报
+        // context 超限时收紧预算重试，而不是把 400 直接抛给用户。@since 0.29.7
+        let mut context_budget = ctx
+            .config
+            .get_int("model.max_context_tokens")
+            .and_then(|value| usize::try_from(value).ok())
+            .map_or(DEFAULT_CONTEXT_TOKENS, budget::clamp_budget);
+        let mut overflow_retries = 0usize;
         'outer: for _iter in 0..max_iter {
-            let stream = provider
-                .chat_stream(messages.clone(), tool_defs.clone(), default_options.clone())
+            let request = pipeline.fit(messages.clone(), context_budget);
+            let stream = match provider
+                .chat_stream(request, tool_defs.clone(), default_options.clone())
                 .await
-                .map_err(|e| route(e.to_string()))?;
+            {
+                Ok(stream) => stream,
+                Err(err @ ModelError::TokenLimitExceeded { max, .. }) => {
+                    // 上游报超限：收紧预算重发（预算严格递减；无法再减时如实上抛）。
+                    match budget::retry_budget(context_budget, max) {
+                        Some(next) if overflow_retries < MAX_OVERFLOW_RETRIES => {
+                            overflow_retries += 1;
+                            context_budget = next;
+                            continue 'outer;
+                        }
+                        _ => return Err(route(err.to_string())),
+                    }
+                }
+                Err(e) => return Err(route(e.to_string())),
+            };
             futures::pin_mut!(stream);
             let mut content = String::new();
             let mut tc_list: Vec<ToolCall> = vec![];
@@ -470,6 +494,138 @@ mod tests {
         }
     }
 
+    /// Config that only answers the context-budget key.
+    struct BudgetConfig(i64);
+    impl ConfigProvider for BudgetConfig {
+        fn get_str(&self, _k: &str) -> Option<String> {
+            None
+        }
+        fn get_int(&self, k: &str) -> Option<i64> {
+            (k == "model.max_context_tokens").then_some(self.0)
+        }
+        fn providers(&self) -> Vec<(String, String)> {
+            vec![]
+        }
+    }
+
+    /// Context whose session already holds `history` and whose budget is `budget` tokens.
+    fn budget_test_ctx(history: Vec<ChatMessage>, budget: usize) -> KernelContext {
+        KernelContext {
+            session: Arc::new(MockSession {
+                history: StdMutex::new(history),
+            }),
+            tools: Arc::new(ToolRegistry::new()),
+            providers: Arc::new(ProviderRegistry::new()),
+            config: Arc::new(BudgetConfig(budget as i64)),
+        }
+    }
+
+    /// Records the estimated token size of every request it is asked to serve. Fails with
+    /// `overflow` when set — on every call when `always_overflow` is set, else only on the
+    /// first — mimicking an upstream context-window rejection.
+    struct CapturingProvider {
+        seen: Arc<StdMutex<Vec<usize>>>,
+        overflow: Option<ModelError>,
+        always_overflow: bool,
+        calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl crate::module::ModelProvider for CapturingProvider {
+        async fn chat_stream(
+            &self,
+            m: Vec<ChatMessage>,
+            _t: Vec<ToolDefinition>,
+            _o: ModelOptions,
+        ) -> Result<BoxStream<'static, Result<ModelEvent, ModelError>>, ModelError> {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst);
+            self.seen
+                .lock()
+                .unwrap()
+                .push(crate::budget::request_tokens(&m));
+            if let Some(err) = &self.overflow
+                && (self.always_overflow || call == 0)
+            {
+                return Err(match err {
+                    ModelError::TokenLimitExceeded { used, max } => {
+                        ModelError::TokenLimitExceeded {
+                            used: *used,
+                            max: *max,
+                        }
+                    }
+                    other => ModelError::Api {
+                        status: 400,
+                        message: other.to_string(),
+                    },
+                });
+            }
+            Ok(Box::pin(stream::iter(vec![
+                Ok(ModelEvent::Delta("ok".into())),
+                Ok(ModelEvent::Done),
+            ])))
+        }
+
+        async fn chat(
+            &self,
+            _m: Vec<ChatMessage>,
+            _o: ModelOptions,
+        ) -> Result<crate::types::ChatResponse, ModelError> {
+            Ok(crate::types::ChatResponse {
+                content: String::new(),
+                tool_calls: vec![],
+            })
+        }
+    }
+
+    /// Drive one turn to completion and return what the provider saw.
+    async fn run_capturing_turn(
+        history: Vec<ChatMessage>,
+        budget: usize,
+        overflow: Option<ModelError>,
+    ) -> Vec<usize> {
+        run_capturing_turn_with(history, budget, overflow, false).await
+    }
+
+    /// As [`run_capturing_turn`], but `always_overflow` keeps rejecting every call so a turn
+    /// can run out of retries.
+    async fn run_capturing_turn_with(
+        history: Vec<ChatMessage>,
+        budget: usize,
+        overflow: Option<ModelError>,
+        always_overflow: bool,
+    ) -> Vec<usize> {
+        let ctx = budget_test_ctx(history, budget);
+        let (_kernel, sender) = spy_kernel_with(ToolSpy);
+        let runner = TurnRunner::new(
+            ctx.clone(),
+            Arc::new(MockPipeline),
+            "sys".into(),
+            sender,
+            "tool_spy".into(),
+        );
+        let seen = Arc::new(StdMutex::new(Vec::new()));
+        ctx.providers.register(
+            "mock".into(),
+            Arc::new(CapturingProvider {
+                seen: Arc::clone(&seen),
+                overflow,
+                always_overflow,
+                calls: Arc::new(AtomicUsize::new(0)),
+            }),
+        );
+        let sid = runner.create_session().unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+        runner
+            .spawn_turn(sid, "hi".into(), None, RunOverrides::default(), tx)
+            .unwrap();
+        while let Some(ev) = rx.recv().await {
+            if matches!(ev, AgentEvent::Done { .. } | AgentEvent::Error(_)) {
+                break;
+            }
+        }
+        seen.lock().unwrap().clone()
+    }
+
     struct MockPipeline;
     impl ContextPipeline for MockPipeline {
         fn assemble(
@@ -702,6 +858,68 @@ mod tests {
         kernel.sender().send(KernelMessage::Shutdown).unwrap();
     }
 
+    /// A long session must not be forwarded whole: the request is trimmed to the budget.
+    #[tokio::test]
+    async fn provider_request_stays_within_the_configured_context_budget() {
+        const BUDGET: usize = 2_000;
+        let history: Vec<ChatMessage> = (0..40)
+            .map(|i| ChatMessage::user(format!("message {i}: {}", "lorem ipsum ".repeat(150))))
+            .collect();
+        let sizes = run_capturing_turn(history, BUDGET, None).await;
+        assert_eq!(sizes.len(), 1, "one model call expected");
+        assert!(
+            sizes[0] <= BUDGET,
+            "request estimated at {} tokens, budget is {BUDGET}",
+            sizes[0]
+        );
+    }
+
+    /// An upstream context-window rejection must be retried with a smaller request.
+    #[tokio::test]
+    async fn context_overflow_retries_with_a_smaller_request() {
+        let history: Vec<ChatMessage> = (0..40)
+            .map(|i| ChatMessage::user(format!("message {i}: {}", "lorem ipsum ".repeat(150))))
+            .collect();
+        let overflow = ModelError::TokenLimitExceeded {
+            used: 60_000,
+            max: 20_000,
+        };
+        let sizes = run_capturing_turn(history, 100_000, Some(overflow)).await;
+        assert_eq!(
+            sizes.len(),
+            2,
+            "the overflow must trigger exactly one retry"
+        );
+        assert!(sizes[1] < sizes[0], "retry must be smaller: {:?}", sizes);
+        assert!(
+            sizes[1] <= 18_000,
+            "the upstream window (20k) must drive the retry, got {} tokens",
+            sizes[1]
+        );
+    }
+
+    /// Retries are bounded, and every retry must shrink the request (a no-op retry would
+    /// resend the identical request): three rejections end the turn with an error.
+    #[tokio::test]
+    async fn context_overflow_gives_up_after_the_retry_budget() {
+        let history: Vec<ChatMessage> = (0..40)
+            .map(|i| ChatMessage::user(format!("message {i}: {}", "lorem ipsum ".repeat(150))))
+            .collect();
+        let overflow = ModelError::TokenLimitExceeded {
+            used: 60_000,
+            max: 20_000,
+        };
+        let sizes = run_capturing_turn_with(history, 100_000, Some(overflow), true).await;
+        assert_eq!(
+            sizes.len(),
+            MAX_OVERFLOW_RETRIES + 1,
+            "one call plus the bounded retries"
+        );
+        assert!(
+            sizes.windows(2).all(|pair| pair[1] < pair[0]),
+            "every retry must strictly shrink the request: {sizes:?}"
+        );
+    }
     #[tokio::test]
     async fn cancel_signals_turn_to_stop_with_cancelled_error() {
         let (kernel, sender) = spy_kernel_with(BlockingSpy);

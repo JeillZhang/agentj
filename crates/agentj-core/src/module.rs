@@ -70,6 +70,14 @@ pub trait ContextPipeline: Send + Sync {
         tool_results: &[(ToolCall, String)],
     ) -> Vec<ChatMessage>;
     fn reflux(&self, history: &mut Vec<ChatMessage>, tool_call: &ToolCall, result: String);
+    /// Trim an assembled request so it fits `budget_tokens` (design §上下文预算). The
+    /// default implementation is used by every pipeline, so a request is trimmed to the
+    /// budget whenever the message layout allows it (the system prompt and the newest
+    /// message are always kept, so an unusually large system prompt can still exceed the
+    /// budget). Override only when the pipeline knows its layout better. @since 0.29.7
+    fn fit(&self, messages: Vec<ChatMessage>, budget_tokens: usize) -> Vec<ChatMessage> {
+        crate::budget::fit_messages(messages, budget_tokens)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

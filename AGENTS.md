@@ -1,6 +1,6 @@
 # AGENTS.md
 
-> **当前版本 0.29.6** · `PROTOCOL_VERSION` **0.18.0**（28 方法 / 78 schemas / 18 crates）
+> **当前版本 0.29.7** · `PROTOCOL_VERSION` **0.18.0**（28 方法 / 78 schemas / 18 crates）
 > 本文件只记录**约束、入口与基线**（Setup / Commands / Architecture / Conventions / Rules）。
 > **逐版本变更与历史决策不写在这里** —— 见 [`docs/changelog/`](docs/changelog/)、
 > [`docs/guide/`](docs/guide/)、[`docs/specs/`](docs/specs/) 与 `.agents/summary/`。
@@ -26,6 +26,7 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
   + e2e_cli/e2e_permission/e2e_serve/e2e_ws/e2e_http_static 密封测试）
   > 内循环用 `cargo test -p <crate> --lib` 只跑单测；全量 e2e 现已秒级（`e2e_permission`
   > 曾因硬编码 session id 读阻塞而无限挂起，2026-10-16 修复并改用 `timeout_ms = 800`）。
+  > e2e 子进程统一用 `serve --port 0` + 读回 stdout 的 `listening on`（避免先选端口再 bind 的竞态）。
 - `cargo clippy --workspace --all-targets -- -D warnings` — lint 门禁（零警告）
 - `cargo bench -p agentj-model` — 模型流式基准（criterion）
 - `cargo run -p agentj-protocol --bin gen_schemas` — 重新生成 `schemas/*.json`
@@ -74,11 +75,14 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
   零内核耦合。协议版本 `0.18.0`，78 schemas。
 - `agentj-core`（内核）：Kernel 混合总线 + 模块 trait 注册表
   + ServiceRegistry（同步/异步） + TurnRunner 总线化 turn 编排
+  + `budget`（请求 token 预算：`estimate_tokens` 估算 + `fit_messages` 裁剪
+  + 上游超限时 `retry_budget` 收紧重试，`ContextPipeline::fit` 默认接入）
   + `ToolCallContext`（会话根上下文，工具相对路径重定基）
   + `TurnArtifact`（FileChange/Todo 产出 + 自研 unified diff，per-run `run_id`/`seq`）
   + 事件总线重入防护（EventGuard thread_local + MAX_EVENT_DEPTH=16）。
 - `agentj-config`：TOML 配置（[model]/[permission]/[session]/[license]/[[mcp.servers]]；
   `[permission] timeout_ms` 调整 `ask` 自动拒绝等待预算（默认 60s，e2e fixture 调至 800ms）；
+  `[model] max_context_tokens` 调整单次请求 token 预算（默认 128k，钳制 1k..=10M）；
   `toml_edit` 定点写回 `[model]` 保留注释）。
 - `agentj-auth`：订阅凭据（`Credential` api_key/oauth + `AuthStore`
   XDG 路径 / 目录 0700 / 文件 0600 / 原子写 / 权限与 JSON 校验拒绝降级
@@ -97,9 +101,12 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
   + `console_catalog`（`GET /api/v2/config` 账号级目录，失败即 Err 以便回退）
   + `catalog`（`data/opencode-go.json` 为 `gen_opencode_catalog` 由 live `/v1/models` 与
   models.dev `provider.npm` 生成的**路由快照**，经 `from_overlay_and_live` 与 live 合并；
-  models.dev 未收录的 id 一律 `openai-compat` + `verified:false`，不猜路由）。
+  models.dev 未收录的 id 一律 `openai-compat` + `verified:false`，不猜路由）
+  + `gateway_error`（三 wire 共用错误映射：429 → `RateLimited`、上下文超限 →
+  `TokenLimitExceeded { used, max }`、其余 → `Api { status, message }`）
+  + `retry`（`temperature` 被拒时去参数重试一次）。
 - `agentj-tools`：内置工具（bash/glob/grep/read/write + `todo`，共 6 个）。
-- `agentj-context`：上下文管线。
+- `agentj-context`：上下文管线（装配/回流纯函数；预算裁剪由 `agentj-core::budget` 统一下发）。
 - `agentj-stats`：用量统计 UsageCollector。
 - `agentj-license`：Ed25519 许可证校验（entitlements + free mode）。
 - `agentj-mcp`：MCP 客户端 + McpConnectionManager 长驻连接
