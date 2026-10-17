@@ -66,6 +66,10 @@ env = { FOO = "bar" }
 - `[[permission.tools.<tool>.command_rules]]`：按命令前缀设置 `effect`
   （`deny` / `allow` 等）。权限决策引擎含超时自动 Deny 与 `allow_always`
   会话级记忆；取消即拒绝。
+- 同一条审批只认**第一次**答复：重复或迟到的答复既不会覆盖已生效的决定，也不会把工具
+  判成「查无此单」（工具只会报告真实原因：`timeout` / `cancelled` / `disconnected`）。
+  断线重连的客户端只要重新 `session/subscribe`（Web/TUI 打开会话时自动做）就继续持有
+  该会话的审批权。
 
 ## `[session]`
 
