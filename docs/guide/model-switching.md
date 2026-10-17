@@ -80,6 +80,27 @@ AgentJ 允许在**运行期**逐轮选择模型：不用改 `config.toml`、不�
 - 本特性**不是**「会话级模型」：不存在「会话值 / 配置默认 / 请求值」三级优先，
   也不需要在会话里清除什么残留状态。
 
+## 模型把工具调用写成文本时
+
+少数模型（或它们背后的网关）不通过结构化的工具调用通道回话，而是把调用写成一段文本标记，
+例如：
+
+```text
+analysis <|constrain|>xml<|message|><rfl:parameter name="command">
+ls docs/changelog; git status --short
+</rfl:parameter>
+```
+
+内核不会把这段标记当成「模型的结论」：
+
+- 文本里写明了参数名（`command` → `bash`、`path`/`file_path` → `read`、`pattern`/`glob` → `glob`、
+  `regex`/`query` → `grep`）时，按它还原成一个**真正的工具调用**继续执行——权限审批、会话历史、
+  进度事件都与正常工具调用完全一致；
+- 认得出是标记但无法无歧义还原（只剩半截标记、未知参数、多参数）时，会重发一轮并明确要求模型
+  改走工具调用通道；仍然不改就**如实报错**，而不是把标记当答复交给用户。
+
+日志里会有 `model wrote its tool call as text; recovered it and executing the tool` 警告作为线索。
+
 ## 协议侧（选读）
 
 `session/run` 的两个可选参数：

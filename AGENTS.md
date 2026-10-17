@@ -1,6 +1,6 @@
 # AGENTS.md
 
-> **当前版本 0.29.9** · `PROTOCOL_VERSION` **0.18.0**（28 方法 / 78 schemas / 18 crates）
+> **当前版本 0.29.10** · `PROTOCOL_VERSION` **0.18.0**（28 方法 / 78 schemas / 18 crates）
 > 本文件只记录**约束、入口与基线**（Setup / Commands / Architecture / Conventions / Rules）。
 > **逐版本变更与历史决策不写在这里** —— 见 [`docs/changelog/`](docs/changelog/)、
 > [`docs/guide/`](docs/guide/)、[`docs/specs/`](docs/specs/) 与 `.agents/summary/`。
@@ -78,6 +78,8 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
   + `budget`（请求 token 预算：`estimate_tokens` 估算 + `fit_messages` 裁剪
   + 上游超限时 `retry_budget` 收紧重试，`ContextPipeline::fit` 默认接入）
   + `ToolCallContext`（会话根上下文，工具相对路径重定基）
+  + `text_tool_call`（把模型写成纯文本方言的工具调用还原成真正的调用；无法无歧义还原时
+  纠偏重发并如实报错，不把标记当结论）
   + `TurnArtifact`（FileChange/Todo 产出 + 自研 unified diff，per-run `run_id`/`seq`）
   + 事件总线重入防护（EventGuard thread_local + MAX_EVENT_DEPTH=16）。
 - `agentj-config`：TOML 配置（[model]/[agent]/[permission]/[session]/[license]/[[mcp.servers]]；
