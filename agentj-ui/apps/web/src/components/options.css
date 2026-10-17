@@ -27,6 +27,12 @@
   padding: 6px 8px;
 }
 
+.pop-empty {
+  font-size: 11px;
+  color: var(--aj-textCaption);
+  padding: 6px 8px 2px;
+}
+
 .pop-item {
   display: flex;
   align-items: center;

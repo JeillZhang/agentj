@@ -3,6 +3,7 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import ProjectEditDialog from "./ProjectEditDialog";
 import { createProject, loadProjects, updateProject } from "../projectStore";
+import { NO_MODEL_HINT } from "./ComposerOptions";
 
 describe("ProjectEditDialog", () => {
   beforeEach(() => localStorage.clear());
@@ -23,6 +24,22 @@ describe("ProjectEditDialog", () => {
     expect(saved?.workDir).toBe("/repo/alpha");
     expect(saved?.isDefault).toBe(true);
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("offers the kernel-served models and says so when there are none", () => {
+    const project = createProject("Alpha");
+    const { unmount } = render(
+      <ProjectEditDialog
+        project={project}
+        onClose={vi.fn()}
+        models={[{ name: "opencode-go/kimi-k3" }]}
+      />,
+    );
+    expect(screen.getByRole("option", { name: "opencode-go/kimi-k3" })).toBeTruthy();
+    unmount();
+    render(<ProjectEditDialog project={project} onClose={vi.fn()} />);
+    expect(screen.queryByRole("option", { name: "deepseek-chat" })).toBeNull();
+    expect(screen.getByRole("option", { name: NO_MODEL_HINT })).toBeTruthy();
   });
 
   it("clears the previous default project on save", () => {

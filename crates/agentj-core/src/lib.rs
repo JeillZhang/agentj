@@ -11,6 +11,7 @@ pub mod kernel;
 pub mod module;
 pub mod permission;
 pub mod resolver;
+pub mod text_tool_call;
 pub mod tool_executor;
 pub mod tool_paths;
 pub mod turn_runner;

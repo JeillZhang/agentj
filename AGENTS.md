@@ -1,6 +1,6 @@
 # AGENTS.md
 
-> **当前版本 0.29.7** · `PROTOCOL_VERSION` **0.18.0**（28 方法 / 78 schemas / 18 crates）
+> **当前版本 0.29.11** · `PROTOCOL_VERSION` **0.18.0**（28 方法 / 78 schemas / 18 crates）
 > 本文件只记录**约束、入口与基线**（Setup / Commands / Architecture / Conventions / Rules）。
 > **逐版本变更与历史决策不写在这里** —— 见 [`docs/changelog/`](docs/changelog/)、
 > [`docs/guide/`](docs/guide/)、[`docs/specs/`](docs/specs/) 与 `.agents/summary/`。
@@ -78,11 +78,15 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
   + `budget`（请求 token 预算：`estimate_tokens` 估算 + `fit_messages` 裁剪
   + 上游超限时 `retry_budget` 收紧重试，`ContextPipeline::fit` 默认接入）
   + `ToolCallContext`（会话根上下文，工具相对路径重定基）
+  + `text_tool_call`（把模型写成纯文本方言的工具调用还原成真正的调用；无法无歧义还原时
+  纠偏重发并如实报错，不把标记当结论）
   + `TurnArtifact`（FileChange/Todo 产出 + 自研 unified diff，per-run `run_id`/`seq`）
   + 事件总线重入防护（EventGuard thread_local + MAX_EVENT_DEPTH=16）。
-- `agentj-config`：TOML 配置（[model]/[permission]/[session]/[license]/[[mcp.servers]]；
+- `agentj-config`：TOML 配置（[model]/[agent]/[permission]/[session]/[license]/[[mcp.servers]]；
   `[permission] timeout_ms` 调整 `ask` 自动拒绝等待预算（默认 60s，e2e fixture 调至 800ms）；
   `[model] max_context_tokens` 调整单次请求 token 预算（默认 128k，钳制 1k..=10M）；
+  `[agent] max_tool_iterations` 调整单轮工具调用轮数（默认 50，钳制 1..=1000；
+  用尽后内核改为无工具收尾要结论）；
   `toml_edit` 定点写回 `[model]` 保留注释）。
 - `agentj-auth`：订阅凭据（`Credential` api_key/oauth + `AuthStore`
   XDG 路径 / 目录 0700 / 文件 0600 / 原子写 / 权限与 JSON 校验拒绝降级

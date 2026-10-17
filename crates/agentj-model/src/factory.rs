@@ -36,11 +36,14 @@ impl ModelProvider for MockStateful {
     ) -> Result<BoxStream<'static, Result<ModelEvent, ModelError>>, ModelError> {
         let n = self.calls.fetch_add(1, Ordering::SeqCst);
         let events: Vec<Result<ModelEvent, ModelError>> = if n == 0 {
-            vec![Ok(ModelEvent::ToolCall(ToolCall {
-                id: "call_1".into(),
-                name: "bash".into(),
-                arguments: serde_json::json!({"command": "curl http://example.com"}),
-            }))]
+            vec![
+                Ok(ModelEvent::ToolCall(ToolCall {
+                    id: "call_1".into(),
+                    name: "bash".into(),
+                    arguments: serde_json::json!({"command": "curl http://example.com"}),
+                })),
+                Ok(ModelEvent::Done),
+            ]
         } else {
             vec![
                 Ok(ModelEvent::Delta("done".into())),
@@ -81,22 +84,28 @@ impl MockWorkbench {
 
     fn script(call: usize) -> Vec<Result<ModelEvent, ModelError>> {
         match call {
-            0 => vec![Ok(ModelEvent::ToolCall(ToolCall {
-                id: "call_todo".into(),
-                name: "todo".into(),
-                arguments: serde_json::json!({"items": [
-                    {"content": "write e2e-artifact.txt", "status": "in_progress"},
-                    {"content": "verify todo/file_change frames", "status": "pending"}
-                ]}),
-            }))],
-            1 => vec![Ok(ModelEvent::ToolCall(ToolCall {
-                id: "call_write".into(),
-                name: "write".into(),
-                arguments: serde_json::json!({
-                    "path": "e2e-artifact.txt",
-                    "content": "e2e-artifact\n",
-                }),
-            }))],
+            0 => vec![
+                Ok(ModelEvent::ToolCall(ToolCall {
+                    id: "call_todo".into(),
+                    name: "todo".into(),
+                    arguments: serde_json::json!({"items": [
+                        {"content": "write e2e-artifact.txt", "status": "in_progress"},
+                        {"content": "verify todo/file_change frames", "status": "pending"}
+                    ]}),
+                })),
+                Ok(ModelEvent::Done),
+            ],
+            1 => vec![
+                Ok(ModelEvent::ToolCall(ToolCall {
+                    id: "call_write".into(),
+                    name: "write".into(),
+                    arguments: serde_json::json!({
+                        "path": "e2e-artifact.txt",
+                        "content": "e2e-artifact\n",
+                    }),
+                })),
+                Ok(ModelEvent::Done),
+            ],
             _ => vec![
                 Ok(ModelEvent::Delta("workbench done".into())),
                 Ok(ModelEvent::Done),
@@ -145,18 +154,21 @@ impl MockAsk {
 
     fn script(call: usize) -> Vec<Result<ModelEvent, ModelError>> {
         match call {
-            0 => vec![Ok(ModelEvent::ToolCall(ToolCall {
-                id: "call_ask".into(),
-                name: "ask".into(),
-                arguments: serde_json::json!({
-                    "question": "Which option should the E2E scenario pick?",
-                    "header": "E2E ask",
-                    "options": [
-                        {"id": "opt-a", "label": "Option A"},
-                        {"id": "opt-b", "label": "Option B"}
-                    ]
-                }),
-            }))],
+            0 => vec![
+                Ok(ModelEvent::ToolCall(ToolCall {
+                    id: "call_ask".into(),
+                    name: "ask".into(),
+                    arguments: serde_json::json!({
+                        "question": "Which option should the E2E scenario pick?",
+                        "header": "E2E ask",
+                        "options": [
+                            {"id": "opt-a", "label": "Option A"},
+                            {"id": "opt-b", "label": "Option B"}
+                        ]
+                    }),
+                })),
+                Ok(ModelEvent::Done),
+            ],
             _ => vec![
                 Ok(ModelEvent::Delta("ask answered".into())),
                 Ok(ModelEvent::Done),
@@ -303,22 +315,22 @@ mod tests {
         .unwrap();
         let first = scripted_events(&provider).await;
         match first.as_slice() {
-            [ModelEvent::ToolCall(call)] => {
+            [ModelEvent::ToolCall(call), ModelEvent::Done] => {
                 assert_eq!(call.name, "todo");
                 let items = call.arguments["items"].as_array().unwrap();
                 assert_eq!(items.len(), 2, "the todo call must script two items");
                 assert_eq!(items[0]["status"], "in_progress");
                 assert_eq!(items[1]["status"], "pending");
             }
-            other => panic!("call 1 must be one todo tool call, got {other:?}"),
+            other => panic!("call 1 must be one todo tool call + Done, got {other:?}"),
         }
         let second = scripted_events(&provider).await;
         match second.as_slice() {
-            [ModelEvent::ToolCall(call)] => {
+            [ModelEvent::ToolCall(call), ModelEvent::Done] => {
                 assert_eq!(call.name, "write");
                 assert_eq!(call.arguments["path"], "e2e-artifact.txt");
             }
-            other => panic!("call 2 must be one write tool call, got {other:?}"),
+            other => panic!("call 2 must be one write tool call + Done, got {other:?}"),
         }
         let third = scripted_events(&provider).await;
         assert!(
@@ -333,7 +345,7 @@ mod tests {
             ProviderFactory::create("mock-ask", "mock-ask", "mock://local", String::new()).unwrap();
         let first = scripted_events(&provider).await;
         match first.as_slice() {
-            [ModelEvent::ToolCall(call)] => {
+            [ModelEvent::ToolCall(call), ModelEvent::Done] => {
                 assert_eq!(call.name, "ask");
                 assert!(
                     call.arguments["question"]
