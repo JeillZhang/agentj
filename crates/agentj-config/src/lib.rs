@@ -37,6 +37,11 @@ pub struct ModelSection {
     /// opencode-go Console base URL (device flow + account catalog). @since 0.27.0
     #[serde(default = "default_console_base_url")]
     pub console_base_url: String,
+    /// Upper bound (approximate tokens) for an assembled request; the kernel trims the
+    /// session history and tool results to fit before calling a provider.
+    /// @since 0.29.7
+    #[serde(default = "default_max_context_tokens")]
+    pub max_context_tokens: i64,
 }
 
 fn default_model() -> String {
@@ -53,6 +58,13 @@ pub fn default_console_base_url() -> String {
     "https://opencode.ai/console".into()
 }
 
+/// Default per-request context budget (approximate tokens), kept well below every window
+/// in the catalog so a request is almost always accepted. Single source of truth lives in
+/// `agentj_core::budget`. @since 0.29.7
+pub fn default_max_context_tokens() -> i64 {
+    agentj_core::budget::DEFAULT_CONTEXT_TOKENS as i64
+}
+
 impl Default for ModelSection {
     fn default() -> Self {
         Self {
@@ -61,6 +73,7 @@ impl Default for ModelSection {
             default_model: default_model(),
             quota_warn_percent: default_quota_warn_percent(),
             console_base_url: default_console_base_url(),
+            max_context_tokens: default_max_context_tokens(),
         }
     }
 }
@@ -126,6 +139,7 @@ impl Default for AgentJConfig {
                 default_model: default_model(),
                 quota_warn_percent: default_quota_warn_percent(),
                 console_base_url: default_console_base_url(),
+                max_context_tokens: default_max_context_tokens(),
             },
             permission: None,
             session: None,
@@ -177,6 +191,10 @@ impl ConfigProvider for Config {
     fn get_int(&self, key: &str) -> Option<i64> {
         match key {
             "model.quota_warn_percent" => Some(self.inner.model.quota_warn_percent.clamp(1, 100)),
+            "model.max_context_tokens" => Some(self.inner.model.max_context_tokens.clamp(
+                agentj_core::budget::MIN_CONTEXT_TOKENS as i64,
+                agentj_core::budget::MAX_CONTEXT_TOKENS as i64,
+            )),
             _ => None,
         }
     }
@@ -519,6 +537,41 @@ mod tests {
                 .unwrap()
                 .get_int("model.quota_warn_percent"),
             Some(100)
+        );
+    }
+
+    #[test]
+    fn max_context_tokens_defaults_overrides_and_clamps() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("config.toml");
+        std::fs::write(&p, "[model]\nprovider = \"deepseek\"\n").unwrap();
+        assert_eq!(
+            Config::load(Some(p.clone()))
+                .unwrap()
+                .get_int("model.max_context_tokens"),
+            Some(128_000)
+        );
+        std::fs::write(
+            &p,
+            "[model]\nprovider = \"deepseek\"\nmax_context_tokens = 32000\n",
+        )
+        .unwrap();
+        assert_eq!(
+            Config::load(Some(p.clone()))
+                .unwrap()
+                .get_int("model.max_context_tokens"),
+            Some(32_000)
+        );
+        std::fs::write(
+            &p,
+            "[model]\nprovider = \"deepseek\"\nmax_context_tokens = 5\n",
+        )
+        .unwrap();
+        assert_eq!(
+            Config::load(Some(p))
+                .unwrap()
+                .get_int("model.max_context_tokens"),
+            Some(1_000)
         );
     }
 

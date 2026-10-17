@@ -40,6 +40,10 @@ env = { FOO = "bar" }
 ## `[model]`
 
 - `provider` / `default_model`：默认模型。
+- `max_context_tokens`：单次请求的近似 token 上限（默认 `128000`，钳制到
+  `1000..=10000000`）。发送前内核把会话历史与工具结果裁剪到该预算内（保留 system 与最新
+  消息；单条超长正文保留头尾并标注截断）。上游若仍报上下文超限，则按上游给出的窗口收紧
+  预算重试（最多 2 次），因此长会话不会再把 400 `context_length_exceeded` 直接抛给用户。
 - `[[model.providers]]`：模型提供方列表。
   - `kind` 取值：`openai-compat`（OpenAI 兼容 SSE）/ `responses`（OpenAI Responses）/
     `anthropic`（Messages）/ `opencode-go`。另有内置 `Mock` 与 `Ollama`。
