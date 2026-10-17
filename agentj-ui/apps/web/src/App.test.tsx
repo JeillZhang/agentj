@@ -231,6 +231,7 @@ import App, { connectionLight, isProtocolCompatible } from "./App";
 import { historyToEntries, historyToConversation, filterNodes } from "./Trajectory";
 import { Trajectory } from "./Trajectory";
 import { saveDisplayPrefs } from "./displayPrefsStore";
+import { saveComposerPrefs } from "./layoutStore";
 
 const WIRE_CORPUS = [
   { session_id: "s1", seq: 1, ts: 100, value: { kind: "user", content: "hi" } },
@@ -720,8 +721,30 @@ describe("App with mocked SDK transport", () => {
     shared.kernelStatusResult.value = null;
   });
 
-  it("replaces opencode-go entries and auto-selects the first linked model", async () => {
+  // The persisted picker preference was displayed but never sent: after a reload the
+  // run silently fell back to the kernel default. @since 0.29.8
+  it("applies the persisted composer model to the next run", async () => {
+    saveComposerPrefs({ model: "opencode-go/kimi-k3" });
     shared.kernelStatusResult.value = {
+      modules: [{ id: "test-mod", state: "running" }],
+      default_model: "DeepSeek-Flash-V4.1",
+      providers: [{ id: "opencode-go", models: ["opencode-go/kimi-k3"] }],
+    };
+    shared.newSessionId.value = "s1";
+    render(<App />);
+    await createActiveSession();
+    expect(await screen.findByRole("button", { name: /opencode-go\/kimi-k3/ })).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText(/prompt/i), { target: { value: "hi" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+    await waitFor(() => expect(shared.lastRunParams.value).not.toBeNull());
+    expect(shared.lastRunParams.value).toMatchObject({
+      model: "opencode-go/kimi-k3",
+      provider: "opencode-go",
+    });
+    shared.kernelStatusResult.value = null;
+  });
+
+  it("replaces opencode-go entries and auto-selects the first linked model", async () => {    shared.kernelStatusResult.value = {
       modules: [{ id: "test-mod", state: "running" }],
       default_model: "deepseek-chat",
       providers: [

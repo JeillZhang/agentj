@@ -783,6 +783,10 @@ export default function RunPanel({
   const usageReadout =
     usageTotal != null && usageTotal.prompt + usageTotal.completion > 0 ? usageTotal : null;
   const usageText = usageReadout ? formatUsageTitle(usageReadout) : "";
+  // The chip names the model this run will send — an explicit pick wins over the
+  // configured default, so the label can no longer lag behind the actual selection.
+  // @since 0.29.8
+  const chipModel = selected?.name ?? model;
 
   return (
     <section ref={cardRef} aria-label="run" className="aj-card">
@@ -907,8 +911,8 @@ export default function RunPanel({
             />
           )}
           <div className="aj-composer__header-meta">
-            {model !== undefined && model !== null && model !== "" && (
-              <span className="aj-chip aj-chip--model">{model}</span>
+            {chipModel !== undefined && chipModel !== null && chipModel !== "" && (
+              <span className="aj-chip aj-chip--model">{chipModel}</span>
             )}
             {usageReadout && (
               <span className="aj-composer__usage" title={usageText} aria-label={usageText}>
