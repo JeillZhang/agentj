@@ -8,9 +8,10 @@
 > 待实施），不得随内容替换而删除；仅当该特性实际实施完成后才能移除（移入功能记录）。
 > 后端总结独立存放于 `summary_and_next_se.md`；两文件内容隔离，互不写入对方文件。
 
-> 当前功能：**v0.29.8 输入框模型标签跟随实际选择（修复）**
+> 当前功能：**v0.29.8 输入框模型标签跟随实际选择（修复）**（v0.29.9 为同分支的后端修复，
+> 前端无改动，详见 `summary_and_next_se.md`）
 > ——来源：用户报告「会话输入框右上角始终显示默认模型（`DeepSeek-Flash-V4.1`），不会根据实际
-> 使用的模型替换」。工作区 0.29.7 → **0.29.8**；`PROTOCOL_VERSION` 仍 **0.18.0** /
+> 使用的模型替换」。工作区 0.29.7 → **0.29.9**；`PROTOCOL_VERSION` 仍 **0.18.0** /
 > 28 方法 / 78 schemas（**无协议变更**，未重生成类型与 `METHODS`）。
 > 后端脚本同步见 `summary_and_next_se.md`。
 
@@ -60,7 +61,7 @@
 | `npm --prefix agentj-ui test --workspace=@agentj/sdk` | **55** passed（6 files） |
 | `bun --cwd agentj-ui/apps/tui test` | 177 passed（21 files，未受本阶段改动影响） |
 | `cargo test -p agentj-protocol -- drift` | 2 passed（协议面无漂移） |
-| `./scripts/check-version.sh` | **version-ok（0.29.8 / 0.18.0）** |
+| `./scripts/check-version.sh` | **version-ok（0.29.9 / 0.18.0）** |
 
 ## v0.29.6（Web 重连即重新订阅；`SessionBusy` 友好提示）✅
 
@@ -157,8 +158,9 @@
 ## 下一步
 
 - v0.29.8 前端代码 + 测试已落地，全门禁绿（Web 658 / SDK 55 / TUI 177 / Web build clean /
-  drift 2 / version-ok）。剩余：提交 → 推送**两个远端**（本机 `github` = GitHub 权威、
-  `origin` = GitCode 镜像；与 AGENTS.md 的远端命名相反）→ 在 GitHub 开 PR（用户负责合并）。
+  drift 2 / version-ok）；v0.29.9 为纯后端修复，前端无需重跑。剩余：提交 → 推送**两个远端**
+  （本机 `github` = GitHub 权威、`origin` = GitCode 镜像；与 AGENTS.md 的远端命名相反）→
+  更新在 GitHub 的 PR（用户负责合并）。
 - 前端候选：③ Web 接入服务端搜索；或订阅状态常驻指示（需先定义新鲜度语义）；
   或清理 `TopbarMenu` / `SettingsDialog` 测试里的重复 stub helper；
   或 TUI `/models` 与 Web 选择语义对齐（TUI 仍是内存态、不跨进程持久化）。

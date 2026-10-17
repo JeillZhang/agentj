@@ -7,16 +7,45 @@
 > 待实施），不得随内容替换而删除；仅当该特性实际实施完成后才能移除（移入功能记录）。
 > 前端总结独立存放于 `summary_and_next_fe.md`；两文件内容隔离，互不写入对方文件。
 
-> 当前功能：**v0.29.8 工具往返落库 + 输入框模型标签跟随实际选择（修复）**
-> ——来源：用户报告两条缺陷（1）会话输入框右上角始终显示配置默认模型，切换模型后不变；
-> （2）长任务（「分析当前项目优缺点」）执行完工具后只回 `passed total: 922\n</rfl:parameter>`
-> 就停止，发「继续」也无法接着做。
-> 后端范围：`crates/agentj-core/src/turn_runner.rs`、`crates/agentj-model/src/factory.rs`；
-> 前端范围见 `summary_and_next_fe.md`。
+> 当前功能：**v0.29.9 长任务工具轮次用尽后仍给结论（修复）** —— 同分支叠加 0.29.8 的
+> 工具往返落库 + 输入框模型标签跟随实际选择。
+> 来源：用户报告三条缺陷（1）会话输入框右上角始终显示配置默认模型，切换模型后不变；
+> （2）长任务执行完工具后只回 `passed total: 922\n</rfl:parameter>` 就停，发「继续」接不上；
+> （3）「分析当前项目优缺点」读完文档与 summary 后只回一句「让我再快速看一下 git 状态…」
+> 就结束，无最终结论。
+> 后端范围：`crates/agentj-core/src/turn_runner.rs`、`crates/agentj-config/src/{lib,merge}.rs`、
+> `crates/agentj-model/src/factory.rs`；前端范围见 `summary_and_next_fe.md`。
 > 协议 wire 面**不变**（`PROTOCOL_VERSION` 仍 **0.18.0** / 28 方法 / 78 schemas）；
-> 工作区 0.29.7 → **0.29.8**（纯修复，无新增方法 / schema）。
+> 工作区 0.29.7 → **0.29.9**（纯修复，无新增方法 / schema）。
 
-## v0.29.8（工具往返落库 + 截断流不再当成结论）✅
+## v0.29.8–0.29.9（工具往返落库 + 截断流不算结论 + 轮次用尽仍收尾）✅
+
+### v0.29.9 追加修复：工具轮次用尽时不再丢掉结论
+
+实测复现（真实 opencode-go 网关 + `agentj serve` + WebSocket 客户端）：预算 50 轮跑
+「分析一下当前项目的优缺点」，预算耗尽后本轮以 `-32603 {"message":"max tool iterations
+| exceeded"}` 结束——UI 只留下模型最后一句过渡语（「让我再快速看一下 git 状态与测试门禁
+情况，以及代码规模」），既没有结论也没人告诉用户发生了什么。
+
+| 位置 | 缺陷 |
+|---|---|
+| `crates/agentj-core/src/turn_runner.rs` | `'outer: for _iter in 0..max_iter` 走完即 `AgentEvent::Error("max tool iterations exceeded")`；整轮的采集成果与中间回答全部作废 |
+| `crates/agentj-config/src/lib.rs` | `turn_runner` 会读 `agent.max_tool_iterations`，但 `ConfigProvider::get_int` 只认 `model.max_context_tokens` / `model.quota_warn_percent`——**该键任何配置都改不动**，实际永远是硬编码 `50` |
+| `crates/agentj-config/src/merge.rs` | 无 `[agent]` 节可合并（同上，配置层根本没有这个节） |
+
+修复：
+
+- **无工具收尾一趟**（`turn_runner.rs`）：新增 `const BUDGET_EXHAUSTED_NUDGE: &str = "工具调用轮次已用尽。请立刻基于你已经获得的信息给出最终结论，不要再请求任何工具。";`，循环结束后把该指令 push 进 `messages`，调 `Self::conclude_without_tools(provider.as_ref(), &pipeline, messages, &default_options, context_budget, &reply, &mut cancel_rx, &mut usage)` → `chat_stream(request, Vec::new(), options)`（**不下发任何工具定义**），收下的文本作为本轮答复落库并以 `AgentEvent::Done` 结算（`tool_calls` 为全程累计的 `all_tool_calls`）；
+  收尾返回 `Ok(None)` = 取消 / 客户端断开 → 发 `AgentEvent::Error("cancelled")` 后返回；
+  收尾文本为空 → `Err("max tool iterations exceeded ({max_iter}) and the model returned no
+  conclusion")`，**不写助手消息**。
+- **`[agent]` 节补全**（`agentj-config`）：新增 `AgentSection { max_tool_iterations: i64 }`
+  （`default_max_tool_iterations() = 50`）、`MIN_TOOL_ITERATIONS = 1` / `MAX_TOOL_ITERATIONS =
+  1_000` / `clamp_tool_iterations()`，`AgentJConfig` 加 `#[serde(default)] pub agent: AgentSection`，
+  `get_int("agent.max_tool_iterations")` 返钳制值，`merge_config` 里文件层非默认值胜出，
+  `docs/guide/configuration.md` 新增 `[agent]` 节说明。
+
+### v0.29.8：工具往返落库 + 截断流不再当成结论
 
 ### 缺陷与根因
 
@@ -63,6 +92,20 @@
 | `turn_fails_when_no_round_ever_completes` | 同上 | 恒截断 → 共 `1 + MAX_INCOMPLETE_RETRIES` 次请求后如实报错，历史不落库 |
 | `turn_accepts_an_empty_but_terminated_round` | 同上 | 有 `Done`、无文本的正常收尾不重试（守卫不能误伤空回复） |
 | `factory_creates_mock_workbench` / `factory_creates_mock_ask` | `crates/agentj-model/src/factory.rs` | 夹具契约：工具调用后必有 `Done` |
+
+### 验证结果（0.29.9，2026-10-17）
+
+| 门禁 | 结果 |
+|---|---|
+| `cargo test --workspace` | **891 passed, 0 failed**（886 → 891，+5；`agentj-core` 155 / 新增 2，`agentj-config` +3） |
+| `cargo clippy --workspace --all-targets -- -D warnings` | 0 warnings |
+| `cargo fmt --all` | clean |
+| `./scripts/check-version.sh` | `version-ok`（0.29.9 / 0.18.0） |
+| 真实 key E2E：预算压到 3 轮 | `[agent] max_tool_iterations = 3` + 「统计 crates/ 下每个 crate 的名字与行数」→ 3 轮工具后给出**完整 18-crate 表格结论**（不再 `-32603 max tool iterations exceeded`），快照末尾是对应 1527 字符的 `assistant`（无 `tool_calls`） |
+| 真实 key E2E：默认 50 轮 | 「分析一下当前项目的优缺点」→ 272.5s / 44 次工具调用后给出完整分析报告（优点 6 条 / 缺点与风险 / 总体评价）；发「继续」后模型不再重复残句，而是带完整上下文（44 次调用累计 `prompt_tokens` **5,728,872**，单次≈128k 预算）反问「希望我接着往哪个方向深入？」（`ask` 工具 + 3 选项） |
+
+> 注意：模型 id 必须写全 `opencode-go/deepseek-v4.1-flash`；只给 `deepseek-v4.1-flash` 会得到
+> `unknown model 'deepseek-v4.1-flash' for provider 'opencode-go'`。
 
 ### 验证结果（0.29.8，2026-10-17）
 
@@ -111,6 +154,10 @@
   （此时由 `retry_budget` 按上游窗口收紧重试，最多 2 次）。
 - **裁剪即丢失**：超预算时最老的会话历史与（同轮内）较早的工具结果会被丢弃，正文超长时中段
   被截断；仅在日志/行为上可观测，UI 无「已裁剪」提示。
+- **`ask` 问题无超时上限**（0.29.9 实测发现）：长任务里模型反问方向时挂起
+  `question/respond`；探测客户端未应答就一直等到被手动杀掉（服务端无默认 `timeout_s`）。
+  UI 有 `AskQuestionCard` 所以正常路径可见，但「没人回答 = 本轮永久挂起」值得跟进
+  （默认超时或 idle 提示）。
 - **快照体积随工具往返增长**（0.29.8 起）：工具结果现在会落库，实测一次只读探测里的 `glob`
   结果就有 **7,963,644 字符**并原样进快照；发送侧虽有 `fit_messages` 预算，**存储侧没有上限**。
   跟进项：落库前按工具结果设上限（或压缩为摘要 + 提示「已截断」）。
@@ -153,11 +200,10 @@
 
 ## 下一步
 
-- v0.29.8 代码 + 测试已落地（886 / 658 / 55 / 177 全绿，clippy 零警告），版本元数据
-  （0.29.8）+ changelog（`docs/changelog/v0.29.md` 0.29.8 段 + 索引）+ `docs/guide/model-switching.md`
-  + 两份 summary 已收尾；剩余：提交 → 推送**两个远端**（本机 `github` = GitHub 权威、
-  `origin` = GitCode 镜像；与 AGENTS.md 的远端命名相反）→ 在 GitHub 开 PR（用户负责合并）。
+- v0.29.9 代码 + 测试 + 版本元数据 + changelog + guide + 两份 summary 已收尾；剩余：提交 →
+  推送**两个远端**（本机 `github` = GitHub 权威、`origin` = GitCode 镜像；与 AGENTS.md 的
+  远端命名相反）→ 更新在 GitHub 的 PR（用户负责合并）。
 - 后端候选：上表 ①②④⑥⑦⑧；或前端跟进见 `summary_and_next_fe.md`。
-- 可选跟进：为 `run` 增加 `--yes`（或非 TTY 自动拒绝），让 CI / 自动化能跑需审批工具路径；
-  把「会话已裁剪 N 条消息」作为可观测事件（`$/progress` 或日志）暴露；
-  `ModelEvent` 增加 `reasoning_content` 承载（`openai_compat` 目前丢弃该字段，思考过程不可见）。
+- 可选跟进：为 `run` 增加 `--yes`（或非 TTY 自动拒绝）；`ask` 问题默认超时；把「会话已裁剪
+  N 条消息」作为可观测事件；`ModelEvent` 增加 `reasoning_content` 承载（`openai_compat`
+  目前丢弃该字段，思考过程不可见）。

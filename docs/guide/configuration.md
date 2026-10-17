@@ -1,7 +1,7 @@
 # 配置（`config.toml`）
 
-AgentJ 使用 TOML 配置，包含 `[model]` / `[permission]` / `[session]` / `[license]` /
-`[[mcp.servers]]` 等节。
+AgentJ 使用 TOML 配置，包含 `[model]` / `[agent]` / `[permission]` / `[session]` /
+`[license]` / `[[mcp.servers]]` 等节。
 
 ## 示例
 
@@ -15,6 +15,9 @@ name = "deepseek-chat"
 base_url = "https://api.deepseek.com"
 api_key_env = "DEEPSEEK_API_KEY"
 kind = "openai-compat"   # openai-compat | responses | anthropic | opencode-go
+
+[agent]
+max_tool_iterations = 50
 
 [permission]
 [permission.tools.bash]
@@ -48,6 +51,13 @@ env = { FOO = "bar" }
   - `kind` 取值：`openai-compat`（OpenAI 兼容 SSE）/ `responses`（OpenAI Responses）/
     `anthropic`（Messages）/ `opencode-go`。另有内置 `Mock` 与 `Ollama`。
   - `api_key_env`：从环境变量读取 API Key。
+
+## `[agent]`
+
+- `max_tool_iterations`：单轮对话允许的工具调用轮数（默认 `50`，钳制到 `1..=1000`）。
+  用尽后内核**不再把工具交给模型**，而是再要一趟「收尾」：要求它基于已经查到的东西直接
+  给出结论，并把结论作为本轮答复。所以长任务不会在轮数用完时丢掉中间成果、只留下一句
+  「让我再看看…」或一条内部错误；若收尾那一趟也拿不回来内容，才会如实报错。
 
 ## `[permission]`
 
