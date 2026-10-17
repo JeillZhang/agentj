@@ -78,6 +78,39 @@ impl Default for ModelSection {
     }
 }
 
+fn default_max_tool_iterations() -> i64 {
+    50
+}
+
+/// Bounds for the agent loop (`[agent]`). @since 0.29.9
+#[derive(Debug, Clone, Deserialize)]
+pub struct AgentSection {
+    /// Tool-calling rounds a single turn may run before the loop stops offering tools and
+    /// asks the model for a conclusion from what it already gathered. Clamped to
+    /// `MIN_TOOL_ITERATIONS..=MAX_TOOL_ITERATIONS` by the accessor. @since 0.29.9
+    #[serde(default = "default_max_tool_iterations")]
+    pub max_tool_iterations: i64,
+}
+
+impl Default for AgentSection {
+    fn default() -> Self {
+        Self {
+            max_tool_iterations: default_max_tool_iterations(),
+        }
+    }
+}
+
+/// Lower bound of `agent.max_tool_iterations` (0 cannot be expressed by the loop, which always
+/// runs at least one round). @since 0.29.9
+pub const MIN_TOOL_ITERATIONS: i64 = 1;
+/// Upper bound of `agent.max_tool_iterations`. @since 0.29.9
+pub const MAX_TOOL_ITERATIONS: i64 = 1_000;
+
+/// Clamp a configured tool-iteration budget into the supported range. @since 0.29.9
+pub fn clamp_tool_iterations(value: i64) -> i64 {
+    value.clamp(MIN_TOOL_ITERATIONS, MAX_TOOL_ITERATIONS)
+}
+
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct SessionConfig {
     #[serde(default)]
@@ -116,6 +149,8 @@ pub struct AgentJConfig {
     #[serde(default)]
     pub model: ModelSection,
     #[serde(default)]
+    pub agent: AgentSection,
+    #[serde(default)]
     pub permission: Option<agentj_permission::PermissionConfig>,
     #[serde(default)]
     pub session: Option<SessionConfig>,
@@ -141,6 +176,7 @@ impl Default for AgentJConfig {
                 console_base_url: default_console_base_url(),
                 max_context_tokens: default_max_context_tokens(),
             },
+            agent: AgentSection::default(),
             permission: None,
             session: None,
             license: None,
@@ -191,6 +227,9 @@ impl ConfigProvider for Config {
     fn get_int(&self, key: &str) -> Option<i64> {
         match key {
             "model.quota_warn_percent" => Some(self.inner.model.quota_warn_percent.clamp(1, 100)),
+            "agent.max_tool_iterations" => {
+                Some(clamp_tool_iterations(self.inner.agent.max_tool_iterations))
+            }
             "model.max_context_tokens" => Some(self.inner.model.max_context_tokens.clamp(
                 agentj_core::budget::MIN_CONTEXT_TOKENS as i64,
                 agentj_core::budget::MAX_CONTEXT_TOKENS as i64,
@@ -339,6 +378,40 @@ mod tests {
         assert_eq!(
             agentj_permission::builtin_default_mode("bash"),
             agentj_permission::PermissionMode::Ask
+        );
+    }
+
+    /// The agent-loop budget is configurable now: it used to be a hardcoded 50 the config
+    /// layer could not answer at all, so a long task died at round 50 with an internal error
+    /// the user never saw. @since 0.29.9
+    /// Parse `text` as a config file through the same path production uses.
+    fn parse_config(text: &str) -> Config {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, text).unwrap();
+        Config::load(Some(path)).unwrap()
+    }
+
+    #[test]
+    fn agent_section_sets_the_tool_iteration_budget() {
+        let cfg = parse_config("[agent]\nmax_tool_iterations = 120\n");
+        assert_eq!(cfg.get_int("agent.max_tool_iterations"), Some(120));
+        assert_eq!(cfg.inner().agent.max_tool_iterations, 120);
+    }
+
+    #[test]
+    fn agent_section_defaults_and_clamps() {
+        let cfg = parse_config("[agent]\n");
+        assert_eq!(cfg.get_int("agent.max_tool_iterations"), Some(50));
+        let low = parse_config("[agent]\nmax_tool_iterations = 0\n");
+        assert_eq!(
+            low.get_int("agent.max_tool_iterations"),
+            Some(MIN_TOOL_ITERATIONS)
+        );
+        let high = parse_config("[agent]\nmax_tool_iterations = 99999\n");
+        assert_eq!(
+            high.get_int("agent.max_tool_iterations"),
+            Some(MAX_TOOL_ITERATIONS)
         );
     }
 

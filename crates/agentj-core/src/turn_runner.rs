@@ -18,6 +18,11 @@ use crate::types::{
 /// ended before `Done`, or the model answered with nothing. @since 0.29.8
 const MAX_INCOMPLETE_RETRIES: usize = 2;
 
+/// 工具轮次用尽后的收尾指令：不再提供任何工具，只要求模型基于已获得的信息作答。
+/// 没有它，用户看到的是模型最后一句「让我再看看…」加一条内部错误。@since 0.29.9
+const BUDGET_EXHAUSTED_NUDGE: &str =
+    "工具调用轮次已用尽。请立刻基于你已经获得的信息给出最终结论，不要再请求任何工具。";
+
 pub struct TurnHandle {
     cancel_tx: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
 }
@@ -437,14 +442,97 @@ impl TurnRunner {
             {
                 return Ok(());
             }
-        } else if reply
-            .send(AgentEvent::Error("max tool iterations exceeded".into()))
+            return Ok(());
+        }
+        // 工具轮次用尽：此刻模型最后一句往往还是「让我再看看…」，直接报内部错误会把整轮
+        // 成果丢掉，用户也接不下去。再走一趟**不带工具**的收尾，只允许它基于已获得的
+        // 信息作答；收尾也拿不到内容才如实报错。@since 0.29.9
+        messages.push(ChatMessage::user(BUDGET_EXHAUSTED_NUDGE.to_string()));
+        let conclusion = match Self::conclude_without_tools(
+            provider.as_ref(),
+            &pipeline,
+            messages,
+            &default_options,
+            context_budget,
+            &reply,
+            &mut cancel_rx,
+            &mut usage,
+        )
+        .await
+        {
+            Ok(Some(text)) => text,
+            Ok(None) => {
+                let _ = reply.send(AgentEvent::Error("cancelled".into())).await;
+                return Ok(());
+            }
+            Err(e) => return Err(route(e.to_string())),
+        };
+        if conclusion.trim().is_empty() {
+            return Err(route(format!(
+                "max tool iterations exceeded ({max_iter}) and the model returned no conclusion"
+            )));
+        }
+        ctx.session
+            .append(&session_id, ChatMessage::assistant(conclusion.clone()))
+            .map_err(|e| route(e.to_string()))?;
+        if reply
+            .send(AgentEvent::Done {
+                run_id: Some(run_id.clone()),
+                final_response: conclusion,
+                tool_calls: all_tool_calls,
+                usage,
+            })
             .await
             .is_err()
         {
             return Ok(());
         }
+        if let Some(f) = &on_done {
+            f(&session_id, usage);
+        }
         Ok(())
+    }
+
+    /// 工具轮次用尽后的收尾一趟：不提供任何工具，把流里的文本收集起来。返回 `None`
+    /// 表示本轮被取消（或客户端已断开），调用方不再结算。@since 0.29.9
+    #[allow(clippy::too_many_arguments)]
+    async fn conclude_without_tools(
+        provider: &dyn crate::module::ModelProvider,
+        pipeline: &Arc<dyn ContextPipeline>,
+        messages: Vec<ChatMessage>,
+        options: &ModelOptions,
+        context_budget: usize,
+        reply: &mpsc::Sender<AgentEvent>,
+        cancel_rx: &mut tokio::sync::oneshot::Receiver<()>,
+        usage: &mut Option<TokenUsage>,
+    ) -> Result<Option<String>, ModelError> {
+        let request = pipeline.fit(messages, context_budget);
+        let stream = provider
+            .chat_stream(request, Vec::new(), options.clone())
+            .await?;
+        futures::pin_mut!(stream);
+        let mut text = String::new();
+        loop {
+            let next = tokio::select! {
+                item = stream.next() => item,
+                _ = &mut *cancel_rx => return Ok(None),
+            };
+            match next {
+                Some(Ok(ModelEvent::Delta(delta))) => {
+                    text.push_str(&delta);
+                    if reply.send(AgentEvent::Delta(delta)).await.is_err() {
+                        return Ok(None);
+                    }
+                }
+                Some(Ok(ModelEvent::Usage(tu))) => match usage {
+                    Some(acc) => acc.accumulate(tu),
+                    None => *usage = Some(tu),
+                },
+                Some(Ok(_)) => {}
+                Some(Err(e)) => return Err(e),
+                None => return Ok(Some(text)),
+            }
+        }
     }
 
     async fn forward_artifacts(
@@ -902,10 +990,12 @@ mod tests {
         kernel.sender().send(KernelMessage::Shutdown).unwrap();
     }
 
-    /// Serves one scripted event list per call; the last script repeats.
+    /// Serves one scripted event list per call; the last script repeats. Records how many
+    /// tools each call was offered, so the tool-free conclusion pass is observable.
     struct ScriptProvider {
         calls: Arc<AtomicUsize>,
         scripts: Vec<Vec<ModelEvent>>,
+        tools_seen: Arc<StdMutex<Vec<usize>>>,
     }
 
     #[async_trait]
@@ -913,10 +1003,11 @@ mod tests {
         async fn chat_stream(
             &self,
             _m: Vec<ChatMessage>,
-            _t: Vec<ToolDefinition>,
+            t: Vec<ToolDefinition>,
             _o: ModelOptions,
         ) -> Result<BoxStream<'static, Result<ModelEvent, ModelError>>, ModelError> {
             let n = self.calls.fetch_add(1, Ordering::SeqCst);
+            self.tools_seen.lock().unwrap().push(t.len());
             let index = n.min(self.scripts.len().saturating_sub(1));
             let events = self.scripts[index].clone();
             Ok(Box::pin(stream::iter(events.into_iter().map(Ok))))
@@ -938,6 +1029,54 @@ mod tests {
     async fn run_scripted_turn(
         scripts: Vec<Vec<ModelEvent>>,
     ) -> (Vec<AgentEvent>, Vec<ChatMessage>, Arc<AtomicUsize>) {
+        let (events, history, calls, _tools) =
+            run_scripted_turn_with(Arc::new(MockConfig), scripts).await;
+        (events, history, calls)
+    }
+
+    /// Config answering the tool-iteration budget key.
+    struct TurnLimitConfig(i64);
+    impl ConfigProvider for TurnLimitConfig {
+        fn get_str(&self, _k: &str) -> Option<String> {
+            None
+        }
+        fn get_int(&self, k: &str) -> Option<i64> {
+            (k == "agent.max_tool_iterations").then_some(self.0)
+        }
+        fn providers(&self) -> Vec<(String, String)> {
+            vec![]
+        }
+    }
+
+    /// A round that asks for one tool and terminates properly.
+    fn tool_round() -> Vec<ModelEvent> {
+        vec![ModelEvent::ToolCall(tc()), ModelEvent::Done]
+    }
+
+    /// Drive one turn against `scripts` with a small tool-iteration budget, also returning the
+    /// per-call tool-definition counts.
+    async fn run_budgeted_scripted_turn(
+        max_iter: i64,
+        scripts: Vec<Vec<ModelEvent>>,
+    ) -> (
+        Vec<AgentEvent>,
+        Vec<ChatMessage>,
+        Arc<AtomicUsize>,
+        Arc<StdMutex<Vec<usize>>>,
+    ) {
+        run_scripted_turn_with(Arc::new(TurnLimitConfig(max_iter)), scripts).await
+    }
+
+    #[allow(clippy::type_complexity)]
+    async fn run_scripted_turn_with(
+        config: Arc<dyn ConfigProvider>,
+        scripts: Vec<Vec<ModelEvent>>,
+    ) -> (
+        Vec<AgentEvent>,
+        Vec<ChatMessage>,
+        Arc<AtomicUsize>,
+        Arc<StdMutex<Vec<usize>>>,
+    ) {
         let (kernel, sender) = spy_kernel_with(ToolSpy);
         let session = Arc::new(MockSession {
             history: StdMutex::new(vec![]),
@@ -946,14 +1085,16 @@ mod tests {
             session: session.clone(),
             tools: Arc::new(ToolRegistry::new()),
             providers: Arc::new(ProviderRegistry::new()),
-            config: Arc::new(MockConfig),
+            config,
         };
         let calls = Arc::new(AtomicUsize::new(0));
+        let tools_seen = Arc::new(StdMutex::new(vec![]));
         ctx.providers.register(
             "mock".into(),
             Arc::new(ScriptProvider {
                 calls: Arc::clone(&calls),
                 scripts,
+                tools_seen: Arc::clone(&tools_seen),
             }),
         );
         let runner = TurnRunner::new(
@@ -978,7 +1119,7 @@ mod tests {
         }
         let history = session.history.lock().unwrap().clone();
         kernel.sender().send(KernelMessage::Shutdown).unwrap();
-        (events, history, calls)
+        (events, history, calls, tools_seen)
     }
 
     /// Every tool round-trip is persisted: a follow-up turn (user “继续”) must still see the
@@ -1069,6 +1210,58 @@ mod tests {
             history.len(),
             2,
             "the empty assistant reply is still persisted"
+        );
+    }
+
+    /// 工具轮次用尽时不能把模型的最后一句「让我再看看…」当成结论，也不能只报一条内部
+    /// 错误：要再走一趟**不带工具**的收尾，把已经查到的信息落成最终答复。@since 0.29.9
+    #[tokio::test]
+    async fn turn_concludes_with_a_tool_free_pass_when_the_budget_runs_out() {
+        let (events, history, calls, tools_seen) = run_budgeted_scripted_turn(
+            2,
+            vec![
+                tool_round(),
+                tool_round(),
+                vec![ModelEvent::Delta("最终结论".into()), ModelEvent::Done],
+            ],
+        )
+        .await;
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            3,
+            "two tool rounds plus one conclusion pass"
+        );
+        assert_eq!(
+            tools_seen.lock().unwrap().last().copied(),
+            Some(0),
+            "the conclusion pass must offer no tools: left as-is the model asks for more work"
+        );
+        assert!(
+            matches!(events.last(), Some(AgentEvent::Done { final_response, .. }) if final_response == "最终结论"),
+            "unexpected terminal event: {:?}",
+            events.last()
+        );
+        assert_eq!(history.last().map(|m| m.content.as_str()), Some("最终结论"));
+    }
+
+    /// 收尾那一趟也拿不到结论时，如实报错——不能把「让我再看看…」回落成答复，
+    /// 也不写入一条空助手消息。@since 0.29.9
+    #[tokio::test]
+    async fn turn_reports_an_error_when_the_conclusion_pass_is_empty() {
+        let (events, history, calls, _tools) =
+            run_budgeted_scripted_turn(1, vec![tool_round(), vec![ModelEvent::Done]]).await;
+        assert_eq!(calls.load(Ordering::SeqCst), 2, "one tool round + one pass");
+        match events.last() {
+            Some(AgentEvent::Error(message)) => assert!(
+                message.contains("no conclusion"),
+                "the error must say the conclusion pass came back empty: {message}"
+            ),
+            other => panic!("expected an error, got {other:?}"),
+        }
+        assert_ne!(
+            history.last().map(|m| m.role),
+            Some(Role::Assistant),
+            "nothing may be persisted as the turn's conclusion"
         );
     }
 
