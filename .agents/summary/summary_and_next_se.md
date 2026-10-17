@@ -7,110 +7,81 @@
 > 待实施），不得随内容替换而删除；仅当该特性实际实施完成后才能移除（移入功能记录）。
 > 前端总结独立存放于 `summary_and_next_fe.md`；两文件内容隔离，互不写入对方文件。
 
-> 当前功能：**v0.29.7 上下文预算（修复）**
-> ——来源：用户报告 `-32603: agent error: API error (400): invalid_request_error: Upstream
-> request failed: [context_length_exceeded] This model's maximum context length is 1048576
-> tokens. However, your messages resulted in 3904559 tokens.`
-> 后端范围：`crates/agentj-core/src/{budget.rs,module.rs,turn_runner.rs}`、
-> `crates/agentj-model/src/gateway_error.rs`、`crates/agentj-config/src/{lib.rs,merge.rs}`。
+> 当前功能：**v0.29.8 工具往返落库 + 输入框模型标签跟随实际选择（修复）**
+> ——来源：用户报告两条缺陷（1）会话输入框右上角始终显示配置默认模型，切换模型后不变；
+> （2）长任务（「分析当前项目优缺点」）执行完工具后只回 `passed total: 922\n</rfl:parameter>`
+> 就停止，发「继续」也无法接着做。
+> 后端范围：`crates/agentj-core/src/turn_runner.rs`、`crates/agentj-model/src/factory.rs`；
+> 前端范围见 `summary_and_next_fe.md`。
 > 协议 wire 面**不变**（`PROTOCOL_VERSION` 仍 **0.18.0** / 28 方法 / 78 schemas）；
-> 工作区 0.29.6 → **0.29.7**（纯修复，无新增方法 / schema）。
+> 工作区 0.29.7 → **0.29.8**（纯修复，无新增方法 / schema）。
 
-## v0.29.7（请求 token 预算：裁剪 + 超限收紧重试）🚧
+## v0.29.8（工具往返落库 + 截断流不再当成结论）✅
 
 ### 缺陷与根因
 
-内核此前**没有任何上下文管理**，长会话把整段历史与每轮工具结果原样发给上游，直到网关用
-400 拒绝。用户看到的是一条无法自助解决的 `-32603`。
+用户会话快照 `0b45b81f-…json` 里只有 4 条消息：
+`user「分析一下当前项目的优缺点。」` → `assistant「passed total: 922\n</rfl:parameter>」`
+→ `user「继续」` → 同样的残句；而同一会话的 trajectory 有 100 条 NDJSON、含 21 轮工具调用。
+即：**工具轮次从未落库**，最终那句残句被当成「最终结论」。
 
 | 位置 | 缺陷 |
 |---|---|
-| `crates/agentj-context/src/lib.rs` | `ContextPipeline::assemble` 是纯函数，返回**全量**历史（system + history + tool_results），无任何预算/裁剪 |
-| `crates/agentj-core/src/turn_runner.rs` | `assemble` 后 `for _iter in 0..max_iter`（`agent.max_tool_iterations`，最多 50 轮）每轮 `pipeline.reflux(...)` 追加工具结果，**只增不减**，然后整段 `provider.chat_stream(messages.clone(), …)`（`turn_runner.rs:238` 是全仓**唯一**的生产发送点，已核对：其余 `.chat_stream(` 命中都是装饰器透传或测试） |
-| `crates/agentj-core/src/error.rs:59` | `ModelError::TokenLimitExceeded { used, max }` 自 v0.1 起**从未被构造**（死代码）——本缺陷本应走的类型化错误 |
-| `crates/agentj-core/src/module.rs:534` / `crates/agentj-session/src/{lib.rs:99,file_store.rs:218}` | `SessionStore::estimate_tokens` 已实现（`chars/4`）但**无生产调用方**（仅自身测试），同样是死代码 |
-| `crates/agentj-model/src/gateway_error.rs` | 共用 `api_error` 一律返回 `Api { status, message }`（0.29.4 起的温度重试依赖该分支），上下文超限只作为文案上抛 |
-| `crates/agentj-config` | `[model]` 无预算键；`ModelSection` 字面量有 4 处（`lib.rs` ×2、`merge.rs` 测试 ×2），新增字段需同步 |
+| `crates/agentj-core/src/turn_runner.rs` | 只 `session.append(user_input)` 与**最终** `append(ChatMessage::assistant(content))`；每轮工具往返仅经 `pipeline.reflux(&mut messages, …)` 进入本轮请求的内存 vec，进程结束即丢 |
+| 同上（流收尾） | `for _iter in 0..max_iter` 内层遇到 `ModelEvent::Done` 或流结束就 break；`tc_list.is_empty()` 即 `AgentEvent::Done{final_response}` 并 `return Ok(())`——**没有 `saw_done` 判定、不看 `finish_reason == "length"`**，半截回复/退化输出一律当作成功收尾 |
+| `crates/agentj-model/src/factory.rs` | mock 脚本（`mock` / `mock-workbench` / `mock-ask`）以裸 `ModelEvent::ToolCall` 结束一轮、**不带 `Done`**——夹具本身违反 ChatStream 契约 |
+
+「继续」失效的量化证据：后续 run 的 `usage.prompt_tokens` 只有 **527**（历史里没有工具上下文），
+而首次 run 是 **731,528**。
 
 ### 修复
 
-- 新增 `crates/agentj-core/src/budget.rs`（`mod budget;` 已注册）：
-  `DEFAULT_CONTEXT_TOKENS = 128_000` / `MIN_CONTEXT_TOKENS = 1_000` /
-  `MAX_CONTEXT_TOKENS = 10_000_000` / `MAX_OVERFLOW_RETRIES = 2`；
-  `estimate_tokens`（ASCII 约 4 字符/token，非 ASCII **按 1 字符/token**，中文宁可高估）、
-  `message_tokens`（含 `tool_calls` 名称与参数 JSON）、`request_tokens`、`clamp_budget`、
-  `retry_budget(budget, upstream_max) -> Option<usize>`（`0 < upstream_max × 0.9 < budget` 时取
-  上游窗口 × 0.9，否则取本预算 × 0.9，再 `clamp_budget`；结果**不小于**当前预算时返回 `None`，
-  即「无法再减就不重试」）、`fit_messages(messages, budget)`。
-- `fit_messages` 语义：保留 `Role::System` 与**最新**消息；逐条正文上限 `budget/4`，超长正文
-  保留头尾并插入 `…[已截断 N 字符]…`（system 永不截断）；正文为空但工具调用参数超大的消息，
-  整段参数替换为 `{"_truncated": …}`（否则单条仍可远超预算）；前缀裁剪**不会留下缺少对应
-  assistant 调用的 `Role::Tool` 结果**（上游会拒绝不成对的 tool 消息）。
-- `ContextPipeline`（`crates/agentj-core/src/module.rs`）新增**默认方法**
-  `fn fit(&self, messages: Vec<ChatMessage>, budget_tokens: usize) -> Vec<ChatMessage>`，
-  默认委托 `budget::fit_messages` → 所有实现（含 `agentj-ipc` / e2e 的 stub 管线）默认受约束，
-  无需逐个改动。
-- `turn_runner`：从 `ctx.config.get_int("model.max_context_tokens")` 取预算（缺省
-  `DEFAULT_CONTEXT_TOKENS`，`clamp_budget` 钳制）；每次发送前 `pipeline.fit(messages.clone(),
-  context_budget)`；`provider.chat_stream` 返回 `Err(ModelError::TokenLimitExceeded { max, .. })`
-  时用 `budget::retry_budget(context_budget, max)` 求下一预算：`Some(next)` 且
-  `overflow_retries < MAX_OVERFLOW_RETRIES` → 递增计数、`context_budget = next`、`continue 'outer`
-  重发；`None`（无法再减）或次数用尽 → 照旧 `route(err.to_string())` 上抛。
-- `crates/agentj-model/src/gateway_error.rs`：新增
-  `pub fn context_overflow(status: u16, body: &str) -> Option<(usize, usize)>`（仅 400/413；
-  措辞命中 `context_length_exceeded` / `maximum context length` /
-  `reduce the length of the messages`——**刻意不含**宽泛的 `context window`，否则 `max_tokens`
-  超窗的参数校验错误会被误判重试；`number_after` 解析 `maximum context length is 1048576` 与
-  `resulted in 3904559`，容忍 `1,048,576` 千位分隔，解析不到记 0）与私有 `number_after`；`api_error` 命中即返回
-  `ModelError::TokenLimitExceeded { used, max }`，用户可读文案变为
-  `context length exceeded: 3904559/1048576 tokens`。三种 wire 共用同一映射。
-- `crates/agentj-config`：`ModelSection.max_context_tokens: i64`
-  （`#[serde(default = "default_max_context_tokens")]`，`default_max_context_tokens() = 128_000`）、
-  `get_int("model.max_context_tokens")` 钳制 `1_000..=10_000_000`、`merge_config` 新增
-  「文件值 ≠ 默认值即覆盖 base」规则（与 `quota_warn_percent` 同形），并同步 `lib.rs` ×2 与
-  `merge.rs` 测试 ×2 的 `ModelSection` 字面量。
-- 代码评审（`del_mvb9gank_sjdk`）后回填：`retry_budget` 改 `Option` 并**保证严格变小**（否则
-  128k 预算遇上 1M 窗口时两次重试发的是同一份请求）、超长工具参数替换、`fit` 文档不再承诺
-  「绝不超过窗口」、`gateway_error` 去掉 `context window` 措辞 + 千位分隔解析、测试改为断言
-  实际请求的 **token 估算**并新增重试耗尽用例。
-- **`e2e_ws` 端口竞态修复**（`crates/agentj-cli/tests/e2e_ws.rs`，非本缺陷引入）：改为
-  `serve --port 0` + 从 stdout 读回绑定地址（同 `e2e_serve.rs`），并行复现 1/3 → 3/3 通过。
-- 文档：`docs/guide/configuration.md`（`[model] max_context_tokens`）、`AGENTS.md`
-  （agentj-core `budget` / agentj-config 键 / agentj-model `gateway_error` + `retry` /
-  agentj-context 说明）、`docs/changelog/v0.29.md` 新增 0.29.7 小节、索引行。
+- **整轮落库**（`turn_runner.rs`）：新增 `let mut round: Vec<(ToolCall, String)> =
+  Vec::with_capacity(tc_list.len());`，工具执行后 `round.push((tc, tool_result))`；工具循环结束
+  且**未取消**时写一条 `ChatMessage { role: Role::Assistant, content, tool_call_id: None,
+  tool_calls: round.iter().map(|(tc, _)| tc.clone()).collect() }`，再为每个条目写一条
+  `ChatMessage::tool_result(tc.id, result)`。落库**延到工具执行之后**：取消/失败的一轮不写任何
+  东西，不会留下没有结果的悬空 `tool_calls`（上游会 400）。
+- **截断流不再算收尾**（`turn_runner.rs`）：新增 `let mut saw_done = false;`（`ModelEvent::Done`
+  置位）与 `const MAX_INCOMPLETE_RETRIES: usize = 2;`；`if !saw_done && tc_list.is_empty() &&
+  !content.trim().is_empty()` → 未超上限则 `continue 'outer`（整轮重发），超限返回
+  `Err("model stream ended before completion")`。**带工具调用的轮次不受影响**：`openai_compat`
+  只在收到 `finish_reason == "tool_calls"` 后才吐 `ToolCall`，那本身就是上游已完成该消息的信号。
+  曾试过更严的 `!saw_done || 空文本` 与 `!saw_done && heard_any`，两者都让 14 条 `agentj-ipc`
+  用例失败（`RepeatingMock` 等夹具的脚本轮不带 `Done`，被误判为截断后重试吞掉了下一轮）。
+- **夹具补齐 `Done`**（`factory.rs`）：`MockStateful`、`MockWorkbench::script` 两轮、`MockAsk`
+  的脚本各补 `Ok(ModelEvent::Done)`；对应单测断言从 `[ToolCall]` 改为 `[ToolCall, Done]`。
+- 前端侧（标签取 `selected?.name ?? 配置默认值`、持久化选择重新水合）见
+  `summary_and_next_fe.md` 与 `docs/changelog/v0.29.md` 的 0.29.8 段。
 
-### 测试（RED → GREEN）
+### 测试
 
-| 测试 | 文件 | RED 证据 |
+| 用例 | 位置 | 修的缺陷 |
 |---|---|---|
-| `provider_request_stays_within_the_configured_context_budget` | `crates/agentj-core/src/turn_runner.rs` | `request carried 72475 chars, budget is 2000 tokens`（provider 实际收到的字符数远超预算） |
-| `context_overflow_retries_with_a_smaller_request` | 同上 | `the overflow must trigger exactly one retry: left 1, right 2`（上游 400 从不重试） |
-| `context_overflow_maps_to_the_typed_error` | `crates/agentj-model/src/gateway_error.rs` | 修前只得到 `API error (400): …`（断言期望 `context length exceeded: 3904559/1048576 tokens`） |
-| `unparsable_overflow_reports_unknown_sizes` | 同上 | 同上（期望 `TokenLimitExceeded { used: 0, max: 0 }`） |
-| `unrelated_400_stays_a_plain_api_error` | 同上 | 始终通过（守护 `retry.rs` 的温度重试分支不被抢走） |
-| `context_overflow_gives_up_after_the_retry_budget` | `crates/agentj-core/src/turn_runner.rs` | 持续超限 → 共 3 次请求且逐次严格变小，最终上抛错误（修前只 1 次请求、无重试） |
-| `retry_budget_always_shrinks_or_gives_up` | `crates/agentj-core/src/budget.rs` | 修前 `retry_budget(128_000, 1_048_576) == 128_000`（两次重试发同一份请求） |
-| `truncate_shrinks_a_tool_call_payload` | 同上 | 修前正文为空的超大 tool-call 消息原样保留 |
-| `digit_grouped_sizes_are_parsed` | `crates/agentj-model/src/gateway_error.rs` | 修前 `1,048,576` 只解析出 `1` |
-| `context_window_validation_error_stays_a_plain_api_error` | 同上 | 修前 `max_tokens` 超窗文案被误判为可裁剪重试 |
-| `budget.rs` 5 条 | `crates/agentj-core/src/budget.rs` | 与实现同批新增：`estimate_tokens_charges_cjk_per_character`、`fit_messages_keeps_system_and_newest_messages`、`fit_messages_truncates_a_single_oversized_body`、`fit_messages_never_orphans_a_tool_result`、`retry_budget_uses_the_upstream_limit_with_headroom` |
-| `max_context_tokens_defaults_overrides_and_clamps` | `crates/agentj-config/src/lib.rs` | 首版**失败**（`Some(128000) != Some(32000)`）→ 暴露 `merge_config` 缺规则，补规则后通过（测试驱动出的真实集成缺口） |
+| `turn_persists_tool_round_trips_so_the_next_turn_has_context` | `crates/agentj-core/src/turn_runner.rs` | 修前历史只有 `user` + 最终 `assistant`；修后 4 条：`user`、`assistant{tool_calls:[c1]}`、`tool{c1}`、`assistant` |
+| `turn_replays_a_round_whose_stream_never_finished` | 同上 | 脚本 `[Delta("half")]` → 重发一次，只落最终答案（history len 2） |
+| `turn_fails_when_no_round_ever_completes` | 同上 | 恒截断 → 共 `1 + MAX_INCOMPLETE_RETRIES` 次请求后如实报错，历史不落库 |
+| `turn_accepts_an_empty_but_terminated_round` | 同上 | 有 `Done`、无文本的正常收尾不重试（守卫不能误伤空回复） |
+| `factory_creates_mock_workbench` / `factory_creates_mock_ask` | `crates/agentj-model/src/factory.rs` | 夹具契约：工具调用后必有 `Done` |
 
-### 验证结果（0.29.7，2026-10-16）
+### 验证结果（0.29.8，2026-10-17）
 
 | 门禁 | 结果 |
 |---|---|
-| `cargo test -p agentj-core --lib -- budget turn_runner` | 28 passed（budget 7 条单测 + 3 条集成用例） |
-| `cargo test -p agentj-model --lib gateway_error` | 7 passed |
-| `cargo test -p agentj-config --lib` | 27 passed |
-| `cargo test --workspace --no-fail-fast` | 48 套件 / **882 passed, 0 failed**（866 → 882，+16 条新增） |
-| `cargo clippy --workspace --all-targets -- -D warnings` | 0 warnings |
-| `cargo fmt --all` / `-p agentj-protocol -- drift` | clean / 2 passed |
-| Web / SDK / TUI | 53 文件 / 655 passed · 6 文件 / 55 passed · 177 passed |
-| `./scripts/check-version.sh` | `version-ok`（0.29.7 / 0.18.0） |
-| 真实 key E2E（opencode-go `space-bunny`） | `max_context_tokens = 4000` + 30k 字符提示 → 退出码 0、回复 `pong`（裁剪后可达，头尾保留让尾部长提示仍被读到）；不设该键（默认 128k）→ 退出码 0、回复 `pong` |
+| `cargo test --workspace` | **886 passed, 0 failed**（882 → 886，+4 条新增；`agentj-core` 153 / `agentj-ipc` 193 / `agentj-model` 75） |
+| `cargo clippy --workspace --all-targets -- -D warnings` | 0 warnings（12.85s） |
+| `cargo fmt --all` | clean |
+| Web / SDK / TUI | 658 passed（655 → 658，+3）· 55 passed · 177 passed |
+| `./scripts/check-version.sh` | `version-ok`（0.29.8 / 0.18.0） |
+| 真实 key E2E（opencode-go `deepseek-v4.1-flash`） | `agentj run "…本仓库 crates/ 下有哪些 crate…"` → ~5 轮工具后输出完整 18-crate 表格；会话快照实记 `user` + 5 组 `assistant{tool_calls}`/`tool` + 最终 `assistant`（674 字符） |
 
-## 已完成（0.29.0 – 0.29.6，详见 `docs/changelog/v0.29.md`）
+> 注意：模型 id 必须写全 `opencode-go/deepseek-v4.1-flash`；只给 `deepseek-v4.1-flash` 会得到
+> `unknown model 'deepseek-v4.1-flash' for provider 'opencode-go'`。
+
+## 已完成（0.29.0 – 0.29.7，详见 `docs/changelog/v0.29.md`）
+
+- ✅ 0.29.7：请求 token 预算（`budget.rs` + `ContextPipeline::fit` + 超限收紧重试）——长会话
+  不再把整段历史原样发给上游后才被 400 拒绝；`[model] max_context_tokens` 可配（默认 128k）。
 
 - ✅ 0.29.0：Web/TUI 链接 opencode-go API Key（协议 0.18.0 / 28 方法 / 78 schemas）。
 - ✅ 0.29.1：验收 BUG-001（env 遮蔽时读侧 / 发送侧不一致）。
@@ -140,8 +111,15 @@
   （此时由 `retry_budget` 按上游窗口收紧重试，最多 2 次）。
 - **裁剪即丢失**：超预算时最老的会话历史与（同轮内）较早的工具结果会被丢弃，正文超长时中段
   被截断；仅在日志/行为上可观测，UI 无「已裁剪」提示。
+- **快照体积随工具往返增长**（0.29.8 起）：工具结果现在会落库，实测一次只读探测里的 `glob`
+  结果就有 **7,963,644 字符**并原样进快照；发送侧虽有 `fit_messages` 预算，**存储侧没有上限**。
+  跟进项：落库前按工具结果设上限（或压缩为摘要 + 提示「已截断」）。
+- **生效模型未回显**：`session/run` 结果不返回实际使用的 `provider`/`model`，trajectory 里也
+  不记录，因此排障时无法从快照/轨迹反查「这句残句到底是哪个模型吐的」。已靠前端在
+  `session/run` 里下发 `provider`/`model` 覆盖 + 标签跟随选择缓解，后端回显仍是加性 wire 候选。
 - **`agentj run` 非 TTY 下遇需审批工具会一直等待**：无自动拒绝、无 `--yes` 开关，也没有上限
-  （0.29.4 以只读工具绕过，未改该行为）。跟进项：加 `run --yes` 或非 TTY 自动拒绝。
+  （0.29.4 以只读工具绕过，未改该行为；0.29.8 真实 key 验证时仍观察到
+  `permission approval timed out … timeout_ms=60000`）。跟进项：加 `run --yes` 或非 TTY 自动拒绝。
 - **`[permission] timeout_ms` 未做下界校验**：`0` 语义为「立即自动拒绝」，当前不视为非法配置。
 - ~~`e2e_ws` 端口竞态~~：0.29.7 已修复（`serve --port 0` + 读回绑定地址；并行复现 1/3 → 3/3）。
 - **2 条 legacy 路由**：`qwen3.6-plus` / `qwen3.7-max` 按 models.dev 判为 `openai-compat`
@@ -167,17 +145,19 @@
 | ② | 抽检扩展 | 逐请求校验 / 手动全量触发端点 | 无（基于 v0.22.0 运行期抽检） | 待实施 |
 | ④ | rank 规则单一真源化 | Rust `file_list::search_rank` 为唯一真源，TUI / mock 镜像退役 | 无（前端跟进见 `_fe.md` 遗留 ③） | 待实施 |
 | ⑥ | 用量历史（服务端持久化 + 趋势） | `provider/usage` 由按需 TTL 300s 扩为服务端持久化采样 + 历史/趋势查询（协议加性）、Web/TUI 趋势视图与保留策略 | 无（基于 v0.27.0 用量面板；设计需先定采样归属/保留/加性 wire） | 待实施 |
+| ⑦ | 工具结果落库上限 | 落库前对单个工具结果设上限（或摘要 + 「已截断」标记），避免 7.9MB 级 `glob` 结果撑爆快照 | 0.29.8 已落库工具往返（存储侧尚无上限） | 待实施 |
+| ⑧ | `session/run` 回显生效模型 | 结果/trajectory 记录实际使用的 `provider`/`model`（加性 wire），便于排障与前端一致性校验 | 0.29.8 前端已按选择下发并显示 | 待实施 |
 
 > 规则：本表条目在未实施时必须**跨阶段保留**（不得随内容替换删除）；实施完成后从本表移除，
 > 并记入对应功能章节。下一特性选择（`jskill-feature-next`）合并本表与 `_fe.md` 待实施表。
 
 ## 下一步
 
-- v0.29.7 代码 + 测试已落地，版本元数据与文档已收尾（`Cargo.lock` / desktop `Cargo.lock` 已刷到
-  0.29.7，`./scripts/check-version.sh` 已过，代码评审（`del_mvb9gank_sjdk`）结论已回填且
-  F1–F6 全部处理）；剩余：提交 → 推送**两个远端**（本机 `github` = GitHub 权威、
-  `origin` = GitCode 镜像；注意 AGENTS.md 的远端命名与本机相反）→ 在 GitHub 开 PR（用户负责合并）。
-- 后端候选：上表 ①②④⑥；或前端跟进见 `summary_and_next_fe.md`。
+- v0.29.8 代码 + 测试已落地（886 / 658 / 55 / 177 全绿，clippy 零警告），版本元数据
+  （0.29.8）+ changelog（`docs/changelog/v0.29.md` 0.29.8 段 + 索引）+ `docs/guide/model-switching.md`
+  + 两份 summary 已收尾；剩余：提交 → 推送**两个远端**（本机 `github` = GitHub 权威、
+  `origin` = GitCode 镜像；与 AGENTS.md 的远端命名相反）→ 在 GitHub 开 PR（用户负责合并）。
+- 后端候选：上表 ①②④⑥⑦⑧；或前端跟进见 `summary_and_next_fe.md`。
 - 可选跟进：为 `run` 增加 `--yes`（或非 TTY 自动拒绝），让 CI / 自动化能跑需审批工具路径；
-  把 `serve` 的「无 provider」从 WARN 提升为 `/version` 可见的启动警告（目前仅日志）；
-  把「会话已裁剪 N 条消息」作为可观测事件（`$/progress` 或日志）暴露。
+  把「会话已裁剪 N 条消息」作为可观测事件（`$/progress` 或日志）暴露；
+  `ModelEvent` 增加 `reasoning_content` 承载（`openai_compat` 目前丢弃该字段，思考过程不可见）。

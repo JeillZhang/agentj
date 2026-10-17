@@ -8,20 +8,59 @@
 > 待实施），不得随内容替换而删除；仅当该特性实际实施完成后才能移除（移入功能记录）。
 > 后端总结独立存放于 `summary_and_next_se.md`；两文件内容隔离，互不写入对方文件。
 
-> 当前功能：**v0.29.7 版本元数据同步（纯版本号，无前端变更）**
-> ——v0.29.7 是**纯后端修复**（上下文预算，见 `summary_and_next_se.md`）：Web / TUI /
-> desktop / SDK 前端代码零改动。本文件本阶段仅记录版本同步：工作区 0.29.6 → **0.29.7**
-> tips：`@agentj/sdk` `VERSION`、desktop 三清单与 lockfile、`scripts/check-version.sh`；
-> `PROTOCOL_VERSION` 仍 **0.18.0** / 28 方法 / 78 schemas（无协议变更、无类型/METHODS 重生成）。
-> 上一个前端功能（v0.29.6 重连重新订阅 + `SessionBusy` 友好提示）见下节，已随 PR 合入 main。
+> 当前功能：**v0.29.8 输入框模型标签跟随实际选择（修复）**
+> ——来源：用户报告「会话输入框右上角始终显示默认模型（`DeepSeek-Flash-V4.1`），不会根据实际
+> 使用的模型替换」。工作区 0.29.7 → **0.29.8**；`PROTOCOL_VERSION` 仍 **0.18.0** /
+> 28 方法 / 78 schemas（**无协议变更**，未重生成类型与 `METHODS`）。
+> 后端脚本同步见 `summary_and_next_se.md`。
 
-## v0.29.7 —— 前端面零变更（仅版本号同步至 0.29.7）
+## v0.29.8（输入框模型标签 = 实际发送的模型）✅
 
-- `agentj-ui/packages/sdk/src/config.ts`：`VERSION` 0.29.6 → **0.29.7**（`PROTOCOL_VERSION`
-  不变）。
-- `agentj-ui/apps/desktop/{package.json,src-tauri/tauri.conf.json,src-tauri/Cargo.toml}` 与
-  `agentj-ui/apps/desktop/src-tauri/Cargo.lock`：版本同步至 0.29.7。
-- 门禁重跑均绿（见下方验证结果）：Web 655 / SDK 55 / TUI 177 / Web build clean / drift 2。
+### 缺陷与根因
+
+- `agentj-ui/apps/web/src/RunPanel.tsx` 右上角 chip 渲染的是 `model` prop，而
+  `agentj-ui/apps/web/src/App.tsx` 传的是 `modelName`（= `kernel/status.default_model`，
+  **静态配置值**）。真正执行用的 `selectedModel`（`provider` + `model`，随 `session/run` 发出）
+  从未参与渲染——默认值恰好是网关不提供的 id 时，标签仍然显示它。
+- 选择只以模型**名**持久化（`agentj.composer.model`），刷新后气泡显示该名字，但 App 的
+  `selectedModel` 仍是 `null` ⇒ `session/run` 不带 `provider`/`model`，落回内核默认：
+  「显示的选择」与「实际执行」不是同一个。
+
+### 修复
+
+- `agentj-ui/apps/web/src/RunPanel.tsx`：新增 `const chipModel = selected?.name ?? model;`，
+  chip 渲染 `chipModel`（默认值仅在没有选择时兜底）。`ComposerOptions` 气泡触发器的
+  `selected?.name ?? model ?? prefs.model` 保持不变。
+- `agentj-ui/apps/web/src/App.tsx`：新增 `const effectiveModelName = useMemo(() =>
+  selectedModel?.name ?? modelName ?? mergedModels[0]?.name ?? null, [...])` 并传给 RunPanel
+  （把「标签显示的」与「`session/run` 发送的」绑到同一处优先级）；新增一次性水合
+  （`prefsHydrated` ref + 守卫 `selectedModel !== null || mergedModels.length === 0`）：
+  内核模型列表到达后按 `loadComposerPrefs().model` 匹配同名条目并 `setSelectedModel`，
+  匹配不到保留默认选择。
+- 兜底刻意保留原始配置值（而不是 `kernelDefaultEntry()` 的 `models[0]`），避免「配置默认模型
+  不在当前 provider 列表里」时标签跳到列表第一项。
+
+### 测试
+
+| 用例 | 文件 | 修的缺陷 |
+|---|---|---|
+| `shows the picked model in the header chip instead of the configured default` | `agentj-ui/apps/web/src/RunPanel.test.tsx` | 修前标签恒为 `DeepSeek-Flash-V4.1` |
+| `falls back to the configured default when nothing is picked` | 同上 | 守卫兜底（未选择时标签不空） |
+| `applies the persisted composer model to the next run` | `agentj-ui/apps/web/src/App.test.tsx` | 修前刷新后 `session/run` 不带 `provider`/`model`；断言 `lastRunParams` 含两者 |
+
+> 该用例必须用 `await screen.findByRole(...)`：水合是 effect 触发的状态更新，
+> `getByRole` 紧跟 `createActiveSession()` 会读到尚未水合的默认标签。
+
+## 验证结果（0.29.8，2026-10-17）
+
+| 门禁 | 结果 |
+|---|---|
+| `npm --prefix agentj-ui test --workspace=@agentj/web` | **658** passed（53 files；655 → 658，+3） |
+| `npm --prefix agentj-ui run build --workspace=@agentj/web` | clean（仅既有 chunk > 500 kB 提示） |
+| `npm --prefix agentj-ui test --workspace=@agentj/sdk` | **55** passed（6 files） |
+| `bun --cwd agentj-ui/apps/tui test` | 177 passed（21 files，未受本阶段改动影响） |
+| `cargo test -p agentj-protocol -- drift` | 2 passed（协议面无漂移） |
+| `./scripts/check-version.sh` | **version-ok（0.29.8 / 0.18.0）** |
 
 ## v0.29.6（Web 重连即重新订阅；`SessionBusy` 友好提示）✅
 
@@ -75,6 +114,8 @@
 
 ## 已完成（0.29.0 – 0.29.7，详见 `docs/changelog/v0.29.md`）
 
+- ✅ **0.29.8**：Web composer 模型标签跟随实际选择 + 持久化选择重新水合（3 条新单测）。
+
 - ✅ **0.29.0 功能（前端）**：Web/TUI 链接 opencode-go API Key——`packages/protocol` 78 schemas
   类型重生成、`packages/sdk` `METHODS` 28 + 版本常量；Web `SubscriptionPanel`「链接方式」区块
   （遮蔽输入、三态回显、env 优先提示、「只保存在所连接内核主机」说明、解除链接回退目录）、
@@ -100,6 +141,9 @@
   释放）；当前不做前端侧退订。
 - **Web 连接为手动重连**：「设置 · 连接」点 `Connect` 才重建 transport/client（`connectSeq`），
   没有自动重连/退避；本阶段只保证「重连后重新订阅」。
+- **标签只能显示「我们请求的」模型**：内核 `session/run` 不回显生效模型（见 `_se.md` 待实施 ⑧），
+  上游把请求静默改路由时，UI 无从得知；当前把标签与 request 参数绑在同一处取值，
+  只能保证「显示 == 我们发出的」。
 
 ## 待实施（跨阶段保留：未实施不得删除）
 
@@ -112,9 +156,10 @@
 
 ## 下一步
 
-- v0.29.6 前端代码 + 测试已落地；全门禁绿。剩余：提交 → 推送**两个远端**
-  （本机 `github` = GitHub 权威、`origin` = GitCode 镜像；注意 AGENTS.md 的远端命名与本机相反）
-  → 在 GitHub 开 PR（用户负责合并）。
+- v0.29.8 前端代码 + 测试已落地，全门禁绿（Web 658 / SDK 55 / TUI 177 / Web build clean /
+  drift 2 / version-ok）。剩余：提交 → 推送**两个远端**（本机 `github` = GitHub 权威、
+  `origin` = GitCode 镜像；与 AGENTS.md 的远端命名相反）→ 在 GitHub 开 PR（用户负责合并）。
 - 前端候选：③ Web 接入服务端搜索；或订阅状态常驻指示（需先定义新鲜度语义）；
-  或清理 `TopbarMenu` / `SettingsDialog` 测试里的重复 stub helper。
+  或清理 `TopbarMenu` / `SettingsDialog` 测试里的重复 stub helper；
+  或 TUI `/models` 与 Web 选择语义对齐（TUI 仍是内存态、不跨进程持久化）。
 - 后端候选见 `summary_and_next_se.md`。
