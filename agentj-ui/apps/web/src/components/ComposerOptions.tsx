@@ -13,7 +13,8 @@ type AgentEntry = { id: ComposerAgent; label: string; cap: string };
 type EntropyPreset = { value: number; label: string; short: string };
 type PermissionEntry = { id: ComposerPermission; label: string; cap: string };
 
-export const MODEL_LIST: ModelEntry[] = [{ name: "deepseek-chat", cap: "128k 上下文 · 工具调用" }];
+/** Shown instead of model rows when the kernel served no model list (nothing selectable). */
+export const NO_MODEL_HINT = "内核未返回模型列表";
 
 export const AGENT_LIST: AgentEntry[] = [
   { id: "build", label: "Build", cap: "默认 · 读写工具全开" },
@@ -34,7 +35,8 @@ export const PERMISSION_MODES: PermissionEntry[] = [
 
 export type ComposerOptionsProps = {
   model?: string | null;
-  /** Kernel-served model list; falls back to MODEL_LIST when absent/empty. */
+  /** Kernel-served model list. Empty/absent means the kernel served none: the picker then
+   * offers nothing to pick (a placeholder row is shown) — never a fabricated model name. */
   models?: ModelEntry[];
   /** Explicit user pick; wins over the kernel-default `model` for the trigger label. */
   selected?: ModelEntry | null;
@@ -90,7 +92,7 @@ export default function ComposerOptions({
   const [prefs, setPrefs] = useState<ComposerPrefs>(() => loadComposerPrefs());
   const [openId, setOpenId] = useState<OpenId>(null);
   const [highlight, setHighlight] = useState(0);
-  const modelOptions = models && models.length > 0 ? models : MODEL_LIST;
+  const modelOptions = models ?? [];
 
   const toolsRef = useRef<HTMLDivElement>(null);
   const modelRef = useRef<HTMLButtonElement>(null);
@@ -140,7 +142,14 @@ export default function ComposerOptions({
     if (collapsed) setOpenId(null);
   }, [collapsed]);
 
-  const modelName = selected?.name ?? model ?? prefs.model;
+  // A persisted preference is display-only, so it may still name a model the kernel no longer
+  // serves (older builds offered one): show it only while the served list has no better
+  // information. The run itself always uses the picker's entry, never this label.
+  const prefsModel =
+    modelOptions.length > 0 && !modelOptions.some((entry) => entry.name === prefs.model)
+      ? null
+      : prefs.model;
+  const modelName = selected?.name ?? model ?? prefsModel;
   // An explicit pick identifies its own row; without one only an unambiguous name can
   // (a name served by several providers cannot say which provider a run would use).
   const nameMatches = modelOptions.filter((entry) => entry.name === modelName);
@@ -255,6 +264,11 @@ export default function ComposerOptions({
           onKeyDown={handleKeyDown}
         >
           <div className="pop-title" id="composer-model-title">选择模型</div>
+          {modelOptions.length === 0 ? (
+            <div className="pop-empty" role="presentation">
+              {NO_MODEL_HINT}
+            </div>
+          ) : null}
           {modelOptions.map((entry, index) => {
             const isSelected = index === selectedModelIndex;
             return (

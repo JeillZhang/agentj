@@ -906,6 +906,7 @@ export default function RunPanel({
           {editingProject && (
             <ProjectEditDialog
               project={editingProject}
+              models={models}
               onClose={() => setEditingProject(null)}
               onSaved={() => setProjects(loadProjects())}
             />

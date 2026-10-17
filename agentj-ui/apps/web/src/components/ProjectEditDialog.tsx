@@ -1,7 +1,8 @@
 import { useState } from "react";
 import type { Project } from "../projectStore";
 import { updateProject } from "../projectStore";
-import { AGENT_LIST, MODEL_LIST } from "./ComposerOptions";
+import { AGENT_LIST, NO_MODEL_HINT } from "./ComposerOptions";
+import type { ModelEntry } from "./ComposerOptions";
 import ModalDialog from "./ModalDialog";
 import "./settingsDialog.css";
 
@@ -9,6 +10,8 @@ export type ProjectEditDialogProps = {
   project: Project;
   onClose: () => void;
   onSaved?: (p: Project) => void;
+  /** Kernel-served models for the default-model picker. Empty/absent = nothing to pick. */
+  models?: ModelEntry[];
 };
 
 /**
@@ -18,7 +21,12 @@ export type ProjectEditDialogProps = {
  * absolute. Delegates persistence and default-project exclusivity to
  * `updateProject`.
  */
-export default function ProjectEditDialog({ project, onClose, onSaved }: ProjectEditDialogProps) {
+export default function ProjectEditDialog({
+  project,
+  onClose,
+  onSaved,
+  models,
+}: ProjectEditDialogProps) {
   const [name, setName] = useState(project.name);
   const [workDir, setWorkDir] = useState(project.workDir ?? "");
   const [isDefault, setIsDefault] = useState(project.isDefault ?? false);
@@ -101,11 +109,16 @@ export default function ProjectEditDialog({ project, onClose, onSaved }: Project
           onChange={(e) => setModel(e.target.value)}
         >
           <option value="">未设置</option>
-          {MODEL_LIST.map((entry) => (
+          {(models ?? []).map((entry) => (
             <option key={entry.name} value={entry.name}>
               {entry.name}
             </option>
           ))}
+          {models === undefined || models.length === 0 ? (
+            <option value="" disabled>
+              {NO_MODEL_HINT}
+            </option>
+          ) : null}
         </select>
       </div>
 

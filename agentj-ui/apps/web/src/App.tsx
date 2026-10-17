@@ -143,8 +143,8 @@ export function firstEntryOf(catalog: AuthSetApiKeyResult | null): ModelEntry | 
 /**
  * Kernel-served rows for `provider` are replaced in place by the linked catalog, so a
  * stale account list never lingers next to the fresh one. Entries of other providers, and
- * the list itself when no catalog was linked, stay untouched (the MODEL_LIST fallback for
- * an empty list lives in ComposerOptions).
+ * the list itself when no catalog was linked, stay untouched (an empty list stays empty —
+ * ComposerOptions shows a placeholder instead of inventing a model name).
  */
 export function mergeProviderEntries(
   models: ModelEntry[],
