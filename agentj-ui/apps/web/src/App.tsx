@@ -143,8 +143,8 @@ export function firstEntryOf(catalog: AuthSetApiKeyResult | null): ModelEntry | 
 /**
  * Kernel-served rows for `provider` are replaced in place by the linked catalog, so a
  * stale account list never lingers next to the fresh one. Entries of other providers, and
- * the list itself when no catalog was linked, stay untouched (the MODEL_LIST fallback for
- * an empty list lives in ComposerOptions).
+ * the list itself when no catalog was linked, stay untouched (an empty list stays empty —
+ * ComposerOptions shows a placeholder instead of inventing a model name).
  */
 export function mergeProviderEntries(
   models: ModelEntry[],
@@ -350,6 +350,27 @@ export default function App() {
   const mergedModels = useMemo(
     () => mergeProviderEntries(models, LINKED_PROVIDER, linkedCatalog),
     [models, linkedCatalog],
+  );
+  // The composer preference survives a reload but was never applied to the run: the
+  // popover showed it while the request still carried no model. Hydrate it once the
+  // kernel list arrives so the shown model and the executed model are the same thing.
+  // @since 0.29.8
+  const prefsHydrated = useRef(false);
+  useEffect(() => {
+    if (prefsHydrated.current || selectedModel !== null || mergedModels.length === 0) return;
+    prefsHydrated.current = true;
+    const pref = loadComposerPrefs().model;
+    const hit = pref ? mergedModels.find((row) => row.name === pref) : undefined;
+    if (hit) setSelectedModel(hit);
+  }, [mergedModels, selectedModel]);
+  /**
+   * What a run will actually use: the explicit pick, else the kernel-configured default
+   * (an un-overridden run sends no model, so the kernel resolves it), else the first
+   * served row. Must stay in lockstep with the `model` sent in `session/run`. @since 0.29.8
+   */
+  const effectiveModelName = useMemo(
+    () => selectedModel?.name ?? modelName ?? mergedModels[0]?.name ?? null,
+    [selectedModel, modelName, mergedModels],
   );
   // An explicit pick from another provider survives a link; otherwise the first linked
   // entry becomes the per-run selection (config.toml is never rewritten).
@@ -743,7 +764,7 @@ export default function App() {
                     ? historyToConversation(historyEvents)
                     : []}
                   pendingTool={pending?.tool}
-                  model={modelName ?? undefined}
+                  model={effectiveModelName ?? undefined}
                   models={mergedModels}
                   selected={selectedModel}
                   onSelect={setSelectedModel}

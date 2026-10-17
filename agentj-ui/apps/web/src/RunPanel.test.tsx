@@ -291,6 +291,29 @@ describe("RunPanel run overrides", () => {
     const params = await submitRun(null);
     expect(Object.keys(params).sort()).toEqual(["content", "session_id"]);
   });
+
+  // The chip used to name the configured default forever, whatever the picker sent.
+  // @since 0.29.8
+  it("shows the picked model in the header chip instead of the configured default", () => {
+    const { container } = render(
+      <RunPanel
+        client={noopClient}
+        activeSessionId="s1"
+        model="DeepSeek-Flash-V4.1"
+        selected={{ name: "opencode-go/kimi-k3", provider: "opencode-go" }}
+      />,
+    );
+    const chip = container.querySelector(".aj-chip--model") as HTMLElement;
+    expect(chip).toHaveTextContent("opencode-go/kimi-k3");
+    expect(chip.textContent).not.toContain("DeepSeek-Flash-V4.1");
+  });
+
+  it("falls back to the configured default when nothing is picked", () => {
+    const { container } = render(
+      <RunPanel client={noopClient} activeSessionId="s1" model="DeepSeek-Flash-V4.1" />,
+    );
+    expect(container.querySelector(".aj-chip--model")).toHaveTextContent("DeepSeek-Flash-V4.1");
+  });
 });
 
 describe("RunPanel usage double-count guard", () => {

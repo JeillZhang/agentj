@@ -23,6 +23,9 @@ pub fn merge_config(base: AgentJConfig, file: AgentJConfig) -> AgentJConfig {
     {
         config.model.console_base_url = file.model.console_base_url;
     }
+    if file.agent.max_tool_iterations != crate::default_max_tool_iterations() {
+        config.agent.max_tool_iterations = file.agent.max_tool_iterations;
+    }
     if file.permission.is_some() {
         config.permission = file.permission;
     }
@@ -76,6 +79,7 @@ mod tests {
                 console_base_url: crate::default_console_base_url(),
                 max_context_tokens: crate::default_max_context_tokens(),
             },
+            agent: crate::AgentSection::default(),
             permission: None,
             session: None,
             license: None,
@@ -86,6 +90,20 @@ mod tests {
         assert_eq!(merged.model.providers[0].name, "opencode-go");
         assert_eq!(merged.model.providers[0].kind, "opencode-go");
         assert_eq!(merged.model.default_model, "opencode-go/kimi-k3");
+    }
+
+    /// A file-level `[agent] max_tool_iterations` must survive the overlay (the key used to be
+    /// unreachable from config at all). @since 0.29.9
+    #[test]
+    fn file_tool_iteration_budget_wins_over_the_default() {
+        let base = AgentJConfig::default();
+        let file = AgentJConfig {
+            agent: crate::AgentSection {
+                max_tool_iterations: 120,
+            },
+            ..AgentJConfig::default()
+        };
+        assert_eq!(merge_config(base, file).agent.max_tool_iterations, 120);
     }
 
     #[test]
@@ -100,6 +118,7 @@ mod tests {
                 console_base_url: crate::default_console_base_url(),
                 max_context_tokens: crate::default_max_context_tokens(),
             },
+            agent: crate::AgentSection::default(),
             permission: None,
             session: None,
             license: None,

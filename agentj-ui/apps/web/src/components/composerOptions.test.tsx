@@ -1,7 +1,7 @@
 import "@testing-library/jest-dom/vitest";
 import { beforeEach, expect, test, vi } from "vitest";
 import { act, render, screen, fireEvent } from "@testing-library/react";
-import ComposerOptions from "./ComposerOptions";
+import ComposerOptions, { NO_MODEL_HINT } from "./ComposerOptions";
 import { createProject, setCurrentProject, updateProject } from "../projectStore";
 import { saveComposerPrefs } from "../layoutStore";
 beforeEach(() => localStorage.clear());
@@ -165,10 +165,20 @@ test("renders the served model list when provided", () => {
   expect(screen.queryByText("deepseek-chat")).not.toBeInTheDocument();
 });
 
-test("falls back to MODEL_LIST when no models prop is given", () => {
-  render(<ComposerOptions model="deepseek-chat" />);
-  fireEvent.click(screen.getByRole("button", { name: /deepseek-chat/ }));
-  expect(screen.getAllByText("deepseek-chat").length).toBeGreaterThan(1);
+test("hides a persisted model name the kernel no longer serves", () => {
+  saveComposerPrefs({ model: "deepseek-chat" });
+  render(
+    <ComposerOptions model={null} models={[{ name: "opencode-go/kimi-k3", cap: "—" }]} />,
+  );
+  expect(screen.queryByText("deepseek-chat")).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /kimi-k3|模型/ })).toBeInTheDocument();
+});
+
+test("offers nothing to pick when the kernel served no model list", () => {
+  render(<ComposerOptions model="kernel-default" />);
+  fireEvent.click(screen.getByRole("button", { name: /kernel-default/ }));
+  expect(screen.getByText(NO_MODEL_HINT)).toBeInTheDocument();
+  expect(screen.queryAllByRole("option")).toHaveLength(0);
 });
 
 test("served model selection persists and updates the trigger label", () => {
