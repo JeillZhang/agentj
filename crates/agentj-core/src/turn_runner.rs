@@ -9,6 +9,7 @@ use crate::budget::{self, DEFAULT_CONTEXT_TOKENS, MAX_OVERFLOW_RETRIES};
 use crate::error::{ModelError, ModuleError};
 use crate::kernel::KernelSender;
 use crate::module::{ContextPipeline, KernelContext, KernelMessage, ToolExecutionOutcome};
+use crate::text_tool_call;
 use crate::types::{
     AgentEvent, ChatMessage, ModelEvent, ModelOptions, ModuleId, Role, RunOverrides, SessionId,
     TokenUsage, ToolCall,
@@ -22,6 +23,21 @@ const MAX_INCOMPLETE_RETRIES: usize = 2;
 /// 没有它，用户看到的是模型最后一句「让我再看看…」加一条内部错误。@since 0.29.9
 const BUDGET_EXHAUSTED_NUDGE: &str =
     "工具调用轮次已用尽。请立刻基于你已经获得的信息给出最终结论，不要再请求任何工具。";
+
+/// 纠偏指令：模型把工具调用写成了纯文本（`<rfl:parameter …>` 之类）而没真的调用工具。
+/// 这类文本既不能当结论交给用户，也要告诉模型改走工具通道。@since 0.29.10
+const TOOL_CALL_AS_TEXT_NUDGE: &str = "你上一条回复把工具调用写成了纯文本标记（例如 <rfl:parameter>），并没有真的调用工具。\
+     请改用工具调用通道重新发起；若不再需要工具，就直接给出最终结论。";
+
+/// Id for a tool call recovered from text (the gateway never issued one). Shaped like the
+/// gateway's own `call-…` ids so the upstream sees a familiar field. @since 0.29.10
+fn recovered_call_id() -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!("call-text-{nanos}")
+}
 
 pub struct TurnHandle {
     cancel_tx: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
@@ -309,9 +325,49 @@ impl TurnRunner {
             if !saw_done && tc_list.is_empty() && !content.trim().is_empty() {
                 if incomplete_retries < MAX_INCOMPLETE_RETRIES {
                     incomplete_retries += 1;
+                    if text_tool_call::looks_like_tool_call_text(&content) {
+                        messages.push(ChatMessage::user(TOOL_CALL_AS_TEXT_NUDGE.to_string()));
+                    }
                     continue 'outer;
                 }
                 return Err(route("model stream ended before completion".into()));
+            }
+            // 有些模型把工具调用写成**纯文本方言**
+            // （`analysis <|constrain|>xml<|message|><rfl:parameter name="command">ls -la</rfl:parameter>`，
+            // 实测 opencode-go 部分模型），网关没把它翻译成结构化 tool_calls。当成「最终
+            // 结论」收尾就会让整轮任务停在半路，所以按文本里写明的参数还原成真正的工具调用，
+            // 继续正常执行（权限门与落库都走原有路径）。@since 0.29.10
+            if tc_list.is_empty()
+                && let Some(call) = text_tool_call::recover_tool_call(&content)
+            {
+                tracing::warn!(
+                    tool = %call.tool,
+                    chars = content.len(),
+                    "model wrote its tool call as text; recovered it and executing the tool"
+                );
+                tc_list.push(ToolCall {
+                    id: recovered_call_id(),
+                    name: call.tool,
+                    arguments: call.arguments,
+                });
+                content.clear();
+            }
+            // 认得出是文本工具调用、但参数无法无歧义还原：同样不能当结论。重发一次并要求
+            // 模型改走工具通道，仍不改就如实报错（而不是把标记当答复交给用户）。
+            // @since 0.29.10
+            if tc_list.is_empty() && text_tool_call::looks_like_tool_call_text(&content) {
+                if incomplete_retries < MAX_INCOMPLETE_RETRIES {
+                    incomplete_retries += 1;
+                    tracing::warn!(
+                        chars = content.len(),
+                        "model wrote unparsable tool-call markup; replaying with a corrective note"
+                    );
+                    messages.push(ChatMessage::user(TOOL_CALL_AS_TEXT_NUDGE.to_string()));
+                    continue 'outer;
+                }
+                return Err(route(
+                    "model kept writing its tool call as text instead of calling the tool".into(),
+                ));
             }
             if tc_list.is_empty() {
                 ctx.session
@@ -1211,6 +1267,69 @@ mod tests {
             2,
             "the empty assistant reply is still persisted"
         );
+    }
+
+    /// 模型把工具调用写成了纯文本方言（实测 leak）：它是一次真正的工具调用，不是最终结论。
+    /// 还原后正常执行并继续，用户不会再拿到一段 `<rfl:parameter>` 标记当答复。@since 0.29.10
+    #[tokio::test]
+    async fn turn_recovers_a_tool_call_the_model_wrote_as_text() {
+        let leak = "analysis <|constrain|>xml<|message|><rfl:parameter name=\"command\">\
+                    ls docs/changelog</rfl:parameter>";
+        let (events, history, calls) = run_scripted_turn(vec![
+            vec![ModelEvent::Delta(leak.into()), ModelEvent::Done],
+            vec![ModelEvent::Delta("最终结论".into()), ModelEvent::Done],
+        ])
+        .await;
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "the leaked round must not be treated as the answer"
+        );
+        assert!(
+            matches!(
+                events.last(),
+                Some(AgentEvent::Done { final_response, tool_calls, .. })
+                    if final_response == "最终结论" && tool_calls.len() == 1
+            ),
+            "unexpected terminal event: {:?}",
+            events.last()
+        );
+        assert_eq!(history.len(), 4);
+        assert_eq!(
+            history[1].tool_calls.len(),
+            1,
+            "the recovered call is persisted"
+        );
+        assert_eq!(history[1].tool_calls[0].name, "bash");
+        assert_eq!(
+            history[1].tool_calls[0].arguments["command"],
+            "ls docs/changelog"
+        );
+        assert!(history[1].tool_calls[0].id.starts_with("call-text-"));
+        assert_eq!(
+            history[1].content, "",
+            "markup must not become the model's words"
+        );
+        assert_eq!(history[3].content, "最终结论");
+    }
+
+    /// 认得出是文本工具调用却无法还原（只剩半截标记）时，既不能当结论，也不能假装成功：
+    /// 重发并纠偏，仍不改就如实报错，且不落任何助手消息。@since 0.29.10
+    #[tokio::test]
+    async fn turn_refuses_to_present_tool_call_markup_as_an_answer() {
+        let fragment = "passed total: 922\n</rfl:parameter>";
+        let (events, history, calls) = run_scripted_turn(vec![vec![
+            ModelEvent::Delta(fragment.into()),
+            ModelEvent::Done,
+        ]])
+        .await;
+        assert_eq!(calls.load(Ordering::SeqCst), 1 + MAX_INCOMPLETE_RETRIES);
+        assert!(
+            matches!(events.last(), Some(AgentEvent::Error(e)) if e.contains("as text")),
+            "unexpected terminal event: {:?}",
+            events.last()
+        );
+        assert_eq!(history.len(), 1, "no assistant message may be persisted");
     }
 
     /// 工具轮次用尽时不能把模型的最后一句「让我再看看…」当成结论，也不能只报一条内部
