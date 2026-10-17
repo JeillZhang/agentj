@@ -8,12 +8,46 @@
 > 待实施），不得随内容替换而删除；仅当该特性实际实施完成后才能移除（移入功能记录）。
 > 后端总结独立存放于 `summary_and_next_se.md`；两文件内容隔离，互不写入对方文件。
 
-> 当前功能：**v0.29.8 输入框模型标签跟随实际选择（修复）**（v0.29.9/0.29.10 为同分支的
-> 后端修复，前端无改动，详见 `summary_and_next_se.md`）
-> ——来源：用户报告「会话输入框右上角始终显示默认模型（`DeepSeek-Flash-V4.1`），不会根据实际
-> 使用的模型替换」。工作区 0.29.7 → **0.29.10**；`PROTOCOL_VERSION` 仍 **0.18.0** /
+> 当前功能：**v0.29.11 模型选择器不再虚构模型名（修复）** —— 同分支叠加 0.29.8 的
+> 「输入框模型标签跟随实际选择」（v0.29.9/0.29.10 是后端修复，详见 `summary_and_next_se.md`）。
+> ——来源：0.29.10 排查中在用户会话轨迹里发现的失败运行
+> `agent error: unknown model 'deepseek-chat' for provider 'opencode-go'`：内核未返回模型列表时
+> 弹层拿出硬编码占位 `deepseek-chat`，选中后作为 `session/run` 的 `model` 发出，任何 provider
+> 都不提供它。工作区 0.29.7 → **0.29.11**；`PROTOCOL_VERSION` 仍 **0.18.0** /
 > 28 方法 / 78 schemas（**无协议变更**，未重生成类型与 `METHODS`）。
 > 后端脚本同步见 `summary_and_next_se.md`。
+
+## v0.29.11（模型选择器不再虚构模型名）✅
+
+### 缺陷与根因
+
+- `agentj-ui/apps/web/src/components/ComposerOptions.tsx:16` 曾经是
+  `MODEL_LIST = [{ name: "deepseek-chat", cap: "128k 上下文 · 工具调用" }]`，:93 是
+  `models && models.length > 0 ? models : MODEL_LIST`——内核列表为空/未到时，弹层展示这个**假模型**。
+- 选中它 → `selectOption("model", i)` 写入 `prefs.model`（本地偏好）并 `onSelect(entry)`；
+  `RunPanel` 随下一轮发 `model: "deepseek-chat"`（无 provider）→ 内核用默认 provider 解析 →
+  `unknown model 'deepseek-chat' for provider 'opencode-go'`，本轮直接失败。
+- 同名占位还被 `agentj-ui/apps/web/src/components/ProjectEditDialog.tsx:104` 用作「项目默认模型」
+  下拉的选项源（同样的假数据）。
+
+### 修复
+
+- `ComposerOptions.tsx`：删除 `MODEL_LIST`，导出 `NO_MODEL_HINT = "内核未返回模型列表"`；
+  `const modelOptions = models ?? [];`；弹层在 `modelOptions.length === 0` 时只渲染一行不可选的
+  提示（`role="presentation"` + `options.css` 新增 `.pop-empty`），没有任何可发送的假模型。
+- `ComposerOptions.tsx` 触发器：`prefs.model` 回退仅在内核已给出列表**且**该名字仍在列表里时
+  生效（否则丢弃），避免旧假名字靠本地存储"复活"；实际发送的模型仍然只来自 `selected`。
+- `ProjectEditDialog.tsx`：新增可选 `models?: ModelEntry[]`（选项来自内核），内核未给列表时
+  显示「未设置」+ 一条禁用提示；`RunPanel.tsx` 传入 `models={models}`。
+- `App.tsx` 注释同步（不再引用 MODEL_LIST 回退）。
+
+### 验证结果（0.29.11）
+
+| 门禁 | 结果 |
+|---|---|
+| `npm --prefix agentj-ui test --workspace=@agentj/web` | **660 passed**（658 → +2：`hides a persisted model name the kernel no longer serves`、`offers the kernel-served models and says so when there are none`；原先的 MODEL_LIST 回退测试改为 `offers nothing to pick when the kernel served no model list`） |
+| `./scripts/check-version.sh` | `version-ok`（0.29.11 / 0.18.0） |
+| 真实的 `kernel/status` / `model/list` | 37 个真实 opencode-go id（`source: live`，无 `deepseek-chat`）——说明用户当时遇到的是**列表为空/未到**时的回退路径 |
 
 ## v0.29.8（输入框模型标签 = 实际发送的模型）✅
 
@@ -115,6 +149,8 @@
 
 ## 已完成（0.29.0 – 0.29.7，详见 `docs/changelog/v0.29.md`）
 
+- ✅ **0.29.11**：模型选择器不再虚构模型名（删除 `MODEL_LIST` 占位 + `.pop-empty` 空态；
+  本地 `prefs.model` 只在仍被内核提供时才显示；`ProjectEditDialog` 的默认模型选项改由内核列表驱动）。
 - ✅ **0.29.8**：Web composer 模型标签跟随实际选择 + 持久化选择重新水合（3 条新单测）。
 
 - ✅ **0.29.0 功能（前端）**：Web/TUI 链接 opencode-go API Key——`packages/protocol` 78 schemas
@@ -157,8 +193,8 @@
 
 ## 下一步
 
-- v0.29.8 前端代码 + 测试已落地，全门禁绿（Web 658 / SDK 55 / TUI 177 / Web build clean /
-  drift 2 / version-ok）；v0.29.9–0.29.10 为纯后端修复，前端无需重跑。剩余：提交 → 推送**两个远端**
+- v0.29.8 + v0.29.11 前端代码与测试已落地（Web **660 passed**）；v0.29.9–0.29.10 为纯后端修复，
+  前端无需重跑。剩余：提交 → 推送**两个远端**
   （本机 `github` = GitHub 权威、`origin` = GitCode 镜像；与 AGENTS.md 的远端命名相反）→
   更新在 GitHub 的 PR（用户负责合并）。
 - 前端候选：③ Web 接入服务端搜索；或订阅状态常驻指示（需先定义新鲜度语义）；
