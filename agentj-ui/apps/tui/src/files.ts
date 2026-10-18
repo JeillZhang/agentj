@@ -126,34 +126,6 @@ export function buildSearchIndex(entries: RawFileEntry[]): SearchEntry[] {
   }));
 }
 
-// rank: name-prefix 0 < name-substring 1 < path-substring 2; null = no match
-function searchRank(entry: SearchEntry, query: string): number | null {
-  const name = entry.name.toLowerCase();
-  if (name.startsWith(query)) return 0;
-  if (name.includes(query)) return 1;
-  return entry.path.toLowerCase().includes(query) ? 2 : null;
-}
-
-export function filterEntries(
-  index: SearchEntry[],
-  query: string,
-  limit: number,
-): { rows: SearchEntry[]; total: number } {
-  const q = query.trim().toLowerCase();
-  if (!q) return { rows: [], total: 0 };
-  const matches: { entry: SearchEntry; rank: number }[] = [];
-  for (const entry of index) {
-    const rank = searchRank(entry, q);
-    if (rank !== null) matches.push({ entry, rank });
-  }
-  matches.sort((a, b) => a.rank - b.rank || comparePaths(a.entry.path, b.entry.path));
-  return { rows: matches.slice(0, Math.max(0, limit)).map((m) => m.entry), total: matches.length };
-}
-
-function comparePaths(a: string, b: string): number {
-  return a < b ? -1 : a > b ? 1 : 0;
-}
-
 export function formatSearchRowParts(row: SearchEntry, width: number, selected: boolean): RowParts {
   const letter = row.gitStatus;
   const bodyWidth = Math.max(4, width - (letter ? 2 : 0));

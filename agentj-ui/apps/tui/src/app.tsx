@@ -26,7 +26,7 @@ import Sidebar, { SIDEBAR_WIDTH, loadCollapsed, loadProjects, saveCollapsed } fr
 import type { Project, SidebarSession, SidebarView } from "./sidebar.tsx";
 import { useFileTree } from "./files.tsx";
 import { DEFAULT_PROJECT_KEY } from "./filetreePrefs.ts";
-import { buildSearchIndex, clampSelection, filterEntries, flattenVisible, moveSelection, parentPath } from "./files.ts";
+import { buildSearchIndex, clampSelection, flattenVisible, moveSelection, parentPath } from "./files.ts";
 import type { RawFileEntry, SearchEntry } from "./files.ts";
 export interface TransportHandle {
   onStatusChange?: (s: TransportStatus) => void;
@@ -46,48 +46,66 @@ export function getBackoffDelay(attempt: number, baseMs = 1000): number {
 
 export type SearchState = {
   query: string;
-  index: SearchEntry[];
   rows: SearchEntry[];
   total: number;
   truncated: boolean;
   error: string | null;
+  notice: string | null;
   idx: number;
-  mode: "unknown" | "server" | "local";
+  mode: "unknown" | "server" | "unsupported";
 };
 
-type FileListSearchReply = { entries?: RawFileEntry[]; total?: number; truncated?: boolean };
+export type FileListSearchReply = { entries?: RawFileEntry[]; total?: number; truncated?: boolean };
 
-const SEARCH_INDEX_DEPTH = 8;
-const MAX_SEARCH_INDEX = 2000;
-const SEARCH_RESULT_LIMIT = 100;
+export const SEARCH_UNSUPPORTED_HINT =
+  "kernel does not support server-side search · upgrade the kernel";
 const SEARCH_DEBOUNCE_MS = 150;
 
-function withSearchQuery(state: SearchState, query: string): SearchState {
-  const { rows, total } = filterEntries(state.index, query, SEARCH_RESULT_LIMIT);
-  return { ...state, query, rows, total, idx: 0 };
-}
-
-// A reply carrying `total` is a server-ranked search (new kernel); without it the
-// old kernel ignored the query and the depth-8 listing becomes the local index.
-function applySearchReply(state: SearchState, query: string, reply: FileListSearchReply): SearchState {
-  const entries = reply.entries ?? [];
+// A reply carrying `total` is a server-ranked search. Without it the kernel is too
+// old to understand the query, so the TUI reports that instead of re-ranking the
+// listing locally — the kernel is the single ranking authority.
+export function applySearchReply(
+  state: SearchState,
+  query: string,
+  reply: FileListSearchReply,
+): SearchState {
   if (typeof reply.total === "number") {
-    const rows = buildSearchIndex(entries);
     return {
       ...state,
       query,
       mode: "server",
-      index: rows,
-      rows,
+      rows: buildSearchIndex(reply.entries ?? []),
       total: reply.total,
       truncated: Boolean(reply.truncated),
       idx: 0,
       error: null,
+      notice: null,
     };
   }
-  const index = buildSearchIndex(entries.slice(0, MAX_SEARCH_INDEX));
-  const truncated = Boolean(reply.truncated) || entries.length > MAX_SEARCH_INDEX;
-  return withSearchQuery({ ...state, mode: "local", index, truncated, error: null }, query);
+  return {
+    ...state,
+    query,
+    mode: "unsupported",
+    rows: [],
+    total: 0,
+    truncated: false,
+    idx: 0,
+    error: null,
+    notice: SEARCH_UNSUPPORTED_HINT,
+  };
+}
+
+export function initialSearchState(): SearchState {
+  return {
+    query: "",
+    rows: [],
+    total: 0,
+    truncated: false,
+    error: null,
+    notice: null,
+    idx: 0,
+    mode: "unknown",
+  };
 }
 
 type SearchKey =
@@ -524,15 +542,13 @@ function AppInner({ url, createTransport, backoffBaseMs = 1000 }: AppProps) {
       const sid = st.activeId;
       const current = searchRef.current;
       if (!client || !sid || !current || searchQueryRef.current !== query) return;
-      if (!force && (current.mode === "local" || current.error !== null)) {
-        setSearch((prev) => (prev && prev.query === query ? withSearchQuery(prev, query) : prev));
-        return;
-      }
+      // A failed request stays put until `r` retries it; keystrokes must not resend it.
+      if (!force && current.error !== null) return;
       try {
         const reply = (await client.request(METHODS.fileList, {
           session_id: sid,
           path: null,
-          depth: SEARCH_INDEX_DEPTH,
+          depth: 8,
           query,
         })) as FileListSearchReply;
         if (searchRef.current === null || searchQueryRef.current !== query) return;
@@ -541,30 +557,16 @@ function AppInner({ url, createTransport, backoffBaseMs = 1000 }: AppProps) {
         const msg = e instanceof Error ? e.message : String(e);
         setSearch((prev) =>
           prev && prev.query === query
-            ? { ...prev, index: [], rows: [], total: 0, idx: 0, error: msg }
-            : prev,
-        );
-      }
-    },
-    [client, st.activeId],
-  );
-  const loadSearchIndex = useCallback(
-    async (query: string): Promise<void> => {
-      const sid = st.activeId;
-      if (!client || !sid) return;
-      try {
-        const reply = (await client.request(METHODS.fileList, {
-          session_id: sid,
-          path: null,
-          depth: SEARCH_INDEX_DEPTH,
-        })) as FileListSearchReply;
-        if (searchRef.current === null || searchQueryRef.current !== query) return;
-        setSearch((prev) => (prev && prev.query === query ? applySearchReply(prev, query, reply) : prev));
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        setSearch((prev) =>
-          prev && prev.query === query
-            ? { ...prev, index: [], rows: [], total: 0, idx: 0, error: msg }
+            ? {
+                ...prev,
+                rows: [],
+                total: 0,
+                idx: 0,
+                error: msg,
+                notice: null,
+                truncated: false,
+                mode: "unknown",
+              }
             : prev,
         );
       }
@@ -575,12 +577,27 @@ function AppInner({ url, createTransport, backoffBaseMs = 1000 }: AppProps) {
     (next: string): void => {
       cancelSearchDebounce();
       searchQueryRef.current = next;
+      // Whitespace-only is empty: it must not be dispatched (the kernel trims it to
+      // an unranked listing, which would be misread as an old-kernel reply).
+      const blank = next.trim().length === 0;
       setSearch((prev) => {
         if (!prev) return prev;
-        if (next.length === 0) return { ...prev, query: "", rows: [], total: 0, idx: 0 };
-        return { ...prev, query: next, idx: 0 };
+        if (blank) {
+          return {
+            ...prev,
+            query: "",
+            rows: [],
+            total: 0,
+            idx: 0,
+            notice: null,
+            truncated: false,
+            mode: "unknown",
+          };
+        }
+        if (next === prev.query) return prev;
+        return { ...prev, query: next, idx: 0, notice: null, truncated: false, mode: "unknown" };
       });
-      if (next.length === 0) return;
+      if (blank) return;
       searchTimerRef.current = setTimeout(() => {
         searchTimerRef.current = null;
         void runServerSearch(next);
@@ -590,27 +607,17 @@ function AppInner({ url, createTransport, backoffBaseMs = 1000 }: AppProps) {
   );
   const rebuildSearch = useCallback((): void => {
     cancelSearchDebounce();
-    const current = searchRef.current;
-    if (!current) return;
-    const query = searchQueryRef.current;
-    if (current.mode === "server") void runServerSearch(query, true);
-    else void loadSearchIndex(query);
-  }, [cancelSearchDebounce, loadSearchIndex, runServerSearch]);
+    if (!searchRef.current) return;
+    // A whitespace-only query is empty: it must not be rebuilt (same guard as applyQuery).
+    if (searchQueryRef.current.trim().length === 0) return;
+    void runServerSearch(searchQueryRef.current, true);
+  }, [cancelSearchDebounce, runServerSearch]);
   const startSearch = useCallback((): void => {
     if (st.activeId === null) return;
     st.setErr(null);
     cancelSearchDebounce();
     searchQueryRef.current = "";
-    setSearch({
-      query: "",
-      index: [],
-      rows: [],
-      total: 0,
-      truncated: false,
-      error: null,
-      idx: 0,
-      mode: "unknown",
-    });
+    setSearch(initialSearchState());
   }, [st.activeId, st.setErr, cancelSearchDebounce]);
   const beginReveal = useCallback((path: string): void => {
     cancelSearchDebounce();
@@ -891,6 +898,7 @@ function AppInner({ url, createTransport, backoffBaseMs = 1000 }: AppProps) {
                   total: search.total,
                   truncated: search.truncated,
                   error: search.error,
+                  notice: search.notice,
                 }
               : undefined,
           }}

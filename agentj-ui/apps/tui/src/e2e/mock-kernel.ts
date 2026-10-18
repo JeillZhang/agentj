@@ -1,5 +1,6 @@
 import { createServer } from "node:http";
 import { WebSocketServer, WebSocket } from "ws";
+import { SEARCH_RANK_CASES, type FixtureEntry } from "../searchRankCases";
 
 export type MockCall = { method: string; [key: string]: unknown };
 
@@ -23,30 +24,29 @@ const SEARCH_FIXTURE = [
   { name: "readme.md", path: "docs/readme.md", kind: "file", git_status: "A" },
 ];
 
-type FixtureEntry = (typeof SEARCH_FIXTURE)[number];
+type ListingEntry = (typeof SEARCH_FIXTURE)[number];
 
-// Mirrors the TUI rank rule (files.ts::searchRank): name prefix 0 < name
-// substring 1 < path substring 2; case-insensitive, path-ascending tie-break.
-function rankFixtureEntry(entry: FixtureEntry, query: string): number | null {
-  const name = entry.name.toLowerCase();
-  if (name.startsWith(query)) return 0;
-  if (name.includes(query)) return 1;
-  return entry.path.toLowerCase().includes(query) ? 2 : null;
+// Search replies replay the shared Rust-pinned conformance fixture
+// (protocol/search-rank-cases.json) instead of re-deriving the rank rule.
+type RankedEntry = { name: string; path: string; kind: "file" | "directory" };
+type WireEntry = { name: string; path: string; kind: "file" | "dir" };
+
+// The fixture speaks its own vocabulary (`"file" | "directory"`); the protocol
+// wire enum spells directories `"dir"`. Translate before replying.
+export function fixtureKindToWire(kind: RankedEntry["kind"]): WireEntry["kind"] {
+  return kind === "directory" ? "dir" : "file";
 }
 
-// Query scans keep matching files only (the kernel skips directory entries).
-function searchFixture(query: string): { entries: FixtureEntry[]; total: number } {
-  const matches: Array<{ entry: FixtureEntry; rank: number }> = [];
-  for (const entry of SEARCH_FIXTURE) {
-    if (entry.kind !== "file") continue;
-    const rank = rankFixtureEntry(entry, query);
-    if (rank !== null) matches.push({ entry, rank });
-  }
-  matches.sort(
-    (a, b) =>
-      a.rank - b.rank || (a.entry.path < b.entry.path ? -1 : a.entry.path > b.entry.path ? 1 : 0),
-  );
-  return { entries: matches.map((m) => m.entry), total: matches.length };
+// The fixture's `searches[]` is the single source of the ranking rule.
+function searchFixture(query: string): { entries: WireEntry[]; total: number } {
+  const contract = SEARCH_RANK_CASES.searches.find((c) => c.query === query);
+  if (!contract) return { entries: [], total: 0 };
+  const byPath = new Map<string, FixtureEntry>(contract.entries.map((e) => [e.path, e]));
+  const entries = contract.expected_ranked_paths
+    .map((path) => byPath.get(path))
+    .filter((e): e is FixtureEntry => e !== undefined)
+    .map((e) => ({ name: e.name, path: e.path, kind: fixtureKindToWire(e.kind) }));
+  return { entries, total: contract.expected_total };
 }
 
 type Pending = {

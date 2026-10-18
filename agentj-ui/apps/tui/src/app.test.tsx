@@ -5,12 +5,13 @@ import { join } from "node:path";
 import { testRender } from "@opentui/react/test-utils";
 import type { TestRendererSetup } from "@opentui/core/testing";
 import { act } from "react";
-import { App, getBackoffDelay } from "./app.tsx";
+import { App, applySearchReply, getBackoffDelay, initialSearchState, SEARCH_UNSUPPORTED_HINT } from "./app.tsx";
 import type { TransportHandle } from "./app.tsx";
 import { METHODS, ResponseRouter } from "@agentj/sdk";
 import type { TransportStatus } from "@agentj/sdk";
 import { MODEL_CONFIG, providersFromStatus, renderModelList } from "./models.tsx";
 import { loadFileTreePrefs, saveFileTreePrefs } from "./filetreePrefs.ts";
+import { SEARCH_RANK_CASES } from "./searchRankCases";
 import { saveSessionHistory } from "./session.tsx";
 import { saveProjects } from "./sidebar.tsx";
 import type { RawFileEntry } from "./files.ts";
@@ -115,16 +116,31 @@ type FakeKernel = {
   handle: TransportHandle & { send: (line: string) => Promise<string> };
 };
 
-// Server mode answers a string query with ranked matches + total; legacy mode
-// (and the default) ignores the query and returns the depth-8 listing as v0.21.
-function rankEntry(entry: RawFileEntry, query: string): number {
-  const name = entry.name.toLowerCase();
-  if (name.startsWith(query)) return 0;
-  if (name.includes(query)) return 1;
-  return 2;
+// Server mode replays the Rust-authoritative conformance fixture; queries outside
+// the fixture get a plain wire-order substring filter over files. Neither path ranks
+// locally — the kernel owns the ranking rule.
+function serverSearchReply(tree: RawFileEntry[], query: string) {
+  const contract = SEARCH_RANK_CASES.searches.find((c) => c.query === query);
+  if (contract) {
+    const byPath = new Map(contract.entries.map((e) => [e.path, e]));
+    return {
+      entries: contract.expected_ranked_paths
+        .map((p) => byPath.get(p))
+        .filter((e): e is NonNullable<typeof e> => e !== undefined)
+        .map((e) => ({ name: e.name, path: e.path, kind: e.kind })),
+      total: contract.expected_total,
+    };
+  }
+  // A filter, never a ranker: directories are dropped and wire order is preserved.
+  const matches = tree.filter(
+    (e) => e.kind === "file" && e.path.toLowerCase().includes(query.toLowerCase()),
+  );
+  return { entries: matches, total: matches.length };
 }
 
-function fakeKernel(options: { search?: "server" | "legacy"; sessionRoot?: string } = {}): FakeKernel {
+function fakeKernel(
+  options: { search?: "server" | "legacy"; sessionRoot?: string; truncatedSearch?: boolean } = {},
+): FakeKernel {
   const calls: KernelCall[] = [];
   const dropped = new Set<string>();
   let depthEightFailures = 0;
@@ -156,16 +172,9 @@ function fakeKernel(options: { search?: "server" | "legacy"; sessionRoot?: strin
             depthEightFailures -= 1;
             throw new Error("index unavailable");
           }
-          if (options.search === "server") {
+          if (options.search !== "legacy") {
             const query = typeof params.query === "string" ? params.query.trim().toLowerCase() : "";
-            const matches = flat().filter(
-              (e) => query.length > 0 && (e.name.toLowerCase().includes(query) ||
-                e.path.toLowerCase().includes(query)),
-            );
-            matches.sort(
-              (a, b) => rankEntry(a, query) - rankEntry(b, query) || a.path.localeCompare(b.path),
-            );
-            result = { entries: matches, total: matches.length, truncated: false };
+            result = { ...serverSearchReply(flat(), query), truncated: options.truncatedSearch === true };
           } else {
             result = { entries: flat(), truncated: false };
           }
@@ -249,6 +258,22 @@ async function openFilesSidebar(setup: TestRendererSetup, input: AppInput): Prom
 
 const depthEightCalls = (kernel: FakeKernel): KernelCall[] =>
   kernel.calls.filter((c) => c.method === METHODS.fileList && c.depth === 8);
+
+async function searchReply(
+  kernel: FakeKernel,
+  query: string,
+): Promise<{ entries: RawFileEntry[]; total?: number }> {
+  const line = JSON.stringify({
+    jsonrpc: "2.0",
+    id: 1,
+    method: METHODS.fileList,
+    params: { path: null, depth: 8, query },
+  });
+  const parsed = JSON.parse(await kernel.handle.send(line)) as {
+    result: { entries: RawFileEntry[]; total?: number };
+  };
+  return parsed.result;
+}
 
 describe("App connection screen", () => {
   test("unreachable shows kernel unreachable", async () => {
@@ -645,8 +670,28 @@ test("BUG-009: typing in the composer never triggers sidebar/file shortcuts", as
 });
 
 describe("files search mode", () => {
+  test("server search replays the conformance fixture, ranked, with its total", async () => {
+    const kernel = fakeKernel({ search: "server" });
+    const contract = SEARCH_RANK_CASES.searches.find((c) => c.query === "auth");
+    expect(contract).toBeDefined();
+    const reply = await searchReply(kernel, "auth");
+    expect(reply.entries.map((e) => e.path)).toEqual(contract!.expected_ranked_paths);
+    expect(reply.total).toBe(contract!.expected_total);
+  });
+
+  test("an unknown query falls back to a wire-order file filter, never a re-ranking", async () => {
+    const kernel = fakeKernel({ search: "server" });
+    // "s" matches the tree's files in wire order; a ranker would sort the nested Button.tsx first.
+    const reply = await searchReply(kernel, "s");
+    expect(reply.entries.map((e) => e.path)).toEqual([
+      "src/main.rs",
+      "src/components/Button.tsx",
+    ]);
+    expect(reply.total).toBe(2);
+  });
+
   test("s enters search, printables filter, r rebuilds, enter jumps", async () => {
-    const kernel = fakeKernel();
+    const kernel = fakeKernel({ search: "server" });
     const { setup, input } = await renderApp(kernel);
     await openFilesSidebar(setup, input);
     await act(async () => { input.press("s"); await setup.flush(); });
@@ -686,30 +731,33 @@ describe("files search mode", () => {
     act(() => setup.renderer.destroy());
   });
 
-  test("enter on a directory result expands and selects it", async () => {
-    const kernel = fakeKernel();
+  test("the fixture contract never ranks a directory", async () => {
+    const kernel = fakeKernel({ search: "server" });
+    const contract = SEARCH_RANK_CASES.searches.find((c) => c.query === "main");
+    expect(contract).toBeDefined();
+    // Premise pin: the driven fixture case actually matches a directory ("src/main").
+    expect(contract!.entries.some((e) => e.kind === "directory")).toBe(true);
+    // The contract excludes every directory path from the ranked output. "Directories are
+    // never ranked" is proven against the real kernel by the Rust test in
+    // crates/agentj-ipc/src/file_list.rs; here we pin the fixture contract itself.
+    const directoryPaths = new Set(
+      contract!.entries.filter((e) => e.kind === "directory").map((e) => e.path),
+    );
+    expect(contract!.expected_ranked_paths.some((p) => directoryPaths.has(p))).toBe(false);
     const { setup, input } = await renderApp(kernel);
     await openFilesSidebar(setup, input);
     await act(async () => { input.press("s"); await setup.flush(); });
-    await act(async () => { await input.type("components"); await setup.flush(); });
+    await act(async () => { await input.type("main"); await setup.flush(); });
     await settleDebounce(setup);
-    await act(async () => {
-      await setup.waitFor(() => setup.captureCharFrame().includes("components"));
-    });
-    await act(async () => { input.press("enter"); await setup.flush(); });
-    await act(async () => {
-      await setup.waitFor(() => !setup.captureCharFrame().includes("type filter"));
-    });
-    await act(async () => { await setup.waitFor(() => /●\s*▼\s*components/.test(setup.captureCharFrame())); });
-    await act(async () => { await setup.waitFor(() => setup.captureCharFrame().includes("Button.tsx")); });
-    expect(kernel.calls).toContainEqual(
-      expect.objectContaining({ method: METHODS.fileList, path: "src/components", depth: 1 }),
-    );
+    const reply = await searchReply(kernel, "main");
+    expect(reply.entries.map((e) => e.path)).toEqual(contract!.expected_ranked_paths);
+    // The UI half: the surviving file row is actually rendered.
+    expect(setup.captureCharFrame()).toContain("main.rs");
     act(() => setup.renderer.destroy());
   });
 
   test("esc clears a non-empty query before it exits search", async () => {
-    const kernel = fakeKernel();
+    const kernel = fakeKernel({ search: "server" });
     const { setup, input } = await renderApp(kernel);
     await openFilesSidebar(setup, input);
     await act(async () => { input.press("s"); await setup.flush(); });
@@ -759,7 +807,7 @@ describe("files search mode", () => {
   });
 
   test("keeps the query typed while the index request is in flight", async () => {
-    const kernel = fakeKernel();
+    const kernel = fakeKernel({ search: "server" });
     const { setup, input } = await renderApp(kernel);
     await openFilesSidebar(setup, input);
     const release = kernel.deferDepthEight();
@@ -793,7 +841,7 @@ describe("files search mode", () => {
     await act(async () => {
       await setup.waitFor(() => setup.captureCharFrame().includes("index unavailable"));
     });
-    // C2: while the error is up, keystrokes filter locally and must not hide it
+    // C2: while the error is up, keystrokes must not resend or hide it
     await act(async () => { await input.type("x"); await setup.flush(); });
     await settleDebounce(setup);
     await repaint(setup);
@@ -812,7 +860,7 @@ describe("files search mode", () => {
   });
 
   test("jump loads ancestors depth-first and selects the nested target", async () => {
-    const kernel = fakeKernel();
+    const kernel = fakeKernel({ search: "server" });
     const { setup, input } = await renderApp(kernel);
     await openFilesSidebar(setup, input);
     await act(async () => { input.press("s"); await setup.flush(); });
@@ -834,7 +882,7 @@ describe("files search mode", () => {
   });
 
   test("a stale search target exits, refreshes the root and reports once", async () => {
-    const kernel = fakeKernel();
+    const kernel = fakeKernel({ search: "server" });
     const { setup, input } = await renderApp(kernel);
     await openFilesSidebar(setup, input);
     await act(async () => { input.press("s"); await setup.flush(); }); // search starts with no index
@@ -860,7 +908,7 @@ describe("files search mode", () => {
   });
 
   test("enter on an empty result set keeps search mode open", async () => {
-    const kernel = fakeKernel();
+    const kernel = fakeKernel({ search: "server" });
     const { setup, input } = await renderApp(kernel);
     await openFilesSidebar(setup, input);
     await act(async () => { input.press("s"); await setup.flush(); });
@@ -959,45 +1007,125 @@ describe("files search mode", () => {
     act(() => setup.renderer.destroy());
   });
 
-  test("server search debounces, renders ranked rows and shows total", async () => {
+  test("server search debounces, renders ranked rows in order and reflects the total", async () => {
     const kernel = fakeKernel({ search: "server" });
+    const contract = SEARCH_RANK_CASES.searches.find((c) => c.query === "auth");
+    expect(contract).toBeDefined();
+    expect(contract!.expected_ranked_paths.length).toBeGreaterThan(1); // order is observable
     const { setup, input } = await renderApp(kernel);
     await openFilesSidebar(setup, input);
     await act(async () => { input.press("s"); await setup.flush(); });
-    await act(async () => { await input.type("mai"); await setup.flush(); });
+    await act(async () => { await input.type("auth"); await setup.flush(); });
     await settleDebounce(setup);
     const queryCalls = kernel.calls.filter(
-      (c) => c.method === METHODS.fileList && c.query === "mai",
+      (c) => c.method === METHODS.fileList && c.query === "auth",
     );
     expect(queryCalls).toHaveLength(1); // debounced to a single request
     expect(queryCalls[0]).toMatchObject({ path: null, depth: 8 });
     await act(async () => {
-      await setup.waitFor(() => setup.captureCharFrame().includes("main.rs"));
+      await setup.waitFor(() => setup.captureCharFrame().includes("auth.test.ts"));
     });
-    // the server-ranked reply drops non-matches (total itself rides in state)
-    expect(setup.captureCharFrame()).not.toContain("README.md");
+    await repaint(setup);
+    const frame = setup.captureCharFrame();
+    // The sidebar narrows the parent suffix on the longest name; the four rows are
+    // still individually identifiable. indexOf order fails if the rows are reversed.
+    const rows = ["auth.ts src/", "auth.test.ts tests/", "my-auth-help… src/helpers/", "index.ts src/auth/"];
+    const positions = rows.map((needle) => frame.indexOf(needle));
+    expect(positions.every((p) => p >= 0)).toBe(true);
+    expect(positions).toEqual([...positions].sort((a, b) => a - b));
+    expect(rows.filter((needle) => frame.includes(needle))).toHaveLength(contract!.expected_total);
+    // the server-ranked reply drops non-matches (a local filter would keep README.md)
+    expect(frame).not.toContain("README.md");
     act(() => setup.renderer.destroy());
   });
 
-  test("falls back to the local index when the kernel omits total", async () => {
-    const kernel = fakeKernel({ search: "legacy" });
+  test("reports an unsupported kernel instead of falling back to a local index", async () => {
+    const kernel = fakeKernel({ search: "legacy" }); // reply carries no total
+    const { setup, input } = await renderApp(kernel);
+    await openFilesSidebar(setup, input);
+    await act(async () => { input.press("s"); await setup.flush(); });
+    await act(async () => { await input.type("components"); await setup.flush(); });
+    await settleDebounce(setup);
+
+    // the sidebar wraps the hint across cells, so compare on a single-line projection
+    const frame = setup.captureCharFrame().replace(/[\s│]+/g, " ");
+    expect(frame).toContain(SEARCH_UNSUPPORTED_HINT);
+    act(() => setup.renderer.destroy());
+  });
+
+  test("a whitespace-only query issues no request and never shows the unsupported notice", async () => {
+    const kernel = fakeKernel({ search: "legacy" }); // legacy would fake the notice if dispatched
+    const { setup, input } = await renderApp(kernel);
+    await openFilesSidebar(setup, input);
+    await act(async () => { input.press("s"); await setup.flush(); });
+    await act(async () => { await input.type("  "); await setup.flush(); });
+    await settleDebounce(setup);
+    expect(depthEightCalls(kernel)).toHaveLength(0); // a blank query must not be dispatched
+    const frame = setup.captureCharFrame().replace(/[\s│]+/g, " ");
+    expect(frame).not.toContain(SEARCH_UNSUPPORTED_HINT);
+    expect(setup.captureCharFrame()).not.toContain("main.rs"); // rows stay empty
+    act(() => setup.renderer.destroy());
+  });
+
+  test("r rebuild does not dispatch a whitespace-only query", async () => {
+    const kernel = fakeKernel({ search: "legacy" }); // legacy would fake the notice if dispatched
+    const { setup, input } = await renderApp(kernel);
+    await openFilesSidebar(setup, input);
+    await act(async () => { input.press("s"); await setup.flush(); });
+    await act(async () => { await input.type("  "); await setup.flush(); });
+    await settleDebounce(setup);
+    expect(depthEightCalls(kernel)).toHaveLength(0); // the blank guard holds for typing
+    // `r` must honour the same blank guard; a rebuild would dispatch immediately.
+    await act(async () => { input.press("r"); await setup.flush(); });
+    await settleDebounce(setup);
+    expect(depthEightCalls(kernel)).toHaveLength(0);
+    const frame = setup.captureCharFrame().replace(/[\s│]+/g, " ");
+    expect(frame).not.toContain(SEARCH_UNSUPPORTED_HINT);
+    act(() => setup.renderer.destroy());
+  });
+
+  test("esc clears the unsupported notice along with the query", async () => {
+    const kernel = fakeKernel({ search: "legacy" }); // reply carries no total
     const { setup, input } = await renderApp(kernel);
     await openFilesSidebar(setup, input);
     await act(async () => { input.press("s"); await setup.flush(); });
     await act(async () => { await input.type("main"); await setup.flush(); });
     await settleDebounce(setup);
-    const withQuery = (): number =>
-      kernel.calls.filter(
-        (c) => c.method === METHODS.fileList && typeof c.query === "string",
-      ).length;
-    expect(withQuery()).toBe(1); // first reply (no total) becomes the local index
-    await act(async () => {
-      await setup.waitFor(() => setup.captureCharFrame().includes("main.rs"));
-    });
-    await act(async () => { await input.type("."); await setup.flush(); });
-    await settleDebounce(setup);
-    expect(withQuery()).toBe(1); // local filtering issues no further requests
+    await repaint(setup);
+    expect(setup.captureCharFrame().replace(/[\s│]+/g, " ")).toContain(SEARCH_UNSUPPORTED_HINT);
+    await pressEscape(setup, input); // clears the query: the notice must not survive it
+    await repaint(setup);
+    expect(setup.captureCharFrame().replace(/[\s│]+/g, " ")).not.toContain(SEARCH_UNSUPPORTED_HINT);
     act(() => setup.renderer.destroy());
+  });
+
+  test("a failed search request does not leave a stale partial hint", async () => {
+    const kernel = fakeKernel({ search: "server", truncatedSearch: true });
+    const { setup, input } = await renderApp(kernel);
+    await openFilesSidebar(setup, input);
+    await act(async () => { input.press("s"); await setup.flush(); });
+    await act(async () => { await input.type("main"); await setup.flush(); });
+    await settleDebounce(setup);
+    await repaint(setup);
+    expect(setup.captureCharFrame()).toContain("partial"); // the first reply was truncated
+    kernel.failDepthEight(1);
+    await act(async () => { await input.type("x"); await setup.flush(); }); // "mainx" fails
+    await settleDebounce(setup);
+    await repaint(setup);
+    const frame = setup.captureCharFrame();
+    expect(frame).toContain("index unavailable");
+    expect(frame).not.toContain("partial");
+    act(() => setup.renderer.destroy());
+  });
+
+  test("a server reply clears the unsupported notice", () => {
+    const unsupported = applySearchReply(initialSearchState(), "q", { entries: [] });
+    expect(unsupported.mode).toBe("unsupported");
+    expect(unsupported.notice).toBe(SEARCH_UNSUPPORTED_HINT);
+    const server = applySearchReply(unsupported, "q", { entries: [], total: 7 });
+    expect(server.mode).toBe("server");
+    expect(server.notice).toBeNull();
+    expect(server.total).toBe(7);
   });
 });
 

@@ -41,10 +41,12 @@ bun --cwd agentj-ui/apps/tui test         # testRender + mock WS e2e
 - 懒加载 `file/list`（depth=1）；stale-reply 代际守卫；collapse 保留子树；
   会话切换清空重取。
 - 搜索：按 `s` 进入，**防抖 150ms 服务端查询**
-  （`file/list { path: null, depth: 8, query }`，服务端 rank + `total`）；
-  旧内核回包无 `total` 时自动降级为 depth-8 本地过滤。
+  （`file/list { path: null, depth: 8, query }`）。**内核是唯一排名者**，客户端只渲染内核返回的
+  顺序与 `total`：name 前缀 < name 子串 < path 子串，大小写不敏感，并列按 path 升序。
+  若内核回包不含 `total`（旧内核忽略 `query`），搜索态显示「不支持服务端搜索」提示并以空结果
+  呈现，不再本地排名。
   - 可打印字符过滤（含 `f`/`n`）、`Backspace` 删末字符；
-  - `Esc` 非空清空 / 空退出；`Enter` 跳转（祖先展开）并选中；`r` 重建索引；
+  - `Esc` 非空清空 / 空退出；`Enter` 跳转（祖先展开）并选中；`r` 立即重查；
   - `truncated` 时显示 `· partial`。
 - 展开状态按会话有效 `project_root` 持久化（`filetree.json`，未知回退
   `__default__`）。

@@ -7,96 +7,76 @@
 > 待实施），不得随内容替换而删除；仅当该特性实际实施完成后才能移除（移入功能记录）。
 > 前端总结独立存放于 `summary_and_next_fe.md`；两文件内容隔离，互不写入对方文件。
 
-> 当前功能：**抽检扩展（逐请求校验 + 手动全量端点）** —— 分支 `feature/spot-check-extension`。
-> 改 `crates/agentj-config`（`[web]` 4 键）+ `crates/agentj-ipc`（`web.rs` 逐请求校验层 /
-> `POST /integrity/verify` / `integrity.on_demand` / 8 指标；`tcp.rs` 绑定传参）+ `crates/agentj-cli`
-> （配置 → `IntegrityOptions` 装配）+ e2e + 文档。协议 wire 面**不变**（`PROTOCOL_VERSION` 仍
-> 0.18.0 / 28 方法 / 78 schemas；工作区仍 **0.1.0**）。下方 0.29.x / BUG-017 等前序章节为归档记录。
+> 当前功能：**rank 规则单一真源化（Rust 权威 + 跨语言契约夹具）** —— 分支
+> `feature/search-rank-single-source`。把文件搜索排名从三份手抄实现（Rust `file_list::search_rank` /
+> TUI `files.ts::searchRank` / mock kernel 镜像）收敛到**唯一可执行真源**（Rust），新增仓库级契约
+> 夹具 `protocol/search-rank-cases.json` 钉住语义，两个 TS 镜像退役。协议 wire 面**不变**
+> （`PROTOCOL_VERSION` 仍 0.18.0 / 28 方法 / 78 schemas；工作区仍 **0.1.0**）。
+> 下方 0.29.x / BUG-017 等前序章节为归档记录。
 
-## 抽检扩展：逐请求校验 + 手动全量端点 ✅
+## rank 规则单一真源化 ✅
 
-分支 `feature/spot-check-extension`（自 `0cd87be` 起）。无 wire 变更：无新 JSON-RPC 方法、无 schema
-改动、`protocol/methods.json` 未动；`PROTOCOL_VERSION` 仍 0.18.0、工作区仍 0.1.0（AGENTS.md：版本号
-不随特性递增）。
+分支 `feature/search-rank-single-source`（自 `c3756c0` 起）。无 wire 变更：无新 JSON-RPC 方法、
+无 schema 改动、`protocol/methods.json` 未动；`PROTOCOL_VERSION` 仍 0.18.0、工作区仍 0.1.0
+（AGENTS.md：版本号不随特性递增）。此即待实施 ④ 的实施落地。
 
 ### 交付
 
-- **`[web]` 完整性 4 键**（`crates/agentj-config/src/lib.rs`）：`spot_interval_secs`（默认 60，钳制
-  5..=3600）、`spot_sample`（默认 8，钳制 1..=1024）、`verify_on_request`（默认 `true`）、
-  `verify_cache_ttl_secs`（默认 60，钳制 1..=3600）；`MIN_/MAX_` 常量 + `clamp_*` 自由函数 +
-  `clamped_*` 访问器；`WebSection` 改为手写 `Default`；未知键仍容忍。
-- **ipc 侧再钳制**（`crates/agentj-ipc/src/web.rs`）：`IntegrityOptions { spot_interval,
-  spot_sample, verify_on_request, verify_cache_ttl }`（Default 60s / 8 / true / 60s）；
-  `WebConfig::with_integrity_options()` 自行再钳制（`tokio::time::interval(0)` 会 panic，配置层钳制
-  不能是唯一防线）。
-- **逐请求校验**（`verify_asset` 中间件，位于登录门**之内**：`gate.layer(verify.layer(face))`）：
-  静态面核验本次将服务的文件，SPA 面未知路径回落 `/index.html`；`nest_service("/assets")` 会剥掉
-  挂载前缀，故 `manifest_key_for` 复原前缀后再查清单；按路径 memoize + **绝对 TTL**（命中不刷新
-  `checked_at`）、缓存上限 `VERIFY_CACHE_MAX = 1024`（溢出先清过期、仍超则整体清空）；锁绝不跨 IO
-  持有、中毒一律 `into_inner()`；fail-open（只计数 + 按路径去重 `warn!`，响应与响应头不变）；未通过
-  鉴权的请求零哈希。
-- **手动全量**（`POST /integrity/verify`）：鉴权与 `GET /metrics` 完全一致（401 `text/plain` +
-  `no-store`，不重定向）；200 `application/json` + `no-store`，body
-  `{manifest_present, checked, mismatched, missing, offenses, truncated, duration_ms}`；`offenses`
-  路径升序、上限 `INTEGRITY_OFFENSES_LIMIT = 50` + `truncated`（计数仍精确）；空清单算
-  `manifest_present: true` 且计一次全量，无可用清单 → `false` 且不增 `sweeps`；非 POST → 405。
-- **`/version` 加性 `integrity.on_demand`**：`{sweeps, checked, mismatched, missing,
-  last_run_age_secs?}`（未触发时省略年龄键）；`runtime` 只记定时轮转、`on_demand` 只记手动全量
-  （语义隔离）；既有 4 字段与 `runtime` 不变。
-- **8 个加性指标**：`agentj_web_integrity_request_{checked,mismatched,missing}_total`、
-  `agentj_web_integrity_request_cache_entries`（gauge）、`agentj_web_integrity_sweeps_total`、
-  `agentj_web_integrity_sweep_{checked,mismatched,missing}_total`；既有序列逐字节不变。
-- **装配链**：`TcpBindOptions.integrity`（Default = `IntegrityOptions::default()`），`bind` 在
-  `spawn_spot_check` 之前 `with_integrity_options`；`crates/agentj-cli/src/main.rs` 新增
-  `resolve_integrity_options(&Config)`，在 config 移入 `KernelContext` 之前取值，`serve` 与
-  `dashboard` 两条路径都带上。
-- **文档**：`docs/specs/ipc-protocol.md` §2.3（6 条 HTTP 层加性条目，纯新增）、
-  `docs/guide/http-and-auth.md`（路由表 + `/version` + `/metrics` + 资产完整性四节）、
-  `docs/changelog/v0.1.md`。
+- **唯一真源 + 契约注释**（`crates/agentj-ipc/src/file_list.rs`）：`search_rank` 补「唯一排名真源 +
+  契约路径」文档注释（语义未改）。规则：三档次序（名字前缀 `0` < 名字子串 `1` < 路径子串 `2`）、
+  大小写不敏感（`search` 侧统一小写 needle，`search_rank` 自小写 `name`）、并列按 `path` 字节升序、
+  `total` 在 Top-100 截断**前**统计、`truncated` 仅扫描预算耗尽、目录不参与排名。
+- **跨语言契约夹具** `protocol/search-rank-cases.json`（`version: 1`）：`rule` 说明 + `ranks[]`
+  （覆盖 `0` / `1` / `2` / `null` 四种结果，含大小写与 trim 用例）+ `searches[]`（乱序 `entries` +
+  `expected_ranked_paths` + `expected_total`，含一个匹配目录且不入排名）。两侧 fail-closed 校验
+  `version`；读路径分别锚定 `env!("CARGO_MANIFEST_DIR")` 与 `import.meta.url`（绝不依赖 cwd）。
+- **Rust 契约测试 2 条**（`crates/agentj-ipc/src/file_list.rs` 内联 `#[cfg(test)] mod tests`）：
+  `search_rank_matches_the_shared_conformance_fixture`（:889）与
+  `search_ordering_matches_the_shared_conformance_fixture`（:975）——断言真实 `search_rank` /
+  `search` 输出与夹具一致；既有 `search_caps_entries_at_the_limit_and_keeps_total`（:827）保留，
+  继续独占 Top-100 上限语义。
+- **TUI 侧镜像退役**（详见 `summary_and_next_fe.md`）：`files.ts` 删本地排名、mock kernel 改为
+  夹具回放、新增唯一夹具加载器 `agentj-ui/apps/tui/src/searchRankCases.ts`；旧内核回复无 `total`
+  时如实提示「不支持服务端搜索」并返回空行，不再本地降级。
+- **文档**：`docs/changelog/v0.1.md`、`docs/guide/tui.md`。
 
 ### 验证（最终门禁，全绿）
 
 | 门禁 | 结果 |
 |------|------|
-| `cargo test --workspace` | **1022 passed** / 0 failed（基线 980） |
+| `cargo test --workspace` | **1024 passed** / 0 failed（基线 1022） |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 0 warning |
 | `cargo fmt --all --check` | 干净 |
 | `cargo test -p agentj-protocol -- drift` | 2 passed（78 schemas 无漂移） |
 | `./scripts/check-version.sh` | `version-ok`（0.1.0 / 0.18.0，本阶段不 bump） |
+| 测试验收（Round 1） | **0 Bug** — 8 个突变全部被测试抓到；独立复算 9/9 `ranks` + 2/2 `searches` 一致 |
 
-分项：`agentj-ipc` lib 271、`agentj-cli` bin 113、`e2e_http_static` 10（E1–E4 新增）、
-`ws_classifier` 6、`agentj-config` lib 37。
+### 真实提交（`df9a965..HEAD`，最旧 → 最新）
 
-### 真实提交（`0cd87be..HEAD`，最旧 → 最新）
-
-- `54ab9d9` feat(config): add [web] integrity knobs (spot cadence + request verification)
-- `ff6f5a9` feat(ipc): add IntegrityOptions and the WebConfig integrity state
-- `3110d70` feat(ipc): memoized per-request asset verification with bound and warn-once
-- `25162bb` feat(ipc): verify served static assets per request behind the login gate
-- `4937b21` feat(ipc): add the manual full integrity sweep and POST /integrity/verify
-- `0a7b893` test(ipc): close the T2 review findings on counter coverage and memo hits
-- `cfe290b` feat(ipc): expose integrity.on_demand on the /version probe
-- `f9bc367` feat(ipc): publish the integrity request and sweep metrics
-- `b3f20db` test(ipc): pin the gauge kind and zero values of the integrity series
-- `4206b90` feat(cli): carry the [web] integrity knobs into the tcp bind path
-- `3af0759` test(cli): cover the integrity chain end to end
-- `3f83773` test(ipc): give the new metrics test its own temp dist tag
-- `d83c32c` docs: document the http-layer integrity surface
-- `92a807a` test(cli): prove a second spot round instead of just the first tick
+- `df9a965` test(ipc): pin search_rank against a shared conformance fixture
+- `e8cc2ea` feat(tui): make file search server-only with an explicit unsupported state
+- `dcb83e7` fix(tui): drop a stale local-filtering comment in the search test
+- `dddce12` test(ipc): pin search ordering and total against the shared fixture
+- `6678458` refactor(tui): retire the local search ranking mirror
+- `e6d3d55` test(tui): add the conformance fixture loader
+- `9cfa286` chore(tui): drop the plan marker comment from the fixture loader
+- `ba089a4` test(tui): make the mock kernel replay the conformance fixture
+- `8d67c05` test(tui): retarget the search suites to the server contract
+- `3a65a18` docs: record the search-rank single source in the changelog and TUI guide
 
 ### 遗留问题（非阻塞）
 
-- **E4 的判别力**：`tokio::time::interval` 首 tick 立即触发，故 e2e 只能断言「15s 内出现**第二**轮」
-  才真正证明 `[web] spot_interval_secs` 到达 `spawn_spot_check`（已按此实现）；若将来把抽检改成
-  `sleep` 语义需重新校准该断言。
-- **`temp_dist` 固定 `/tmp` 目录**：`agentj-cli-e2e-web-{tag}` 仅按 tag 区分，同 tag 并发跑同一测试
-  目标（或残留服务）会互踩；既有模式，未在本阶段改动。
-- **fixture 基线重复**：`web_verify_off.toml` / `web_fast_spot.toml` 各自复制了
-  `permission_deny.toml` 的完整基线（含 `timeout_ms = 800`），基线变更时需同步三处。
-- **计划文本笔误**：计划 T2 的 AC4 写 `mismatched is 2`，正确值为 1（代码与测试是对的）。
+- **Web 侧仍无搜索 UI**：本阶段只收敛后端权威 + TUI 消费；Web Files 搜索态是前端待实施 ③
+  （见 `summary_and_next_fe.md`），单独跟进。
+- **夹具是「两侧都要过」的第三方裁判**：将来改排名语义必须同时改夹具 + Rust 断言 + mock 回放；
+  `version` 只做 fail-closed 校验，不做自动迁移。
 
-## 已完成（0.29.0 – 0.29.12 + BUG-017/018，详见 `docs/changelog/v0.1.md`）
+## 已完成（0.29.0 – 0.29.12 + BUG-017/018 + 抽检扩展，详见 `docs/changelog/v0.1.md`）
 
+- ✅ 抽检扩展（逐请求校验 + 手动全量端点）：`[web]` 4 键（`spot_interval_secs` / `spot_sample` /
+  `verify_on_request` / `verify_cache_ttl_secs`）+ `IntegrityOptions` + 逐请求资产校验中间件
+  （memoize + 绝对 TTL + 上限 1024、fail-open 计数 / 去重告警、未鉴权零哈希）+ `POST /integrity/verify`
+  手动全量 + `/version` 加性 `integrity.on_demand` + 8 个加性指标；`serve` / `dashboard` 两路装配。
 - ✅ 0.29.8：工具往返落库（每轮 `assistant{tool_calls}` + `tool` 结果写入会话，「继续」不再失忆）
   + 截断流（无 `Done` 的纯文本轮）重放 ≤2 次后如实报错；前端输入框 chip 跟随实际选择。
 - ✅ 0.29.9：工具轮次用尽后追加一趟「无工具收尾」（`conclude_without_tools`），
@@ -130,6 +110,14 @@
 
 ## 遗留问题 / 已知限制（后端）
 
+- **抽检扩展 E4 的判别力**：`tokio::time::interval` 首 tick 立即触发，故 e2e 只能断言「15s 内出现
+  **第二**轮」才真正证明 `[web] spot_interval_secs` 到达 `spawn_spot_check`（已按此实现）；若将来
+  把抽检改成 `sleep` 语义需重新校准该断言。
+- **`temp_dist` 固定 `/tmp` 目录**：`agentj-cli-e2e-web-{tag}` 仅按 tag 区分，同 tag 并发跑同一测试
+  目标（或残留服务）会互踩；既有模式，未在本阶段改动。
+- **fixture 基线重复**：`web_verify_off.toml` / `web_fast_spot.toml` 各自复制了
+  `permission_deny.toml` 的完整基线（含 `timeout_ms = 800`），基线变更时需同步三处。
+- **计划文本笔误（抽检扩展 T2）**：计划 AC4 写 `mismatched is 2`，正确值为 1（代码与测试是对的）。
 - **远端命名修正（本工作副本实测）**：`github` = `git@github.com:JeillZhang/agentj.git`（**权威**）、
   `origin` = `git@gitcode.com:jeill/agentj.git`（GitCode **镜像**）——与 `AGENTS.md`「Remote & Merge
   Policy」的命名**相反**；feature 分支须推 `github` + `origin` 两个远端，PR 开在 `github`（待实施 ⑳
@@ -223,7 +211,6 @@
 
 | # | 特性 | 内容 | 依赖 | 状态 |
 |---|------|------|------|------|
-| ④ | rank 规则单一真源化 | Rust `file_list::search_rank` 为唯一真源，TUI / mock 镜像退役 | 无（前端跟进见 `_fe.md` 遗留 ③） | 待实施 |
 | ⑥ | 用量历史（服务端持久化 + 趋势） | `provider/usage` 由按需 TTL 300s 扩为服务端持久化采样 + 历史/趋势查询（协议加性）、Web/TUI 趋势视图与保留策略 | 无（基于 v0.27.0 用量面板；设计需先定采样归属/保留/加性 wire） | 待实施 |
 | ⑦ | 工具结果落库上限 | 落库前对单个工具结果设上限（或摘要 + 「已截断」标记），避免 7.9MB 级 `glob` 结果撑爆快照 | 0.29.8 已落库工具往返（存储侧尚无上限） | 待实施 |
 | ⑧ | `session/run` 回显生效模型 | 结果/trajectory 记录实际使用的 `provider`/`model`（加性 wire），便于排障与前端一致性校验 | 0.29.8 前端已按选择下发并显示 | 待实施 |
@@ -252,12 +239,12 @@
 
 ## 下一步
 
-- 抽检扩展（逐请求校验 + 手动全量端点）代码 / 测试 / 文档 / summary(se) 全部收尾，最终门禁全绿；
-  剩余：推送**两个远端**（本工作副本 `github` = GitHub 权威、`origin` = GitCode 镜像；与
-  `AGENTS.md` 远端命名相反）→ 开 GitHub PR（用户负责合并）→ 进入测试验收。
-- 下一特性候选：待实施 ④「rank 规则单一真源化」、⑥「用量历史服务端持久化」、⑦「工具结果落库
-  上限」、⑧「`session/run` 回显生效模型」、⑨「`glob` 路径语义」。
-- 后端候选：上表 ④⑥⑦⑧⑨（特性）+ ⑩–⑳、㉗–㉜（工程债 / 修复 / 合规）；或前端跟进见
-  `summary_and_next_fe.md`（含 ㉑–㉕ 前端债 / 修复）。
+- rank 规则单一真源化代码 / 测试 / 文档 / summary(se/fe) 全部收尾，最终门禁全绿；剩余：推送
+  **两个远端**（本工作副本 `github` = GitHub 权威、`origin` = GitCode 镜像；与 `AGENTS.md` 远端
+  命名相反）→ 开 GitHub PR（用户负责合并）→ 进入测试验收。
+- 下一特性候选：待实施 ⑥「用量历史服务端持久化」、⑦「工具结果落库上限」、⑧「`session/run`
+  回显生效模型」、⑨「`glob` 路径语义」。
+- 后端候选：上表 ⑥⑦⑧⑨（特性）+ ⑩–⑳、㉗–㉜（工程债 / 修复 / 合规）；或前端跟进见
+  `summary_and_next_fe.md`（含 ③ Web 接入服务端搜索 + ㉑–㉕ 前端债 / 修复）。
 - 可选跟进：为 `run` 增加 `--yes`（或非 TTY 自动拒绝）；`ask` 问题默认超时；把「会话已裁剪
   N 条消息」作为可观测事件；`ModelEvent` 增加 `reasoning_content` 承载。
