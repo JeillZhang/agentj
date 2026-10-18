@@ -68,6 +68,9 @@ bun --cwd agentj-ui/apps/tui run dev
 ripgrep 时自动回退到进程内检索（按行匹配、支持 `include` 通配、跳过 `.git` / `target` /
 `node_modules`、跳过二进制与超大文件、命中上限 2000 条）。
 
+`bash` / `grep` / `glob` 都接受可选入参 `timeout_ms`（默认：`bash` 120 秒，`grep` / `glob`
+60 秒；钳制 1–600 秒）；超时会终止**整个进程组**（含后台子进程）并向模型报超时错误。
+
 ## 下一步
 
 - 命令行细节 → [CLI](cli.md)
