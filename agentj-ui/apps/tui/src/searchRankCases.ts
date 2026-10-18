@@ -1,4 +1,3 @@
-// agentj-ui/apps/tui/src/searchRankCases.ts — CREATE.
 // The ONLY place the fixture path is computed; every other module imports from here.
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
