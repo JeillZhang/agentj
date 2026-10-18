@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "rule": "name-prefix 0 < name-substring 1 < path-substring 2; case-insensitive; ties by path byte-ascending; total = full match count before the 100-entry cap",
+  "ranks": [
+    { "name": "main.rs", "path": "src/main.rs", "query": "main", "expected_rank": 0 },
+    { "name": "domain_main.rs", "path": "src/domain/domain_main.rs", "query": "main", "expected_rank": 1 },
+    { "name": "readme.md", "path": "docs/main-guide/readme.md", "query": "main", "expected_rank": 2 },
+    { "name": "main.rs", "path": "src/main.rs", "query": "MAIN", "expected_rank": 0 },
+    { "name": "MAIN.rs", "path": "src/MAIN.rs", "query": "main", "expected_rank": 0 },
+    { "name": "auth.ts", "path": "src/auth.ts", "query": "auth", "expected_rank": 0 },
+    { "name": "index.ts", "path": "src/auth/index.ts", "query": "auth", "expected_rank": 2 },
+    { "name": "lib.rs", "path": "src/lib.rs", "query": "main", "expected_rank": null },
+    { "name": "main.rs", "path": "src/main.rs", "query": "  main  ", "expected_rank": null }
+  ]
+}

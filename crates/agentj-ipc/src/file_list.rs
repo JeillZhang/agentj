@@ -850,4 +850,71 @@ mod tests {
         assert_eq!(result.total, Some(1));
         fs::remove_dir_all(&root).ok();
     }
+
+    #[derive(serde::Deserialize)]
+    struct RankCases {
+        version: u32,
+        ranks: Vec<RankCase>,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct RankCase {
+        name: String,
+        path: String,
+        query: String,
+        expected_rank: Option<u8>,
+    }
+
+    /// `protocol/` is the repo's cross-language contract directory; anchor on
+    /// CARGO_MANIFEST_DIR because cargo runs tests with cwd = the crate dir.
+    fn search_rank_cases_path() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../protocol/search-rank-cases.json")
+    }
+
+    fn load_rank_cases() -> RankCases {
+        let path = search_rank_cases_path();
+        let raw =
+            fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        let cases: RankCases =
+            serde_json::from_str(&raw).unwrap_or_else(|e| panic!("parse {}: {e}", path.display()));
+        assert_eq!(cases.version, 1, "unexpected fixture version");
+        cases
+    }
+
+    #[test]
+    fn search_rank_matches_the_shared_conformance_fixture() {
+        let cases = load_rank_cases();
+        assert!(
+            !cases.ranks.is_empty(),
+            "fixture declares no ranks[] entries"
+        );
+        for case in &cases.ranks {
+            assert_eq!(
+                search_rank(&case.name, &case.path, &case.query.to_lowercase()),
+                case.expected_rank,
+                "rank mismatch for name={:?} path={:?} query={:?}",
+                case.name,
+                case.path,
+                case.query
+            );
+        }
+        let mut seen: Vec<Option<u8>> = cases.ranks.iter().map(|c| c.expected_rank).collect();
+        seen.sort_unstable();
+        seen.dedup();
+        assert_eq!(
+            seen,
+            vec![None, Some(0), Some(1), Some(2)],
+            "the fixture must pin all four rank outcomes"
+        );
+        let raw = fs::read_to_string(search_rank_cases_path()).unwrap();
+        for token in [
+            "name-prefix",
+            "name-substring",
+            "path-substring",
+            "case-insensitive",
+            "path byte-ascending",
+        ] {
+            assert!(raw.contains(token), "fixture rule string omits {token:?}");
+        }
+    }
 }
