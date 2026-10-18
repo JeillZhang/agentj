@@ -52,6 +52,38 @@ Prometheus 文本。回环 / 未配 token / 有效 cookie → 直出 200；远�
 （不重定向）。含聚合计数/gauges + per-IP 序列（Top-50 截断 +
 `agentj_login_ip_series_truncated` 指示）+ 清单摘要。
 
+## 反向代理
+
+内核默认只信任**直接 TCP peer**。要让 `/metrics` 与登录限流看到经代理转发的真实客户端
+IP，须在内核侧显式开启代理头信任：
+
+```toml
+[web]
+trust_proxy_headers = true          # 默认 false；仅当直接 peer 是回环时生效
+state_dir = "/var/lib/agentj"       # 可选；默认 $XDG_DATA_HOME/agentj
+```
+
+代理须把客户端 IP 写进请求头（nginx）：
+
+```nginx
+location / {
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_pass http://127.0.0.1:4096;
+}
+```
+
+- **信任根是回环 peer**：只有发起连接的直接 peer 是回环（本机代理）时才采信
+  `X-Forwarded-For` / `X-Real-IP`；否则一律退回真实 peer。`X-Forwarded-For` 从右向左取
+  第一个非回环合法项（回环跳数视为代理自身，不是客户端）。
+- **红线：派生 IP 只用于识别**——限流键、per-IP 序列标签与日志字段；**永不参与鉴权**。
+  `auth_required` 的回环免鉴权判据始终只吃真实 TCP peer，请求头无法用它换取免登录。
+- **多实例聚合**：限流状态按进程持有，状态文件按端口分片
+  （`$XDG_DATA_HOME/agentj/metrics-state-<port>.json`，目录 `0700` / 文件 `0600`）。多实例
+  部署时不要假设单实例聚合，per-IP 序列请在 Prometheus 侧用 `sum by (ip)` 聚合；
+  `agentj_web_metrics_state_*` 指标反映各实例自身的落盘状态。
+- 状态目录可用 `[web] state_dir` 覆盖；不可用时启动只警告、不落盘，服务照常。
+
 ## 资产完整性
 
 构建 Web UI 时生成 `dist/asset-manifest.json`（`sha384` 覆盖全部 bundle 产物含动态
