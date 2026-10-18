@@ -29,6 +29,9 @@ pub fn merge_config(base: AgentJConfig, file: AgentJConfig) -> AgentJConfig {
     if file.agent.max_tool_result_chars != crate::default_max_tool_result_chars() {
         config.agent.max_tool_result_chars = file.agent.max_tool_result_chars;
     }
+    if file.agent.question_timeout_s != crate::default_question_timeout_s() {
+        config.agent.question_timeout_s = file.agent.question_timeout_s;
+    }
     if file.permission.is_some() {
         config.permission = file.permission;
     }
@@ -120,6 +123,14 @@ mod tests {
         file.agent.max_tool_result_chars = 2_000;
         let merged = crate::merge::merge_config(crate::AgentJConfig::default(), file);
         assert_eq!(merged.agent.max_tool_result_chars, 2_000);
+    }
+
+    #[test]
+    fn merge_keeps_file_level_question_timeout_s() {
+        let mut file = crate::AgentJConfig::default();
+        file.agent.question_timeout_s = 300;
+        let merged = crate::merge::merge_config(crate::AgentJConfig::default(), file);
+        assert_eq!(merged.agent.question_timeout_s, 300);
     }
 
     #[test]

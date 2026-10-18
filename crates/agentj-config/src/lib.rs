@@ -86,6 +86,10 @@ fn default_max_tool_result_chars() -> i64 {
     100_000
 }
 
+fn default_question_timeout_s() -> i64 {
+    600
+}
+
 /// Bounds for the agent loop (`[agent]`). @since 0.29.9
 #[derive(Debug, Clone, Deserialize)]
 pub struct AgentSection {
@@ -98,6 +102,11 @@ pub struct AgentSection {
     /// `MIN_TOOL_RESULT_CHARS..=MAX_TOOL_RESULT_CHARS` by the accessor.
     #[serde(default = "default_max_tool_result_chars")]
     pub max_tool_result_chars: i64,
+    /// Seconds a `question` may wait for an answer before the kernel settles it as
+    /// unanswered. Clamped to `MIN_QUESTION_TIMEOUT_S..=MAX_QUESTION_TIMEOUT_S` by the
+    /// accessor.
+    #[serde(default = "default_question_timeout_s")]
+    pub question_timeout_s: i64,
 }
 
 impl Default for AgentSection {
@@ -105,6 +114,7 @@ impl Default for AgentSection {
         Self {
             max_tool_iterations: default_max_tool_iterations(),
             max_tool_result_chars: default_max_tool_result_chars(),
+            question_timeout_s: default_question_timeout_s(),
         }
     }
 }
@@ -128,6 +138,17 @@ pub const MAX_TOOL_RESULT_CHARS: i64 = 1_000_000;
 /// Clamp a configured tool-result budget into the supported range.
 pub fn clamp_tool_result_chars(value: i64) -> i64 {
     value.clamp(MIN_TOOL_RESULT_CHARS, MAX_TOOL_RESULT_CHARS)
+}
+
+/// Lower bound of `agent.question_timeout_s` (a zero timeout would settle every question
+/// instantly).
+pub const MIN_QUESTION_TIMEOUT_S: i64 = 1;
+/// Upper bound of `agent.question_timeout_s` (one day).
+pub const MAX_QUESTION_TIMEOUT_S: i64 = 86_400;
+
+/// Clamp a configured question timeout into the supported range.
+pub fn clamp_question_timeout_s(value: i64) -> i64 {
+    value.clamp(MIN_QUESTION_TIMEOUT_S, MAX_QUESTION_TIMEOUT_S)
 }
 
 /// Default `[web] spot_interval_secs` — matches the pre-existing hard-coded 60s sweep.
@@ -337,6 +358,12 @@ impl Config {
     pub fn max_tool_result_chars(&self) -> usize {
         clamp_tool_result_chars(self.inner.agent.max_tool_result_chars) as usize
     }
+
+    /// Seconds a `question` may wait for an answer before it is settled as unanswered,
+    /// clamped into the supported range.
+    pub fn question_timeout_s(&self) -> u64 {
+        clamp_question_timeout_s(self.inner.agent.question_timeout_s) as u64
+    }
 }
 
 impl ConfigProvider for Config {
@@ -363,6 +390,9 @@ impl ConfigProvider for Config {
             }
             "agent.max_tool_result_chars" => Some(clamp_tool_result_chars(
                 self.inner.agent.max_tool_result_chars,
+            )),
+            "agent.question_timeout_s" => Some(clamp_question_timeout_s(
+                self.inner.agent.question_timeout_s,
             )),
             "model.max_context_tokens" => Some(self.inner.model.max_context_tokens.clamp(
                 agentj_core::budget::MIN_CONTEXT_TOKENS as i64,
@@ -649,6 +679,38 @@ mod tests {
     fn max_tool_result_chars_is_readable_through_get_int() {
         let cfg = parse_config("[agent]\nmax_tool_result_chars = 2000\n");
         assert_eq!(cfg.get_int("agent.max_tool_result_chars"), Some(2000));
+    }
+
+    #[test]
+    fn question_timeout_defaults_to_ten_minutes_and_clamps() {
+        assert_eq!(parse_config("").question_timeout_s(), 600);
+        assert_eq!(
+            parse_config("[agent]\nquestion_timeout_s = 300\n").question_timeout_s(),
+            300
+        );
+        assert_eq!(
+            parse_config("[agent]\nquestion_timeout_s = 0\n").question_timeout_s(),
+            1
+        );
+        assert_eq!(
+            parse_config("[agent]\nquestion_timeout_s = 999999\n").question_timeout_s(),
+            86_400
+        );
+        // A negative value must clamp before the i64 → u64 cast, never wrap.
+        assert_eq!(
+            parse_config("[agent]\nquestion_timeout_s = -5\n").question_timeout_s(),
+            1
+        );
+    }
+
+    #[test]
+    fn question_timeout_s_is_readable_through_get_int() {
+        let cfg = parse_config("[agent]\nquestion_timeout_s = 300\n");
+        assert_eq!(cfg.get_int("agent.question_timeout_s"), Some(300));
+        let low = parse_config("[agent]\nquestion_timeout_s = 0\n");
+        assert_eq!(low.get_int("agent.question_timeout_s"), Some(1));
+        let high = parse_config("[agent]\nquestion_timeout_s = 999999\n");
+        assert_eq!(high.get_int("agent.question_timeout_s"), Some(86_400));
     }
 
     #[test]
