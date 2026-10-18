@@ -484,10 +484,31 @@ impl ProviderRegistry {
     }
 
     pub fn get_default(&self) -> Option<Arc<dyn ModelProvider>> {
-        self.default
-            .read()
-            .as_ref()
-            .and_then(|name| self.providers.read().get(name).cloned())
+        self.get_default_with_name().map(|(_, provider)| provider)
+    }
+
+    /// Switch the default to an already-registered name. Returns `false` and leaves the
+    /// default unchanged if the name is not registered.
+    pub fn set_default(&self, name: &str) -> bool {
+        if !self.providers.read().contains_key(name) {
+            return false;
+        }
+        *self.default.write() = Some(name.to_string());
+        true
+    }
+
+    /// Name of the current default provider, if any.
+    pub fn default_name(&self) -> Option<String> {
+        self.default.read().clone()
+    }
+
+    /// Resolves the default name and provider under a single `default` read, so a caller can
+    /// never pair a name with a different provider under a concurrent `set_default`.
+    pub fn get_default_with_name(&self) -> Option<(String, Arc<dyn ModelProvider>)> {
+        let default = self.default.read();
+        let name = default.as_ref()?;
+        let provider = self.providers.read().get(name).cloned()?;
+        Some((name.clone(), provider))
     }
 
     /// Look up a provider by its registered name (read-only). @since 0.26.0
@@ -921,6 +942,54 @@ mod tests {
     fn provider_registry_has_no_default_before_register() {
         let registry = ProviderRegistry::new();
         assert!(registry.get_default().is_none());
+    }
+
+    /// Local mock whose name field mirrors the registry key for readability; it is never read.
+    #[allow(dead_code)]
+    struct NamedProvider(&'static str);
+    #[async_trait]
+    impl ModelProvider for NamedProvider {
+        async fn chat_stream(
+            &self,
+            _m: Vec<ChatMessage>,
+            _t: Vec<ToolDefinition>,
+            _o: ModelOptions,
+        ) -> Result<BoxStream<'static, Result<ModelEvent, ModelError>>, ModelError> {
+            Ok(Box::pin(futures::stream::iter(vec![Ok(ModelEvent::Done)])))
+        }
+        async fn chat(
+            &self,
+            _m: Vec<ChatMessage>,
+            _o: ModelOptions,
+        ) -> Result<ChatResponse, ModelError> {
+            Ok(ChatResponse {
+                content: String::new(),
+                tool_calls: vec![],
+            })
+        }
+    }
+
+    #[test]
+    fn set_default_switches_the_resolved_provider() {
+        let reg = ProviderRegistry::new();
+        reg.register("a".into(), Arc::new(NamedProvider("a")));
+        reg.register("b".into(), Arc::new(NamedProvider("b")));
+        assert_eq!(reg.default_name().as_deref(), Some("a"));
+        // the first registered provider is the default and its name resolves alongside it
+        assert_eq!(
+            reg.get_default_with_name().map(|(n, _)| n),
+            Some("a".to_string())
+        );
+        assert!(reg.set_default("b"));
+        assert_eq!(reg.default_name().as_deref(), Some("b"));
+        assert!(!reg.set_default("missing"));
+        assert_eq!(reg.default_name().as_deref(), Some("b"));
+        // get_default_with_name tracks the current default, so a name never pairs with
+        // a different provider after set_default
+        assert_eq!(
+            reg.get_default_with_name().map(|(n, _)| n),
+            Some("b".to_string())
+        );
     }
 
     #[test]

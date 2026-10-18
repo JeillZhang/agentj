@@ -132,6 +132,8 @@ pub enum AgentEvent {
         final_response: String,
         tool_calls: Vec<ToolCall>,
         usage: Option<TokenUsage>,
+        provider: Option<String>,
+        model: Option<String>,
     },
     Error(String),
 }
@@ -293,6 +295,8 @@ mod tests {
             final_response: "ok".into(),
             tool_calls: vec![],
             usage: None,
+            provider: None,
+            model: None,
         };
         assert!(matches!(
             done,

@@ -221,21 +221,24 @@ impl TurnRunner {
             .session
             .get(&session_id)
             .map_err(|e| route(e.to_string()))?;
-        let provider = match overrides
+        let (provider_name, provider) = match overrides
             .provider
             .as_deref()
             .map(str::trim)
             .filter(|name| !name.is_empty())
         {
-            Some(name) => ctx.providers.get(name).ok_or_else(|| {
-                route(format!(
-                    "unknown provider: {name} (registered: {})",
-                    ctx.providers.list().join(", ")
-                ))
-            })?,
+            Some(name) => (
+                name.to_string(),
+                ctx.providers.get(name).ok_or_else(|| {
+                    route(format!(
+                        "unknown provider: {name} (registered: {})",
+                        ctx.providers.list().join(", ")
+                    ))
+                })?,
+            ),
             None => ctx
                 .providers
-                .get_default()
+                .get_default_with_name()
                 .ok_or_else(|| route("no default provider".into()))?,
         };
         let tool_defs = ctx.tools.definitions();
@@ -389,6 +392,8 @@ impl TurnRunner {
                         final_response: content,
                         tool_calls: all_tool_calls,
                         usage,
+                        provider: Some(provider_name.clone()),
+                        model: Some(default_options.model.clone()),
                     })
                     .await
                     .is_err()
@@ -563,6 +568,8 @@ impl TurnRunner {
                 final_response: conclusion,
                 tool_calls: all_tool_calls,
                 usage,
+                provider: Some(provider_name.clone()),
+                model: Some(default_options.model.clone()),
             })
             .await
             .is_err()
@@ -2444,6 +2451,69 @@ mod tests {
         .await;
         assert!(err.is_none(), "{err:?}");
         assert_eq!(seen, vec!["mock:cfg-model".to_string()]);
+    }
+
+    /// One turn against a single registered default provider with an optional model override;
+    /// returns the full event stream plus the persisted session history.
+    async fn run_turn_with(model: Option<&'static str>) -> (Vec<AgentEvent>, Vec<ChatMessage>) {
+        let (kernel, sender) = spy_kernel_with(ToolSpy);
+        let ctx = loop_test_ctx();
+        ctx.providers.register(
+            "default-provider".into(),
+            Arc::new(NamedRecordingProvider {
+                name: "default-provider",
+                seen: Arc::new(Mutex::new(Vec::new())),
+            }),
+        );
+        let session = ctx.session.clone();
+        let runner = TurnRunner::new(
+            ctx.clone(),
+            Arc::new(MockPipeline),
+            "sys".into(),
+            sender,
+            "tool_spy".into(),
+        );
+        let sid = runner.create_session().unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+        runner
+            .spawn_turn(
+                sid.clone(),
+                "hi".into(),
+                None,
+                RunOverrides {
+                    provider: None,
+                    model: model.map(str::to_string),
+                },
+                tx,
+            )
+            .unwrap();
+        let mut events = vec![];
+        while let Some(ev) = rx.recv().await {
+            let terminal = matches!(ev, AgentEvent::Done { .. } | AgentEvent::Error(_));
+            events.push(ev);
+            if terminal {
+                break;
+            }
+        }
+        let stored = session.get(&sid).unwrap_or_default();
+        kernel.sender().send(KernelMessage::Shutdown).unwrap();
+        (events, stored)
+    }
+
+    #[tokio::test]
+    async fn done_reports_the_effective_model() {
+        let (events, _) = run_turn_with(Some("m-b")).await;
+        let (provider, model) = events
+            .iter()
+            .find_map(|e| match e {
+                AgentEvent::Done {
+                    provider, model, ..
+                } => Some((provider.clone(), model.clone())),
+                _ => None,
+            })
+            .expect("Done");
+        assert_eq!(provider.as_deref(), Some("default-provider"));
+        assert_eq!(model.as_deref(), Some("m-b"));
     }
 
     /// Tool whose result is a fixed 200 000-char string — the T6 truncation fixture.
