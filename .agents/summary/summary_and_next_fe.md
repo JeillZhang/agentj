@@ -8,9 +8,11 @@
 > 待实施），不得随内容替换而删除；仅当该特性实际实施完成后才能移除（移入功能记录）。
 > 后端总结独立存放于 `summary_and_next_se.md`；两文件内容隔离，互不写入对方文件。
 
-> 当前功能：**对话工具调用卡片可读性**（工具名旁显示命令 / 文件 / 模式 + 卡片铺满中栏），
-> 本阶段已完成（TDD RED→GREEN，Web **666 passed**）。版本按约定保持 **0.1.0** 不递增；
-> `PROTOCOL_VERSION` 仍 **0.18.0** / 28 方法 / 78 schemas（**无协议变更**，纯前端）。
+> 当前功能：**对话工具调用卡片可读性**（工具名旁显示命令 / 文件 / 模式 + 卡片铺满中栏）
+> 及其**验收修复**（BUG-017 空助手气泡 / BUG-018 会话列表不刷新）。均已交付
+> （Web **679 passed** / Rust **911 passed**）。版本按约定保持 **0.1.0** 不递增；
+> `PROTOCOL_VERSION` 仍 **0.18.0** / 28 方法 / 78 schemas（**无协议变更**；BUG-017 触及
+> `agentj-ipc` 的 thinking 落盘，但未改 wire）。
 
 ## 工具调用卡片可读性（工具名旁显示调用目标 + 铺满中栏）✅
 
@@ -27,7 +29,8 @@
   `args` 为 null / 非对象或工具未知时返回 `""`。`ToolCard` 在 `.aj-tool-name` 之后渲染
   `<span className="aj-tool-summary" title={summary}>`，仅当 summary 非空。
 - `agentj-ui/apps/web/src/components/conversation.css`：`.aj-tool-card` 的
-  `align-self: flex-start` → `align-self: stretch` + `width: 100%`（铺满 `.aj-conv` 中栏宽度）；
+  `align-self: flex-start` → `align-self: stretch`（铺满 `.aj-conv` 中栏宽度；评审后移除了多余的
+  `width: 100%`）；
   新增 `.aj-tool-summary`（`flex: 1 1 0` / `min-width: 0` / `white-space: nowrap` /
   `text-overflow: ellipsis` / `font-family: var(--aj-mono)` / `color: var(--aj-textMuted)`）。
 - `agentj-ui/apps/web/src/components/displayPrefs.css`：`.aj-tool-summary` 字号跟随
@@ -46,7 +49,7 @@
 
 RED 证据：实现前 6 条断言全部失败（RunPanel 4 条 + CSS 2 条），实现后全绿。
 
-### 验证结果
+### 验证结果（特性阶段）
 
 | 门禁 | 结果 |
 |---|---|
@@ -55,6 +58,57 @@ RED 证据：实现前 6 条断言全部失败（RunPanel 4 条 + CSS 2 条）�
 | `cargo fmt --all -- --check` | clean |
 | `cargo test --workspace` | 全绿（本阶段未改后端） |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 0 warning |
+| `./scripts/check-version.sh` | **version-ok（0.1.0 / 0.18.0）** |
+
+## 验收修复（BUG-017 / BUG-018）✅
+
+用户（m00229）在同一会话报告：①「bash 命令卡片中间有不少空白消息没有显示，最左侧有蓝条，
+但无文字消息」；②「新建会话后，左侧列表不更新新对话项」。按 `jskill-test-acceptance` 流程，
+修复直接落在**同一特性分支** `feature/tool-card-command-summary`（PR #84），**每 Bug 一个提交**。
+
+### BUG-017 — 零宽保活增量渲染成空助手气泡（commit `a2947f6`）
+
+- **取证**：真实轨迹 `~/.local/share/agentj/sessions/4451942d-…​.trajectory`（170 事件）中
+  12 个 `thinking` 有 **10 个 content 恰为 `"\u200b"`**（U+200B 零宽空格 = 网关在工具调用之间的
+  保活增量）。U+200B **无 Unicode `White_Space` 属性**：`String.trim()` / `char::is_whitespace()`
+  都不判空 → 每帧成为一个 `.aj-ai` 条目，即用户看到的「蓝条 + 无文字」。
+- **修复**：新增 `agentj-ui/apps/web/src/blankText.ts`（`BLANK_CHARS = /[\s\u200b-\u200f\u2060\ufeff]/g`
+  + `isBlankText()`；**不能用 `trim()`**）——`ConversationFeed` 的 `case "ai"` 直接 `return null`；
+  `Trajectory` 的 `historyToEntries` / `historyToConversation` 两处 `case "thinking"` 同步跳过；
+  后端 `crates/agentj-ipc/src/lib.rs` 的 `flush_thinking` 改为**总是 `mem::take`** 再由新关联函数
+  `is_visually_blank` 判定「仅空白 / 零宽 / BOM」即不落盘（避免残留污染下一段 thinking）。
+
+### BUG-018 — 新建会话后左侧列表不刷新（commit `cf2b45e`）
+
+- **取证**：`UnifiedSidebar` 只在挂载时拉取一次 `session/list`；`handleNewSession` 成功后只
+  `assignSession` + `onActiveChange`，turn 结算（preview / `updated_at` 变化）也不刷新。
+- **修复**：抽出 `refreshList` 回调（挂载 / `session/new` 成功后 / 事件到达时调用，用 `aliveRef`
+  替代一次性 `cancelled` 标志）；新增 `agentj-ui/apps/web/src/sessionEvents.ts`
+  （`agentj:sessions-updated` + `notifySessionsUpdated` / `subscribeSessionsUpdated`）；
+  `RunPanel.submit()` 的 `finally` 广播该事件 → 一轮跑完（成功或失败）左栏即刷新 preview 与时间。
+  **刻意不做乐观插入**：refetch 返回的列表会冲掉本地乐观行。
+
+### 测试（RED → GREEN）
+
+| 测试 | 文件 |
+|---|---|
+| `isBlankText` 4 条（空 / 零宽 / 含可见字形 / 反 trim 守卫） | 新增 `agentj-ui/apps/web/src/blankText.test.ts` |
+| `renders no assistant bubble for zero-width-only text`、`still renders an assistant bubble for zero-width-prefixed real text` | `agentj-ui/apps/web/src/RunPanel.test.tsx` |
+| `visually blank thinking is dropped (BUG-017)` 3 条 | `agentj-ui/apps/web/src/Trajectory.test.tsx` |
+| `dispatches agentj:sessions-updated after a turn settles`、`announces even when the turn fails` | `agentj-ui/apps/web/src/RunPanel.test.tsx` |
+| `BUG-018 — a new session shows up in the list right away`、`BUG-018 — a sessions-updated event refetches the list` | `agentj-ui/apps/web/src/components/UnifiedSidebar.test.tsx` |
+| `run_drops_zero_width_only_deltas_instead_of_recording_blank_thinking`、`run_keeps_thinking_that_contains_visible_glyphs`、`is_visually_blank_covers_zero_width_and_whitespace_only_text` | `crates/agentj-ipc/src/lib.rs` |
+
+RED 证据：Web **7 failed / 662 passed**（+ `blankText.test.ts` 整文件 import 失败）；GREEN 后 **679 passed**。
+
+### 验证结果（验收修复后 · HEAD `cf2b45e`）
+
+| 门禁 | 结果 |
+|---|---|
+| `npm --prefix agentj-ui test --workspace=@agentj/web` | **679 passed**（55 files） |
+| `npm --prefix agentj-ui run build --workspace=@agentj/web` | clean（仅既有 chunk > 500 kB 提示） |
+| `cargo test --workspace` | **911 passed / 0 failed**（`-p agentj-ipc --lib` 197） |
+| `cargo fmt --all --check` / `cargo clippy --workspace --all-targets -- -D warnings` | FMT-OK / 0 warning |
 | `./scripts/check-version.sh` | **version-ok（0.1.0 / 0.18.0）** |
 
 ## 遗留问题 / 已知限制（前端）
@@ -92,8 +146,12 @@ RED 证据：实现前 6 条断言全部失败（RunPanel 4 条 + CSS 2 条）�
 
 ## 下一步
 
-- 本阶段改动待提交 → 推送**两个远端**（本机 `github` = GitHub 权威、`origin` = GitCode 镜像；
-  与 AGENTS.md 的远端命名相反）→ 在 GitHub 建 PR（用户负责合并）。
+- 本阶段改动已提交到 `feature/tool-card-command-summary`（特性 `c62ee6c` + 文档 `2190a0d`，
+  验收修复 `a2947f6` / `cf2b45e`，均**每 Bug 一个提交**）→ 推送**两个远端**（本机
+  `github` = GitHub 权威、`origin` = GitCode 镜像；与 AGENTS.md 的远端命名相反）→
+  更新 PR #84 的 title / body 以覆盖验收修复（用户负责合并）。
+- 本轮验收记录见本地 `.superpowers/acceptance/bugs.md`（gitignored；上轮已归档为
+  `archive-bugs-20261018-103252.md`）。
 - 前端候选：③ Web 接入服务端搜索；或订阅状态常驻指示（需先定义新鲜度语义）；
   或清理 `TopbarMenu` / `SettingsDialog` 测试里的重复 stub helper；
   或 TUI `/models` 与 Web 选择语义对齐（TUI 仍是内存态、不跨进程持久化）。
