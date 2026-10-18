@@ -1,7 +1,7 @@
 //! E2E resident-kernel lifecycle test (T12): `agentj serve --port 0` binds an
 //! ephemeral TCP port, prints `listening on <addr>` on stdout, serves a TCP
 //! client's session/new, and exits gracefully when the last client disconnects
-//! (design 决策 #3 按需常驻).
+//! (design #3: reap on demand).
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
@@ -1064,4 +1064,170 @@ fn sha256_hex(bytes: &[u8]) -> String {
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect()
+}
+
+/// Minimal HTTP/1.0 request over a fresh socket; returns the whole response text.
+fn http_request(
+    addr: &str,
+    method: &str,
+    path: &str,
+    headers: &[(&str, &str)],
+    body: &str,
+) -> String {
+    use std::io::{Read, Write};
+    let mut stream = TcpStream::connect(addr).expect("connect to the server");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let mut request = format!(
+        "{method} {path} HTTP/1.0\r\nHost: {addr}\r\nConnection: close\r\nContent-Length: {}\r\n",
+        body.len()
+    );
+    for (name, value) in headers {
+        request.push_str(&format!("{name}: {value}\r\n"));
+    }
+    if !body.is_empty() {
+        request.push_str("Content-Type: application/x-www-form-urlencoded\r\n");
+    }
+    request.push_str("\r\n");
+    request.push_str(body);
+    stream.write_all(request.as_bytes()).unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).unwrap();
+    response
+}
+
+fn http_post(addr: &str, path: &str, headers: &[(&str, &str)], body: &str) -> String {
+    http_request(addr, "POST", path, headers, body)
+}
+
+fn http_get(addr: &str, path: &str) -> String {
+    http_request(addr, "GET", path, &[], "")
+}
+
+/// Spawns `serve` with stdout captured (unlike the inheriting helper) so the test
+/// can wait for `listening on` and later restart on the same port.
+fn serve_capturing_stdout(home: &TempHome, args: &[&str]) -> AutoReap {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_agentj"));
+    command
+        .arg("--config")
+        .arg(home.path().join("config.toml"))
+        .args(args)
+        .env("XDG_DATA_HOME", home.path())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    AutoReap(command.spawn().unwrap())
+}
+
+/// True when `body` has a whole line equal to `expected`: an exact-value check
+/// that `"total 5"` cannot satisfy for a line reading `"total 50"`.
+fn has_metric_line(body: &str, expected: &str) -> bool {
+    body.lines()
+        .any(|line| line.trim_end_matches('\r') == expected)
+}
+
+/// The persisted login-limiter snapshot must outlive a graceful restart.
+#[test]
+fn login_counters_survive_a_restart() {
+    let home = TempHome::new("metrics-state-restore");
+    std::fs::write(
+        home.path().join("config.toml"),
+        "[web]\ntrust_proxy_headers = true\n",
+    )
+    .unwrap();
+
+    let mut first = serve_capturing_stdout(&home, &["serve", "--port", "0", "--token", "secret"]);
+    // Keep the stdout pipe open for the whole test: the resident server prints
+    // more lines after `listening on`, and a closed reader would fail those.
+    let mut first_stdout = BufReader::new(first.0.stdout.take().unwrap());
+    let addr = read_listening_addr(&mut first_stdout);
+
+    // One JSON-RPC connection keeps the resident server alive across the probes
+    // and triggers the graceful shutdown chain when it is dropped (design #3).
+    let keep_alive = TcpStream::connect(&addr).expect("kernel connection");
+    for _ in 0..5 {
+        let response = http_post(
+            &addr,
+            "/login",
+            &[("x-forwarded-for", "198.51.100.9")],
+            "token=wrong&next=%2F",
+        );
+        // The 5th failure locks the IP, so that response carries 429 — the
+        // counting assertions below are what this loop verifies.
+        assert!(
+            response.starts_with("HTTP/1."),
+            "unexpected login response: {response}"
+        );
+    }
+    let before = http_get(&addr, "/metrics");
+    assert!(
+        has_metric_line(&before, "agentj_login_attempts_total 5"),
+        "{before}"
+    );
+    assert!(
+        has_metric_line(&before, "agentj_login_failures_total 5"),
+        "{before}"
+    );
+    assert!(
+        has_metric_line(&before, "agentj_login_lockouts_total 1"),
+        "{before}"
+    );
+    assert!(
+        has_metric_line(&before, "agentj_login_ip_locked{ip=\"198.51.100.9\"} 1"),
+        "{before}"
+    );
+    assert!(
+        has_metric_line(
+            &before,
+            "agentj_web_client_ip_source_total{source=\"forwarded\"} 5"
+        ),
+        "{before}"
+    );
+
+    drop(keep_alive);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut exited = false;
+    while Instant::now() < deadline {
+        if let Some(status) = first.0.try_wait().unwrap() {
+            assert!(status.success(), "first server exited with {status}");
+            exited = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(exited, "the first server did not shut down gracefully");
+
+    let port = addr.rsplit(':').next().unwrap().to_string();
+    let state_file = home
+        .path()
+        .join("agentj")
+        .join(format!("metrics-state-{port}.json"));
+    assert!(
+        state_file.is_file(),
+        "no state file at {}",
+        state_file.display()
+    );
+
+    let mut second =
+        serve_capturing_stdout(&home, &["serve", "--port", &port, "--token", "secret"]);
+    let mut second_stdout = BufReader::new(second.0.stdout.take().unwrap());
+    let addr = read_listening_addr(&mut second_stdout);
+    let after = http_get(&addr, "/metrics");
+    assert!(
+        has_metric_line(&after, "agentj_web_metrics_state_restored 1"),
+        "{after}"
+    );
+    assert!(
+        has_metric_line(&after, "agentj_web_metrics_state_entries_restored 1"),
+        "{after}"
+    );
+    assert!(
+        has_metric_line(&after, "agentj_login_failures_total 5"),
+        "{after}"
+    );
+    assert!(
+        has_metric_line(&after, "agentj_login_ip_locked{ip=\"198.51.100.9\"} 1"),
+        "{after}"
+    );
 }

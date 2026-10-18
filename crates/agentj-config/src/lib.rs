@@ -144,6 +144,19 @@ pub struct McpConfig {
     pub servers: Vec<McpServerConfig>,
 }
 
+/// `[web]` HTTP surface options: proxy-header trust for client-IP derivation
+/// and the directory holding the persisted login-limiter state.
+///
+/// `trust_proxy_headers` defaults to `false`; enabling it only takes effect when
+/// the direct TCP peer is loopback (design D1), so it is safe for same-host proxies.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct WebSection {
+    pub trust_proxy_headers: bool,
+    /// Overrides `$XDG_DATA_HOME/agentj`; `None` means "resolve from the environment".
+    pub state_dir: Option<PathBuf>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct AgentJConfig {
     #[serde(default)]
@@ -158,6 +171,8 @@ pub struct AgentJConfig {
     pub license: Option<LicenseConfig>,
     #[serde(default)]
     pub mcp: Option<McpConfig>,
+    #[serde(default)]
+    pub web: Option<WebSection>,
 }
 
 impl Default for AgentJConfig {
@@ -181,6 +196,7 @@ impl Default for AgentJConfig {
             session: None,
             license: None,
             mcp: None,
+            web: None,
         }
     }
 }
@@ -257,6 +273,38 @@ mod tests {
             .get_or_init(|| std::sync::Mutex::new(()))
             .lock()
             .unwrap_or_else(|p| p.into_inner())
+    }
+
+    #[test]
+    fn web_section_defaults_trust_proxy_headers_to_false() {
+        let cfg: AgentJConfig = toml::from_str("").unwrap();
+        assert!(cfg.web.is_none(), "an absent [web] section stays None");
+        let web = WebSection::default();
+        assert!(!web.trust_proxy_headers, "forwarded headers are opt-in");
+        assert!(web.state_dir.is_none());
+    }
+
+    #[test]
+    fn web_section_reads_trust_and_state_dir() {
+        let cfg: AgentJConfig =
+            toml::from_str("[web]\ntrust_proxy_headers = true\nstate_dir = \"/var/lib/agentj\"\n")
+                .unwrap();
+        let web = cfg.web.expect("[web] section present");
+        assert!(web.trust_proxy_headers);
+        assert_eq!(
+            web.state_dir,
+            Some(std::path::PathBuf::from("/var/lib/agentj"))
+        );
+    }
+
+    #[test]
+    fn web_section_tolerates_unknown_keys() {
+        // The future `trusted_proxies` CIDR whitelist must not break older binaries.
+        let cfg: AgentJConfig = toml::from_str(
+            "[web]\ntrusted_proxies = [\"10.0.0.0/8\"]\ntrust_proxy_headers = true\n",
+        )
+        .unwrap();
+        assert!(cfg.web.expect("[web] section present").trust_proxy_headers);
     }
 
     #[test]
