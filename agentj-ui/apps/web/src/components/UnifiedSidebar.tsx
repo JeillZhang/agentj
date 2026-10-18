@@ -16,6 +16,7 @@ import {
 import type { Project } from "../projectStore";
 import { loadFavorites, loadLayout, saveLayout, toggleFavorite } from "../layoutStore";
 import { loadSidebarPrefs, subscribeSidebarPrefs } from "../sidebarPrefsStore";
+import { subscribeSessionsUpdated } from "../sessionEvents";
 import type { SidebarPrefs } from "../sidebarPrefsStore";
 import { isDemoEnabled, subscribeDemo } from "../demoData";
 import { moveSelection, tabIndexFor } from "../hooks/useRovingFocus";
@@ -193,6 +194,50 @@ export default function UnifiedSidebar({
 
   useEffect(() => subscribeSidebarPrefs(setPrefs), []);
 
+  const aliveRef = useRef(true);
+
+  // fetch session/list — reused on mount, after session/new, and when a run settles.
+  const refreshList = useCallback(async () => {
+    try {
+      let sessionsRaw: Array<Record<string, unknown>> = [];
+      const rpc = client as RpcClient | null;
+      if (rpc && typeof (rpc as unknown as { request?: unknown }).request === "function") {
+        const res = (await (rpc as RpcClient).request(METHODS.sessionList, {})) as {
+          sessions?: Array<Record<string, unknown>>;
+        } | null;
+        sessionsRaw = res?.sessions ?? [];
+      } else {
+        const { transport, client: tmp } = openOpClient(wsUrl);
+        try {
+          const res = (await tmp.request(METHODS.sessionList, {})) as {
+            sessions?: Array<Record<string, unknown>>;
+          } | null;
+          sessionsRaw = res?.sessions ?? [];
+        } finally {
+          (transport as unknown as { close?: () => void }).close?.();
+        }
+      }
+      if (aliveRef.current) setListRows(rowsFromList(sessionsRaw));
+    } catch (err) {
+      console.debug("session-list", err);
+      if (aliveRef.current) setListRows([]);
+    }
+  }, [wsUrl, client]);
+
+  useEffect(() => {
+    aliveRef.current = true;
+    return () => {
+      aliveRef.current = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    void refreshList();
+  }, [refreshList]);
+
+  // A settled run (or another panel) asks for a refetch.
+  useEffect(() => subscribeSessionsUpdated(() => void refreshList()), [refreshList]);
+
   const handleNewSession = useCallback(
     async (targetProjectId: string) => {
       setBusy(true);
@@ -217,6 +262,8 @@ export default function UnifiedSidebar({
         if (sid) {
           assignSession(sid, targetProjectId);
           onActiveChange(sid);
+          // Otherwise the new session is missing from the left list until reload.
+          void refreshList();
         }
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
@@ -224,7 +271,7 @@ export default function UnifiedSidebar({
         setBusy(false);
       }
     },
-    [wsUrl, client, onActiveChange],
+    [wsUrl, client, onActiveChange, refreshList],
   );
 
   // hero New session dispatch + legacy sidebar handlers
@@ -235,42 +282,6 @@ export default function UnifiedSidebar({
     window.addEventListener("agentj:new-session", onNew as EventListener);
     return () => window.removeEventListener("agentj:new-session", onNew as EventListener);
   }, [handleNewSession, currentProjectId]);
-
-  // fetch session/list
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      try {
-        let sessionsRaw: Array<Record<string, unknown>> = [];
-        const rpc = client as RpcClient | null;
-        if (rpc && typeof (rpc as unknown as { request?: unknown }).request === "function") {
-          const res = (await (rpc as RpcClient).request(METHODS.sessionList, {})) as {
-            sessions?: Array<Record<string, unknown>>;
-          } | null;
-          sessionsRaw = res?.sessions ?? [];
-        } else {
-          const { transport, client: tmp } = openOpClient(wsUrl);
-          try {
-            const res = (await tmp.request(METHODS.sessionList, {})) as {
-              sessions?: Array<Record<string, unknown>>;
-            } | null;
-            sessionsRaw = res?.sessions ?? [];
-          } finally {
-            (transport as unknown as { close?: () => void }).close?.();
-          }
-        }
-        if (!cancelled) setListRows(rowsFromList(sessionsRaw));
-      } catch (err) {
-        if (!cancelled) {
-          console.debug("session-list", err);
-          setListRows([]);
-        }
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [wsUrl, client]);
 
   useEffect(() => {
     setFlatVisible(VIRTUAL_PAGE);
