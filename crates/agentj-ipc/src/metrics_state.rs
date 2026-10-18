@@ -73,6 +73,13 @@ fn io_err(error: std::io::Error) -> StateError {
     StateError::Io(error.to_string())
 }
 
+/// Best-effort removal of a partially written tmp file before surfacing the
+/// error: a failed write must never leave a `*.json.tmp` behind (design D4).
+fn discard_tmp(tmp: &Path, error: std::io::Error) -> StateError {
+    let _ = std::fs::remove_file(tmp);
+    io_err(error)
+}
+
 /// State files are per-port: two instances in one directory must not overwrite
 /// each other (design D4).
 pub(crate) fn state_path_in(dir: &Path, port: u16) -> PathBuf {
@@ -107,14 +114,13 @@ pub(crate) fn write(path: &Path, state: &MetricsState) -> Result<(), StateError>
     }
     let body = serde_json::to_string(state).map_err(|e| StateError::Parse(e.to_string()))?;
     let mut file = opts.open(&tmp).map_err(io_err)?;
-    if let Err(error) = std::io::Write::write_all(&mut file, body.as_bytes()) {
-        drop(file);
-        let _ = std::fs::remove_file(&tmp);
-        return Err(io_err(error));
-    }
-    file.sync_all().map_err(io_err)?;
+    let written =
+        std::io::Write::write_all(&mut file, body.as_bytes()).and_then(|()| file.sync_all());
     drop(file);
-    std::fs::rename(&tmp, path).map_err(io_err)
+    if let Err(error) = written {
+        return Err(discard_tmp(&tmp, error));
+    }
+    std::fs::rename(&tmp, path).map_err(|error| discard_tmp(&tmp, error))
 }
 
 /// `Ok(None)` means "no state yet" (a normal first run); `Err` means the file
@@ -243,6 +249,25 @@ mod tests {
         write(&path, &sample_state()).unwrap();
         let back = read(&path).unwrap().expect("state present");
         assert_eq!(back, sample_state());
+        let leftovers: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+            .filter(|name| name.ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "tmp files leaked: {leftovers:?}");
+    }
+
+    #[test]
+    fn write_is_atomic_and_never_leaves_a_tmp_behind() {
+        // Force the final `rename` to fail: the destination already exists as a
+        // directory, so the tmp file must be cleaned up on that error path too.
+        let dir = tempfile::tempdir().unwrap();
+        let path = state_path_in(dir.path(), 4096);
+        std::fs::create_dir(&path).unwrap();
+        assert!(
+            write(&path, &sample_state()).is_err(),
+            "writing over a directory must fail"
+        );
         let leftovers: Vec<_> = std::fs::read_dir(dir.path())
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
