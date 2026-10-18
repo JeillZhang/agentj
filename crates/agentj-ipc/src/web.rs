@@ -104,7 +104,6 @@ pub(crate) enum AssetCheck {
 /// Resolve the manifest key for a mount prefix plus a stripped request path
 /// (the `/assets` service sees `path` without its mount prefix; `mount_prefix`
 /// is a static so the allocation happens only on a miss).
-#[allow(dead_code)] // wired into the static surface in a following change
 fn manifest_key_for(mount_prefix: &'static str, path: &str) -> String {
     format!("{mount_prefix}{path}")
 }
@@ -113,7 +112,6 @@ fn manifest_key_for(mount_prefix: &'static str, path: &str) -> String {
 /// the manifest has it, otherwise `fallback_key` (the SPA shell for history
 /// routes) when that is present too. `None` means "not a manifest asset", so the
 /// request is never hashed against an unrelated digest.
-#[allow(dead_code)] // wired into the static surface in a following change
 fn verify_key(
     manifest: &AssetManifest,
     mount_prefix: &'static str,
@@ -485,7 +483,6 @@ impl WebConfig {
     /// hit never refreshes `checked_at`, so a tampered file is re-hashed once the
     /// window closes instead of being trusted forever. Keys absent from the
     /// manifest are ignored (they are never hashed).
-    #[allow(dead_code)] // wired into the static surface in a following change
     pub(crate) fn verify_cached_asset(&self, key: &str) {
         let Some(dist) = self.dist.as_deref() else {
             return;
@@ -532,7 +529,6 @@ impl WebConfig {
     }
     /// Insert one verdict, keeping the memo bounded: expired entries are dropped
     /// first, and a still-full cache is cleared rather than grown without limit.
-    #[allow(dead_code)] // only reachable through `verify_cached_asset`
     fn store_verify_entry(&self, key: String, verdict: AssetCheck, at: Instant) {
         let mut cache = self.verify_cache.lock().unwrap_or_else(|e| e.into_inner());
         if cache.len() >= VERIFY_CACHE_MAX && !cache.contains_key(&key) {
@@ -551,7 +547,6 @@ impl WebConfig {
         );
     }
     /// One `warn!` per path for the whole process; shared by every integrity path.
-    #[allow(dead_code)] // only reachable through `verify_cached_asset`
     pub(crate) fn warn_offense_once(&self, path: &str) {
         let mut warned = self.warned.lock().unwrap_or_else(|e| e.into_inner());
         if warned.insert(path.to_string()) {
@@ -1179,6 +1174,29 @@ async fn gate(
     next.run(req).await
 }
 
+/// Per-request integrity gate for one static mount (D9: fail-open — the
+/// verdict never changes the response, the served bytes are checked and
+/// counted). `mount_prefix` re-attaches what `nest_service` stripped so the
+/// manifest key can be resolved, and `fallback_key` is the SPA fallback's
+/// document for non-asset paths.
+async fn verify_asset(
+    web: std::sync::Arc<WebConfig>,
+    mount_prefix: &'static str,
+    fallback_key: Option<&'static str>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    if web.verify_on_request {
+        let key = web.manifest.as_ref().and_then(|manifest| {
+            verify_key(manifest, mount_prefix, fallback_key, req.uri().path())
+        });
+        if let Some(key) = key {
+            web.verify_cached_asset(&key);
+        }
+    }
+    next.run(req).await
+}
+
 /// Mount the static SPA surface (D6: cache headers + login gate wrapped around
 /// each service individually — `Router::layer` would leak onto `/ws`). The root
 /// mount is `fallback_service` (unknown paths -> index.html, 200) because
@@ -1217,9 +1235,24 @@ fn static_surface(
             async move { gate(web, peer, "", req, next).await }
         })
     };
+    let verify_assets = {
+        let web = web.clone();
+        axum::middleware::from_fn(move |req, next| {
+            let web = web.clone();
+            async move { verify_asset(web, "/assets", None, req, next).await }
+        })
+    };
+    let verify_spa = {
+        let web = web.clone();
+        axum::middleware::from_fn(move |req, next| {
+            let web = web.clone();
+            async move { verify_asset(web, "", Some("/index.html"), req, next).await }
+        })
+    };
+    // Gate outermost, verify innermost: an unauthorised request must not hash.
     router
-        .nest_service("/assets", gate_assets.layer(assets))
-        .fallback_service(gate_spa.layer(spa))
+        .nest_service("/assets", gate_assets.layer(verify_assets.layer(assets)))
+        .fallback_service(gate_spa.layer(verify_spa.layer(spa)))
 }
 
 /// Unauthenticated version probe: reports this server's product/protocol
@@ -1796,6 +1829,116 @@ mod tests {
         for d in [aligned, mismatched, legacy, broken] {
             std::fs::remove_dir_all(&d).ok();
         }
+    }
+
+    #[tokio::test]
+    async fn per_request_check_hashes_the_served_asset() {
+        let dist = temp_dist("req-asset");
+        write_temp_dist_manifest(&dist);
+        let state = test_state(WebConfig::new(Some(dist.clone()), None));
+        let local: std::net::SocketAddr = LOOPBACK.parse().unwrap();
+        let (status, _, _) = get(
+            crate::web::build_router(state.clone(), local),
+            "/assets/app.js",
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert_eq!(state.web.request_integrity_snapshot().checked, 1);
+        std::fs::remove_dir_all(&dist).ok();
+    }
+
+    #[tokio::test]
+    async fn per_request_check_skips_unknown_asset_paths() {
+        let dist = temp_dist("req-unknown");
+        let digest = sha384_b64(b"console.log(1)");
+        write_manifest(&dist, &[("/app.js", digest.as_str())]); // no /assets prefix
+        let state = test_state(WebConfig::new(Some(dist.clone()), None));
+        let local: std::net::SocketAddr = LOOPBACK.parse().unwrap();
+        // Not in the manifest and not on disk: the v0.19.0 404, and never the SPA fallback.
+        let (missing, _, body) = get(
+            crate::web::build_router(state.clone(), local),
+            "/assets/typo.js",
+        )
+        .await;
+        assert_eq!(missing, axum::http::StatusCode::NOT_FOUND);
+        assert!(
+            !body.contains("agentj"),
+            "the assets face must not fall back to index.html"
+        );
+        // On disk but keyed differently in the manifest: served, still unhashed.
+        let (served, _, _) = get(
+            crate::web::build_router(state.clone(), local),
+            "/assets/app.js",
+        )
+        .await;
+        assert_eq!(served, axum::http::StatusCode::OK);
+        assert_eq!(state.web.request_integrity_snapshot().checked, 0);
+        std::fs::remove_dir_all(&dist).ok();
+    }
+
+    #[tokio::test]
+    async fn per_request_check_verifies_the_spa_fallback_key() {
+        let dist = temp_dist("req-spa");
+        write_temp_dist_manifest(&dist);
+        let state = test_state(WebConfig::new(Some(dist.clone()), None));
+        let local: std::net::SocketAddr = LOOPBACK.parse().unwrap();
+        let (status, _, _) = get(crate::web::build_router(state.clone(), local), "/sessions").await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert_eq!(state.web.request_integrity_snapshot().checked, 1);
+        std::fs::remove_dir_all(&dist).ok();
+    }
+
+    #[tokio::test]
+    async fn per_request_check_is_off_when_configured_off() {
+        let dist = temp_dist("req-off");
+        write_temp_dist_manifest(&dist);
+        let web =
+            WebConfig::new(Some(dist.clone()), None).with_integrity_options(IntegrityOptions {
+                verify_on_request: false,
+                ..IntegrityOptions::default()
+            });
+        let state = test_state(web);
+        let local: std::net::SocketAddr = LOOPBACK.parse().unwrap();
+        let (status, _, _) = get(
+            crate::web::build_router(state.clone(), local),
+            "/assets/app.js",
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert_eq!(state.web.request_integrity_snapshot().checked, 0);
+        std::fs::remove_dir_all(&dist).ok();
+    }
+
+    #[tokio::test]
+    async fn per_request_check_never_runs_for_a_rejected_remote_request() {
+        let dist = temp_dist("req-remote");
+        write_temp_dist_manifest(&dist);
+        let state = test_state(WebConfig::new(Some(dist.clone()), Some("s3cret".into())));
+        let remote: std::net::SocketAddr = "203.0.113.7:41000".parse().unwrap();
+        let (status, headers, _) = get(
+            crate::web::build_router(state.clone(), remote),
+            "/assets/app.js",
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::FOUND);
+        assert!(headers.get(axum::http::header::LOCATION).is_some());
+        assert_eq!(state.web.request_integrity_snapshot().checked, 0);
+        std::fs::remove_dir_all(&dist).ok();
+    }
+
+    #[tokio::test]
+    async fn per_request_check_is_a_noop_without_a_manifest() {
+        let dist = temp_dist("req-no-manifest");
+        let state = test_state(WebConfig::new(Some(dist.clone()), None));
+        let local: std::net::SocketAddr = LOOPBACK.parse().unwrap();
+        let (status, _, _) = get(
+            crate::web::build_router(state.clone(), local),
+            "/assets/app.js",
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert_eq!(state.web.request_integrity_snapshot().checked, 0);
+        std::fs::remove_dir_all(&dist).ok();
     }
 
     #[test]
