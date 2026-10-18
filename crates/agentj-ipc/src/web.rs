@@ -1346,6 +1346,13 @@ mod tests {
     use std::fs;
     use std::time::Duration;
 
+    /// True when `body` has a whole line equal to `expected`, so an exact-value
+    /// check cannot be satisfied by a longer number (`" 5"` vs `" 50"`).
+    fn has_metric_line(body: &str, expected: &str) -> bool {
+        body.lines()
+            .any(|line| line.trim_end_matches('\r') == expected)
+    }
+
     #[test]
     fn safe_next_whitelists_same_site_paths_only() {
         assert_eq!(safe_next(None), "/");
@@ -1652,8 +1659,8 @@ mod tests {
         assert!(report.last_run.is_some());
         assert!(age.is_some());
         let text = prometheus_text(&web);
-        assert!(text.contains("agentj_web_spot_rounds_total 4"));
-        assert!(text.contains("agentj_web_spot_checked_total 3"));
+        assert!(has_metric_line(&text, "agentj_web_spot_rounds_total 4"));
+        assert!(has_metric_line(&text, "agentj_web_spot_checked_total 3"));
         web.warned
             .lock()
             .unwrap()
@@ -1984,8 +1991,8 @@ mod tests {
         let local: std::net::SocketAddr = "127.0.0.1:4444".parse().unwrap();
         let (status, _, body) = get(crate::web::build_router(state, local), "/metrics").await;
         assert_eq!(status, axum::http::StatusCode::OK);
-        assert!(body.contains("agentj_web_manifest_present 1"));
-        assert!(body.contains("agentj_web_assets_checked 2"));
+        assert!(has_metric_line(&body, "agentj_web_manifest_present 1"));
+        assert!(has_metric_line(&body, "agentj_web_assets_checked 2"));
         std::fs::remove_dir_all(&dist).ok();
     }
 
@@ -2041,7 +2048,10 @@ mod tests {
         let locked_at = body.find("ip=\"203.0.113.9\"").expect("locked series");
         let busy_at = body.find("ip=\"10.0.0.1\"").expect("allowed series");
         assert!(locked_at < busy_at, "locked IPs rank first");
-        assert!(body.contains("agentj_login_ip_locked{ip=\"203.0.113.9\"} 1"));
+        assert!(has_metric_line(
+            &body,
+            "agentj_login_ip_locked{ip=\"203.0.113.9\"} 1"
+        ));
         assert!(body.contains("agentj_login_ip_last_seen_seconds{ip=\"203.0.113.9\"}"));
         assert!(body.contains("ip=\"10.0.0.49\""));
         assert!(!body.contains("ip=\"10.0.0.50\""), "51st series is dropped");
@@ -2194,25 +2204,29 @@ mod tests {
         // but they are tallied on Counters.blocked (2) instead of
         // Counters.failures, so only 3 failures are counted globally.
         assert!(
-            body.contains(&format!(
-                "agentj_login_ip_failures_total{{ip=\"{FORWARDED_CLIENT}\"}} 5"
-            )),
+            has_metric_line(
+                &body,
+                &format!("agentj_login_ip_failures_total{{ip=\"{FORWARDED_CLIENT}\"}} 5")
+            ),
             "{body}"
         );
         assert!(
-            body.contains("agentj_login_ip_locked{ip=\"198.51.100.9\"} 1"),
+            has_metric_line(&body, "agentj_login_ip_locked{ip=\"198.51.100.9\"} 1"),
             "the lockout follows the forwarded client, not 127.0.0.1:\n{body}"
         );
         assert!(
-            body.contains("agentj_login_blocked_total 2"),
+            has_metric_line(&body, "agentj_login_blocked_total 2"),
             "attempts 4-5 hit the locked entry and are counted as blocked:\n{body}"
         );
         assert!(
-            body.contains("agentj_login_failures_total 4"),
+            has_metric_line(&body, "agentj_login_failures_total 4"),
             "3 unblocked failures for the proxy client + 1 for the other client:\n{body}"
         );
         assert!(
-            body.contains("agentj_login_ip_failures_total{ip=\"203.0.113.5\"} 1"),
+            has_metric_line(
+                &body,
+                "agentj_login_ip_failures_total{ip=\"203.0.113.5\"} 1"
+            ),
             "another forwarded client keeps its own budget:\n{body}"
         );
         assert!(
@@ -2235,7 +2249,10 @@ mod tests {
         // The peer's own entry keeps incrementing its failures even while
         // locked, so the per-IP series shows all 5 attempts.
         assert!(
-            body.contains("agentj_login_ip_failures_total{ip=\"203.0.113.7\"} 5"),
+            has_metric_line(
+                &body,
+                "agentj_login_ip_failures_total{ip=\"203.0.113.7\"} 5"
+            ),
             "{body}"
         );
         assert!(
@@ -2243,7 +2260,10 @@ mod tests {
             "{body}"
         );
         assert!(
-            body.contains("agentj_web_client_ip_source_total{source=\"peer\"} 5"),
+            has_metric_line(
+                &body,
+                "agentj_web_client_ip_source_total{source=\"peer\"} 5"
+            ),
             "a non-loopback peer always resolves to itself:\n{body}"
         );
     }
@@ -2272,11 +2292,14 @@ mod tests {
         )
         .await;
         assert!(
-            body.contains("agentj_web_proxy_header_invalid_total 0"),
+            has_metric_line(&body, "agentj_web_proxy_header_invalid_total 0"),
             "{body}"
         );
         assert!(
-            body.contains("agentj_web_client_ip_source_total{source=\"peer\"} 1"),
+            has_metric_line(
+                &body,
+                "agentj_web_client_ip_source_total{source=\"peer\"} 1"
+            ),
             "{body}"
         );
     }
@@ -2291,11 +2314,11 @@ mod tests {
         )
         .await;
         assert!(
-            body.contains("agentj_web_proxy_header_invalid_total 1"),
+            has_metric_line(&body, "agentj_web_proxy_header_invalid_total 1"),
             "{body}"
         );
         assert!(
-            body.contains("agentj_login_ip_failures_total{ip=\"127.0.0.1\"} 1"),
+            has_metric_line(&body, "agentj_login_ip_failures_total{ip=\"127.0.0.1\"} 1"),
             "{body}"
         );
     }
@@ -2678,9 +2701,12 @@ mod tests {
         );
 
         let out = prometheus_text(&web);
-        assert!(out.contains("agentj_web_metrics_state_restored 1"), "{out}");
         assert!(
-            out.contains("agentj_web_metrics_state_entries_restored 1"),
+            has_metric_line(&out, "agentj_web_metrics_state_restored 1"),
+            "{out}"
+        );
+        assert!(
+            has_metric_line(&out, "agentj_web_metrics_state_entries_restored 1"),
             "{out}"
         );
     }
@@ -2743,11 +2769,11 @@ mod tests {
         assert!(web.login_limiter.dirty(), "a failed write must stay dirty");
         let out = prometheus_text(&web);
         assert!(
-            out.contains("agentj_web_metrics_state_write_failures_total 1"),
+            has_metric_line(&out, "agentj_web_metrics_state_write_failures_total 1"),
             "{out}"
         );
         assert!(
-            out.contains("agentj_web_metrics_state_last_flush_unix 0"),
+            has_metric_line(&out, "agentj_web_metrics_state_last_flush_unix 0"),
             "{out}"
         );
     }
@@ -2796,18 +2822,24 @@ mod tests {
             );
         }
         assert!(
-            out.contains("agentj_web_client_ip_source_total{source=\"forwarded\"} 1"),
+            has_metric_line(
+                &out,
+                "agentj_web_client_ip_source_total{source=\"forwarded\"} 1"
+            ),
             "{out}"
         );
         assert!(
-            out.contains("agentj_web_client_ip_source_total{source=\"peer\"} 1"),
+            has_metric_line(&out, "agentj_web_client_ip_source_total{source=\"peer\"} 1"),
             "{out}"
         );
         assert!(
-            out.contains("agentj_web_proxy_header_invalid_total 1"),
+            has_metric_line(&out, "agentj_web_proxy_header_invalid_total 1"),
             "{out}"
         );
-        assert!(out.contains("agentj_web_metrics_state_restored 0"), "{out}");
+        assert!(
+            has_metric_line(&out, "agentj_web_metrics_state_restored 0"),
+            "{out}"
+        );
     }
 
     #[tokio::test]
