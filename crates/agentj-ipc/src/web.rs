@@ -410,7 +410,10 @@ impl WebConfig {
     }
     /// Write the limiter state if a path is configured (design D3). Failures are
     /// counted and warned once; the dirty flag stays set so the next tick retries.
-    pub(crate) fn flush_metrics_state(&self) {
+    ///
+    /// Graceful-shutdown API: the CLI calls this (before `stop_metrics_flush`)
+    /// so a recorded login-failure window survives the process exiting.
+    pub fn flush_metrics_state(&self) {
         let Some(path) = self.metrics_state.as_deref() else {
             return;
         };
@@ -456,8 +459,10 @@ impl WebConfig {
         *self.flush_task.lock().unwrap_or_else(|e| e.into_inner()) = Some(handle.abort_handle());
         Some(handle)
     }
+    /// Graceful-shutdown API: abort the debounced flush task. Callers flush
+    /// first (`flush_metrics_state`), so the last snapshot is never lost.
     #[allow(dead_code)] // wired by the CLI shutdown path in T7
-    pub(crate) fn stop_metrics_flush(&self) {
+    pub fn stop_metrics_flush(&self) {
         let task = self
             .flush_task
             .lock()
