@@ -1120,6 +1120,13 @@ fn serve_capturing_stdout(home: &TempHome, args: &[&str]) -> AutoReap {
     AutoReap(command.spawn().unwrap())
 }
 
+/// True when `body` has a whole line equal to `expected`: an exact-value check
+/// that `"total 5"` cannot satisfy for a line reading `"total 50"`.
+fn has_metric_line(body: &str, expected: &str) -> bool {
+    body.lines()
+        .any(|line| line.trim_end_matches('\r') == expected)
+}
+
 /// The persisted login-limiter snapshot must outlive a graceful restart.
 #[test]
 fn login_counters_survive_a_restart() {
@@ -1137,7 +1144,7 @@ fn login_counters_survive_a_restart() {
     let addr = read_listening_addr(&mut first_stdout);
 
     // One JSON-RPC connection keeps the resident server alive across the probes
-    // and triggers the graceful shutdown chain when it is dropped (决策 #3).
+    // and triggers the graceful shutdown chain when it is dropped (design #3).
     let keep_alive = TcpStream::connect(&addr).expect("kernel connection");
     for _ in 0..5 {
         let response = http_post(
@@ -1154,15 +1161,27 @@ fn login_counters_survive_a_restart() {
         );
     }
     let before = http_get(&addr, "/metrics");
-    assert!(before.contains("agentj_login_attempts_total 5"), "{before}");
-    assert!(before.contains("agentj_login_failures_total 5"), "{before}");
-    assert!(before.contains("agentj_login_lockouts_total 1"), "{before}");
     assert!(
-        before.contains("agentj_login_ip_locked{ip=\"198.51.100.9\"} 1"),
+        has_metric_line(&before, "agentj_login_attempts_total 5"),
         "{before}"
     );
     assert!(
-        before.contains("agentj_web_client_ip_source_total{source=\"forwarded\"} 5"),
+        has_metric_line(&before, "agentj_login_failures_total 5"),
+        "{before}"
+    );
+    assert!(
+        has_metric_line(&before, "agentj_login_lockouts_total 1"),
+        "{before}"
+    );
+    assert!(
+        has_metric_line(&before, "agentj_login_ip_locked{ip=\"198.51.100.9\"} 1"),
+        "{before}"
+    );
+    assert!(
+        has_metric_line(
+            &before,
+            "agentj_web_client_ip_source_total{source=\"forwarded\"} 5"
+        ),
         "{before}"
     );
 
@@ -1196,16 +1215,19 @@ fn login_counters_survive_a_restart() {
     let addr = read_listening_addr(&mut second_stdout);
     let after = http_get(&addr, "/metrics");
     assert!(
-        after.contains("agentj_web_metrics_state_restored 1"),
+        has_metric_line(&after, "agentj_web_metrics_state_restored 1"),
         "{after}"
     );
     assert!(
-        after.contains("agentj_web_metrics_state_entries_restored 1"),
+        has_metric_line(&after, "agentj_web_metrics_state_entries_restored 1"),
         "{after}"
     );
-    assert!(after.contains("agentj_login_failures_total 5"), "{after}");
     assert!(
-        after.contains("agentj_login_ip_locked{ip=\"198.51.100.9\"} 1"),
+        has_metric_line(&after, "agentj_login_failures_total 5"),
+        "{after}"
+    );
+    assert!(
+        has_metric_line(&after, "agentj_login_ip_locked{ip=\"198.51.100.9\"} 1"),
         "{after}"
     );
 }
