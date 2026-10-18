@@ -12,6 +12,7 @@ import { FilesView, useFileTree } from "./files.tsx";
 import { flattenVisible } from "./files.ts";
 import type { FileNode, RawFileEntry, SearchEntry } from "./files.ts";
 import { loadFileTreePrefs, saveFileTreePrefs } from "./filetreePrefs.ts";
+import { SEARCH_UNSUPPORTED_HINT } from "./app.tsx";
 
 function node(partial: Partial<FileNode> & { name: string; path: string; kind: "file" | "dir" }): FileNode {
   return {
@@ -109,7 +110,7 @@ describe("FilesView search mode", () => {
   test("renders matching rows with parent dirs, letters and the selected marker", async () => {
     const setup = await renderView({
       nodes: null, selected: 1, error: null, truncated: false, noSession: false, width: 28,
-      search: { active: true, query: "ma", rows: TWO_ROWS, total: 2, truncated: true, error: null },
+      search: { active: true, query: "ma", rows: TWO_ROWS, total: 2, truncated: true, error: null, notice: null },
     });
     const frame = setup.captureCharFrame();
     const lines = frame.split("\n");
@@ -129,7 +130,9 @@ describe("FilesView search mode", () => {
   test("renders an inline error row while the hint line stays visible", async () => {
     const setup = await renderView({
       nodes: null, selected: 0, error: null, truncated: false, noSession: false, width: 28,
-      search: { active: true, query: "ma", rows: [], total: 0, truncated: false, error: "file/list failed" },
+      search: {
+        active: true, query: "ma", rows: [], total: 0, truncated: false, error: "file/list failed", notice: null,
+      },
     });
     const frame = setup.captureCharFrame();
     expect(frame).toContain("file/list failed");
@@ -142,7 +145,7 @@ describe("FilesView search mode", () => {
     const setup = await renderView({
       nodes: [node({ name: "src", path: "src", kind: "dir", gitStatus: "M" })],
       selected: 0, error: null, truncated: false, noSession: false, width: 28,
-      search: { active: false, query: "", rows: [], total: 0, truncated: false, error: null },
+      search: { active: false, query: "", rows: [], total: 0, truncated: false, error: null, notice: null },
     });
     const frame = setup.captureCharFrame();
     expect(frame).toContain("src");
@@ -153,7 +156,7 @@ describe("FilesView search mode", () => {
   test("shows the remaining count when the server total exceeds the rendered rows", async () => {
     const setup = await renderView({
       nodes: null, selected: 0, error: null, truncated: false, noSession: false, width: 28,
-      search: { active: true, query: "ma", rows: TWO_ROWS, total: 5, truncated: false, error: null },
+      search: { active: true, query: "ma", rows: TWO_ROWS, total: 5, truncated: false, error: null, notice: null },
     });
     expect(setup.captureCharFrame()).toContain("type filter · enter jump · esc back · 3 more");
     act(() => setup.renderer.destroy());
@@ -162,7 +165,7 @@ describe("FilesView search mode", () => {
   test("combines partial with the remaining count when both apply", async () => {
     const setup = await renderView({
       nodes: null, selected: 0, error: null, truncated: false, noSession: false, width: 28,
-      search: { active: true, query: "ma", rows: TWO_ROWS, total: 9, truncated: true, error: null },
+      search: { active: true, query: "ma", rows: TWO_ROWS, total: 9, truncated: true, error: null, notice: null },
     });
     expect(setup.captureCharFrame()).toContain("esc back · partial · 7 more");
     act(() => setup.renderer.destroy());
@@ -171,7 +174,7 @@ describe("FilesView search mode", () => {
   test("omits the remaining count when every match fits in the rendered rows", async () => {
     const setup = await renderView({
       nodes: null, selected: 0, error: null, truncated: false, noSession: false, width: 28,
-      search: { active: true, query: "ma", rows: TWO_ROWS, total: 2, truncated: false, error: null },
+      search: { active: true, query: "ma", rows: TWO_ROWS, total: 2, truncated: false, error: null, notice: null },
     });
     const hint = setup.captureCharFrame().split("\n")[0]!;
     expect(hint).toContain("esc back");
@@ -183,7 +186,7 @@ describe("FilesView search mode", () => {
     const setup = await renderView({
       nodes: [node({ name: "src", path: "src", kind: "dir" })],
       selected: 0, error: null, truncated: false, noSession: false, width: 28,
-      search: { active: false, query: "", rows: [], total: 7, truncated: false, error: null },
+      search: { active: false, query: "", rows: [], total: 7, truncated: false, error: null, notice: null },
     });
     expect(setup.captureCharFrame()).not.toContain("more");
     act(() => setup.renderer.destroy());
@@ -203,6 +206,36 @@ describe("FilesView search mode", () => {
     expect(frame).not.toContain("file00");
     act(() => setup.renderer.destroy());
   });
+
+  test("renders the unsupported-kernel notice instead of rows", async () => {
+    const setup = await testRender(
+      <ThemeProvider>
+        <FilesView
+          nodes={null}
+          selected={0}
+          error={null}
+          truncated={false}
+          noSession={false}
+          width={80}
+          search={{
+            active: true,
+            query: "components",
+            rows: [],
+            total: 0,
+            truncated: false,
+            error: null,
+            notice: SEARCH_UNSUPPORTED_HINT,
+          }}
+        />
+      </ThemeProvider>,
+      { width: 80, height: 20 },
+    );
+    await act(async () => { await setup.flush(); });
+    const frame = setup.captureCharFrame();
+    expect(frame).toContain(SEARCH_UNSUPPORTED_HINT);
+    expect(frame).not.toContain("Button.tsx");
+    act(() => setup.renderer.destroy());
+  });
 });
 
 function SearchScrollProbe({ control }: { control: { setSelected: (n: number) => void } }) {
@@ -217,7 +250,7 @@ function SearchScrollProbe({ control }: { control: { setSelected: (n: number) =>
   return (
     <FilesView
       nodes={null} selected={selected} error={null} truncated={false} noSession={false} width={28}
-      search={{ active: true, query: "file", rows, total: rows.length, truncated: false, error: null }}
+      search={{ active: true, query: "file", rows, total: rows.length, truncated: false, error: null, notice: null }}
     />
   );
 }

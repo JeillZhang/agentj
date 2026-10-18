@@ -215,7 +215,8 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
   Files 视图 = `files.ts` 纯函数 + `FilesView` + `useFileTree`（懒加载 `file/list`
   depth=1、stale-reply 代际守卫、collapse 保留子树、refresh 根+已展开、会话切换清空重取）
   + 键位 `j,k,↑,↓` / `Enter,l,→` / `h,←` / `r` / `s` 搜索（防抖 150ms 服务端
-  `file/list {query}`，rank + `total`；旧内核无 `total` 自动降级 depth-8 本地过滤）
+  `file/list {query}`，内核 `file_list::search_rank` 是唯一排名真源；TUI 只渲染服务端返回的顺序与
+  `total`，回复无 `total` 时提示「不支持服务端搜索」并置空行，不再本地降级）
   + 展开态经 `filetree.json` 按会话 `project_root` 持久化 + mock WS e2e + `testRender` 快照。
 - `agentj-ui/apps/desktop`：Desktop 壳（Tauri v2，`frontendDist` → `../../web/dist`，
   与 workspace 版本同源，四件套 deb/AppImage/dmg/msi 打包）。

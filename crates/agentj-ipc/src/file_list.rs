@@ -397,8 +397,12 @@ pub(crate) fn search_with_budget(
     Ok(scan.finish())
 }
 
-/// Rank a match exactly like the TUI `searchRank` (case-insensitive): name
-/// prefix 0 > name substring 1 > path substring 2; `None` = no match.
+/// Rank a search hit for an already-lowercased `needle`:
+/// `0` = name prefix, `1` = name substring, `2` = path substring, `None` = no match.
+///
+/// **Single source of truth for file-search ranking.** The cross-language
+/// conformance contract lives in `protocol/search-rank-cases.json`; this crate's
+/// tests and the TUI mock kernel are both pinned to it.
 fn search_rank(name: &str, path: &str, needle: &str) -> Option<u8> {
     let name = name.to_lowercase();
     if name.starts_with(needle) {
@@ -849,5 +853,156 @@ mod tests {
         assert_eq!(paths, ["keep.rs"]);
         assert_eq!(result.total, Some(1));
         fs::remove_dir_all(&root).ok();
+    }
+
+    #[derive(serde::Deserialize)]
+    struct RankCases {
+        version: u32,
+        ranks: Vec<RankCase>,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct RankCase {
+        name: String,
+        path: String,
+        query: String,
+        expected_rank: Option<u8>,
+    }
+
+    /// `protocol/` is the repo's cross-language contract directory; anchor on
+    /// CARGO_MANIFEST_DIR because cargo runs tests with cwd = the crate dir.
+    fn search_rank_cases_path() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../protocol/search-rank-cases.json")
+    }
+
+    fn load_rank_cases() -> RankCases {
+        let path = search_rank_cases_path();
+        let raw =
+            fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        let cases: RankCases =
+            serde_json::from_str(&raw).unwrap_or_else(|e| panic!("parse {}: {e}", path.display()));
+        assert_eq!(cases.version, 1, "unexpected fixture version");
+        cases
+    }
+
+    #[test]
+    fn search_rank_matches_the_shared_conformance_fixture() {
+        let cases = load_rank_cases();
+        assert!(
+            !cases.ranks.is_empty(),
+            "fixture declares no ranks[] entries"
+        );
+        for case in &cases.ranks {
+            assert_eq!(
+                search_rank(&case.name, &case.path, &case.query.to_lowercase()),
+                case.expected_rank,
+                "rank mismatch for name={:?} path={:?} query={:?}",
+                case.name,
+                case.path,
+                case.query
+            );
+        }
+        let mut seen: Vec<Option<u8>> = cases.ranks.iter().map(|c| c.expected_rank).collect();
+        seen.sort_unstable();
+        seen.dedup();
+        assert_eq!(
+            seen,
+            vec![None, Some(0), Some(1), Some(2)],
+            "the fixture must pin all four rank outcomes"
+        );
+        let raw = fs::read_to_string(search_rank_cases_path()).unwrap();
+        for token in [
+            "name-prefix",
+            "name-substring",
+            "path-substring",
+            "case-insensitive",
+            "path byte-ascending",
+        ] {
+            assert!(raw.contains(token), "fixture rule string omits {token:?}");
+        }
+    }
+
+    #[derive(serde::Deserialize)]
+    struct SearchCases {
+        version: u32,
+        searches: Vec<SearchCase>,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct SearchCase {
+        query: String,
+        entries: Vec<FixtureEntry>,
+        expected_ranked_paths: Vec<String>,
+        expected_total: u64,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct FixtureEntry {
+        /// Part of the fixture's declared shape; the tree is built from `path`.
+        #[allow(dead_code)]
+        name: String,
+        path: String,
+        kind: String,
+    }
+
+    fn load_search_cases() -> SearchCases {
+        let path = search_rank_cases_path();
+        let raw =
+            fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        let cases: SearchCases =
+            serde_json::from_str(&raw).unwrap_or_else(|e| panic!("parse {}: {e}", path.display()));
+        assert_eq!(cases.version, 1, "unexpected fixture version");
+        cases
+    }
+
+    /// Materialize a fixture case as a real tree. Directories become dirs so the
+    /// "directories are never ranked" contract is exercised by the fixture itself.
+    fn materialize_fixture_entries(tag: &str, entries: &[FixtureEntry]) -> PathBuf {
+        let root = temp_dir(tag);
+        for entry in entries {
+            let full = root.join(&entry.path);
+            if entry.kind == "directory" {
+                fs::create_dir_all(&full).unwrap();
+            } else {
+                fs::create_dir_all(full.parent().unwrap()).unwrap();
+                fs::write(&full, "x").unwrap();
+            }
+        }
+        root
+    }
+
+    #[test]
+    fn search_ordering_matches_the_shared_conformance_fixture() {
+        let cases = load_search_cases();
+        assert!(
+            !cases.searches.is_empty(),
+            "fixture declares no searches[] entries"
+        );
+        assert!(
+            cases.searches.iter().any(|c| {
+                let declared: Vec<&str> = c.entries.iter().map(|e| e.path.as_str()).collect();
+                let expected: Vec<&str> =
+                    c.expected_ranked_paths.iter().map(String::as_str).collect();
+                declared != expected
+            }),
+            "every fixture case is already pre-sorted; the assertion cannot detect an echo"
+        );
+        for (i, case) in cases.searches.iter().enumerate() {
+            let root = materialize_fixture_entries(&format!("search-fixture-{i}"), &case.entries);
+            let result = search(&root, None, &case.query).unwrap();
+            assert_eq!(
+                paths(&result),
+                case.expected_ranked_paths,
+                "query={:?}",
+                case.query
+            );
+            assert_eq!(
+                result.total,
+                Some(case.expected_total),
+                "query={:?}",
+                case.query
+            );
+            fs::remove_dir_all(&root).ok();
+        }
     }
 }

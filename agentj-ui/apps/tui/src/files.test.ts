@@ -1,11 +1,12 @@
 // agentj-ui/apps/tui/src/files.test.ts
 import { describe, expect, test } from "bun:test";
 import {
-  buildFileNode, buildSearchIndex, clampSelection, filterEntries, flattenVisible,
+  buildFileNode, buildSearchIndex, clampSelection, flattenVisible,
   formatFileRowParts, formatSearchRowParts, isEmptyExpandedDir, moveSelection, parentPath,
   statusLetterColor, toGitLetter, updateNode,
 } from "./files.ts";
 import type { FileNode, RawFileEntry } from "./files.ts";
+import * as files from "./files.ts";
 
 function node(
   partial: Partial<FileNode> & { name: string; path: string; kind: "file" | "dir" },
@@ -131,51 +132,6 @@ describe("file search helpers", () => {
     expect(index[3].gitStatus).toBe("D");
   });
 
-  test("filters case-insensitively with name matches ranked first", () => {
-    const index = buildSearchIndex([
-      raw("main.md", "docs/main.md"),
-      raw("main.rs", "src/main.rs"),
-      raw("lib.rs", "src/lib.rs"),
-    ]);
-    const out = filterEntries(index, "MAIN", 10);
-    expect(out.rows.map((r) => r.path)).toEqual(["docs/main.md", "src/main.rs"]);
-    expect(out.total).toBe(2);
-    expect(filterEntries(index, "", 10)).toEqual({ rows: [], total: 0 });
-  });
-
-  test("ranks name prefix > name substring > path substring, ties broken by path asc", () => {
-    const index = buildSearchIndex([
-      raw("index.ts", "src/auth/index.ts"),
-      raw("my-auth-helper.ts", "src/helpers/my-auth-helper.ts"),
-      raw("auth.ts", "src/auth.ts"),
-      raw("auth.test.ts", "tests/auth.test.ts"),
-      raw("other.ts", "src/other.ts"),
-    ]);
-    const out = filterEntries(index, "AUTH", 10);
-    expect(out.rows.map((r) => r.path)).toEqual([
-      "src/auth.ts",
-      "tests/auth.test.ts",
-      "src/helpers/my-auth-helper.ts",
-      "src/auth/index.ts",
-    ]);
-    expect(out.total).toBe(4);
-  });
-
-  test("caps rows at the limit while total keeps the full match count", () => {
-    const index = buildSearchIndex([
-      raw("file-1.ts", "src/file-1.ts"),
-      raw("file-2.ts", "src/file-2.ts"),
-      raw("file-3.ts", "src/file-3.ts"),
-      raw("file-4.ts", "src/file-4.ts"),
-      raw("file-5.ts", "src/file-5.ts"),
-    ]);
-    const out = filterEntries(index, "file", 2);
-    expect(out.rows.map((r) => r.path)).toEqual(["src/file-1.ts", "src/file-2.ts"]);
-    expect(out.total).toBe(5);
-    expect(filterEntries(index, "file", 0).rows).toEqual([]);
-    expect(filterEntries(index, "file", 0).total).toBe(5);
-  });
-
   test("formatSearchRowParts fits the budget, truncates the name and keeps the letter", () => {
     const [long] = buildSearchIndex([
       { name: "averyveryverylongfilename.ts", path: "src/deep/averyveryverylongfilename.ts",
@@ -202,4 +158,12 @@ describe("file search helpers", () => {
     expect(plain.body).toBe("● main.md docs/".padEnd(28));
     expect(plain.body.length).toBeLessThanOrEqual(28);
   });
+});
+
+test("the TUI ships no local ranking implementation", () => {
+  const exported = Object.keys(files);
+  expect(exported).toContain("buildSearchIndex");
+  expect(exported).not.toContain("filterEntries");
+  expect(exported).not.toContain("searchRank");
+  expect(exported).not.toContain("comparePaths");
 });
