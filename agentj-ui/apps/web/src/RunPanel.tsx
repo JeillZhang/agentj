@@ -179,6 +179,33 @@ export function toolGlyph(entry: Extract<RunEntry, { kind: "tool" }>, pending: b
   return pending ? <Clock size={16} aria-hidden="true" /> : <Minus size={16} aria-hidden="true" />;
 }
 
+/** One-line summary of what a tool call targets: the bash command, the read/written
+ *  file, the glob/grep pattern. Unknown or malformed args yield "" (no chip shown). */
+export function toolSummary(entry: Extract<RunEntry, { kind: "tool" }>): string {
+  const args = entry.args;
+  if (typeof args !== "object" || args === null) return "";
+  const a = args as Record<string, unknown>;
+  const str = (key: string) => (typeof a[key] === "string" ? (a[key] as string) : "");
+  switch (entry.name) {
+    case "bash":
+      return str("command");
+    case "read":
+    case "write":
+      return str("path");
+    case "glob":
+      return str("pattern");
+    case "grep": {
+      const pattern = str("pattern");
+      const include = str("include");
+      return pattern && include && include !== "*" ? `${pattern} · ${include}` : pattern;
+    }
+    case "todo":
+      return Array.isArray(a.items) ? `${a.items.length} 项` : "";
+    default:
+      return "";
+  }
+}
+
 export function ToolCard({
   entry,
   pending,
@@ -191,11 +218,17 @@ export function ToolCard({
   const folded = !open && lines.length > 3;
   const shown = folded ? lines.slice(0, 3).join("\n") : entry.output ?? "";
   const state = pending ? "pending" : entry.state;
+  const summary = toolSummary(entry);
   return (
     <section className="aj-tool-card" aria-label={entry.name}>
       <span className="aj-tool-dot" data-state={state} aria-hidden="true" />
       <span className="aj-tool-status" data-state={state}>{toolGlyph(entry, pending)}</span>
       <span className="aj-tool-name">{entry.name}</span>
+      {summary !== "" && (
+        <span className="aj-tool-summary" title={summary}>
+          {summary}
+        </span>
+      )}
       {entry.output !== undefined && (
         <button type="button" aria-label={open ? "collapse" : "expand"} onClick={() => setOpen(!open)}>
           {open ? "collapse" : "expand"}
