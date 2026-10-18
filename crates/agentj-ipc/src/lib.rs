@@ -6,6 +6,10 @@
 pub(crate) mod client_ip;
 pub mod file_list;
 pub(crate) mod login_limiter;
+// Consumed by the limiter snapshot wiring landed in the following tasks of this
+// feature branch (T4/T5); until then the module is exercised only by its tests.
+#[allow(dead_code)]
+pub(crate) mod metrics_state;
 pub mod tcp;
 pub mod trajectory;
 pub mod web;
