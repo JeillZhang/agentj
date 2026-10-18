@@ -143,6 +143,17 @@
   顺序回归（把 `?` 前移即 RED）；但它**不**驱动 `serve_tcp`，故若回归重新在调用点写回
   `tcp.run().await?`（`main.rs:447` 一类），该测试仍会通过。要覆盖这一层需让 `serve_tcp` 以
   可失败的 `run()` 端到端跑通（当前无该夹具），故仅记录、不再加测。
+- **`[web] state_dir = ""` 未做配置校验**（验收实测）：`metrics_state_dir_from`
+  （`crates/agentj-cli/src/main.rs:146`）对空 `$XDG_DATA_HOME` / `$HOME` 有过滤，但**显式空**
+  `state_dir` 会返回 `Some(PathBuf::from(""))`；后果为每次 debounce flush 均失败（
+  `warning: cannot persist login metrics state to metrics-state-<port>.json (io error: No such
+  file or directory)` + `agentj_web_metrics_state_write_failures_total` 增长），不写文件、
+  不改 cwd 权限、不崩溃。字面满足验收 AC（`<dir>` 即 `state_dir`），故未计 Bug；跟进项：
+  加载配置时把空串归为 `None` 并复用「无状态目录」启动警告。
+- **flush 与变更之间存在理论竞态（未复现）**：`flush_metrics_state`
+  （`crates/agentj-ipc/src/web.rs:412-424`）先快照、后**无条件** `mark_clean()`；若某次限流变更
+  恰好落在两者之间，该变更会被当作「已持久化」。可由下一次变更或关机时的无条件 flush 补回，
+  仅「在该窗口内 SIGKILL」才真正丢一次增量；因无法确定性复现，故仅记录。
 - **预算为近似估算**：`estimate_tokens` 用「ASCII / 4 + 非 ASCII × 1」的字符启发式，非真实
   tokenizer；目录里**没有 per-model 上下文窗口元数据**（`schemas/ModelEntry.json` 仅
   format/id/verified），因此默认 128k 是保守假设，真窗口更小的模型仍可能被上游拒绝一次
