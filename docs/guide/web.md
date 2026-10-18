@@ -52,6 +52,9 @@ WebSocket 地址按以下优先级解析（前者生效则不再看后者）：
 ## 中栏（对话）
 
 - 流式渲染 `$/progress`；工具调用卡片、Markdown、审批行。
+- **工具调用卡片**：铺满中栏宽度；顶部工具名旁显示本次调用的目标——`bash` 的命令、
+  `read` / `write` 的文件路径、`glob` / `grep` 的匹配模式（`grep` 附带 `include`）；
+  超长值以省略号截断，悬停 `title` 可看全文。输出仍可按需展开/折叠。
 - **代码块卡片**：语法高亮（`rehype-highlight`）；左上折叠/展开、右上复制
   （clipboard → `execCommand` 降级）。
 - 顶部模型 chip 右侧显示会话 token 总量 `Σ`，并拆分「输入 / 输出」明细。

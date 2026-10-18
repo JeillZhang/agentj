@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import "@testing-library/jest-dom/vitest";
 import { describe, expect, it } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
-import { Trajectory, type RawEvent } from "./Trajectory.tsx";
+import { Trajectory, historyToConversation, historyToEntries, type RawEvent } from "./Trajectory.tsx";
 
 const CORPUS: RawEvent[] = [
   { session_id: "s1", seq: 1, ts: 100, value: { kind: "user", content: "hi" } },
@@ -51,5 +51,35 @@ describe("Trajectory timeline polish (T7)", () => {
       "utf8",
     );
     expect(src).toContain("aj-traj");
+  });
+});
+
+// BUG-017: a lone ZWSP (U+200B) keep-alive delta was recorded as a `thinking`
+// event, which replayed as an empty assistant bubble.
+describe("visually blank thinking is dropped (BUG-017)", () => {
+  const BLANK: RawEvent[] = [
+    { session_id: "s1", seq: 1, ts: 1, value: { kind: "user", content: "hi" } },
+    { session_id: "s1", seq: 2, ts: 2, value: { kind: "thinking", content: "\u200b" } },
+    { session_id: "s1", seq: 3, ts: 3, value: { kind: "thinking", content: "\u200b\u200b" } },
+    { session_id: "s1", seq: 4, ts: 4, value: { kind: "thinking", content: "  \n" } },
+    { session_id: "s1", seq: 5, ts: 5, value: { kind: "thinking", content: "real" } },
+  ];
+
+  it("historyToConversation skips blank thinking and keeps the visible ones", () => {
+    expect(historyToConversation(BLANK)).toEqual([
+      { kind: "user", text: "hi" },
+      { kind: "ai", text: "real" },
+    ]);
+  });
+
+  it("historyToEntries skips blank thinking nodes", () => {
+    expect(historyToEntries(BLANK).map((n) => n.kind)).toEqual(["user", "thinking"]);
+  });
+
+  it("keeps thinking whose text has visible glyphs", () => {
+    const events: RawEvent[] = [
+      { session_id: "s1", seq: 1, ts: 1, value: { kind: "thinking", content: "\u200b分析" } },
+    ];
+    expect(historyToConversation(events)).toEqual([{ kind: "ai", text: "\u200b分析" }]);
   });
 });

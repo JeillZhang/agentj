@@ -1,7 +1,7 @@
 import "@testing-library/jest-dom/vitest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, fireEvent, within, act, waitFor } from "@testing-library/react";
-import RunPanel, { ConversationFeed, failRun, fmtDuration, reduceRunFeed, type RunEntry } from "./RunPanel.tsx";
+import RunPanel, { ConversationFeed, failRun, fmtDuration, reduceRunFeed, toolSummary, type RunEntry } from "./RunPanel.tsx";
 import { createProject, setCurrentProject } from "./projectStore";
 import { setDemoEnabled } from "./demoData";
 import { formatUsageTitle } from "./tokenUsage";
@@ -234,6 +234,62 @@ describe("ConversationFeed rendering", () => {
     fireEvent.click(screen.getByRole("button", { name: /expand/i }));
     expect(card.textContent).toContain("line 7");
   });
+  it("shows the bash command beside the tool name", () => {
+    const entries = [
+      user("go"),
+      { kind: "tool", id: "c1", name: "bash", args: { command: "git status --short" }, state: "ok", output: "" },
+    ] as RunEntry[];
+    const { container } = render(<ConversationFeed entries={entries} />);
+    const summary = container.querySelector<HTMLElement>(".aj-tool-summary")!;
+    expect(summary.textContent).toBe("git status --short");
+    expect(summary.getAttribute("title")).toBe("git status --short");
+  });
+  it("shows the target path for read and write tools", () => {
+    const entries = [
+      user("go"),
+      { kind: "tool", id: "c1", name: "read", args: { path: "src/App.tsx" }, state: "ok", output: "" },
+      { kind: "tool", id: "c2", name: "write", args: { path: "src/RunPanel.tsx" }, state: "ok", output: "" },
+    ] as RunEntry[];
+    const { container } = render(<ConversationFeed entries={entries} />);
+    const summaries = [...container.querySelectorAll<HTMLElement>(".aj-tool-summary")];
+    expect(summaries.map((s) => s.textContent)).toEqual(["src/App.tsx", "src/RunPanel.tsx"]);
+  });
+  it("summarizes grep as pattern + include and glob as pattern", () => {
+    expect(toolSummary({ kind: "tool", id: "c", name: "grep", args: { pattern: "TODO", include: "*.ts" }, state: "running" })).toBe("TODO · *.ts");
+    expect(toolSummary({ kind: "tool", id: "c", name: "grep", args: { pattern: "TODO" }, state: "running" })).toBe("TODO");
+    expect(toolSummary({ kind: "tool", id: "c", name: "grep", args: { pattern: "TODO", include: "*" }, state: "running" })).toBe("TODO");
+    expect(toolSummary({ kind: "tool", id: "c", name: "glob", args: { pattern: "src/**/*.tsx" }, state: "running" })).toBe("src/**/*.tsx");
+    expect(toolSummary({ kind: "tool", id: "c", name: "todo", args: { items: [{}, {}] }, state: "running" })).toBe("2 项");
+  });
+  it("omits the summary when args are absent or the tool is unknown", () => {
+    expect(toolSummary({ kind: "tool", id: "c", name: "bash", args: null, state: "running" })).toBe("");
+    expect(toolSummary({ kind: "tool", id: "c", name: "bash", args: [1, 2], state: "running" })).toBe("");
+    expect(toolSummary({ kind: "tool", id: "c", name: "bash", args: 42, state: "running" })).toBe("");
+    expect(toolSummary({ kind: "tool", id: "c", name: "mystery", args: { x: 1 }, state: "running" })).toBe("");
+    const { container } = render(<ConversationFeed entries={[user("go"), tool("c1", "bash")] as RunEntry[]} />);
+    expect(container.querySelector(".aj-tool-summary")).toBeNull();
+  });
+
+  // BUG-017: gateways stream a lone ZWSP (U+200B) between tool calls; each one
+  // used to render an empty `.aj-ai` bubble (blue rule, no text).
+  it("renders no assistant bubble for zero-width-only text", () => {
+    const entries = [
+      user("go"),
+      ai("\u200b"),
+      ai("\u200b\u200b\u200b"),
+      ai(" \n\t"),
+      tool("c1", "bash"),
+    ] as RunEntry[];
+    const { container } = render(<ConversationFeed entries={entries} />);
+    expect(container.querySelectorAll(".aj-ai")).toHaveLength(0);
+  });
+
+  it("still renders an assistant bubble for zero-width-prefixed real text", () => {
+    const { container } = render(<ConversationFeed entries={[ai("\u200b分析结果")] as RunEntry[]} />);
+    const bubbles = container.querySelectorAll(".aj-ai");
+    expect(bubbles).toHaveLength(1);
+    expect(bubbles[0].textContent).toContain("分析结果");
+  });
 });
 
 describe("RunPanel composer toolbar", () => {
@@ -313,6 +369,45 @@ describe("RunPanel run overrides", () => {
       <RunPanel client={noopClient} activeSessionId="s1" model="DeepSeek-Flash-V4.1" />,
     );
     expect(container.querySelector(".aj-chip--model")).toHaveTextContent("DeepSeek-Flash-V4.1");
+  });
+});
+
+// BUG-018: the sidebar keeps its own session list, so it has to be told when a
+// turn settles (preview text / updated_at changed server-side).
+describe("RunPanel run completion announcement", () => {
+  it("dispatches agentj:sessions-updated after a turn settles", async () => {
+    const seen = vi.fn();
+    window.addEventListener("agentj:sessions-updated", seen);
+    const rpc = {
+      setNotificationHandler: () => {},
+      removeNotificationHandler: () => {},
+      request: async (method: string) =>
+        method === METHODS.sessionRun
+          ? { usage: { prompt_tokens: 1, completion_tokens: 2 } }
+          : null,
+    } as unknown as Parameters<typeof RunPanel>[0]["client"];
+    render(<RunPanel client={rpc} activeSessionId="s1" />);
+    fireEvent.change(screen.getByLabelText(/prompt/i), { target: { value: "hi" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+    await waitFor(() => expect(seen).toHaveBeenCalled());
+    window.removeEventListener("agentj:sessions-updated", seen);
+  });
+
+  it("announces even when the turn fails", async () => {
+    const seen = vi.fn();
+    window.addEventListener("agentj:sessions-updated", seen);
+    const rpc = {
+      setNotificationHandler: () => {},
+      removeNotificationHandler: () => {},
+      request: async () => {
+        throw new Error("run:boom");
+      },
+    } as unknown as Parameters<typeof RunPanel>[0]["client"];
+    render(<RunPanel client={rpc} activeSessionId="s1" />);
+    fireEvent.change(screen.getByLabelText(/prompt/i), { target: { value: "hi" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+    await waitFor(() => expect(seen).toHaveBeenCalled());
+    window.removeEventListener("agentj:sessions-updated", seen);
   });
 });
 

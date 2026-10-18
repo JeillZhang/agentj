@@ -7,18 +7,49 @@
 > 待实施），不得随内容替换而删除；仅当该特性实际实施完成后才能移除（移入功能记录）。
 > 前端总结独立存放于 `summary_and_next_fe.md`；两文件内容隔离，互不写入对方文件。
 
-> 当前功能：**v0.29.12 审批不再「查无此单」+ grep 不再依赖 ripgrep（修复）** —— 同一分支
-> 叠加 0.29.8–0.29.11 的修复（工具往返落库 / 轮次用尽仍收尾 / 文本形式工具调用还原 /
-> 选择器不虚构模型名，前端部分见 `summary_and_next_fe.md`）。
-> 来源：用户报告六条缺陷，最近一条（2026-10-17）：大量 `bash` 命令时
-> `Error: tool 'bash' permission denied: request not found`，同时
-> `Error: tool 'grep' execution failed: No such file or directory (os error 2)`。
-> 后端范围：`crates/agentj-permission/src/module.rs`、`crates/agentj-ipc/src/lib.rs`
-> （`session/subscribe` 认领归属）、`crates/agentj-tools/src/builtins.rs`（+ 依赖）。
-> 协议 wire 面**不变**（`PROTOCOL_VERSION` 仍 **0.18.0** / 28 方法 / 78 schemas）；
-> 工作区 0.29.7 → **0.29.12**（纯修复，无新增方法 / schema）。
+> 当前功能：**BUG-017 空 thinking 落盘守卫（验收修复）** —— 与前端同分支
+> `feature/tool-card-command-summary`（PR #84）交付；前端侧见 `summary_and_next_fe.md`。
+> 仅改 `crates/agentj-ipc/src/lib.rs`，协议 wire 面**不变**（`PROTOCOL_VERSION` 仍 0.18.0 /
+> 28 方法 / 78 schemas；工作区仍 **0.1.0**）。下方 v0.29.12 及前序章节为**上一阶段记录**（保留备查）。
 
-## v0.29.12（审批决定不再被抢跑吞掉 + grep 无需 ripgrep）✅
+## BUG-017 空 thinking 落盘守卫（验收修复）✅
+
+### 现象与根因
+
+- 现象（用户 m00229）：对话中栏在 bash 工具卡片之间出现「只有左侧强调线、无任何文字」的空助手气泡。
+- 根因：网关在工具调用之间把**孤立的零宽空格（U+200B）**当保活增量下发；U+200B **无 Unicode
+  `White_Space` 属性**，`char::is_whitespace()` 不判空 → `flush_thinking` 只守卫
+  `!pending.is_empty()`，白空格 / 零宽一律落盘为 `TrajectoryValue::Thinking`（既污染轨迹，
+  也让前端每帧渲染一个空气泡）。
+
+### 修复
+
+- `crates/agentj-ipc/src/lib.rs`（`impl IpcServer`）：`flush_thinking` 改为**总是**
+  `let text = std::mem::take(pending);`，再由新关联函数
+  `fn is_visually_blank(s: &str) -> bool { !s.chars().any(|c| !c.is_whitespace() && !matches!(c, '\u{200b}'..='\u{200f}' | '\u{2060}' | '\u{feff}')) }`
+  判定「仅空白 / 零宽 / BOM」即 `return`（不落盘）；始终 take 可避免零宽残留污染下一段 thinking。
+- **未改** `AgentEvent::Delta` 的 `$/progress` 广播与任何 wire 字段（前端已有
+  `agentj-ui/apps/web/src/blankText.ts` 过滤，保持 live 与落盘一致）。
+
+### 测试（RED → GREEN）
+
+新增 3 条（插在 `run_records_one_merged_thinking_node_for_two_deltas` 之后）：
+`run_drops_zero_width_only_deltas_instead_of_recording_blank_thinking`（`"\u{200b}"` /
+`" \n"` / `"\u{feff}"` + `Done` → `traj_kinds == ["user"]`）、
+`run_keeps_thinking_that_contains_visible_glyphs`（`"\u{200b}"` + `"ok"` →
+`["user","thinking"]`，content `"\u{200b}ok"`）、
+`is_visually_blank_covers_zero_width_and_whitespace_only_text`（同步 test）。
+
+### 验证结果
+
+| 门禁 | 结果 |
+|------|------|
+| `cargo test -p agentj-ipc --lib` | **197 passed** |
+| `cargo test --workspace` | **911 passed / 0 failed** |
+| `cargo fmt --all --check` / `cargo clippy --workspace --all-targets -- -D warnings` | FMT-OK / 0 warning |
+| `./scripts/check-version.sh` | `version-ok`（0.1.0 / 0.18.0） |
+
+## v0.29.12（审批不再「查无此单」+ grep 不再依赖 ripgrep）✅
 
 ### 缺陷与根因
 

@@ -21,6 +21,10 @@
   font-size: var(--aj-font-code, 12px);
 }
 
+.aj-tool-summary {
+  font-size: var(--aj-font-code, 12px);
+}
+
 .aj-composer-card .aj-input {
   font-size: var(--aj-font-conv, 15px);
 }
