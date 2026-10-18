@@ -7,113 +7,87 @@
 > 待实施），不得随内容替换而删除；仅当该特性实际实施完成后才能移除（移入功能记录）。
 > 前端总结独立存放于 `summary_and_next_fe.md`；两文件内容隔离，互不写入对方文件。
 
-> 当前功能：**工具执行生命周期统一（bash / grep / glob 经 `ToolExecutor`）** —— 分支
-> `feature/tool-execution-lifecycle`。仅改 `crates/agentj-tools`（executor / builtins / lib /
-> Cargo.toml）与文档；协议 wire 面**不变**（`PROTOCOL_VERSION` 仍 0.18.0 / 28 方法 /
-> 78 schemas；工作区仍 **0.1.0**）。下方 BUG-017 / 0.29.12 等前序章节为**上一阶段记录**（归档）。
+> 当前功能：**指标导出扩展（代理头解析 + 计数持久化）** —— 分支 `feature/metrics-export-extension`。
+> 改 `crates/agentj-ipc`（新增 `client_ip.rs` / `metrics_state.rs`，扩展 `login_limiter.rs` /
+> `web.rs` / `tcp.rs`）+ `crates/agentj-config`（新增 `[web]`）+ `crates/agentj-cli`（serve 装配与
+> 优雅落盘）；协议 wire 面**不变**（`PROTOCOL_VERSION` 仍 0.18.0 / 28 方法 / 78 schemas；工作区仍
+> **0.1.0**）。下方 0.29.x / BUG-017 等前序章节为**上一阶段记录**（归档）。
 
-## 工具执行生命周期统一：bash / grep / glob 统一经 ToolExecutor ✅
+## 指标导出扩展：代理头解析 + 计数持久化 ✅
 
-分支 `feature/tool-execution-lifecycle`。仅改 `crates/agentj-tools`（`executor.rs` /
-`builtins.rs` / `lib.rs` / `Cargo.toml`）；协议 wire 面**不变**（`PROTOCOL_VERSION` 仍
-0.18.0 / 28 方法 / 78 schemas；工作区仍 **0.1.0**）。
+分支 `feature/metrics-export-extension`。无 wire 变更（无新方法 / 无 schema / 无 `PROTOCOL_VERSION` 变更）。
 
 ### 交付
 
-- **executor**（`crates/agentj-tools/src/executor.rs`）：`CommandSpec` 增 `cwd: Option<PathBuf>`；
-  新增 `pub enum RunFailure { ProgramMissing { program, reason }, Timeout(Duration), Failed(ToolError) }`
-  + `impl From<RunFailure> for ToolError`；新增 `ToolExecutor::run_blocking(&self, spec)` —— 自建
-  current-thread runtime（`enable_all()`）`block_on` 驱动既有的「独立进程组 + 超时杀整组 + drop
-  回收」守卫（`spawn_blocking` 线程未设 `EnterRuntime::Entered`，故 `Runtime::block_on` 安全）。
-  `Cargo.toml` 补 tokio `rt` feature。
-- **builtins**（`crates/agentj-tools/src/builtins.rs`）：`bash` / `grep` / `glob` 三个进程型工具
-  全部改经 `ToolExecutor`（不再裸 `std::process::Command`）；`Tool::execute` 与
-  `execute_with_context` **两条路径**都接入。新增 `clamp_timeout_ms(raw, default)`（钳制
-  `1_000..=600_000`，缺失 / 非整数取默认）+ `BASH_DEFAULT_TIMEOUT_MS=120_000` /
-  `SEARCH_DEFAULT_TIMEOUT_MS=60_000`；三个工具的 `input_schema` 增可选整数 `timeout_ms`。
-- **grep 回退语义**：`run_rg` 返回 `Result<String, RunFailure>`，`run_with_rg` 对
-  `RunFailure::ProgramMissing` 回退进程内检索（不再匹配错误文案）；超时**不再**退化为
-  `Ok("")`（空结果会被模型读成「无匹配」）。
-- **删除** `builtins.rs` 的 `pub fn execute_with_timeout` 与 `lib.rs` 的再导出（「超时返回但
-  子进程继续跑」的旧语义退役）。
-
-### 测试（RED → GREEN）
-
-新增 12 条：`executor` 4 条（`run_blocking_returns_output_on_success` /
-`run_blocking_times_out_and_reclaims_the_group` / `run_blocking_reports_a_missing_program` /
-`run_failure_converts_back_to_tool_error`）；`builtins` 8 条（clamp 钳制与回退、bash 超时回收
-进程组、杀孙进程、超时文案、运行时内 `spawn_blocking` 路径、1MiB stdout 不死锁、schema）。
-删除 `bash_tool_timeout_detected`（旧 `execute_with_timeout` 测试）。
+- **客户端 IP 派生**（`crates/agentj-ipc/src/client_ip.rs`，新增，纯函数、无 IO）：
+  `resolve_client_ip(peer, headers, trust) -> ClientIp { ip, source: IpSource }`——仅在**信任生效**
+  时读 `X-Forwarded-For` / `X-Real-IP`，而信任生效的唯一前提是**直接 TCP peer 为回环**；
+  `X-Forwarded-For` 从右向左扫描、跳过回环跳，取第一个合法非回环项（最右 = 代理实际观测值，
+  客户端伪造的左前缀无效）；`X-Real-IP` 为回退；否则回退原始 peer。
+  `IpSource::{Peer, XForwardedFor, XRealIp}::label()` → `peer` / `forwarded` / `real_ip`。
+- **计数持久化**（`crates/agentj-ipc/src/metrics_state.rs`，新增）：`version: 1` 的 JSON 快照 +
+  `state_path_in(dir, port)` = `metrics-state-<port>.json`；原子写（目录 `0700` / 文件 `0600` /
+  同目录 tmp + `rename`，**每条失败路径都清理 tmp**）；`read` 缺文件 → `Ok(None)`，损坏 / 超
+  1 MiB / `version` 不符 → `Err`；`restore_seeds()` 做钳制换算（锁 ≤ 900 s、idle 年龄 ≤ 1800 s、
+  超 TTL 丢弃、按 `max_tracked` 截断；锁过期仍保留失败数）。
+- **限流器**（`crates/agentj-ipc/src/login_limiter.rs`）：新增 `to_state` / `restore_from` /
+  `dirty` / `mark_clean`；**既有公开签名一律未动**。
+- **Web 面**（`crates/agentj-ipc/src/web.rs`）：`WebConfig` 增信任开关 / 状态路径 / 5 s debounce
+  flush 任务（**仅 dirty 才写**）+ `restore_metrics_state()` + `flush_metrics_state()` /
+  `stop_metrics_flush()`（供优雅关闭）；`prometheus_text` 增 6 个**加性**指标——
+  `agentj_web_client_ip_source_total{source=peer|forwarded|real_ip}` /
+  `agentj_web_proxy_header_invalid_total` / `agentj_web_metrics_state_restored` /
+  `agentj_web_metrics_state_entries_restored` / `agentj_web_metrics_state_write_failures_total` /
+  `agentj_web_metrics_state_last_flush_unix`；既有指标名与 `PER_IP_SERIES_LIMIT = 50` 不变。
+- **TCP 绑定**（`crates/agentj-ipc/src/tcp.rs`）：`TcpBindOptions` 增 `trust_proxy_headers` +
+  `metrics_state_dir`；状态路径按**实际绑定端口**（`local_addr()`）拼出，故 `--port 0` 亦正确。
+- **配置 / CLI**：`crates/agentj-config` 新增 `[web]`（`trust_proxy_headers` 默认 `false` /
+  `state_dir`）→ `AgentJConfig.web`；`crates/agentj-cli/src/main.rs` 装配进 `serve`——状态目录
+  依次取 `[web] state_dir` → `$XDG_DATA_HOME/agentj` → `$HOME/.local/share/agentj`，全空则仅内存
+  并启动警告；非回环绑定 + 信任开启另发启动警告；**优雅关闭先落盘再停 flush 任务，且 serve 循环
+  返回错误时也不跳过**。
+- **安全红线（永久不变量）**：派生 IP **只**用于登录限流键、per-IP 指标序列与日志/指标字段；
+  `auth_required` 始终按**原始 TCP peer** 判定，故转发头**永远不能**换取 `/metrics` 的回环豁免
+  （回归测试 `forwarded_headers_cannot_buy_loopback_exemption` 钉住）。
+- **口径**：持久化为**每进程、每端口一个文件**；同机多实例共享聚合为**非目标**（Prometheus 侧
+  `sum by`）。
 
 ### 验证
 
 | 门禁 | 结果 |
 |------|------|
-| `cargo test -p agentj-tools --lib` | **33 passed** |
-| `cargo test --workspace` | 全绿（0 failed） |
+| `cargo test --workspace` | **980 passed** / 0 failed |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 0 warning |
+| `cargo clippy -p agentj-ipc -- -D warnings` | 0 warning |
 | `cargo fmt --all --check` | FMT-OK |
-| `./scripts/check-version.sh` | `version-ok`（0.1.0 / 0.18.0） |
+| `cargo test -p agentj-protocol -- drift` | 2 passed |
+| `./scripts/check-version.sh` | `version-ok`（0.1.0 / 0.18.0，本阶段不 bump） |
+| `cargo test -p agentj-ipc --lib` | 239 passed |
+| `cargo test -p agentj-cli --bin agentj` | 110 passed |
+| `cargo test -p agentj-cli --test e2e_serve` | 9 passed |
 
-### 验收（test 轮 1，零 Bug）
+### 真实提交（`9f2bc15..HEAD`，最旧 → 最新）
 
-`ajteam-tester` 跑门禁 + 探索式 QA（探针置于 `/tmp`，未改仓库）：fmt OK / workspace 全绿 /
-clippy 0 warning / `agentj-tools` lib 33 passed / version-ok；8 MiB stdout 不死锁；超时后孙进程
-`ps` 确认 GONE 且无 `defunct`；`timeout_ms` 为 0 / -1 → 钳到 1s，`1000.5` / `"1000"` / `null`
-→ 回退默认；相对路径 cwd 正确。清单 `.superpowers/acceptance/bugs.md` 无新增行（BUG-019 未使用）。
-
-### 验收（test 轮 2 → BUG-019，PR CI 回归）✅
-
-PR #86 的 `ci.yml`（`cargo llvm-cov --workspace`）在 `e2e_serve_exits_gracefully_on_sigterm` 上失败：
-`crates/agentj-cli/tests/e2e_cli.rs:123 expected graceful exit 0, got: ExitStatus(unix_wait_status(15))`
-（8 passed / 1 failed；本地连跑 25/25 通过 → 窄窗竞态）。与本次 `agentj-tools` 改动无关
-（`git diff --stat main..HEAD` 未触及 `agentj-cli` / `agentj-ipc`），但阻塞门禁，故在本轮验收内修复。
-
-- **根因**（BUG-019）：`crates/agentj-cli/src/main.rs:186 fn spawn_signal_task` /
-  `:206 fn spawn_tcp_signal_task` 把 `tokio::signal::unix::signal(SignalKind::terminate())` 写在
-  `tokio::spawn` 的 async 块**内**——tokio 在 `signal()` 首次被调用时才安装进程级 OS 处理器，
-  而 `tokio::spawn` 是惰性的，故任务首次被 poll 之前到达的 SIGTERM 仍是默认处置（进程被信号杀死，
-  `exit 15`），不走 `KernelMessage::Shutdown`（stdio 调用点 `main.rs:772`）/ `shared.signal_shutdown()`
-  （TCP 调用点 `main.rs:370`）的优雅关闭链；测试 `e2e_cli.rs:92-100` 注释里的「收到 `session/new`
-  回包即处理器已装」假设不成立。llvm-cov 插桩使窗口变大，故 CI 偶发、本地难复现。
-- **修复**（commit `737844a`，仅 `crates/agentj-cli/src/main.rs`）：首等待的 `SIGINT`/`SIGTERM` 流
-  （`SignalKind::interrupt()` 替代 `ctrl_c()`）上移到函数体**同步创建**，确定早于 `serve_stdio()` /
-  `tcp.run()`；TCP 第二次信号（强制退出 `exit 130`）仍惰性创建——若两对都提前创建，单次 SIGTERM 会
-  同时通知第二对而立即强制退出（实测 `exit 130` vs 期望 `0`），属语义回归，故只上移首等待。
-- **证据**：修复者以「首等待前插入 800ms 延迟」的临时插桩在新旧代码上跑出 RED（exit 15）→ GREEN（exit 0）；
-  本地 `e2e_cli` 9 passed、`--exact e2e_serve_exits_gracefully_on_sigterm` 连跑 **30/30 通过**、
-  `cargo test --workspace` 0 failed、clippy 0 warning、`cargo fmt --all --check` OK、`version-ok`。
-
-### 验收（test 轮 3 → BUG-019 reopen → 二次修复）✅
-
-回归验证发现首修只保证「首请求之前」装上处理器，未保证「**就绪宣告之前**」装上：
-`crates/agentj-cli/src/main.rs` 的 `serve_tcp()` 中，`println!("listening on {local}")` 等就绪输出与
-`tcp.web_config().startup_warnings()` 循环（旧 373–388 行）早于
-`let signal_task = spawn_tcp_signal_task(tcp.shared_server());`（旧 389 行）——行监督者语义（读到
-`listening on` 即刻 SIGTERM）下仍有竞态窗口。
-
-- **二次修复**（commit `b51110c`，仅 `crates/agentj-cli/src/main.rs`，+5/-1）：把信号任务创建上移到
-  `TcpIpcServer::bind(...)` 成功之后、**第一个就绪输出之前**；`signal_task.abort()` 与
-  `tcp.run().await?` 后的清理顺序不变，TCP 第二对信号仍惰性创建。
-- **RED → GREEN（harness `/tmp/harness.py`，每次改源码均 `cargo build --bin agentj` 刷新二进制）**：
-  旧码（`224a1f1` 的 `main.rs`）`tcp-term`（读回 `listening on` 立刻发 SIGTERM）
-  两批 `{0: 17, -15: 3}` + `{0: 15, -15: 5}` = **40 次中 8 次以信号 15 退出（20%）**；修复后
-  `{0: 20}` × 2 = **40/40 exit 0**，`stdio-term 20` = 20/20、`tcp-int 10` = 10/10、
-  `tcp-double 20` = 20/20（首信号后 0.15s 内已优雅退出，未观察到 `exit 130`，已如实记录）。
-- **未新增回归测试**（有意为之）：旧码单次 `-15` 概率 ≈20%，「同一 e2e 用例重复 5 次」的批次失败率仅
-  ≈67%，达不到「连续 5 批 ≥4 批失败」的稳定 RED 门槛；要达标需同用例重复 ≥20 次进程 spawn（热点 e2e 变慢
-  且易 flaky），故保留既有 stdio e2e 用例作为门禁，未用同义反复断言充数。
-- **终态门禁（HEAD `b51110c`）**：`cargo fmt --all --check` OK；`e2e_cli` 9 passed；exact 用例 **20/20**；
-  `cargo test --workspace` 0 failed；clippy 0 warning；`version-ok`。
-
-故本阶段**不 bump 版本**（计划把工作区固定在 0.1.0 / PROTOCOL 0.18.0；BUG-019 作为 0.1.x 的 Fixed
-条目记入 `docs/changelog/v0.1.md`）。
-
-### 前序阶段（归档，详见 `docs/changelog/v0.1.md`）
-
-- BUG-017/018（PR #84）：空 thinking（零宽 / 空白 / BOM）不再落盘，前端同步丢弃空气泡。
-- 0.29.12：审批不再「查无此单」（`respond` 保留待决条目只投递决定 + `session/subscribe`
-  认领 owner）；`grep` 无 `rg` 时回退进程内检索。
+- `1ec9e5b` feat(config): add [web] section with trust_proxy_headers and state_dir
+- `8986885` feat(ipc): derive the client IP from loopback-gated forwarded headers
+- `55e6d29` feat(ipc): add atomic metrics state snapshot with clamped clock conversion
+- `55d63de` feat(ipc): snapshot and restore login limiter state with dirty tracking
+- `5b6f16a` fix(ipc): clean up the metrics state tmp file on every write failure
+- `3ae4f87` feat(ipc): restore and debounce-flush login metrics state behind WebConfig
+- `b4c77eb` feat(ipc): throttle on the derived client IP while auth keeps the raw peer
+- `853a760` feat(ipc): resolve the metrics state path from the bound port
+- `54db01c` refactor(ipc): make the metrics state flush and stop API public for graceful shutdown
+- `496a0af` feat(cli): wire [web] proxy trust and metrics state dir into serve
+- `ca52ff5` test(cli): prove login counters survive a serve restart
+- `e36db88` docs: document proxy-header trust and persisted login metrics
+- `ac44b66` refactor(ipc): drop the staging dead_code allowances now that the metrics wiring is live
+- `c6fbf16` refactor(cli): always tear down the serve loop and trim serve_tcp
+- `f5955a1` test(cli): assert exact metric lines in the restart e2e
+- `2eaf0ec` refactor(ipc): render client IP source labels from IpSource::label
+- `d888b24` docs: record the per-IP last-seen metric and snapshot-only history
+- `b8b5493` test(cli): translate the last Chinese comment fragment in the serve e2e
+- `d45e30c` test(cli): cover the error-path teardown of the serve loop
+- `965dcf4` test(ipc): assert exact metric lines in the web unit tests
 
 ## 已完成（0.29.0 – 0.29.12 + BUG-017/018，详见 `docs/changelog/v0.1.md`）
 
@@ -150,6 +124,25 @@ PR #86 的 `ci.yml`（`cargo llvm-cov --workspace`）在 `e2e_serve_exits_gracef
 
 ## 遗留问题 / 已知限制（后端）
 
+- **远端命名修正（本工作副本实测）**：`github` = `git@github.com:JeillZhang/agentj.git`（**权威**）、
+  `origin` = `git@gitcode.com:jeill/agentj.git`（GitCode **镜像**）——与 `AGENTS.md`「Remote & Merge
+  Policy」的命名**相反**；feature 分支须推 `github` + `origin` 两个远端，PR 开在 `github`（待实施 ⑳
+  的主题，本阶段不改文档，仅记录实测事实）。
+- **文档滞后（本阶段有意未动 `AGENTS.md`）**：`AGENTS.md` 的 `agentj-config` 条目尚未列新增 `[web]`
+  配置节，`agentj-ipc` 条目尚未提 `client_ip` / `metrics_state` 两个新模块（本阶段文档落在
+  `docs/specs/ipc-protocol.md` + `docs/guide/http-and-auth.md` + `docs/changelog/v0.1.md`）；下次
+  结构性触碰时补齐。
+- **状态目录默认值文档不完整（实测）**：`docs/specs/ipc-protocol.md:58` 与
+  `docs/guide/http-and-auth.md:63,82` 只写默认 `$XDG_DATA_HOME/agentj`，而
+  `crates/agentj-cli/src/main.rs:146 fn metrics_state_dir_from` 的实装回退链为 `[web] state_dir`
+  → `$XDG_DATA_HOME/agentj` → `$HOME/.local/share/agentj`（代码自身的启动警告亦写「set
+  XDG_DATA_HOME, HOME or [web] state_dir」）；下次触碰该文档时补 HOME 回退。
+- **错误路径收尾的测试只覆盖到 helper 内部**（终审 MEDIUM）：`crates/agentj-cli/src/main.rs` 的
+  新测试 `shutdown_flushes_metrics_state_even_when_the_serve_loop_failed` 直接调用私有
+  `shutdown_tcp_server`，因此**能**钉住「`run_result?` 不得早于 `flush_metrics_state()`」这一
+  顺序回归（把 `?` 前移即 RED）；但它**不**驱动 `serve_tcp`，故若回归重新在调用点写回
+  `tcp.run().await?`（`main.rs:447` 一类），该测试仍会通过。要覆盖这一层需让 `serve_tcp` 以
+  可失败的 `run()` 端到端跑通（当前无该夹具），故仅记录、不再加测。
 - **预算为近似估算**：`estimate_tokens` 用「ASCII / 4 + 非 ASCII × 1」的字符启发式，非真实
   tokenizer；目录里**没有 per-model 上下文窗口元数据**（`schemas/ModelEntry.json` 仅
   format/id/verified），因此默认 128k 是保守假设，真窗口更小的模型仍可能被上游拒绝一次
@@ -213,7 +206,6 @@ PR #86 的 `ci.yml`（`cargo llvm-cov --workspace`）在 `e2e_serve_exits_gracef
 
 | # | 特性 | 内容 | 依赖 | 状态 |
 |---|------|------|------|------|
-| ① | 指标导出扩展 | 计数持久化 / 跨实例共享、代理头解析 | 无（基于 v0.22.0 `/metrics`） | 待实施 |
 | ② | 抽检扩展 | 逐请求校验 / 手动全量触发端点 | 无（基于 v0.22.0 运行期抽检） | 待实施 |
 | ④ | rank 规则单一真源化 | Rust `file_list::search_rank` 为唯一真源，TUI / mock 镜像退役 | 无（前端跟进见 `_fe.md` 遗留 ③） | 待实施 |
 | ⑥ | 用量历史（服务端持久化 + 趋势） | `provider/usage` 由按需 TTL 300s 扩为服务端持久化采样 + 历史/趋势查询（协议加性）、Web/TUI 趋势视图与保留策略 | 无（基于 v0.27.0 用量面板；设计需先定采样归属/保留/加性 wire） | 待实施 |
@@ -244,18 +236,11 @@ PR #86 的 `ci.yml`（`cargo llvm-cov --workspace`）在 `e2e_serve_exits_gracef
 
 ## 下一步
 
-- 工具执行生命周期统一（bash / grep / glob → `ToolExecutor`）代码 + 测试 + changelog + guide +
-  summary(se) 已收尾；剩余：提交 → 推送**两个远端**（本机 `github` = GitHub 权威、
-  `origin` = GitCode 镜像；与 AGENTS.md 的远端命名相反）→ 开 GitHub PR（用户负责合并）→
-  自动进入测试验收。
-- 本轮真实网关 E2E 暴露的观察：
-  - `beam-free` 在 ask 模式下 8 次审批全部放行（含故意重复/迟到答复），证明 6a 已修；
-  - 无 ripgrep 的 `PATH` 下 grep 走回退路径并命中 `turn_runner.rs:189`，证明 6b 已修；
-  - 模型仍会在收尾时只回标题回声（38 字符）——属**模型能力问题**，非内核丢失结论。
-- 读法提醒：`<sid>.trajectory` 里的 `usage` 行是**每轮一条、整轮累计**（不是单次请求的
-  prompt 大小），反推单次 prompt ≈ 20–30k tokens，仍在 128k 预算内。
-- 后端候选：上表 ①②④⑥⑦⑧⑨（特性）+ ⑩–⑳、㉗–㉜（工程债 / 修复 / 合规，见本表新增行；其中 ㉘ 为已确认缺陷，㉜ 需用户决策）；或前端跟进见
+- 指标导出扩展（代理头解析 + 计数持久化）代码 + 文档 + summary(se) 已收尾；剩余：提交 →
+  推送**两个远端**（本工作副本 `github` = GitHub 权威、`origin` = GitCode 镜像；与 `AGENTS.md`
+  远端命名相反）→ 开 GitHub PR（用户负责合并）→ 自动进入测试验收。
+- 下一特性：待实施 ②「抽检扩展」（逐请求校验 / 手动全量触发端点，基于 v0.22.0 运行期抽检）。
+- 后端候选：上表 ②④⑥⑦⑧⑨（特性）+ ⑩–⑳、㉗–㉜（工程债 / 修复 / 合规）；或前端跟进见
   `summary_and_next_fe.md`（含 ㉑–㉕ 前端债 / 修复）。
 - 可选跟进：为 `run` 增加 `--yes`（或非 TTY 自动拒绝）；`ask` 问题默认超时；把「会话已裁剪
-  N 条消息」作为可观测事件；`ModelEvent` 增加 `reasoning_content` 承载（`openai_compat`
-  目前丢弃该字段，思考过程不可见）。
+  N 条消息」作为可观测事件；`ModelEvent` 增加 `reasoning_content` 承载。
