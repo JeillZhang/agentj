@@ -326,14 +326,12 @@ impl WebConfig {
     }
     /// Opt in to forwarded-header trust (design D1). Takes effect only when the
     /// direct peer is loopback.
-    #[allow(dead_code)] // wired by the CLI bind path in T7
     pub(crate) fn with_trust_proxy_headers(mut self, trust: bool) -> Self {
         self.trust_proxy_headers = trust;
         self
     }
     /// Opt in to state persistence (design D3). `None` keeps the limiter purely
     /// in memory — which is what every directly constructed `WebConfig` does.
-    #[allow(dead_code)] // wired by the CLI bind path in T7
     pub(crate) fn with_metrics_state(mut self, path: Option<std::path::PathBuf>) -> Self {
         self.metrics_state = path;
         self
@@ -343,17 +341,15 @@ impl WebConfig {
         self.flush_interval = interval;
         self
     }
-    #[allow(dead_code)] // consumed by the client-IP resolution in T6
     pub(crate) fn trust_proxy_headers(&self) -> bool {
         self.trust_proxy_headers
     }
-    #[allow(dead_code)] // consumed by the CLI bind path in T7
+    #[allow(dead_code)] // only used by the tcp bind tests
     pub(crate) fn metrics_state_path(&self) -> Option<&std::path::Path> {
         self.metrics_state.as_deref()
     }
     /// Tally one resolved client IP (design D6). `invalid` is set by the caller
     /// only when trust applied, a header was present and nothing usable came out.
-    #[allow(dead_code)] // consumed by the client-IP resolution in T6
     pub(crate) fn record_ip_source(&self, source: crate::client_ip::IpSource, invalid: bool) {
         let mut totals = self.ip_sources.write().unwrap_or_else(|e| e.into_inner());
         match source {
@@ -378,7 +374,6 @@ impl WebConfig {
     /// Load the persisted limiter state (design D3): a missing file is a normal
     /// first run; an unusable one warns once and starts from zero, never blocking
     /// startup. Returns whether state was restored.
-    #[allow(dead_code)] // wired by the CLI bind path in T7
     pub(crate) fn restore_metrics_state(&self) -> bool {
         let Some(path) = self.metrics_state.as_deref() else {
             return false;
@@ -443,7 +438,6 @@ impl WebConfig {
     }
     /// Periodic debounced flush (design D3): one tick writes only when the
     /// limiter is dirty, mirroring the spot-check task's lifecycle.
-    #[allow(dead_code)] // wired by the CLI bind path in T7
     pub(crate) fn spawn_metrics_flush(self: &Arc<Self>) -> Option<JoinHandle<()>> {
         self.metrics_state.as_ref()?;
         let web = Arc::clone(self);
@@ -461,7 +455,6 @@ impl WebConfig {
     }
     /// Graceful-shutdown API: abort the debounced flush task. Callers flush
     /// first (`flush_metrics_state`), so the last snapshot is never lost.
-    #[allow(dead_code)] // wired by the CLI shutdown path in T7
     pub fn stop_metrics_flush(&self) {
         let task = self
             .flush_task

@@ -215,12 +215,10 @@ impl LoginLimiter {
     }
 
     /// Whether anything changed since the last successful flush.
-    #[allow(dead_code)] // consumed by the WebConfig flush task in T5
     pub(crate) fn dirty(&self) -> bool {
         self.dirty.load(Ordering::Relaxed)
     }
 
-    #[allow(dead_code)] // consumed by the WebConfig flush task in T5
     pub(crate) fn mark_clean(&self) {
         self.dirty.store(false, Ordering::Relaxed);
     }
@@ -231,7 +229,6 @@ impl LoginLimiter {
 
     /// Serialize the aggregate counters plus every per-IP entry (design D3):
     /// `Instant`s are converted against the caller's `now_unix` reading.
-    #[allow(dead_code)] // consumed by the WebConfig flush task in T5
     pub(crate) fn to_state(&self, now: Instant, now_unix: u64) -> MetricsState {
         let ips = {
             let entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
@@ -263,7 +260,6 @@ impl LoginLimiter {
 
     /// Replace the in-memory state with a persisted snapshot and return how many
     /// per-IP entries survived the conversion and the policy bounds (design D3).
-    #[allow(dead_code)] // consumed by the WebConfig startup restore in T5
     pub(crate) fn restore_from(&self, state: &MetricsState, now: Instant, now_unix: u64) -> usize {
         self.counters
             .attempts

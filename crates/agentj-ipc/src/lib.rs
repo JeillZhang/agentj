@@ -1,14 +1,11 @@
 //! Unified Connection abstraction (design 决策 #1/#2) — transport-agnostic serve.
-// Consumed by the per-IP metrics / throttle wiring landed in the following
-// tasks of this feature branch (T5/T6); until then the module is exercised only
-// by its own tests.
+// `IpSource::label` is an exported helper the metrics renderer does not consume
+// yet (it inlines its own label strings); the module-level allowance stays until
+// that changes.
 #[allow(dead_code)]
 pub(crate) mod client_ip;
 pub mod file_list;
 pub(crate) mod login_limiter;
-// Consumed by the limiter snapshot wiring landed in the following tasks of this
-// feature branch (T4/T5); until then the module is exercised only by its tests.
-#[allow(dead_code)]
 pub(crate) mod metrics_state;
 pub mod tcp;
 pub mod trajectory;
