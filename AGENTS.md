@@ -113,7 +113,9 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
   + `retry`（`temperature` 被拒时去参数重试一次）。
 - `agentj-tools`：内置工具（bash/glob/grep/read/write + `todo`，共 6 个）；`grep` 优先
   `rg`、缺失时回退进程内检索（`regex` + `globset` + `walkdir`，行匹配 + `include` 通配 +
-  跳目录/二进制/超大文件 + 2000 条上限）。
+  跳目录/二进制/超大文件 + 2000 条上限）；三个进程型工具（`bash` / `grep` / `glob`）统一经
+  `ToolExecutor`（`executor.rs`）以独立进程组执行，超时杀整组并按工具默认值
+  （`bash` 120s、`grep` / `glob` 60s）生效，可经入参 `timeout_ms` 覆盖（钳制 1s–600s）。
 - `agentj-context`：上下文管线（装配/回流纯函数；预算裁剪由 `agentj-core::budget` 统一下发）。
 - `agentj-stats`：用量统计 UsageCollector。
 - `agentj-license`：Ed25519 许可证校验（entitlements + free mode）。
