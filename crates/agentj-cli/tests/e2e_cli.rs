@@ -2,6 +2,8 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+mod common;
+
 #[test]
 fn e2e_serve_responds_to_jsonrpc_session_new() {
     // Temp config — avoids touching any real config.toml
@@ -14,7 +16,10 @@ fn e2e_serve_responds_to_jsonrpc_session_new() {
     )
     .unwrap();
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_agentj"))
+    let env = common::TempEnv::new();
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_agentj"));
+    env.apply(&mut cmd);
+    let mut child = cmd
         .args(["--config", cfg.to_str().unwrap(), "serve"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -76,7 +81,10 @@ fn e2e_serve_exits_gracefully_on_sigterm() {
     )
     .unwrap();
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_agentj"))
+    let env = common::TempEnv::new();
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_agentj"));
+    env.apply(&mut cmd);
+    let mut child = cmd
         .args(["--config", cfg.to_str().unwrap(), "serve"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -156,8 +164,10 @@ fn write_serve_config(dir: &Path, model: &str, extra: &str, sessions: &Path) -> 
 /// Spawn `agentj --config <cfg> serve`; CWD is the project root so relative tool
 /// paths fall back to it when a session has no `project_root`.
 fn spawn_serve(cfg: &Path, workdir: &Path) -> std::process::Child {
-    Command::new(env!("CARGO_BIN_EXE_agentj"))
-        .args(["--config", cfg.to_str().unwrap(), "serve"])
+    let env = common::TempEnv::new();
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_agentj"));
+    env.apply(&mut cmd);
+    cmd.args(["--config", cfg.to_str().unwrap(), "serve"])
         .current_dir(workdir)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -370,8 +380,10 @@ fn write_run_config(dir: &Path) -> PathBuf {
 
 /// `agentj --config <cfg> run <args…>` from the project root, output captured.
 fn run_cli(cfg: &Path, workdir: &Path, args: &[&str]) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_agentj"))
-        .arg("--config")
+    let env = common::TempEnv::new();
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_agentj"));
+    env.apply(&mut cmd);
+    cmd.arg("--config")
         .arg(cfg)
         .arg("run")
         .args(args)
@@ -491,9 +503,11 @@ fn read_listening_addr<R: BufRead>(reader: &mut R) -> String {
 fn e2e_run_attach_surfaces_unknown_provider() {
     let dir = run_temp_dir("attach-unknown-provider");
     let cfg = write_run_config(&dir);
+    let env = common::TempEnv::new();
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_agentj"));
+    env.apply(&mut cmd);
     let mut kernel = AutoReap(
-        Command::new(env!("CARGO_BIN_EXE_agentj"))
-            .args(["--config", cfg.to_str().unwrap(), "serve", "--port", "0"])
+        cmd.args(["--config", cfg.to_str().unwrap(), "serve", "--port", "0"])
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -506,7 +520,10 @@ fn e2e_run_attach_surfaces_unknown_provider() {
     let addr = read_listening_addr(&mut reader);
 
     let errfile = dir.join("attach-stderr.txt");
-    let mut attach = Command::new(env!("CARGO_BIN_EXE_agentj"))
+    let env = common::TempEnv::new();
+    let mut attach_cmd = Command::new(env!("CARGO_BIN_EXE_agentj"));
+    env.apply(&mut attach_cmd);
+    let mut attach = attach_cmd
         .args([
             "--config",
             cfg.to_str().unwrap(),
