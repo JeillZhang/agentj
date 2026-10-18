@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom/vitest";
 import { test, it, expect, vi } from "vitest";
-import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within, act } from "@testing-library/react";
 import UnifiedSidebar from "./UnifiedSidebar";
 import TopbarMenu from "./TopbarMenu";
 import { createProject, setCurrentProject, updateProject } from "../projectStore";
@@ -538,4 +538,58 @@ it("ignores sidebar shortcuts when focus is outside the sidebar", async () => {
   document.getElementById("aj-prompt")!.focus();
   fireEvent.keyDown(document, { key: "f" });
   expect(screen.getByRole("tab", { name: "会话" })).toHaveAttribute("aria-selected", "true");
+});
+
+// BUG-018: the list was only fetched once on mount, so a freshly created session
+// never appeared until the user reloaded the page.
+function mutatingClient() {
+  const calls: Array<{ method: string }> = [];
+  const sessions: Array<Record<string, unknown>> = [
+    { session_id: "s1", state: "active", preview: "old", updated_at: 1000 },
+  ];
+  const rpc = {
+    request: async (method: string) => {
+      calls.push({ method });
+      if (method === "session/list") return { sessions: [...sessions] };
+      if (method === "session/new") {
+        sessions.push({ session_id: "new-1", state: "active", updated_at: 2000 });
+        return { session_id: "new-1" };
+      }
+      return null;
+    },
+    setNotificationHandler: () => {},
+  };
+  return { calls, client: rpc };
+}
+
+test("BUG-018 — a new session shows up in the list right away", async () => {
+  localStorage.clear();
+  const { calls, client: rpc } = mutatingClient();
+  const onActive = vi.fn();
+  const { container } = render(
+    <UnifiedSidebar wsUrl="ws://x" client={rpc as never} activeSessionId={null} onActiveChange={onActive} />,
+  );
+  const flat = container.querySelector('[aria-label="最近会话"]') as HTMLElement;
+  await within(flat).findByText("old");
+  expect(calls.filter((c) => c.method === "session/list")).toHaveLength(1);
+
+  fireEvent.click(screen.getByRole("button", { name: "+ 新建会话" }));
+  await waitFor(() => expect(onActive).toHaveBeenCalledWith("new-1"));
+  await waitFor(() => expect(calls.filter((c) => c.method === "session/list")).toHaveLength(2));
+  await within(flat).findByText("new-1");
+  expect(flat.querySelectorAll(".aj-sess")).toHaveLength(2);
+});
+
+test("BUG-018 — a sessions-updated event refetches the list", async () => {
+  localStorage.clear();
+  const { calls, client: rpc } = mutatingClient();
+  render(
+    <UnifiedSidebar wsUrl="ws://x" client={rpc as never} activeSessionId={null} onActiveChange={() => {}} />,
+  );
+  await waitFor(() => expect(calls.filter((c) => c.method === "session/list")).toHaveLength(1));
+
+  act(() => {
+    window.dispatchEvent(new CustomEvent("agentj:sessions-updated"));
+  });
+  await waitFor(() => expect(calls.filter((c) => c.method === "session/list")).toHaveLength(2));
 });

@@ -372,6 +372,45 @@ describe("RunPanel run overrides", () => {
   });
 });
 
+// BUG-018: the sidebar keeps its own session list, so it has to be told when a
+// turn settles (preview text / updated_at changed server-side).
+describe("RunPanel run completion announcement", () => {
+  it("dispatches agentj:sessions-updated after a turn settles", async () => {
+    const seen = vi.fn();
+    window.addEventListener("agentj:sessions-updated", seen);
+    const rpc = {
+      setNotificationHandler: () => {},
+      removeNotificationHandler: () => {},
+      request: async (method: string) =>
+        method === METHODS.sessionRun
+          ? { usage: { prompt_tokens: 1, completion_tokens: 2 } }
+          : null,
+    } as unknown as Parameters<typeof RunPanel>[0]["client"];
+    render(<RunPanel client={rpc} activeSessionId="s1" />);
+    fireEvent.change(screen.getByLabelText(/prompt/i), { target: { value: "hi" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+    await waitFor(() => expect(seen).toHaveBeenCalled());
+    window.removeEventListener("agentj:sessions-updated", seen);
+  });
+
+  it("announces even when the turn fails", async () => {
+    const seen = vi.fn();
+    window.addEventListener("agentj:sessions-updated", seen);
+    const rpc = {
+      setNotificationHandler: () => {},
+      removeNotificationHandler: () => {},
+      request: async () => {
+        throw new Error("run:boom");
+      },
+    } as unknown as Parameters<typeof RunPanel>[0]["client"];
+    render(<RunPanel client={rpc} activeSessionId="s1" />);
+    fireEvent.change(screen.getByLabelText(/prompt/i), { target: { value: "hi" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+    await waitFor(() => expect(seen).toHaveBeenCalled());
+    window.removeEventListener("agentj:sessions-updated", seen);
+  });
+});
+
 describe("RunPanel usage double-count guard", () => {
   it("counts a turn once when a usage frame precedes the run result", async () => {
     let handler: ((method: string, params: unknown) => void) | null = null;

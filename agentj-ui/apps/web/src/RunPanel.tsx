@@ -13,6 +13,7 @@ import ProjectEditDialog from "./components/ProjectEditDialog";
 import { DEMO_QA_RECORD, DEMO_QUESTION, isDemoEnabled, subscribeDemo } from "./demoData";
 import { loadAskCollapsed, saveAskCollapsed } from "./layoutStore";
 import { isBlankText } from "./blankText";
+import { notifySessionsUpdated } from "./sessionEvents";
 import { createProject, loadCurrentProject, loadProjects, setCurrentProject } from "./projectStore";
 import type { Project } from "./projectStore";
 import { formatUsageSummary, formatUsageTitle } from "./tokenUsage";
@@ -792,6 +793,8 @@ export default function RunPanel({
       setElapsedMs(performance.now() - startedAt);
       busy.current = false;
       setIsBusy(false);
+      // The turn changed the session's preview / updated_at server-side.
+      notifySessionsUpdated();
     }
     const pt = usage?.usage?.prompt_tokens;
     const ct = usage?.usage?.completion_tokens;
