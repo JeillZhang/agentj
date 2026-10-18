@@ -13,8 +13,10 @@
 | `/login` / `/logout` | 登录页 / 登出（会话 cookie） |
 | `GET /version` | 版本事实（未鉴权，`Cache-Control: no-store`） |
 | `GET /metrics` | Prometheus 指标（鉴权门控，`text/plain; version=0.0.4`，`no-store`） |
+| `POST /integrity/verify` | 手动全量完整性核验（鉴权门控，同 `/metrics`；`application/json` + `no-store`） |
 
-`/ws`、`/login`、`/logout`、`/version`、`/metrics` 均为显式路由，优先于 SPA fallback。
+`/ws`、`/login`、`/logout`、`/version`、`/metrics`、`POST /integrity/verify` 均为显式路由，
+优先于 SPA fallback。
 
 ## 鉴权
 
@@ -43,14 +45,19 @@
 
 - `login_limiter`：聚合计数（`attempts` / `failures` / `lockouts` / `blocked` /
   `locked_now` / `tracked_ips`，无 per-IP 明细）。
-- `integrity`：资产清单摘要（`manifest_present` / `checked` / `mismatched` / `missing`）
-  与运行期抽检 `runtime { rounds, checked, mismatched, missing, last_run_age_secs? }`。
+- `integrity`：资产清单摘要（`manifest_present` / `checked` / `mismatched` / `missing`）、
+  运行期抽检 `runtime { rounds, checked, mismatched, missing, last_run_age_secs? }`
+  与手动全量 `on_demand { sweeps, checked, mismatched, missing, last_run_age_secs? }`
+  （两者未运行过则省略 `last_run_age_secs`）。
 
 ## `/metrics`
 
 Prometheus 文本。回环 / 未配 token / 有效 cookie → 直出 200；远程无 cookie → `401`
 （不重定向）。含聚合计数/gauges + per-IP 序列（Top-50 截断 +
-`agentj_login_ip_series_truncated` 指示）+ 清单摘要。
+`agentj_login_ip_series_truncated` 指示）+ 清单摘要 + 完整性核验累计：逐请求校验
+`agentj_web_integrity_request_{checked,mismatched,missing}_total` 与
+`agentj_web_integrity_request_cache_entries`（gauge），手动全量
+`agentj_web_integrity_sweeps_total` 与 `agentj_web_integrity_sweep_{checked,mismatched,missing}_total`。
 
 ## 反向代理
 
@@ -88,5 +95,27 @@ location / {
 
 构建 Web UI 时生成 `dist/asset-manifest.json`（`sha384` 覆盖全部 bundle 产物含动态
 chunk + 重写后 `index.html` + dist 实目录其余部署文件，含 `public/` 透传）。内核启动
-逐文件校验（缺失/不符仅 stderr 警告，不阻断服务），并每 60s 游标轮转抽检 8 个文件
-（不符 `warn!` 按路径去重）。
+逐文件校验（缺失/不符仅 stderr 警告，不阻断服务）。
+
+运行期有三条核验路径，**全部恒定 fail-open**：不符 / 缺失只计数 + 按路径进程内去重
+`warn!`，从不改变响应状态与响应头、从不拒绝服务（定位为部署完整性观测，不是安全边界）。
+
+- **定时抽检**：每 `spot_interval_secs`（默认 60）秒按排序键游标轮转抽检 `spot_sample`
+  （默认 8）个文件，全量随轮转有界覆盖；累计值见 `/version` 的 `integrity.runtime`。
+- **逐请求校验**：静态面每个请求核验**本次将服务的那一个文件**（SPA 面未知路径回落核验
+  `/index.html`）；按路径 memoize、TTL 为绝对语义（命中不刷新过期时间），默认 60s，缓存
+  上限 1024 条；`verify_on_request = false` 可整体关闭；未通过鉴权的请求不触发校验。结果
+  只在 `/metrics` 的 `agentj_web_integrity_request_*` 上体现。
+- **手动全量**：`POST /integrity/verify`（鉴权门控同 `/metrics`）同步核验整个清单，返回
+  `{manifest_present, checked, mismatched, missing, offenses, truncated, duration_ms}`
+  （`offenses` 路径升序、最多 50 条，超出置 `truncated`）；累计值见 `/version` 的
+  `integrity.on_demand`。无可用清单 → `manifest_present: false` 且不计一次全量；清单存在
+  但为空 → `manifest_present: true`、计数全零。
+
+```toml
+[web]
+spot_interval_secs = 60      # 抽检节拍，钳制 5..=3600
+spot_sample = 8              # 每轮抽检文件数，钳制 1..=1024
+verify_on_request = true     # 逐请求校验开关
+verify_cache_ttl_secs = 60   # 逐请求 memoize 绝对 TTL，钳制 1..=3600
+```
