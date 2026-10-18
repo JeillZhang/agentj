@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { startMockKernel } from "./mock-kernel.ts";
+import { fixtureKindToWire, startMockKernel } from "./mock-kernel.ts";
 import { SEARCH_RANK_CASES } from "../searchRankCases";
 
 type MessageHandler = (data: never) => void;
@@ -78,6 +78,12 @@ describe("mock kernel file/list", () => {
     await k.close();
   }, 10000);
 
+  test("translates fixture-local kinds to the wire enum", () => {
+    // The fixture vocabulary is "file" | "directory"; the wire enum is "file" | "dir".
+    expect(fixtureKindToWire("directory")).toBe("dir");
+    expect(fixtureKindToWire("file")).toBe("file");
+  });
+
   test("answers query searches with ranked matches and total", async () => {
     const k = await startMockKernel();
     const ws = await openWs(k.url);
@@ -142,6 +148,26 @@ describe("mock kernel file/list", () => {
       await kernel.close();
     }
   });
+
+  test("only emits wire-valid kinds and never ranks the fixture's directory", async () => {
+    const kernel = await startMockKernel();
+    const ws = await openWs(kernel.url);
+    try {
+      // "main" is the fixture case whose entries include a directory ("src/main").
+      const reply = (await rpc(ws, 1, "file/list", {
+        session_id: "s1",
+        path: null,
+        depth: 8,
+        query: "main",
+      })) as { entries: Array<{ path: string; kind: string }> };
+      expect(reply.entries.length).toBeGreaterThan(0);
+      for (const entry of reply.entries) expect(["file", "dir"]).toContain(entry.kind);
+      expect(reply.entries.some((e) => e.path === "src/main")).toBe(false);
+    } finally {
+      ws.close();
+      await kernel.close();
+    }
+  }, 10000);
 
   test("answers a query absent from the fixture with an empty result and total 0", async () => {
     const kernel = await startMockKernel();

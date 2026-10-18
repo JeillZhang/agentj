@@ -731,21 +731,25 @@ describe("files search mode", () => {
     act(() => setup.renderer.destroy());
   });
 
-  test("every server search row is a file, never a directory", async () => {
+  test("the fixture contract never ranks a directory", async () => {
     const kernel = fakeKernel({ search: "server" });
     const contract = SEARCH_RANK_CASES.searches.find((c) => c.query === "main");
     expect(contract).toBeDefined();
-    // The driven fixture case actually matches a directory ("src/main"); only the
-    // rank contract (expected_ranked_paths) drops it, which is what this test pins.
+    // Premise pin: the driven fixture case actually matches a directory ("src/main").
     expect(contract!.entries.some((e) => e.kind === "directory")).toBe(true);
+    // The contract excludes every directory path from the ranked output. "Directories are
+    // never ranked" is proven against the real kernel by the Rust test in
+    // crates/agentj-ipc/src/file_list.rs; here we pin the fixture contract itself.
+    const directoryPaths = new Set(
+      contract!.entries.filter((e) => e.kind === "directory").map((e) => e.path),
+    );
+    expect(contract!.expected_ranked_paths.some((p) => directoryPaths.has(p))).toBe(false);
     const { setup, input } = await renderApp(kernel);
     await openFilesSidebar(setup, input);
     await act(async () => { input.press("s"); await setup.flush(); });
     await act(async () => { await input.type("main"); await setup.flush(); });
     await settleDebounce(setup);
     const reply = await searchReply(kernel, "main");
-    // The contract half: no non-file entry survives, and the order is the fixture's.
-    expect(reply.entries.some((e) => e.kind !== "file")).toBe(false);
     expect(reply.entries.map((e) => e.path)).toEqual(contract!.expected_ranked_paths);
     // The UI half: the surviving file row is actually rendered.
     expect(setup.captureCharFrame()).toContain("main.rs");
@@ -1003,23 +1007,35 @@ describe("files search mode", () => {
     act(() => setup.renderer.destroy());
   });
 
-  test("server search debounces, renders ranked rows and shows total", async () => {
+  test("server search debounces, renders ranked rows in order and reflects the total", async () => {
     const kernel = fakeKernel({ search: "server" });
+    const contract = SEARCH_RANK_CASES.searches.find((c) => c.query === "auth");
+    expect(contract).toBeDefined();
+    expect(contract!.expected_ranked_paths.length).toBeGreaterThan(1); // order is observable
     const { setup, input } = await renderApp(kernel);
     await openFilesSidebar(setup, input);
     await act(async () => { input.press("s"); await setup.flush(); });
-    await act(async () => { await input.type("mai"); await setup.flush(); });
+    await act(async () => { await input.type("auth"); await setup.flush(); });
     await settleDebounce(setup);
     const queryCalls = kernel.calls.filter(
-      (c) => c.method === METHODS.fileList && c.query === "mai",
+      (c) => c.method === METHODS.fileList && c.query === "auth",
     );
     expect(queryCalls).toHaveLength(1); // debounced to a single request
     expect(queryCalls[0]).toMatchObject({ path: null, depth: 8 });
     await act(async () => {
-      await setup.waitFor(() => setup.captureCharFrame().includes("main.rs"));
+      await setup.waitFor(() => setup.captureCharFrame().includes("auth.test.ts"));
     });
-    // the server-ranked reply drops non-matches (total itself rides in state)
-    expect(setup.captureCharFrame()).not.toContain("README.md");
+    await repaint(setup);
+    const frame = setup.captureCharFrame();
+    // The sidebar narrows the parent suffix on the longest name; the four rows are
+    // still individually identifiable. indexOf order fails if the rows are reversed.
+    const rows = ["auth.ts src/", "auth.test.ts tests/", "my-auth-help… src/helpers/", "index.ts src/auth/"];
+    const positions = rows.map((needle) => frame.indexOf(needle));
+    expect(positions.every((p) => p >= 0)).toBe(true);
+    expect(positions).toEqual([...positions].sort((a, b) => a - b));
+    expect(rows.filter((needle) => frame.includes(needle))).toHaveLength(contract!.expected_total);
+    // the server-ranked reply drops non-matches (a local filter would keep README.md)
+    expect(frame).not.toContain("README.md");
     act(() => setup.renderer.destroy());
   });
 

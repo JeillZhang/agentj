@@ -29,16 +29,23 @@ type ListingEntry = (typeof SEARCH_FIXTURE)[number];
 // Search replies replay the shared Rust-pinned conformance fixture
 // (protocol/search-rank-cases.json) instead of re-deriving the rank rule.
 type RankedEntry = { name: string; path: string; kind: "file" | "directory" };
+type WireEntry = { name: string; path: string; kind: "file" | "dir" };
+
+// The fixture speaks its own vocabulary (`"file" | "directory"`); the protocol
+// wire enum spells directories `"dir"`. Translate before replying.
+export function fixtureKindToWire(kind: RankedEntry["kind"]): WireEntry["kind"] {
+  return kind === "directory" ? "dir" : "file";
+}
 
 // The fixture's `searches[]` is the single source of the ranking rule.
-function searchFixture(query: string): { entries: RankedEntry[]; total: number } {
+function searchFixture(query: string): { entries: WireEntry[]; total: number } {
   const contract = SEARCH_RANK_CASES.searches.find((c) => c.query === query);
   if (!contract) return { entries: [], total: 0 };
   const byPath = new Map<string, FixtureEntry>(contract.entries.map((e) => [e.path, e]));
   const entries = contract.expected_ranked_paths
     .map((path) => byPath.get(path))
     .filter((e): e is FixtureEntry => e !== undefined)
-    .map((e) => ({ name: e.name, path: e.path, kind: e.kind }));
+    .map((e) => ({ name: e.name, path: e.path, kind: fixtureKindToWire(e.kind) }));
   return { entries, total: contract.expected_total };
 }
 

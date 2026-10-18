@@ -3,6 +3,8 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 export type FixtureEntry = { name: string; path: string; kind: "file" | "directory" };
+// Fixture-local vocabulary: `"directory"` here, but the wire enum spells it `"dir"` —
+// translate via `fixtureKindToWire` before sending a reply.
 export type RankCase = {
   name: string;
   path: string;
@@ -41,6 +43,12 @@ export function parseRankCases(raw: string, path: string): SearchRankCases {
       `search-rank conformance fixture ${path} has version ${parsed.version}, expected ${EXPECTED_VERSION}`,
     );
   }
+  if (!Array.isArray(parsed.ranks) || !Array.isArray(parsed.searches)) {
+    const family = Array.isArray(parsed.ranks) ? "searches" : "ranks";
+    throw new Error(
+      `search-rank conformance fixture ${path} has a non-array ${family} (expected arrays)`,
+    );
+  }
   return parsed;
 }
 
@@ -55,4 +63,6 @@ function load(): SearchRankCases {
   return parseRankCases(raw, path);
 }
 
+// Fail-closed BY DESIGN: imported only by tests and the e2e mock kernel (never the
+// production UI), so a missing fixture fails loudly at import instead of silently.
 export const SEARCH_RANK_CASES: SearchRankCases = load();

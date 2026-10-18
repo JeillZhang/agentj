@@ -28,4 +28,11 @@ describe("search rank conformance fixture loader", () => {
       /\/tmp\/search-rank-cases\.json.*version 2.*expected 1/,
     );
   });
+
+  test("rejects a fixture whose case families are not arrays", () => {
+    const raw = JSON.stringify({ version: 1, rule: "r", ranks: {}, searches: [] });
+    expect(() => parseRankCases(raw, "/tmp/search-rank-cases.json")).toThrow(
+      /\/tmp\/search-rank-cases\.json.*ranks.*array/,
+    );
+  });
 });
