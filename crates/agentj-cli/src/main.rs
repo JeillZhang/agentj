@@ -450,8 +450,9 @@ async fn serve_tcp(
 }
 
 /// Print the readiness banner (websocket + resolved web-dist line) and the
-/// config-level warnings in the order the CLI has always emitted them
-/// (websocket → dist → web config → bind → proxy trust).
+/// config-level warnings in the order the CLI has always emitted them:
+/// websocket → dist → web config, then the optional warnings in
+/// [insecure-bind, metrics-state, proxy-trust] order.
 fn emit_serve_banner(
     web: &agentj_ipc::web::WebConfig,
     web_dist: &Option<std::path::PathBuf>,
@@ -1551,6 +1552,69 @@ mod tests {
         tcp.web_config().flush_metrics_state();
         tcp.web_config().stop_metrics_flush();
         assert!(path.is_file(), "flush must persist {}", path.display());
+        let body = std::fs::read_to_string(&path).unwrap();
+        assert!(body.contains("\"version\":1"), "{body}");
+        assert!(body.contains("\"counters\""), "{body}");
+    }
+
+    /// A bound TCP server whose metrics state persists under `dir`: the same
+    /// `TcpIpcServer::bind` seam `serve_tcp` uses, so the real state path is
+    /// `<dir>/metrics-state-<bound port>.json`.
+    async fn tcp_server_with_metrics_dir(dir: &std::path::Path) -> agentj_ipc::tcp::TcpIpcServer {
+        agentj_ipc::tcp::TcpIpcServer::bind(
+            "127.0.0.1:0",
+            Kernel::new(),
+            Arc::new(agentj_session::InMemoryStore::new()),
+            None,
+            None,
+            agentj_ipc::tcp::TcpBindOptions {
+                metrics_state_dir: Some(dir.to_path_buf()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("bind")
+    }
+
+    /// An idle MCP manager for the teardown path: nothing is connected, so
+    /// `close_all` is a no-op and the manager needs no real tool registry.
+    fn test_mcp_manager() -> McpConnectionManager {
+        McpConnectionManager::new(
+            Arc::new(ToolRegistry::new()),
+            Duration::from_secs(60),
+            Duration::from_millis(500),
+            5,
+            Arc::new(agentj_core::hooks::EventBus::new()),
+        )
+    }
+
+    /// `shutdown_tcp_server` must run the full teardown (persist metrics, abort
+    /// the debounce task) even when the serve loop returned `Err`, then still
+    /// surface the error so the CLI exits non-zero. Regression guard: the old
+    /// `tcp.run().await?` skipped the flush on the error path.
+    #[tokio::test]
+    async fn shutdown_flushes_metrics_state_even_when_the_serve_loop_failed() {
+        let dir = tempfile::tempdir().unwrap();
+        let tcp = tcp_server_with_metrics_dir(dir.path()).await;
+        let port = tcp.local_addr().expect("local addr").port();
+        let path = dir.path().join(format!("metrics-state-{port}.json"));
+        let signal_task = tokio::spawn(std::future::pending::<()>());
+        let result = shutdown_tcp_server(
+            &tcp,
+            signal_task,
+            &test_mcp_manager(),
+            Err(agentj_core::error::IpcError::InvalidRequest("boom".into())),
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "a serve-loop error must still propagate after the teardown"
+        );
+        assert!(
+            path.is_file(),
+            "flush must persist {} on the error path",
+            path.display()
+        );
         let body = std::fs::read_to_string(&path).unwrap();
         assert!(body.contains("\"version\":1"), "{body}");
         assert!(body.contains("\"counters\""), "{body}");
