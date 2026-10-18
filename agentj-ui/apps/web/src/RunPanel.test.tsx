@@ -269,6 +269,27 @@ describe("ConversationFeed rendering", () => {
     const { container } = render(<ConversationFeed entries={[user("go"), tool("c1", "bash")] as RunEntry[]} />);
     expect(container.querySelector(".aj-tool-summary")).toBeNull();
   });
+
+  // BUG-017: gateways stream a lone ZWSP (U+200B) between tool calls; each one
+  // used to render an empty `.aj-ai` bubble (blue rule, no text).
+  it("renders no assistant bubble for zero-width-only text", () => {
+    const entries = [
+      user("go"),
+      ai("\u200b"),
+      ai("\u200b\u200b\u200b"),
+      ai(" \n\t"),
+      tool("c1", "bash"),
+    ] as RunEntry[];
+    const { container } = render(<ConversationFeed entries={entries} />);
+    expect(container.querySelectorAll(".aj-ai")).toHaveLength(0);
+  });
+
+  it("still renders an assistant bubble for zero-width-prefixed real text", () => {
+    const { container } = render(<ConversationFeed entries={[ai("\u200b分析结果")] as RunEntry[]} />);
+    const bubbles = container.querySelectorAll(".aj-ai");
+    expect(bubbles).toHaveLength(1);
+    expect(bubbles[0].textContent).toContain("分析结果");
+  });
 });
 
 describe("RunPanel composer toolbar", () => {

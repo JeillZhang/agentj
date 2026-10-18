@@ -12,6 +12,7 @@ import AskQuestionCard, { type AskAnswer, type AskQuestionView } from "./compone
 import ProjectEditDialog from "./components/ProjectEditDialog";
 import { DEMO_QA_RECORD, DEMO_QUESTION, isDemoEnabled, subscribeDemo } from "./demoData";
 import { loadAskCollapsed, saveAskCollapsed } from "./layoutStore";
+import { isBlankText } from "./blankText";
 import { createProject, loadCurrentProject, loadProjects, setCurrentProject } from "./projectStore";
 import type { Project } from "./projectStore";
 import { formatUsageSummary, formatUsageTitle } from "./tokenUsage";
@@ -352,6 +353,9 @@ export function ConversationFeed({
               <div key={i} className="aj-bubble-user aj-bubble-user--right">{entry.text}</div>
             );
           case "ai":
+            // Zero-width-only deltas (U+200B keep-alives) are not visible text:
+            // rendering them yields an empty bubble with only its accent rule.
+            if (isBlankText(entry.text)) return null;
             return (
               <div key={i} className="aj-ai">
                 <ReactMarkdown

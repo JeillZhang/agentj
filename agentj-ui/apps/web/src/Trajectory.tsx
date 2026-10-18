@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Pause, Play } from "lucide-react";
 import type { RunEntry } from "./RunPanel.tsx";
 import { getProjectForSession, loadProjects } from "./projectStore.ts";
+import { isBlankText } from "./blankText.ts";
 
 export type RawEvent = {
   session_id: string;
@@ -37,6 +38,9 @@ export function historyToEntries(events: RawEvent[]): TrajNode[] {
         out.push({ kind: "user", seq: ev.seq, ts: ev.ts, text: typeof v.content === "string" ? v.content : "", sessionId: ev.session_id });
         break;
       case "thinking":
+        // A lone-zero-width keep-alive delta is not thinking: drop it so the
+        // timeline has no blank nodes. @since 0.1.0 (BUG-017)
+        if (typeof v.content === "string" && isBlankText(v.content)) break;
         out.push({ kind: "thinking", seq: ev.seq, ts: ev.ts, text: typeof v.content === "string" ? v.content : "", sessionId: ev.session_id });
         break;
       case "tool_call": {
@@ -143,6 +147,8 @@ export function historyToConversation(events: RawEvent[]): RunEntry[] {
         entries.push({ kind: "user", text: typeof v.content === "string" ? v.content : "" });
         break;
       case "thinking":
+        // See historyToEntries: keep-alive-only thinking must not become a bubble.
+        if (typeof v.content === "string" && isBlankText(v.content)) break;
         entries.push({ kind: "ai", text: typeof v.content === "string" ? v.content : "" });
         break;
       case "tool_call": {

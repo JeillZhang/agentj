@@ -835,14 +835,27 @@ impl IpcServer {
     }
 
     fn flush_thinking(&self, pending: &mut String, sid: &str) {
-        if !pending.is_empty() {
-            self.record_trajectory(
-                sid,
-                agentj_protocol::trajectory::TrajectoryValue::Thinking {
-                    content: std::mem::take(pending),
-                },
-            );
+        // A gateway keeps the stream warm between tool calls by sending a lone
+        // zero-width space (U+200B). U+200B is not `char::is_whitespace`, so it
+        // used to be persisted as a thinking node with no visible text — which the
+        // UI replayed as an empty assistant bubble. Always take the buffer first so
+        // the residue cannot leak into the next node either.
+        let text = std::mem::take(pending);
+        if Self::is_visually_blank(&text) {
+            return;
         }
+        self.record_trajectory(
+            sid,
+            agentj_protocol::trajectory::TrajectoryValue::Thinking { content: text },
+        );
+    }
+
+    /// True when `s` renders as nothing: only whitespace and zero-width/format code
+    /// points, which `char::is_whitespace` does not cover (U+200B is the common one).
+    fn is_visually_blank(s: &str) -> bool {
+        !s.chars().any(|c| {
+            !c.is_whitespace() && !matches!(c, '\u{200b}'..='\u{200f}' | '\u{2060}' | '\u{feff}')
+        })
     }
 
     async fn dispatch_session_run(
@@ -6158,6 +6171,66 @@ mod tests {
         };
         assert_eq!(content, "hello", "both deltas concatenated into ONE node");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn run_drops_zero_width_only_deltas_instead_of_recording_blank_thinking() {
+        let dir = temp_dir_traj("zwsp");
+        let mut server = scripted_run_server(vec![
+            Ok(agentj_core::types::ModelEvent::Delta("\u{200b}".into())),
+            Ok(agentj_core::types::ModelEvent::Delta(" \n".into())),
+            Ok(agentj_core::types::ModelEvent::Delta("\u{feff}".into())),
+            Ok(agentj_core::types::ModelEvent::Done),
+        ]);
+        server.trajectory_store = Some(wired_store(&dir));
+        let resp = server
+            .handle_request(r#"{"jsonrpc":"2.0","id":2,"method":"session/run","params":{"session_id":"s1","content":"hi"}}"#)
+            .await
+            .unwrap();
+        assert!(resp.contains("\"result\""), "{resp}");
+        let events = read_traj_events(&dir, "s1");
+        assert_eq!(traj_kinds(&events), vec!["user"], "no blank thinking node");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn run_keeps_thinking_that_contains_visible_glyphs() {
+        let dir = temp_dir_traj("zwsp-visible");
+        let mut server = scripted_run_server(vec![
+            Ok(agentj_core::types::ModelEvent::Delta("\u{200b}".into())),
+            Ok(agentj_core::types::ModelEvent::Delta("ok".into())),
+            Ok(agentj_core::types::ModelEvent::Done),
+        ]);
+        server.trajectory_store = Some(wired_store(&dir));
+        server
+            .handle_request(r#"{"jsonrpc":"2.0","id":2,"method":"session/run","params":{"session_id":"s1","content":"hi"}}"#)
+            .await
+            .unwrap();
+        let events = read_traj_events(&dir, "s1");
+        assert_eq!(traj_kinds(&events), vec!["user", "thinking"]);
+        let agentj_protocol::trajectory::TrajectoryValue::Thinking { content } = &events[1].value
+        else {
+            panic!("expected a thinking node, got {events:?}")
+        };
+        assert_eq!(content, "\u{200b}ok");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn is_visually_blank_covers_zero_width_and_whitespace_only_text() {
+        for blank in [
+            "",
+            " ",
+            "\n\t ",
+            "\u{200b}",
+            "\u{200b}\u{feff}",
+            " \u{200b}\n",
+        ] {
+            assert!(IpcServer::is_visually_blank(blank), "{blank:?}");
+        }
+        for visible in ["a", "0", "-", "\u{200b}ok", "分析"] {
+            assert!(!IpcServer::is_visually_blank(visible), "{visible:?}");
+        }
     }
 
     #[tokio::test]
