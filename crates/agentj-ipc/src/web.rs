@@ -270,21 +270,11 @@ impl Default for IntegrityOptions {
 }
 
 /// Clamp bounds for [`IntegrityOptions`], mirroring `agentj-config`'s `[web]` bounds.
-///
-/// `allow(dead_code)`: the bounds are consumed by the request-path verification and
-/// the manual sweep, which land in the following changes; the annotations come off
-/// with each consumer.
-#[allow(dead_code)]
 pub(crate) const MIN_SPOT_INTERVAL: Duration = Duration::from_secs(5);
-#[allow(dead_code)]
 pub(crate) const MAX_SPOT_INTERVAL: Duration = Duration::from_secs(3600);
-#[allow(dead_code)]
 pub(crate) const MIN_SPOT_SAMPLE: usize = 1;
-#[allow(dead_code)]
 pub(crate) const MAX_SPOT_SAMPLE: usize = 1024;
-#[allow(dead_code)]
 pub(crate) const MIN_VERIFY_TTL: Duration = Duration::from_secs(1);
-#[allow(dead_code)]
 pub(crate) const MAX_VERIFY_TTL: Duration = Duration::from_secs(3600);
 /// Upper bound on the request-path verification memo (design: bounded cache).
 pub(crate) const VERIFY_CACHE_MAX: usize = 1024;
@@ -317,7 +307,6 @@ pub(crate) struct FullSweepOutcome {
 }
 
 /// Request-path verification counters plus the current memo size (design G2).
-#[allow(dead_code)] // /metrics reads these in the following changes
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct RequestIntegritySnapshot {
     pub(crate) checked: u64,
@@ -775,7 +764,6 @@ impl WebConfig {
         (report, age)
     }
     /// Request-path verification counters plus the current memo size (design G2).
-    #[allow(dead_code)] // /metrics reads this in a following change
     pub(crate) fn request_integrity_snapshot(&self) -> RequestIntegritySnapshot {
         let cache_entries = self
             .verify_cache
@@ -1447,6 +1435,9 @@ fn prometheus_text(web: &WebConfig) -> String {
     push_login_ip_series(&mut out, &series, now);
     push_integrity_summary(&mut out, web.integrity());
     push_spot_summary(&mut out, &runtime);
+    push_integrity_request_summary(&mut out, &web.request_integrity_snapshot());
+    let (on_demand, _) = web.on_demand_snapshot();
+    push_integrity_sweep_summary(&mut out, &on_demand);
     push_client_ip_summary(web, &mut out);
     push_state_summary(web, &mut out);
     out
@@ -1600,6 +1591,72 @@ fn push_spot_summary(out: &mut String, report: &SpotCheckReport) {
         "agentj_web_spot_missing_total",
         "counter",
         "Web asset spot-check: manifest entries missing on disk across rounds.",
+        report.missing,
+    );
+}
+
+/// Request-path verification series (design G2): how many served assets were
+/// hashed, how many of those were tampered with or already gone, and how many
+/// verdicts the memo currently holds.
+fn push_integrity_request_summary(out: &mut String, snapshot: &RequestIntegritySnapshot) {
+    push_metric(
+        out,
+        "agentj_web_integrity_request_checked_total",
+        "counter",
+        "Per-request web asset checks that read and hashed a file.",
+        snapshot.checked,
+    );
+    push_metric(
+        out,
+        "agentj_web_integrity_request_mismatched_total",
+        "counter",
+        "Per-request web asset checks that found a digest mismatch.",
+        snapshot.mismatched,
+    );
+    push_metric(
+        out,
+        "agentj_web_integrity_request_missing_total",
+        "counter",
+        "Per-request web asset checks whose manifest entry was missing on disk.",
+        snapshot.missing,
+    );
+    push_metric(
+        out,
+        "agentj_web_integrity_request_cache_entries",
+        "gauge",
+        "Memoised per-request verification verdicts currently held.",
+        snapshot.cache_entries as u64,
+    );
+}
+
+/// Manual-sweep series (design G3/G7): swept runs and their cumulative outcome.
+fn push_integrity_sweep_summary(out: &mut String, report: &IntegrityOnDemandReport) {
+    push_metric(
+        out,
+        "agentj_web_integrity_sweeps_total",
+        "counter",
+        "On-demand full asset sweeps actually executed.",
+        report.sweeps,
+    );
+    push_metric(
+        out,
+        "agentj_web_integrity_sweep_checked_total",
+        "counter",
+        "On-demand sweeps: files read and hashed.",
+        report.checked,
+    );
+    push_metric(
+        out,
+        "agentj_web_integrity_sweep_mismatched_total",
+        "counter",
+        "On-demand sweeps: digest mismatches.",
+        report.mismatched,
+    );
+    push_metric(
+        out,
+        "agentj_web_integrity_sweep_missing_total",
+        "counter",
+        "On-demand sweeps: manifest entries missing on disk.",
         report.missing,
     );
 }
@@ -3842,6 +3899,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn integrity_metrics_reflect_a_request_check_and_a_sweep() {
+        let dist = temp_dist("metrics-integrity");
+        write_manifest(&dist, &[("/assets/app.js", "sha384-AAAA")]);
+        let state = test_state(WebConfig::new(Some(dist.clone()), None));
+        let local: std::net::SocketAddr = LOOPBACK.parse().unwrap();
+        get(
+            crate::web::build_router(state.clone(), local),
+            "/assets/app.js",
+        )
+        .await;
+        form_post(
+            crate::web::build_router(state.clone(), local),
+            "/integrity/verify",
+            "",
+        )
+        .await;
+        let (_s, _, body) = get(crate::web::build_router(state.clone(), local), "/metrics").await;
+        for line in [
+            "agentj_web_integrity_request_checked_total 1",
+            "agentj_web_integrity_request_cache_entries 1",
+            "agentj_web_integrity_sweeps_total 1",
+        ] {
+            assert!(body.lines().any(|l| l == line), "missing {line} in\n{body}");
+        }
+        std::fs::remove_dir_all(&dist).ok();
+    }
+
+    #[tokio::test]
     async fn prometheus_text_keeps_the_existing_metrics_and_adds_the_new_ones() {
         let web = crate::web::WebConfig::new(None, None).with_trust_proxy_headers(true);
         web.record_ip_source(crate::client_ip::IpSource::XForwardedFor, false);
@@ -3867,6 +3952,21 @@ mod tests {
             assert!(
                 out.contains(name),
                 "existing metric {name} vanished:\n{out}"
+            );
+        }
+        for name in [
+            "agentj_web_integrity_request_checked_total",
+            "agentj_web_integrity_request_mismatched_total",
+            "agentj_web_integrity_request_missing_total",
+            "agentj_web_integrity_request_cache_entries",
+            "agentj_web_integrity_sweeps_total",
+            "agentj_web_integrity_sweep_checked_total",
+            "agentj_web_integrity_sweep_mismatched_total",
+            "agentj_web_integrity_sweep_missing_total",
+        ] {
+            assert!(
+                out.contains(&format!("# TYPE {name} ")),
+                "missing TYPE for {name}:\n{out}"
             );
         }
         assert!(
