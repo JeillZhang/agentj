@@ -2,7 +2,7 @@ use agentj_core::error::ToolError;
 use agentj_core::module::{Tool, ToolCallContext};
 use std::sync::Arc;
 
-use crate::executor::{CommandSpec, ToolExecutor};
+use crate::executor::{CommandSpec, RunFailure, ToolExecutor};
 
 /// Lower bound for a model-supplied `timeout_ms`. Anything smaller is almost
 /// always a units mistake (seconds read as milliseconds) and would kill the
@@ -196,8 +196,9 @@ impl GrepTool {
         pattern: &str,
         include: &str,
         cwd: Option<&std::path::Path>,
+        timeout: std::time::Duration,
     ) -> Result<serde_json::Value, ToolError> {
-        Self::run_with_rg("rg", pattern, include, cwd)
+        Self::run_with_rg("rg", pattern, include, cwd, timeout)
     }
 
     /// Search with the ripgrep binary when it is available, otherwise fall back to
@@ -208,45 +209,50 @@ impl GrepTool {
         pattern: &str,
         include: &str,
         cwd: Option<&std::path::Path>,
+        timeout: std::time::Duration,
     ) -> Result<serde_json::Value, ToolError> {
-        match Self::run_rg(rg_bin, pattern, include, cwd) {
+        match Self::run_rg(rg_bin, pattern, include, cwd, timeout) {
             Ok(stdout) => Ok(serde_json::Value::String(stdout)),
             // `rg` is not installed (fresh machine, minimal container, Windows):
             // fall back to the in-process walker instead of failing the tool.
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Self::search_native(
+            Err(RunFailure::ProgramMissing { .. }) => Self::search_native(
                 pattern,
                 include,
                 cwd.unwrap_or_else(|| std::path::Path::new(".")),
             )
             .map(serde_json::Value::String),
-            Err(e) => Err(ToolError::ExecutionFailed {
-                name: "grep".into(),
-                reason: e.to_string(),
-            }),
+            Err(other) => Err(other.into()),
         }
     }
 
-    /// Spawn error is preserved so the caller can tell "no ripgrep" from "rg ran
-    /// and failed". `-n` keeps ripgrep's output in the same `path:line:match`
-    /// shape the fallback emits.
+    /// Run `rg` through the guarded executor so a hung search is killed together
+    /// with its process group. A spawn `io::ErrorKind::NotFound` surfaces as
+    /// [`RunFailure::ProgramMissing`], which is the signal that there is no
+    /// ripgrep to fall back from — hence `RunFailure` rather than `ToolError`.
+    /// The argument order is unchanged, which keeps the `path:line:match` output
+    /// shape identical to the fallback.
     fn run_rg(
         rg_bin: &str,
         pattern: &str,
         include: &str,
         cwd: Option<&std::path::Path>,
-    ) -> std::io::Result<String> {
-        let mut cmd = std::process::Command::new(rg_bin);
-        cmd.arg("--no-heading")
-            .arg("--with-filename")
-            .arg("--line-number")
-            .arg(pattern)
-            .arg("--glob")
-            .arg(include);
-        if let Some(dir) = cwd {
-            cmd.current_dir(dir);
-        }
-        let output = cmd.output()?;
-        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+        timeout: std::time::Duration,
+    ) -> Result<String, RunFailure> {
+        let spec = CommandSpec {
+            program: rg_bin.to_string(),
+            args: vec![
+                "--no-heading".into(),
+                "--with-filename".into(),
+                "--line-number".into(),
+                pattern.into(),
+                "--glob".into(),
+                include.into(),
+            ],
+            cwd: cwd.map(std::path::Path::to_path_buf),
+        };
+        ToolExecutor::new(timeout, true)
+            .run_blocking(spec)
+            .map(|out| out.stdout)
     }
 
     /// Search without ripgrep: walk `root`, match `include` as a glob, run the
@@ -334,14 +340,19 @@ impl Tool for GrepTool {
             "type": "object",
             "properties": {
                 "pattern": { "type": "string" },
-                "include": { "type": "string", "description": "File pattern (e.g. *.rs)" }
+                "include": { "type": "string", "description": "File pattern (e.g. *.rs)" },
+                "timeout_ms": {
+                    "type": "integer",
+                    "description": "Optional timeout in milliseconds (1000-600000; default 60000)"
+                }
             },
             "required": ["pattern"]
         })
     }
     fn execute(&self, input: serde_json::Value) -> Result<serde_json::Value, ToolError> {
         let (pattern, include) = Self::args(&input);
-        Self::run(pattern, include, None)
+        let timeout = clamp_timeout_ms(input["timeout_ms"].as_i64(), SEARCH_DEFAULT_TIMEOUT_MS);
+        Self::run(pattern, include, None, timeout)
     }
     fn execute_with_context(
         &self,
@@ -349,7 +360,8 @@ impl Tool for GrepTool {
         ctx: &ToolCallContext,
     ) -> Result<serde_json::Value, ToolError> {
         let (pattern, include) = Self::args(&input);
-        Self::run(pattern, include, Some(&ctx.workspace_root))
+        let timeout = clamp_timeout_ms(input["timeout_ms"].as_i64(), SEARCH_DEFAULT_TIMEOUT_MS);
+        Self::run(pattern, include, Some(&ctx.workspace_root), timeout)
     }
 }
 
@@ -716,12 +728,56 @@ mod tests {
             "system_prompt",
             "*.rs",
             Some(root.path()),
+            std::time::Duration::from_secs(60),
         )
         .unwrap();
         assert_eq!(
             out.as_str().unwrap(),
             "crates/demo/src/lib.rs:1:pub fn system_prompt() {}\ncrates/demo/src/lib.rs:2:// system_prompt again\n",
             "a missing rg binary must fall back to the in-process walker"
+        );
+    }
+
+    #[cfg(unix)]
+    fn slow_executable(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join(name);
+        std::fs::write(&path, "#!/bin/sh\nsleep 30\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn grep_tool_times_out_and_reclaims_its_process_group() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let fake_rg = slow_executable(dir.path(), "slow-rg");
+        let started = std::time::Instant::now();
+        let err = GrepTool::run_with_rg(
+            fake_rg.to_str().unwrap(),
+            "needle",
+            "*",
+            Some(dir.path()),
+            std::time::Duration::from_millis(1_000),
+        )
+        .unwrap_err();
+        // Err(Timeout) — NOT Ok(""): an empty result would read to the model as
+        // "no matches", turning a timeout into a false conclusion.
+        assert!(matches!(&err, ToolError::Timeout(_)), "unexpected: {err}");
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    }
+
+    #[test]
+    fn grep_schema_declares_an_optional_timeout_ms() {
+        let schema = GrepTool.input_schema();
+        assert_eq!(schema["properties"]["timeout_ms"]["type"], "integer");
+        assert!(
+            schema["required"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|v| v != "timeout_ms"),
+            "timeout_ms must stay optional"
         );
     }
 
