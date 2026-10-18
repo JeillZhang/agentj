@@ -1,6 +1,6 @@
 # AGENTS.md
 
-> **当前版本 0.29.12** · `PROTOCOL_VERSION` **0.18.0**（28 方法 / 78 schemas / 18 crates）
+> **当前版本 0.1.0** · `PROTOCOL_VERSION` **0.18.0**（28 方法 / 78 schemas / 18 crates）
 > 本文件只记录**约束、入口与基线**（Setup / Commands / Architecture / Conventions / Rules）。
 > **逐版本变更与历史决策不写在这里** —— 见 [`docs/changelog/`](docs/changelog/)、
 > [`docs/guide/`](docs/guide/)、[`docs/specs/`](docs/specs/) 与 `.agents/summary/`。
@@ -246,7 +246,7 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
   **不记录详细版本变更与逐版本特性**。版本行只同步「当前版本 + 指向 `docs/changelog/` 的链接」。
 - 版本变更记录 → `docs/changelog/`（每个次版本一个文件 `v0.<minor>.md`，补丁号作为同文件
   小节；Keep a Changelog 风格 `Added`/`Changed`/`Fixed`/`Removed`；新次版本另建文件并更新
-  `docs/changelog/README.md` 索引）。
+  `docs/changelog/README.md` 索引）。全部特性合并于 `0.1.0`（`v0.1.md`），不保留历史版本演进。
 - 用户可见特性 → `docs/guide/`（按主题，去版本号叙事）。
 - 当前正在开发功能的进度 / 遗留问题 / 待实施 / 下一步 → `.agents/summary/`（见下）。
 - 协议与设计细节 → `docs/specs/`。
@@ -257,7 +257,11 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
 ### 版本与提交
 
 - Commit messages in English. `docs/superpowers/` 本地文档用中文（不入库）。
-- Bump version on every feature (`0.1.0` → `0.2.0`) and bugfix (`0.1.0` → `0.1.1`)。
+- **版本号不随特性/修复自动递增**：默认沿用当前版本号（现为 `0.1.0`），新特性与 bug 修复都不改动它。
+  仅当用户**主动要求**变更版本号时才更新；届时须同步 `Cargo.toml`、`agentj-ui/packages/sdk/src/config.ts`
+  （`VERSION`）、desktop 四件套（`package.json` / `src-tauri/tauri.conf.json` / `src-tauri/Cargo.toml`）、
+  本文件与 `README.md` 的版本基线，以及 `scripts/check-version.sh` 的断言，并以
+  `./scripts/check-version.sh` 通过为验收。
 - 涉及协议 wire 的变更必须同步 `PROTOCOL_VERSION` + `protocol/methods.json` + schemas。
 
 ### 总结文件（前后端隔离，禁止交叉写入）
