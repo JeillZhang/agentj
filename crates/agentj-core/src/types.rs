@@ -114,6 +114,13 @@ pub enum AgentEvent {
         call_id: String,
         result: String,
     },
+    /// A tool result exceeded `max_tool_result_chars` and was capped at the single
+    /// tool-result conversion point. The [`AgentEvent::ToolResult`] that follows carries
+    /// the already-truncated text; every sink sees the same string.
+    ToolResultTruncated {
+        tool_call_id: String,
+        dropped_chars: usize,
+    },
     Todo {
         run_id: Option<String>,
         revision: u64,

@@ -50,6 +50,7 @@ pub struct TurnRunner {
     pipeline: Arc<dyn ContextPipeline>,
     default_system_prompt: String,
     max_tool_iterations: usize,
+    max_tool_result_chars: usize,
     on_turn_complete: Option<Arc<dyn Fn(&SessionId, Option<TokenUsage>) + Send + Sync>>,
     sender: KernelSender,
     tool_executor_id: ModuleId,
@@ -75,11 +76,17 @@ impl TurnRunner {
                     .and_then(|v| if v > 0 { Some(v as usize) } else { None })
             })
             .unwrap_or(50);
+        let max_tool_result_chars = ctx
+            .config
+            .get_int("agent.max_tool_result_chars")
+            .and_then(|v| usize::try_from(v).ok())
+            .unwrap_or(100_000);
         Self {
             ctx,
             pipeline,
             default_system_prompt,
             max_tool_iterations,
+            max_tool_result_chars,
             on_turn_complete: None,
             sender,
             tool_executor_id,
@@ -137,6 +144,7 @@ impl TurnRunner {
         let pipeline = Arc::clone(&self.pipeline);
         let system_prompt = system_prompt.unwrap_or_else(|| self.default_system_prompt.clone());
         let max_iter = self.max_tool_iterations;
+        let max_tool_result_chars = self.max_tool_result_chars;
         let on_done = self.on_turn_complete.clone();
         let sender = self.sender.clone();
         let tool_executor_id = self.tool_executor_id.clone();
@@ -166,6 +174,7 @@ impl TurnRunner {
                 system_prompt,
                 overrides,
                 max_iter,
+                max_tool_result_chars,
                 reply.clone(),
                 sender,
                 tool_executor_id,
@@ -195,6 +204,7 @@ impl TurnRunner {
         system_prompt: String,
         overrides: RunOverrides,
         max_iter: usize,
+        max_tool_result_chars: usize,
         reply: mpsc::Sender<AgentEvent>,
         sender: KernelSender,
         tool_executor_id: ModuleId,
@@ -445,6 +455,22 @@ impl TurnRunner {
                 };
                 if cancelled {
                     break;
+                }
+                // Cap oversized tool results exactly once, at the single tool-result
+                // conversion point. The truncated string is what every downstream sink
+                // (event, reflux, persisted history) sees.
+                let (tool_result, dropped) =
+                    crate::budget::truncate_chars(&tool_result, max_tool_result_chars);
+                if dropped > 0
+                    && reply
+                        .send(AgentEvent::ToolResultTruncated {
+                            tool_call_id: tc.id.clone(),
+                            dropped_chars: dropped,
+                        })
+                        .await
+                        .is_err()
+                {
+                    return Ok(());
                 }
                 if reply
                     .send(AgentEvent::ToolResult {
@@ -1024,6 +1050,7 @@ mod tests {
                 }
                 AgentEvent::ToolCall(_) => kinds.push("tool_call".to_string()),
                 AgentEvent::ToolResult { .. } => kinds.push("tool_result".to_string()),
+                AgentEvent::ToolResultTruncated { .. } => {}
                 AgentEvent::Todo { .. } => kinds.push("todo".to_string()),
                 AgentEvent::FileChange(_) => kinds.push("file_change".to_string()),
                 AgentEvent::Done { .. } => {
@@ -1783,6 +1810,7 @@ mod tests {
                 AgentEvent::Delta(_) => kinds.push("delta".into()),
                 AgentEvent::ToolCall(_) => kinds.push("tool_call".into()),
                 AgentEvent::ToolResult { .. } => kinds.push("tool_result".into()),
+                AgentEvent::ToolResultTruncated { .. } => {}
                 AgentEvent::Todo {
                     revision, snapshot, ..
                 } => {
@@ -1847,6 +1875,7 @@ mod tests {
                 AgentEvent::Delta(_) => kinds.push("delta".into()),
                 AgentEvent::ToolCall(_) => kinds.push("tool_call".into()),
                 AgentEvent::ToolResult { .. } => kinds.push("tool_result".into()),
+                AgentEvent::ToolResultTruncated { .. } => {}
                 AgentEvent::Todo { .. } => kinds.push("todo".into()),
                 AgentEvent::FileChange(artifact) => {
                     kinds.push("file_change".into());
@@ -2415,5 +2444,199 @@ mod tests {
         .await;
         assert!(err.is_none(), "{err:?}");
         assert_eq!(seen, vec!["mock:cfg-model".to_string()]);
+    }
+
+    /// Tool whose result is a fixed 200 000-char string — the T6 truncation fixture.
+    struct BigOutputTool;
+    impl crate::module::Tool for BigOutputTool {
+        fn name(&self) -> &str {
+            "big"
+        }
+        fn description(&self) -> &str {
+            "returns a fixed oversized output"
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({ "type": "object", "properties": {} })
+        }
+        fn execute(
+            &self,
+            _input: serde_json::Value,
+        ) -> Result<serde_json::Value, crate::error::ToolError> {
+            Ok(serde_json::Value::String("x".repeat(200_000)))
+        }
+    }
+
+    /// Executes tools registered in a shared [`ToolRegistry`] — the in-test stand-in for
+    /// the real tool-executor module.
+    struct BigToolExecutor(Arc<ToolRegistry>);
+    impl Module for BigToolExecutor {
+        fn id(&self) -> ModuleId {
+            "tool_exec".into()
+        }
+        fn metadata(&self) -> ModuleMetadata {
+            ModuleMetadata {
+                id: "tool_exec".into(),
+                name: "exec".into(),
+                version: "0.1".into(),
+                description: "".into(),
+                author: "".into(),
+            }
+        }
+        fn init(&mut self, _c: &KernelContext, _r: &mut ModuleRegister) -> Result<(), ModuleError> {
+            Ok(())
+        }
+        fn shutdown(&mut self) -> Result<(), ModuleError> {
+            Ok(())
+        }
+    }
+    impl KernelModule for BigToolExecutor {
+        fn handle(
+            &mut self,
+            msg: &KernelMessage,
+        ) -> Result<crate::module::KernelResponse, ModuleError> {
+            if let KernelMessage::ToolCallRequest {
+                tool_call, reply, ..
+            } = msg
+            {
+                let reply = reply.clone();
+                let result = match self.0.get(&tool_call.name) {
+                    Some(tool) => tool
+                        .execute(tool_call.arguments.clone())
+                        .unwrap_or(serde_json::Value::Null),
+                    None => serde_json::Value::Null,
+                };
+                let mut guard = reply.lock().unwrap();
+                if let Some(tx) = guard.take() {
+                    let _ = tx.send(Ok(ToolExecutionOutcome {
+                        result,
+                        artifacts: vec![],
+                    }));
+                }
+            }
+            Ok(crate::module::KernelResponse::Handled)
+        }
+    }
+
+    /// Config that answers only the tool-result cap key.
+    struct ToolResultCapConfig(i64);
+    impl ConfigProvider for ToolResultCapConfig {
+        fn get_str(&self, _k: &str) -> Option<String> {
+            None
+        }
+        fn get_int(&self, k: &str) -> Option<i64> {
+            (k == "agent.max_tool_result_chars").then_some(self.0)
+        }
+        fn providers(&self) -> Vec<(String, String)> {
+            vec![]
+        }
+    }
+
+    /// One tool round against `BigOutputTool`, driven to completion. Returns every emitted
+    /// event and the persisted session history.
+    async fn run_one_tool_turn(cap: i64) -> (Vec<AgentEvent>, Vec<ChatMessage>) {
+        let tools = Arc::new(ToolRegistry::new());
+        tools.register(Arc::new(BigOutputTool));
+        let mut kernel = crate::kernel::Kernel::new();
+        let mut register = ModuleRegister::new(tools.clone(), Arc::new(ProviderRegistry::new()));
+        kernel
+            .register_module(
+                Box::new(BigToolExecutor(tools.clone())),
+                &loop_test_ctx(),
+                &mut register,
+            )
+            .unwrap();
+        let sender = kernel.sender();
+        let _handle = kernel.start();
+        let session = Arc::new(MockSession {
+            history: StdMutex::new(vec![]),
+        });
+        let ctx = KernelContext {
+            session: session.clone(),
+            tools,
+            providers: Arc::new(ProviderRegistry::new()),
+            config: Arc::new(ToolResultCapConfig(cap)),
+        };
+        ctx.providers.register(
+            "mock".into(),
+            Arc::new(ScriptedProvider {
+                calls: Arc::new(AtomicUsize::new(0)),
+                tool: ToolCall {
+                    id: "c1".into(),
+                    name: "big".into(),
+                    arguments: serde_json::json!({}),
+                },
+            }),
+        );
+        let runner = TurnRunner::new(
+            ctx.clone(),
+            Arc::new(MockPipeline),
+            "sys".into(),
+            sender,
+            "tool_exec".into(),
+        );
+        let sid = runner.create_session().unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+        runner
+            .spawn_turn(sid, "hi".into(), None, RunOverrides::default(), tx)
+            .unwrap();
+        let mut events = vec![];
+        while let Some(ev) = rx.recv().await {
+            let terminal = matches!(ev, AgentEvent::Done { .. } | AgentEvent::Error(_));
+            events.push(ev);
+            if terminal {
+                break;
+            }
+        }
+        let stored = session.history.lock().unwrap().clone();
+        kernel.sender().send(KernelMessage::Shutdown).unwrap();
+        (events, stored)
+    }
+
+    #[tokio::test]
+    async fn big_tool_output_is_truncated_once() {
+        let (events, stored) = run_one_tool_turn(100_000).await;
+        let tool_msg = stored
+            .iter()
+            .find(|m| m.role == Role::Tool)
+            .expect("tool message");
+        assert!(tool_msg.content.chars().count() <= 100_000 + 160);
+        assert!(tool_msg.content.ends_with("请缩小查询范围]…\n"));
+        let dropped: Vec<usize> = events
+            .iter()
+            .filter_map(|e| match e {
+                AgentEvent::ToolResultTruncated { dropped_chars, .. } => Some(*dropped_chars),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(dropped, vec![100_000], "one truncation with exact drop");
+        // The ToolResult frame and the stored message must carry the SAME truncated string
+        // (single conversion point, no re-truncation downstream).
+        let frame = events
+            .iter()
+            .find_map(|e| match e {
+                AgentEvent::ToolResult { result, .. } => Some(result),
+                _ => None,
+            })
+            .expect("tool result frame");
+        assert_eq!(frame, &tool_msg.content, "event frame == stored message");
+    }
+
+    #[tokio::test]
+    async fn small_tool_output_is_untouched() {
+        let (events, stored) = run_one_tool_turn(10_000_000).await;
+        let tool_msg = stored
+            .iter()
+            .find(|m| m.role == Role::Tool)
+            .expect("tool message");
+        assert_eq!(
+            tool_msg.content,
+            "x".repeat(200_000),
+            "below-limit result must be byte-identical"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, AgentEvent::ToolResultTruncated { .. }))
+        );
     }
 }

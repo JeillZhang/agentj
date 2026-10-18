@@ -985,6 +985,7 @@ impl IpcServer {
                         },
                     );
                 }
+                AgentEvent::ToolResultTruncated { .. } => {}
                 AgentEvent::Done {
                     run_id,
                     tool_calls,
