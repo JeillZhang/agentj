@@ -11,6 +11,7 @@ import { METHODS, ResponseRouter } from "@agentj/sdk";
 import type { TransportStatus } from "@agentj/sdk";
 import { MODEL_CONFIG, providersFromStatus, renderModelList } from "./models.tsx";
 import { loadFileTreePrefs, saveFileTreePrefs } from "./filetreePrefs.ts";
+import { SEARCH_RANK_CASES } from "./searchRankCases";
 import { saveSessionHistory } from "./session.tsx";
 import { saveProjects } from "./sidebar.tsx";
 import type { RawFileEntry } from "./files.ts";
@@ -115,13 +116,26 @@ type FakeKernel = {
   handle: TransportHandle & { send: (line: string) => Promise<string> };
 };
 
-// Server mode (the default) answers a string query with ranked matches + total;
-// legacy mode ignores the query and returns the depth-8 listing without a total.
-function rankEntry(entry: RawFileEntry, query: string): number {
-  const name = entry.name.toLowerCase();
-  if (name.startsWith(query)) return 0;
-  if (name.includes(query)) return 1;
-  return 2;
+// Server mode replays the Rust-authoritative conformance fixture; queries outside
+// the fixture get a plain wire-order substring filter over files. Neither path ranks
+// locally — the kernel owns the ranking rule.
+function serverSearchReply(tree: RawFileEntry[], query: string) {
+  const contract = SEARCH_RANK_CASES.searches.find((c) => c.query === query);
+  if (contract) {
+    const byPath = new Map(contract.entries.map((e) => [e.path, e]));
+    return {
+      entries: contract.expected_ranked_paths
+        .map((p) => byPath.get(p))
+        .filter((e): e is NonNullable<typeof e> => e !== undefined)
+        .map((e) => ({ name: e.name, path: e.path, kind: e.kind })),
+      total: contract.expected_total,
+    };
+  }
+  // A filter, never a ranker: directories are dropped and wire order is preserved.
+  const matches = tree.filter(
+    (e) => e.kind === "file" && e.path.toLowerCase().includes(query.toLowerCase()),
+  );
+  return { entries: matches, total: matches.length };
 }
 
 function fakeKernel(options: { search?: "server" | "legacy"; sessionRoot?: string } = {}): FakeKernel {
@@ -158,14 +172,7 @@ function fakeKernel(options: { search?: "server" | "legacy"; sessionRoot?: strin
           }
           if (options.search !== "legacy") {
             const query = typeof params.query === "string" ? params.query.trim().toLowerCase() : "";
-            const matches = flat().filter(
-              (e) => query.length > 0 && (e.name.toLowerCase().includes(query) ||
-                e.path.toLowerCase().includes(query)),
-            );
-            matches.sort(
-              (a, b) => rankEntry(a, query) - rankEntry(b, query) || a.path.localeCompare(b.path),
-            );
-            result = { entries: matches, total: matches.length, truncated: false };
+            result = { ...serverSearchReply(flat(), query), truncated: false };
           } else {
             result = { entries: flat(), truncated: false };
           }
@@ -249,6 +256,22 @@ async function openFilesSidebar(setup: TestRendererSetup, input: AppInput): Prom
 
 const depthEightCalls = (kernel: FakeKernel): KernelCall[] =>
   kernel.calls.filter((c) => c.method === METHODS.fileList && c.depth === 8);
+
+async function searchReply(
+  kernel: FakeKernel,
+  query: string,
+): Promise<{ entries: RawFileEntry[]; total?: number }> {
+  const line = JSON.stringify({
+    jsonrpc: "2.0",
+    id: 1,
+    method: METHODS.fileList,
+    params: { path: null, depth: 8, query },
+  });
+  const parsed = JSON.parse(await kernel.handle.send(line)) as {
+    result: { entries: RawFileEntry[]; total?: number };
+  };
+  return parsed.result;
+}
 
 describe("App connection screen", () => {
   test("unreachable shows kernel unreachable", async () => {
@@ -645,8 +668,28 @@ test("BUG-009: typing in the composer never triggers sidebar/file shortcuts", as
 });
 
 describe("files search mode", () => {
+  test("server search replays the conformance fixture, ranked, with its total", async () => {
+    const kernel = fakeKernel({ search: "server" });
+    const contract = SEARCH_RANK_CASES.searches.find((c) => c.query === "auth");
+    expect(contract).toBeDefined();
+    const reply = await searchReply(kernel, "auth");
+    expect(reply.entries.map((e) => e.path)).toEqual(contract!.expected_ranked_paths);
+    expect(reply.total).toBe(contract!.expected_total);
+  });
+
+  test("an unknown query falls back to a wire-order file filter, never a re-ranking", async () => {
+    const kernel = fakeKernel({ search: "server" });
+    // "s" matches the tree's files in wire order; a ranker would sort the nested Button.tsx first.
+    const reply = await searchReply(kernel, "s");
+    expect(reply.entries.map((e) => e.path)).toEqual([
+      "src/main.rs",
+      "src/components/Button.tsx",
+    ]);
+    expect(reply.total).toBe(2);
+  });
+
   test("s enters search, printables filter, r rebuilds, enter jumps", async () => {
-    const kernel = fakeKernel();
+    const kernel = fakeKernel({ search: "server" });
     const { setup, input } = await renderApp(kernel);
     await openFilesSidebar(setup, input);
     await act(async () => { input.press("s"); await setup.flush(); });
@@ -686,30 +729,29 @@ describe("files search mode", () => {
     act(() => setup.renderer.destroy());
   });
 
-  test("enter on a directory result expands and selects it", async () => {
-    const kernel = fakeKernel();
+  test("every server search row is a file, never a directory", async () => {
+    const kernel = fakeKernel({ search: "server" });
+    const contract = SEARCH_RANK_CASES.searches.find((c) => c.query === "main");
+    expect(contract).toBeDefined();
+    // The driven fixture case actually matches a directory ("src/main"); only the
+    // rank contract (expected_ranked_paths) drops it, which is what this test pins.
+    expect(contract!.entries.some((e) => e.kind === "directory")).toBe(true);
     const { setup, input } = await renderApp(kernel);
     await openFilesSidebar(setup, input);
     await act(async () => { input.press("s"); await setup.flush(); });
-    await act(async () => { await input.type("components"); await setup.flush(); });
+    await act(async () => { await input.type("main"); await setup.flush(); });
     await settleDebounce(setup);
-    await act(async () => {
-      await setup.waitFor(() => setup.captureCharFrame().includes("components"));
-    });
-    await act(async () => { input.press("enter"); await setup.flush(); });
-    await act(async () => {
-      await setup.waitFor(() => !setup.captureCharFrame().includes("type filter"));
-    });
-    await act(async () => { await setup.waitFor(() => /●\s*▼\s*components/.test(setup.captureCharFrame())); });
-    await act(async () => { await setup.waitFor(() => setup.captureCharFrame().includes("Button.tsx")); });
-    expect(kernel.calls).toContainEqual(
-      expect.objectContaining({ method: METHODS.fileList, path: "src/components", depth: 1 }),
-    );
+    const reply = await searchReply(kernel, "main");
+    // The contract half: no non-file entry survives, and the order is the fixture's.
+    expect(reply.entries.some((e) => e.kind !== "file")).toBe(false);
+    expect(reply.entries.map((e) => e.path)).toEqual(contract!.expected_ranked_paths);
+    // The UI half: the surviving file row is actually rendered.
+    expect(setup.captureCharFrame()).toContain("main.rs");
     act(() => setup.renderer.destroy());
   });
 
   test("esc clears a non-empty query before it exits search", async () => {
-    const kernel = fakeKernel();
+    const kernel = fakeKernel({ search: "server" });
     const { setup, input } = await renderApp(kernel);
     await openFilesSidebar(setup, input);
     await act(async () => { input.press("s"); await setup.flush(); });
@@ -759,7 +801,7 @@ describe("files search mode", () => {
   });
 
   test("keeps the query typed while the index request is in flight", async () => {
-    const kernel = fakeKernel();
+    const kernel = fakeKernel({ search: "server" });
     const { setup, input } = await renderApp(kernel);
     await openFilesSidebar(setup, input);
     const release = kernel.deferDepthEight();
@@ -812,7 +854,7 @@ describe("files search mode", () => {
   });
 
   test("jump loads ancestors depth-first and selects the nested target", async () => {
-    const kernel = fakeKernel();
+    const kernel = fakeKernel({ search: "server" });
     const { setup, input } = await renderApp(kernel);
     await openFilesSidebar(setup, input);
     await act(async () => { input.press("s"); await setup.flush(); });
@@ -834,7 +876,7 @@ describe("files search mode", () => {
   });
 
   test("a stale search target exits, refreshes the root and reports once", async () => {
-    const kernel = fakeKernel();
+    const kernel = fakeKernel({ search: "server" });
     const { setup, input } = await renderApp(kernel);
     await openFilesSidebar(setup, input);
     await act(async () => { input.press("s"); await setup.flush(); }); // search starts with no index
@@ -860,7 +902,7 @@ describe("files search mode", () => {
   });
 
   test("enter on an empty result set keeps search mode open", async () => {
-    const kernel = fakeKernel();
+    const kernel = fakeKernel({ search: "server" });
     const { setup, input } = await renderApp(kernel);
     await openFilesSidebar(setup, input);
     await act(async () => { input.press("s"); await setup.flush(); });
