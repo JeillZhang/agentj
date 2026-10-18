@@ -6,6 +6,20 @@
     "content": {
       "type": "string"
     },
+    "model": {
+      "description": "Effective model of the turn. @since 0.19.0",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "provider": {
+      "description": "Effective provider of the turn. @since 0.19.0",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "run_id": {
       "description": "Run id that scopes this turn's todo/file_change events. @since 0.15.0",
       "type": [
