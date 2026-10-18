@@ -368,19 +368,36 @@ impl Tool for GrepTool {
 pub struct GlobTool;
 
 impl GlobTool {
-    fn run(pattern: &str, cwd: Option<&std::path::Path>) -> Result<serde_json::Value, ToolError> {
-        let mut cmd = std::process::Command::new("find");
-        cmd.arg(".").arg("-name").arg(pattern).arg("-type").arg("f");
-        if let Some(dir) = cwd {
-            cmd.current_dir(dir);
-        }
-        let output = cmd.output().map_err(|e| ToolError::ExecutionFailed {
-            name: "glob".into(),
-            reason: e.to_string(),
-        })?;
-        Ok(serde_json::Value::String(
-            String::from_utf8_lossy(&output.stdout).to_string(),
-        ))
+    fn run(
+        pattern: &str,
+        cwd: Option<&std::path::Path>,
+        timeout: std::time::Duration,
+    ) -> Result<serde_json::Value, ToolError> {
+        Self::run_with_bin("find", pattern, cwd, timeout)
+    }
+
+    /// Run `find` through the guarded executor. The binary name is a parameter so
+    /// the timeout path can be exercised with a stand-in in tests. Arguments and
+    /// their order are unchanged, so the output keeps its `./src/main.rs` shape.
+    fn run_with_bin(
+        bin: &str,
+        pattern: &str,
+        cwd: Option<&std::path::Path>,
+        timeout: std::time::Duration,
+    ) -> Result<serde_json::Value, ToolError> {
+        let spec = CommandSpec {
+            program: bin.to_string(),
+            args: vec![
+                ".".into(),
+                "-name".into(),
+                pattern.into(),
+                "-type".into(),
+                "f".into(),
+            ],
+            cwd: cwd.map(std::path::Path::to_path_buf),
+        };
+        let out = ToolExecutor::new(timeout, true).run_blocking(spec)?;
+        Ok(serde_json::Value::String(out.stdout))
     }
 }
 
@@ -394,21 +411,30 @@ impl Tool for GlobTool {
     fn input_schema(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
-            "properties": { "pattern": { "type": "string" } },
+            "properties": {
+                "pattern": { "type": "string" },
+                "timeout_ms": {
+                    "type": "integer",
+                    "description": "Optional timeout in milliseconds (1000-600000; default 60000)"
+                }
+            },
             "required": ["pattern"]
         })
     }
     fn execute(&self, input: serde_json::Value) -> Result<serde_json::Value, ToolError> {
-        Self::run(input["pattern"].as_str().unwrap_or("*"), None)
+        let timeout = clamp_timeout_ms(input["timeout_ms"].as_i64(), SEARCH_DEFAULT_TIMEOUT_MS);
+        Self::run(input["pattern"].as_str().unwrap_or("*"), None, timeout)
     }
     fn execute_with_context(
         &self,
         input: serde_json::Value,
         ctx: &ToolCallContext,
     ) -> Result<serde_json::Value, ToolError> {
+        let timeout = clamp_timeout_ms(input["timeout_ms"].as_i64(), SEARCH_DEFAULT_TIMEOUT_MS);
         Self::run(
             input["pattern"].as_str().unwrap_or("*"),
             Some(&ctx.workspace_root),
+            timeout,
         )
     }
 }
@@ -779,6 +805,30 @@ mod tests {
                 .all(|v| v != "timeout_ms"),
             "timeout_ms must stay optional"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn glob_tool_times_out_and_reclaims_its_process_group() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let fake_find = slow_executable(dir.path(), "slow-find");
+        let started = std::time::Instant::now();
+        let err = GlobTool::run_with_bin(
+            fake_find.to_str().unwrap(),
+            "*.rs",
+            Some(dir.path()),
+            std::time::Duration::from_millis(1_000),
+        )
+        .unwrap_err();
+        assert!(matches!(&err, ToolError::Timeout(_)), "unexpected: {err}");
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    }
+
+    #[test]
+    fn glob_schema_declares_an_optional_timeout_ms() {
+        let schema = GlobTool.input_schema();
+        assert_eq!(schema["properties"]["timeout_ms"]["type"], "integer");
+        assert_eq!(schema["required"], serde_json::json!(["pattern"]));
     }
 
     /// `rg` matches the glob against the file name at any depth; the fallback
