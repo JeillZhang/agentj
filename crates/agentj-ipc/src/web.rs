@@ -3899,7 +3899,9 @@ mod tests {
 
     #[tokio::test]
     async fn integrity_metrics_reflect_a_request_check_and_a_sweep() {
-        let dist = temp_dist("metrics-integrity");
+        // Its own tag: sharing `metrics-integrity` with the startup-summary test
+        // made the two delete each other's dist under a parallel run.
+        let dist = temp_dist("metrics-integrity-request");
         write_manifest(&dist, &[("/assets/app.js", "sha384-AAAA")]);
         let state = test_state(WebConfig::new(Some(dist.clone()), None));
         let local: std::net::SocketAddr = LOOPBACK.parse().unwrap();
