@@ -3968,7 +3968,15 @@ mod tests {
                 out.contains(&format!("# TYPE {name} ")),
                 "missing TYPE for {name}:\n{out}"
             );
+            assert!(
+                has_metric_line(&out, &format!("{name} 0")),
+                "a fresh server must publish {name} as 0:\n{out}"
+            );
         }
+        assert!(
+            out.contains("# TYPE agentj_web_integrity_request_cache_entries gauge"),
+            "the memo size is a gauge, not a counter:\n{out}"
+        );
         assert!(
             has_metric_line(
                 &out,
