@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { startMockKernel } from "./mock-kernel.ts";
+import { SEARCH_RANK_CASES } from "../searchRankCases";
 
 type MessageHandler = (data: never) => void;
 
@@ -120,4 +121,43 @@ describe("mock kernel file/list", () => {
       await k.close();
     }
   }, 10000);
+
+  test("replays the shared conformance fixture instead of its own ranking rule", async () => {
+    const kernel = await startMockKernel();
+    const ws = await openWs(kernel.url);
+    try {
+      let id = 1;
+      for (const searchCase of SEARCH_RANK_CASES.searches) {
+        const reply = (await rpc(ws, id++, "file/list", {
+          session_id: "s1",
+          path: null,
+          depth: 8,
+          query: searchCase.query,
+        })) as { entries?: Array<{ path: string }>; total?: number };
+        expect(reply.entries?.map((e) => e.path)).toEqual(searchCase.expected_ranked_paths);
+        expect(reply.total).toBe(searchCase.expected_total);
+      }
+    } finally {
+      ws.close();
+      await kernel.close();
+    }
+  });
+
+  test("answers a query absent from the fixture with an empty result and total 0", async () => {
+    const kernel = await startMockKernel();
+    const ws = await openWs(kernel.url);
+    try {
+      const reply = (await rpc(ws, 1, "file/list", {
+        session_id: "s1",
+        path: null,
+        depth: 8,
+        query: "zzz-absent-from-fixture",
+      })) as { entries?: unknown[]; total?: number };
+      expect(reply.entries).toEqual([]);
+      expect(reply.total).toBe(0);
+    } finally {
+      ws.close();
+      await kernel.close();
+    }
+  });
 });
