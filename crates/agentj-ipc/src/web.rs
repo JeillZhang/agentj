@@ -94,10 +94,39 @@ fn validate_manifest(manifest: &AssetManifest) -> Result<(), String> {
 }
 
 /// Outcome of hashing one manifest entry against the bytes on disk.
-enum AssetCheck {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AssetCheck {
     Match,
     Mismatch,
     Missing,
+}
+
+/// Resolve the manifest key for a mount prefix plus a stripped request path
+/// (the `/assets` service sees `path` without its mount prefix; `mount_prefix`
+/// is a static so the allocation happens only on a miss).
+#[allow(dead_code)] // wired into the static surface in a following change
+fn manifest_key_for(mount_prefix: &'static str, path: &str) -> String {
+    format!("{mount_prefix}{path}")
+}
+
+/// Pick the manifest key for a request: the exact `mount_prefix + path` key when
+/// the manifest has it, otherwise `fallback_key` (the SPA shell for history
+/// routes) when that is present too. `None` means "not a manifest asset", so the
+/// request is never hashed against an unrelated digest.
+#[allow(dead_code)] // wired into the static surface in a following change
+fn verify_key(
+    manifest: &AssetManifest,
+    mount_prefix: &'static str,
+    fallback_key: Option<&'static str>,
+    path: &str,
+) -> Option<String> {
+    let key = manifest_key_for(mount_prefix, path);
+    if manifest.assets.contains_key(&key) {
+        return Some(key);
+    }
+    fallback_key
+        .filter(|fallback| manifest.assets.contains_key(*fallback))
+        .map(str::to_string)
 }
 
 /// Hash one manifest entry against the bytes on disk; shared by the startup
@@ -259,6 +288,8 @@ pub(crate) const MAX_SPOT_SAMPLE: usize = 1024;
 pub(crate) const MIN_VERIFY_TTL: Duration = Duration::from_secs(1);
 #[allow(dead_code)]
 pub(crate) const MAX_VERIFY_TTL: Duration = Duration::from_secs(3600);
+/// Upper bound on the request-path verification memo (design: bounded cache).
+pub(crate) const VERIFY_CACHE_MAX: usize = 1024;
 
 /// Cumulative outcome of the manual `POST /integrity/verify` sweeps (design G7):
 /// written by the sweep handler, read by `/version`.
@@ -284,8 +315,8 @@ pub(crate) struct RequestIntegritySnapshot {
 
 /// One memoised request-path verdict plus the instant it was taken, so the
 /// expiry check is absolute (a cache hit never extends the TTL).
-#[allow(dead_code)] // read once the request-path verification lands
 struct VerifyEntry {
+    #[allow(dead_code)] // inspected by the test-only `verify_cache_verdict`
     verdict: AssetCheck,
     checked_at: Instant,
 }
@@ -427,6 +458,13 @@ impl WebConfig {
     pub(crate) fn verify_on_request_enabled(&self) -> bool {
         self.verify_on_request
     }
+    /// Test-only escape hatch past the `MIN_VERIFY_TTL` clamp, so TTL tests can use
+    /// sub-second windows instead of sleeping a full second.
+    #[cfg(test)]
+    pub(crate) fn with_raw_verify_cache_ttl(mut self, ttl: Duration) -> Self {
+        self.verify_cache_ttl = ttl;
+        self
+    }
     /// Apply the `[web]` integrity knobs. Re-clamps defensively: the fields of
     /// `IntegrityOptions` are `pub`, and `tokio::time::interval(0)` panics.
     #[allow(dead_code)] // wired into the bind path in a following change
@@ -440,6 +478,94 @@ impl WebConfig {
         self.verify_on_request = opts.verify_on_request;
         self.verify_cache_ttl = opts.verify_cache_ttl.clamp(MIN_VERIFY_TTL, MAX_VERIFY_TTL);
         self
+    }
+    /// Verify one manifest entry, memoised for `verify_cache_ttl` (design D9/D10).
+    ///
+    /// The memo is keyed by manifest key and expires on an absolute deadline: a
+    /// hit never refreshes `checked_at`, so a tampered file is re-hashed once the
+    /// window closes instead of being trusted forever. Keys absent from the
+    /// manifest are ignored (they are never hashed).
+    #[allow(dead_code)] // wired into the static surface in a following change
+    pub(crate) fn verify_cached_asset(&self, key: &str) {
+        let Some(dist) = self.dist.as_deref() else {
+            return;
+        };
+        let Some(expected) = self
+            .manifest
+            .as_ref()
+            .and_then(|m| m.assets.get(key))
+            .cloned()
+        else {
+            return;
+        };
+        let now = Instant::now();
+        {
+            let cache = self.verify_cache.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(entry) = cache.get(key) {
+                // Absolute TTL: a hit never refreshes `checked_at`.
+                if now.duration_since(entry.checked_at) < self.verify_cache_ttl {
+                    return;
+                }
+            }
+        }; // release before any IO — never hold this lock across a read + hash
+        let verdict = check_asset(dist, key, &expected);
+        match verdict {
+            AssetCheck::Match => {
+                self.request_checked
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+            AssetCheck::Mismatch => {
+                self.request_checked
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                self.request_mismatched
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+            AssetCheck::Missing => {
+                self.request_missing
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+        if verdict != AssetCheck::Match {
+            self.warn_offense_once(key);
+        }
+        self.store_verify_entry(key.to_string(), verdict, now);
+    }
+    /// Insert one verdict, keeping the memo bounded: expired entries are dropped
+    /// first, and a still-full cache is cleared rather than grown without limit.
+    #[allow(dead_code)] // only reachable through `verify_cached_asset`
+    fn store_verify_entry(&self, key: String, verdict: AssetCheck, at: Instant) {
+        let mut cache = self.verify_cache.lock().unwrap_or_else(|e| e.into_inner());
+        if cache.len() >= VERIFY_CACHE_MAX && !cache.contains_key(&key) {
+            let ttl = self.verify_cache_ttl;
+            cache.retain(|_, entry| at.duration_since(entry.checked_at) < ttl);
+            if cache.len() >= VERIFY_CACHE_MAX {
+                cache.clear();
+            }
+        }
+        cache.insert(
+            key,
+            VerifyEntry {
+                verdict,
+                checked_at: at,
+            },
+        );
+    }
+    /// One `warn!` per path for the whole process; shared by every integrity path.
+    #[allow(dead_code)] // only reachable through `verify_cached_asset`
+    pub(crate) fn warn_offense_once(&self, path: &str) {
+        let mut warned = self.warned.lock().unwrap_or_else(|e| e.into_inner());
+        if warned.insert(path.to_string()) {
+            tracing::warn!(path = %path, "web asset integrity check failed");
+        }
+    }
+    /// The memoised verdict for `key`, for tests that need to see the cache.
+    #[cfg(test)]
+    pub(crate) fn verify_cache_verdict(&self, key: &str) -> Option<AssetCheck> {
+        self.verify_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(key)
+            .map(|entry| entry.verdict)
     }
     /// Opt in to forwarded-header trust (design D1). Takes effect only when the
     /// direct peer is loopback.
@@ -1670,6 +1796,176 @@ mod tests {
         for d in [aligned, mismatched, legacy, broken] {
             std::fs::remove_dir_all(&d).ok();
         }
+    }
+
+    #[test]
+    fn manifest_key_for_reattaches_the_stripped_mount_prefix() {
+        assert_eq!(manifest_key_for("/assets", "/app.js"), "/assets/app.js");
+        assert_eq!(manifest_key_for("", "/index.html"), "/index.html");
+    }
+
+    #[test]
+    fn verify_key_prefers_the_exact_key_then_the_fallback() {
+        let dist = temp_dist("verify-key");
+        let digest = sha384_b64(b"console.log(1)");
+        write_manifest(
+            &dist,
+            &[
+                ("/assets/app.js", digest.as_str()),
+                ("/index.html", digest.as_str()),
+            ],
+        );
+        let web = WebConfig::new(Some(dist.clone()), None);
+        let manifest = web.manifest.as_ref().expect("usable manifest");
+        assert_eq!(
+            verify_key(manifest, "/assets", None, "/app.js").as_deref(),
+            Some("/assets/app.js"),
+        );
+        assert_eq!(verify_key(manifest, "/assets", None, "/typo.js"), None);
+        assert_eq!(
+            verify_key(manifest, "", Some("/index.html"), "/sessions").as_deref(),
+            Some("/index.html"),
+        );
+        std::fs::remove_dir_all(&dist).ok();
+    }
+
+    #[test]
+    fn verify_cached_asset_memoizes_within_an_absolute_ttl() {
+        let dist = temp_dist("memo");
+        write_temp_dist_manifest(&dist);
+        let web =
+            WebConfig::new(Some(dist.clone()), None).with_integrity_options(IntegrityOptions {
+                verify_cache_ttl: Duration::from_secs(60),
+                ..IntegrityOptions::default()
+            });
+        web.verify_cached_asset("/assets/app.js");
+        std::fs::write(dist.join("assets/app.js"), "tampered").unwrap();
+        web.verify_cached_asset("/assets/app.js");
+        assert_eq!(web.request_integrity_snapshot().checked, 1);
+        assert_eq!(web.request_integrity_snapshot().mismatched, 0);
+        assert!(
+            web.verify_cache_verdict("/assets/app.js")
+                .is_some_and(|v| v == AssetCheck::Match)
+        );
+    }
+
+    #[test]
+    fn verify_cached_asset_rechecks_after_the_absolute_ttl_expires() {
+        let dist = temp_dist("ttl");
+        write_temp_dist_manifest(&dist);
+        // `with_raw_verify_cache_ttl` bypasses the 1s production clamp so this stays fast.
+        let web = WebConfig::new(Some(dist.clone()), None)
+            .with_raw_verify_cache_ttl(Duration::from_millis(1));
+        web.verify_cached_asset("/assets/app.js");
+        std::fs::write(dist.join("assets/app.js"), "tampered").unwrap();
+        std::thread::sleep(Duration::from_millis(5));
+        web.verify_cached_asset("/assets/app.js");
+        let snapshot = web.request_integrity_snapshot();
+        assert_eq!((snapshot.checked, snapshot.mismatched), (2, 1));
+    }
+
+    #[test]
+    fn verify_cache_entries_stay_within_the_bound() {
+        let dist = temp_dist("bound");
+        let keys: Vec<String> = (0..VERIFY_CACHE_MAX + 8)
+            .map(|i| format!("/assets/generated-{i}.js"))
+            .collect();
+        let digest = sha384_b64(b"x");
+        let entries: Vec<(&str, &str)> = keys
+            .iter()
+            .map(|key| (key.as_str(), digest.as_str()))
+            .collect();
+        write_manifest(&dist, &entries);
+        // Sub-second TTL: every insertion already sees expired entries, so the
+        // retain-then-clear branch inside `store_verify_entry` runs.
+        let web = WebConfig::new(Some(dist.clone()), None)
+            .with_raw_verify_cache_ttl(Duration::from_millis(1));
+        for key in &keys {
+            web.verify_cached_asset(key);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(
+            web.request_integrity_snapshot().cache_entries <= VERIFY_CACHE_MAX,
+            "the memo must stay bounded"
+        );
+        std::fs::remove_dir_all(&dist).ok();
+    }
+
+    #[test]
+    fn verify_cached_asset_warns_once_per_path_across_expiries() {
+        let dist = temp_dist("warn-once");
+        write_temp_dist_manifest(&dist);
+        std::fs::write(dist.join("assets/app.js"), "tampered").unwrap();
+        let web = WebConfig::new(Some(dist.clone()), None)
+            .with_raw_verify_cache_ttl(Duration::from_millis(1));
+        let (buf, _guard) = capture_warnings();
+        for _ in 0..3 {
+            web.verify_cached_asset("/assets/app.js");
+            std::thread::sleep(Duration::from_millis(3));
+        }
+        let out = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap_or_default();
+        assert_eq!(
+            out.matches("web asset integrity check failed").count(),
+            1,
+            "{out}"
+        );
+        assert_eq!(out.matches("/assets/app.js").count(), 1, "{out}");
+        let snapshot = web.request_integrity_snapshot();
+        assert_eq!(
+            (snapshot.checked, snapshot.mismatched),
+            (3, 3),
+            "warning de-duplication must not touch the counters"
+        );
+        std::fs::remove_dir_all(&dist).ok();
+    }
+
+    #[test]
+    fn verify_cached_asset_survives_poisoned_locks() {
+        let dist = temp_dist("poison");
+        write_temp_dist_manifest(&dist);
+        let web = std::sync::Arc::new(WebConfig::new(Some(dist.clone()), None));
+        let poisoned = std::sync::Arc::clone(&web);
+        let _ = std::thread::spawn(move || {
+            let _cache = poisoned.verify_cache.lock().unwrap();
+            let _warned = poisoned.warned.lock().unwrap();
+            panic!("poison both locks");
+        })
+        .join();
+        std::fs::write(dist.join("assets/app.js"), "tampered").unwrap();
+        web.verify_cached_asset("/assets/app.js"); // must not panic
+        assert_eq!(web.request_integrity_snapshot().mismatched, 1);
+        std::fs::remove_dir_all(&dist).ok();
+    }
+
+    #[test]
+    fn concurrent_cold_cache_checks_stay_correct() {
+        let dist = temp_dist("concurrent");
+        write_temp_dist_manifest(&dist);
+        std::fs::write(dist.join("assets/app.js"), "tampered").unwrap();
+        let web = std::sync::Arc::new(WebConfig::new(Some(dist.clone()), None));
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                let web = std::sync::Arc::clone(&web);
+                std::thread::spawn(move || web.verify_cached_asset("/assets/app.js"))
+            })
+            .collect();
+        for handle in handles {
+            handle.join().expect("no thread may panic");
+        }
+        let snapshot = web.request_integrity_snapshot();
+        assert!(
+            snapshot.mismatched >= 1,
+            "at least one hash reports the mismatch"
+        );
+        assert_eq!(
+            snapshot.cache_entries, 1,
+            "one key -> exactly one cache entry"
+        );
+        assert_eq!(
+            web.verify_cache_verdict("/assets/app.js"),
+            Some(AssetCheck::Mismatch)
+        );
+        std::fs::remove_dir_all(&dist).ok();
     }
 
     #[test]
