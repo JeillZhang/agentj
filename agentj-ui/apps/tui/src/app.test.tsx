@@ -1067,6 +1067,23 @@ describe("files search mode", () => {
     act(() => setup.renderer.destroy());
   });
 
+  test("r rebuild does not dispatch a whitespace-only query", async () => {
+    const kernel = fakeKernel({ search: "legacy" }); // legacy would fake the notice if dispatched
+    const { setup, input } = await renderApp(kernel);
+    await openFilesSidebar(setup, input);
+    await act(async () => { input.press("s"); await setup.flush(); });
+    await act(async () => { await input.type("  "); await setup.flush(); });
+    await settleDebounce(setup);
+    expect(depthEightCalls(kernel)).toHaveLength(0); // the blank guard holds for typing
+    // `r` must honour the same blank guard; a rebuild would dispatch immediately.
+    await act(async () => { input.press("r"); await setup.flush(); });
+    await settleDebounce(setup);
+    expect(depthEightCalls(kernel)).toHaveLength(0);
+    const frame = setup.captureCharFrame().replace(/[\s│]+/g, " ");
+    expect(frame).not.toContain(SEARCH_UNSUPPORTED_HINT);
+    act(() => setup.renderer.destroy());
+  });
+
   test("esc clears the unsupported notice along with the query", async () => {
     const kernel = fakeKernel({ search: "legacy" }); // reply carries no total
     const { setup, input } = await renderApp(kernel);

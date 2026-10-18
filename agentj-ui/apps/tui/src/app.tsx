@@ -557,7 +557,16 @@ function AppInner({ url, createTransport, backoffBaseMs = 1000 }: AppProps) {
         const msg = e instanceof Error ? e.message : String(e);
         setSearch((prev) =>
           prev && prev.query === query
-            ? { ...prev, rows: [], total: 0, idx: 0, error: msg, notice: null, truncated: false }
+            ? {
+                ...prev,
+                rows: [],
+                total: 0,
+                idx: 0,
+                error: msg,
+                notice: null,
+                truncated: false,
+                mode: "unknown",
+              }
             : prev,
         );
       }
@@ -574,10 +583,19 @@ function AppInner({ url, createTransport, backoffBaseMs = 1000 }: AppProps) {
       setSearch((prev) => {
         if (!prev) return prev;
         if (blank) {
-          return { ...prev, query: "", rows: [], total: 0, idx: 0, notice: null, truncated: false };
+          return {
+            ...prev,
+            query: "",
+            rows: [],
+            total: 0,
+            idx: 0,
+            notice: null,
+            truncated: false,
+            mode: "unknown",
+          };
         }
         if (next === prev.query) return prev;
-        return { ...prev, query: next, idx: 0, notice: null, truncated: false };
+        return { ...prev, query: next, idx: 0, notice: null, truncated: false, mode: "unknown" };
       });
       if (blank) return;
       searchTimerRef.current = setTimeout(() => {
@@ -590,6 +608,8 @@ function AppInner({ url, createTransport, backoffBaseMs = 1000 }: AppProps) {
   const rebuildSearch = useCallback((): void => {
     cancelSearchDebounce();
     if (!searchRef.current) return;
+    // A whitespace-only query is empty: it must not be rebuilt (same guard as applyQuery).
+    if (searchQueryRef.current.trim().length === 0) return;
     void runServerSearch(searchQueryRef.current, true);
   }, [cancelSearchDebounce, runServerSearch]);
   const startSearch = useCallback((): void => {
