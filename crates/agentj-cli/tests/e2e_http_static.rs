@@ -133,39 +133,11 @@ fn serve_config() -> &'static str {
     )
 }
 
-/// Spawn `agentj serve --web-dist <dist>`, wait for its listening address, run
-/// `probe` against that address, then kill the child and return its stderr.
-/// The stdout reader is held for the whole run (see the static e2e note).
+/// Serve `<dist>` with the shared deny-all fixture, run `probe` once the
+/// server prints its address, then return the child's stderr (read after the
+/// kill, so the already-emitted warnings do not block).
 fn run_serve_and_capture(dist: &std::path::Path, probe: impl FnOnce(&str)) -> String {
-    let mut child = AutoReap(
-        Command::new(env!("CARGO_BIN_EXE_agentj"))
-            .args([
-                "--config",
-                serve_config(),
-                "serve",
-                "--port",
-                "0",
-                "--web-dist",
-                dist.to_str().unwrap(),
-            ])
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap(),
-    );
-    let mut stderr = child.0.stderr.take().unwrap();
-    let mut reader = BufReader::new(child.0.stdout.take().unwrap());
-    let addr = read_listening_addr(&mut reader);
-    probe(&addr);
-
-    // The warning is written before the accept loop; kill the child to close
-    // stderr and read the already-emitted output without blocking.
-    let _ = child.0.kill();
-    let _ = child.0.wait();
-    let mut err = String::new();
-    let _ = stderr.read_to_string(&mut err);
-    err
+    run_serve_with_config(serve_config(), dist, probe)
 }
 
 /// `run_serve_and_capture` with an explicit fixture, so tests can drive `[web]`
@@ -504,19 +476,26 @@ fn e3_verify_on_request_false_suppresses_the_check() {
 fn e4_spot_cadence_comes_from_the_config_file() {
     let dist = temp_dist("e4");
     write_matching_manifest(&dist);
-    run_serve_with_config(FAST_SPOT, &dist, |addr| {
+    let err = run_serve_with_config(FAST_SPOT, &dist, |addr| {
         let deadline = Instant::now() + Duration::from_secs(15);
         while Instant::now() < deadline {
             let body = http_get(addr, "/version");
             if let Some(payload) = body.split("\r\n\r\n").nth(1) {
                 let json: serde_json::Value = serde_json::from_str(payload).unwrap();
-                if json["integrity"]["runtime"]["rounds"].as_u64().unwrap_or(0) >= 1 {
+                // `tokio::time::interval` ticks once immediately, so `>= 1` proves
+                // nothing about the cadence; a second round inside 15s is what
+                // distinguishes the 5s fixture from the 60s default.
+                if json["integrity"]["runtime"]["rounds"].as_u64().unwrap_or(0) >= 2 {
                     return;
                 }
             }
             std::thread::sleep(Duration::from_millis(250));
         }
-        panic!("runtime spot-check never ran with a 5s configured cadence");
+        panic!("the runtime spot-check never reached a second round within 15s");
     });
+    assert!(
+        !err.contains("integrity check failed"),
+        "unexpected warning: {err}"
+    );
     std::fs::remove_dir_all(&dist).ok();
 }
