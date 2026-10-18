@@ -4,10 +4,12 @@
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use tracing::{debug, info, warn};
+
+use crate::metrics_state::{self, CountersSnapshot, IpState, MetricsState, STATE_VERSION};
 
 #[derive(Clone, Debug)]
 pub(crate) struct Policy {
@@ -74,6 +76,8 @@ pub(crate) struct LoginLimiter {
     policy: Policy,
     entries: Mutex<HashMap<IpAddr, Entry>>,
     counters: CounterAtoms,
+    /// Set by every state mutation, cleared after a successful flush (design D3).
+    dirty: AtomicBool,
 }
 
 impl LoginLimiter {
@@ -86,6 +90,7 @@ impl LoginLimiter {
             policy,
             entries: Mutex::new(HashMap::new()),
             counters: CounterAtoms::default(),
+            dirty: AtomicBool::new(false),
         }
     }
 
@@ -105,6 +110,7 @@ impl LoginLimiter {
                 "login blocked while locked"
             );
         }
+        self.mark_dirty();
         throttle
     }
 
@@ -129,6 +135,7 @@ impl LoginLimiter {
         entry.last = now;
         if entry.failures < self.policy.free_attempts {
             debug!(ip = %ip, failures = entry.failures, "login failure");
+            self.mark_dirty();
             return Throttle::Allow;
         }
         let lockout = self.lockout_for(entry.failures);
@@ -145,6 +152,7 @@ impl LoginLimiter {
                 "login lockout"
             );
         }
+        self.mark_dirty();
         Throttle::Locked {
             retry_after: lockout,
         }
@@ -158,6 +166,7 @@ impl LoginLimiter {
             .remove(&ip)
             .map_or(0, |entry| entry.failures);
         info!(ip = %ip, prior_failures, "login ok");
+        self.mark_dirty();
     }
 
     pub(crate) fn counters(&self, now: Instant) -> Counters {
@@ -203,6 +212,89 @@ impl LoginLimiter {
                 .then(a.ip.cmp(&b.ip))
         });
         out
+    }
+
+    /// Whether anything changed since the last successful flush.
+    pub(crate) fn dirty(&self) -> bool {
+        self.dirty.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn mark_clean(&self) {
+        self.dirty.store(false, Ordering::Relaxed);
+    }
+
+    fn mark_dirty(&self) {
+        self.dirty.store(true, Ordering::Relaxed);
+    }
+
+    /// Serialize the aggregate counters plus every per-IP entry (design D3):
+    /// `Instant`s are converted against the caller's `now_unix` reading.
+    pub(crate) fn to_state(&self, now: Instant, now_unix: u64) -> MetricsState {
+        let ips = {
+            let entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+            entries
+                .iter()
+                .map(|(ip, entry)| IpState {
+                    ip: ip.to_string(),
+                    failures: entry.failures,
+                    locked_until_unix: entry.locked_until.map(|until| {
+                        now_unix.saturating_add(until.saturating_duration_since(now).as_secs())
+                    }),
+                    last_unix: now_unix
+                        .saturating_sub(now.saturating_duration_since(entry.last).as_secs()),
+                })
+                .collect()
+        };
+        MetricsState {
+            version: STATE_VERSION,
+            saved_at_unix: now_unix,
+            counters: CountersSnapshot {
+                attempts: self.counters.attempts.load(Ordering::Relaxed),
+                failures: self.counters.failures.load(Ordering::Relaxed),
+                lockouts: self.counters.lockouts.load(Ordering::Relaxed),
+                blocked: self.counters.blocked.load(Ordering::Relaxed),
+            },
+            ips,
+        }
+    }
+
+    /// Replace the in-memory state with a persisted snapshot and return how many
+    /// per-IP entries survived the conversion and the policy bounds (design D3).
+    pub(crate) fn restore_from(&self, state: &MetricsState, now: Instant, now_unix: u64) -> usize {
+        self.counters
+            .attempts
+            .store(state.counters.attempts, Ordering::Relaxed);
+        self.counters
+            .failures
+            .store(state.counters.failures, Ordering::Relaxed);
+        self.counters
+            .lockouts
+            .store(state.counters.lockouts, Ordering::Relaxed);
+        self.counters
+            .blocked
+            .store(state.counters.blocked, Ordering::Relaxed);
+        let seeds = metrics_state::restore_seeds(
+            &state.ips,
+            now_unix,
+            self.policy.max_lockout,
+            self.policy.idle_ttl,
+            self.policy.max_tracked,
+        );
+        let restored = seeds.len();
+        let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        entries.clear();
+        for (ip, seed) in seeds {
+            entries.insert(
+                ip,
+                Entry {
+                    failures: seed.failures,
+                    locked_until: seed.locked_for.map(|remaining| now + remaining),
+                    last: now.checked_sub(seed.last_age).unwrap_or(now),
+                },
+            );
+        }
+        self.mark_clean();
+        restored
     }
 
     fn lockout_for(&self, failures: u32) -> Duration {
@@ -422,6 +514,154 @@ mod tests {
         assert!(!snap[1].locked);
         assert_eq!(snap[1].retry_after, Duration::ZERO);
         assert!(limiter.snapshot(t0).iter().all(|s| s.last_seen == t0));
+    }
+
+    /// Production-scale policy: whole-second lockout/ttl values, so a file
+    /// round-trip (which stores whole seconds) keeps the lock window intact.
+    fn restore_policy() -> Policy {
+        Policy {
+            free_attempts: 5,
+            base_lockout: Duration::from_secs(30),
+            max_lockout: Duration::from_secs(900),
+            idle_ttl: Duration::from_secs(1800),
+            max_tracked: 1024,
+        }
+    }
+
+    #[test]
+    fn to_state_round_trips_through_restore_from() {
+        let limiter = LoginLimiter::with_policy(restore_policy());
+        let now = Instant::now();
+        let client = ip("203.0.113.9");
+        let other = ip("198.51.100.4");
+        for _ in 0..3 {
+            limiter.check(client, now);
+            limiter.record_failure(client, now);
+        }
+        // `check` alone creates no per-IP entry, so the second IP needs a failure.
+        limiter.check(other, now);
+        limiter.record_failure(other, now);
+        let state = limiter.to_state(now, 1_700_000_000);
+        assert_eq!(state.version, crate::metrics_state::STATE_VERSION);
+        assert_eq!(state.saved_at_unix, 1_700_000_000);
+        assert_eq!(state.counters.failures, 4);
+        assert_eq!(state.ips.len(), 2);
+
+        let restored = LoginLimiter::with_policy(restore_policy());
+        let entries = restored.restore_from(&state, now, 1_700_000_000);
+        assert_eq!(entries, 2);
+        assert_eq!(restored.counters(now).failures, 4);
+        assert_eq!(restored.counters(now).attempts, state.counters.attempts);
+        assert_eq!(restored.snapshot(now).len(), 2);
+        assert!(!restored.dirty(), "restoring must not mark the state dirty");
+    }
+
+    #[test]
+    fn restore_from_drops_idle_entries_and_keeps_live_locks() {
+        let now = Instant::now();
+        let state = crate::metrics_state::MetricsState {
+            version: crate::metrics_state::STATE_VERSION,
+            saved_at_unix: 1_700_000_000,
+            counters: crate::metrics_state::CountersSnapshot::default(),
+            ips: vec![
+                crate::metrics_state::IpState {
+                    ip: "203.0.113.9".into(),
+                    failures: 5,
+                    locked_until_unix: Some(1_700_000_400),
+                    last_unix: 1_700_000_000,
+                },
+                crate::metrics_state::IpState {
+                    ip: "198.51.100.4".into(),
+                    failures: 9,
+                    locked_until_unix: None,
+                    last_unix: 1_699_998_000, // age 2000s > idle_ttl 1800s
+                },
+            ],
+        };
+        let limiter = LoginLimiter::with_policy(restore_policy());
+        assert_eq!(limiter.restore_from(&state, now, 1_700_000_000), 1);
+        let snapshot = limiter.snapshot(now);
+        assert_eq!(snapshot.len(), 1);
+        assert!(snapshot[0].locked);
+        assert_eq!(snapshot[0].failures, 5);
+        assert!(snapshot[0].retry_after <= Duration::from_secs(400));
+        assert!(
+            snapshot[0].retry_after >= Duration::from_secs(399),
+            "the live lock keeps its remaining window: {:?}",
+            snapshot[0].retry_after
+        );
+    }
+
+    #[test]
+    fn restore_from_returns_the_restored_entry_count() {
+        let now = Instant::now();
+        let state = crate::metrics_state::MetricsState {
+            version: crate::metrics_state::STATE_VERSION,
+            saved_at_unix: 1_700_000_000,
+            counters: crate::metrics_state::CountersSnapshot::default(),
+            ips: (0..2000)
+                .map(|n| crate::metrics_state::IpState {
+                    ip: format!("10.{}.{}.1", n / 256, n % 256),
+                    failures: 1,
+                    locked_until_unix: None,
+                    last_unix: 1_700_000_000,
+                })
+                .collect(),
+        };
+        let limiter = LoginLimiter::with_policy(restore_policy());
+        let restored = limiter.restore_from(&state, now, 1_700_000_000);
+        assert_eq!(restored, 1024, "truncated to the policy cap");
+        assert_eq!(limiter.counters(now).tracked_ips, 1024);
+    }
+
+    #[test]
+    fn dirty_marks_on_every_mutation_and_clears_on_mark_clean() {
+        let limiter = LoginLimiter::with_policy(restore_policy());
+        let now = Instant::now();
+        assert!(!limiter.dirty(), "a fresh limiter has nothing to persist");
+        limiter.check(ip("203.0.113.9"), now);
+        assert!(limiter.dirty(), "check prunes and may bump attempts");
+        limiter.mark_clean();
+        assert!(!limiter.dirty());
+        limiter.record_failure(ip("203.0.113.9"), now);
+        assert!(limiter.dirty());
+        limiter.mark_clean();
+        limiter.record_success(ip("203.0.113.9"));
+        assert!(limiter.dirty());
+    }
+
+    #[test]
+    fn restore_from_replaces_previous_entries() {
+        let limiter = LoginLimiter::with_policy(restore_policy());
+        let now = Instant::now();
+        for _ in 0..3 {
+            limiter.record_failure(ip("192.0.2.5"), now);
+        }
+        let state = crate::metrics_state::MetricsState {
+            version: crate::metrics_state::STATE_VERSION,
+            saved_at_unix: 1_700_000_000,
+            counters: crate::metrics_state::CountersSnapshot {
+                attempts: 4,
+                failures: 4,
+                lockouts: 0,
+                blocked: 0,
+            },
+            ips: vec![crate::metrics_state::IpState {
+                ip: "203.0.113.9".into(),
+                failures: 4,
+                locked_until_unix: None,
+                last_unix: 1_700_000_000,
+            }],
+        };
+        assert_eq!(limiter.restore_from(&state, now, 1_700_000_000), 1);
+        let snapshot = limiter.snapshot(now);
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(
+            snapshot[0].ip,
+            ip("203.0.113.9"),
+            "pre-restore entries are gone"
+        );
+        assert_eq!(limiter.counters(now).attempts, 4);
     }
 
     #[derive(Clone, Default)]

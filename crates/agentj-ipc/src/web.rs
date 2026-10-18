@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::task::JoinHandle;
 
+use crate::client_ip::IpSource;
 use crate::login_limiter::{Counters, IpSnapshot, LoginLimiter, Throttle};
 
 /// Cookie carrying the opaque session id issued after a successful login.
@@ -239,6 +240,25 @@ pub(crate) struct SpotRound {
     pub(crate) offenses: Vec<String>,
 }
 
+/// Client-IP source tallies for `agentj_web_client_ip_source_total` plus the
+/// derivation failures (trust on, header present, nothing usable).
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct IpSourceTotals {
+    pub(crate) peer: u64,
+    pub(crate) forwarded: u64,
+    pub(crate) real_ip: u64,
+    pub(crate) invalid: u64,
+}
+
+/// Outcome of the persisted-state lifecycle, exposed as gauges/counters.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct StateReport {
+    pub(crate) restored: bool,
+    pub(crate) restored_entries: u64,
+    pub(crate) write_failures: u64,
+    pub(crate) last_flush_unix: u64,
+}
+
 /// Static-web-UI runtime config: resolved dist directory plus the optional
 /// access token and the in-memory set of issued sessions (D3, no persistence).
 pub struct WebConfig {
@@ -256,6 +276,12 @@ pub struct WebConfig {
     spot_task: std::sync::Mutex<Option<tokio::task::AbortHandle>>,
     sessions: std::sync::RwLock<std::collections::HashSet<String>>,
     login_limiter: LoginLimiter,
+    trust_proxy_headers: bool,
+    metrics_state: Option<std::path::PathBuf>,
+    ip_sources: std::sync::RwLock<IpSourceTotals>,
+    state_report: std::sync::RwLock<StateReport>,
+    flush_task: std::sync::Mutex<Option<tokio::task::AbortHandle>>,
+    flush_interval: Duration,
 }
 
 impl WebConfig {
@@ -281,6 +307,12 @@ impl WebConfig {
             spot_task: std::sync::Mutex::new(None),
             sessions: std::sync::RwLock::new(std::collections::HashSet::new()),
             login_limiter: LoginLimiter::new(),
+            trust_proxy_headers: false,
+            metrics_state: None,
+            ip_sources: std::sync::RwLock::new(IpSourceTotals::default()),
+            state_report: std::sync::RwLock::new(StateReport::default()),
+            flush_task: std::sync::Mutex::new(None),
+            flush_interval: Duration::from_secs(5),
         }
     }
     #[cfg(test)]
@@ -292,6 +324,147 @@ impl WebConfig {
     pub(crate) fn with_spot_check(mut self, spot: SpotCheckConfig) -> Self {
         self.spot = spot;
         self
+    }
+    /// Opt in to forwarded-header trust (design D1). Takes effect only when the
+    /// direct peer is loopback.
+    pub(crate) fn with_trust_proxy_headers(mut self, trust: bool) -> Self {
+        self.trust_proxy_headers = trust;
+        self
+    }
+    /// Opt in to state persistence (design D3). `None` keeps the limiter purely
+    /// in memory — which is what every directly constructed `WebConfig` does.
+    pub(crate) fn with_metrics_state(mut self, path: Option<std::path::PathBuf>) -> Self {
+        self.metrics_state = path;
+        self
+    }
+    #[cfg(test)]
+    pub(crate) fn with_flush_interval(mut self, interval: Duration) -> Self {
+        self.flush_interval = interval;
+        self
+    }
+    pub(crate) fn trust_proxy_headers(&self) -> bool {
+        self.trust_proxy_headers
+    }
+    #[allow(dead_code)] // only used by the tcp bind tests
+    pub(crate) fn metrics_state_path(&self) -> Option<&std::path::Path> {
+        self.metrics_state.as_deref()
+    }
+    /// Tally one resolved client IP (design D6). `invalid` is set by the caller
+    /// only when trust applied, a header was present and nothing usable came out.
+    pub(crate) fn record_ip_source(&self, source: crate::client_ip::IpSource, invalid: bool) {
+        let mut totals = self.ip_sources.write().unwrap_or_else(|e| e.into_inner());
+        match source {
+            crate::client_ip::IpSource::Peer => totals.peer += 1,
+            crate::client_ip::IpSource::XForwardedFor => totals.forwarded += 1,
+            crate::client_ip::IpSource::XRealIp => totals.real_ip += 1,
+        }
+        if invalid {
+            totals.invalid += 1;
+        }
+    }
+    fn warn_once(&self, key: &str, message: &str) {
+        let first = self
+            .warned
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(key.to_string());
+        if first {
+            tracing::warn!("{message}");
+        }
+    }
+    /// Load the persisted limiter state (design D3): a missing file is a normal
+    /// first run; an unusable one warns once and starts from zero, never blocking
+    /// startup. Returns whether state was restored.
+    pub(crate) fn restore_metrics_state(&self) -> bool {
+        let Some(path) = self.metrics_state.as_deref() else {
+            return false;
+        };
+        match crate::metrics_state::read(path) {
+            Ok(Some(state)) => {
+                let entries = self.login_limiter.restore_from(
+                    &state,
+                    Instant::now(),
+                    crate::metrics_state::unix_now(),
+                );
+                let mut report = self.state_report.write().unwrap_or_else(|e| e.into_inner());
+                report.restored = true;
+                report.restored_entries = entries as u64;
+                true
+            }
+            Ok(None) => false,
+            Err(error) => {
+                self.warn_once(
+                    "metrics-state-read",
+                    &format!(
+                        "warning: login metrics state at {} is unusable ({error}); counters start at zero",
+                        path.display()
+                    ),
+                );
+                false
+            }
+        }
+    }
+    /// Write the limiter state if a path is configured (design D3). Failures are
+    /// counted and warned once; the dirty flag stays set so the next tick retries.
+    ///
+    /// Graceful-shutdown API: the CLI calls this (before `stop_metrics_flush`)
+    /// so a recorded login-failure window survives the process exiting.
+    pub fn flush_metrics_state(&self) {
+        let Some(path) = self.metrics_state.as_deref() else {
+            return;
+        };
+        let now = Instant::now();
+        let now_unix = crate::metrics_state::unix_now();
+        let state = self.login_limiter.to_state(now, now_unix);
+        match crate::metrics_state::write(path, &state) {
+            Ok(()) => {
+                self.login_limiter.mark_clean();
+                let mut report = self.state_report.write().unwrap_or_else(|e| e.into_inner());
+                report.last_flush_unix = now_unix;
+            }
+            Err(error) => {
+                {
+                    let mut report = self.state_report.write().unwrap_or_else(|e| e.into_inner());
+                    report.write_failures += 1;
+                }
+                self.warn_once(
+                    "metrics-state-write",
+                    &format!(
+                        "warning: cannot persist login metrics state to {} ({error})",
+                        path.display()
+                    ),
+                );
+            }
+        }
+    }
+    /// Periodic debounced flush (design D3): one tick writes only when the
+    /// limiter is dirty, mirroring the spot-check task's lifecycle.
+    pub(crate) fn spawn_metrics_flush(self: &Arc<Self>) -> Option<JoinHandle<()>> {
+        self.metrics_state.as_ref()?;
+        let web = Arc::clone(self);
+        let handle = tokio::spawn(async move {
+            let mut ticks = tokio::time::interval(web.flush_interval);
+            loop {
+                ticks.tick().await;
+                if web.login_limiter.dirty() {
+                    web.flush_metrics_state();
+                }
+            }
+        });
+        *self.flush_task.lock().unwrap_or_else(|e| e.into_inner()) = Some(handle.abort_handle());
+        Some(handle)
+    }
+    /// Graceful-shutdown API: abort the debounced flush task. Callers flush
+    /// first (`flush_metrics_state`), so the last snapshot is never lost.
+    pub fn stop_metrics_flush(&self) {
+        let task = self
+            .flush_task
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        if let Some(task) = task {
+            task.abort();
+        }
     }
     /// Run one spot-check round (design D6): hash up to `spot.sample` manifest
     /// entries starting at the rotating cursor over the sorted key set, fold the
@@ -463,12 +636,24 @@ impl WebConfig {
 
 /// Whether the request peer is a loopback address (hybrid auth exemption, D2).
 pub fn peer_is_loopback(peer: std::net::SocketAddr) -> bool {
-    match peer.ip() {
-        std::net::IpAddr::V4(v4) => v4.is_loopback(),
-        std::net::IpAddr::V6(v6) => {
-            v6.is_loopback() || v6.to_ipv4_mapped().is_some_and(|v4| v4.is_loopback())
-        }
-    }
+    crate::client_ip::is_loopback_ip(peer.ip())
+}
+
+/// Derive the client IP used for identification (design D2/D5). Tally the source
+/// as a side effect. `invalid` is true only when trust applied, the request
+/// carried a proxy header and nothing usable came out of it.
+fn client_ip_for(
+    web: &WebConfig,
+    peer: std::net::SocketAddr,
+    headers: &axum::http::HeaderMap,
+) -> crate::client_ip::ClientIp {
+    let trust = web.trust_proxy_headers() && peer_is_loopback(peer);
+    let resolved = crate::client_ip::resolve_client_ip(peer, headers, trust);
+    let invalid = trust
+        && resolved.source == crate::client_ip::IpSource::Peer
+        && crate::client_ip::has_proxy_header(headers);
+    web.record_ip_source(resolved.source, invalid);
+    resolved
 }
 
 /// Extract the `agentj_session` cookie value from a `Cookie` header.
@@ -575,10 +760,13 @@ fn redirect_found(location: &str) -> axum::response::Response {
 async fn submit_login(
     web: &WebConfig,
     peer: std::net::SocketAddr,
+    headers: &axum::http::HeaderMap,
     form: LoginForm,
 ) -> axum::response::Response {
     let now = Instant::now();
-    let ip = peer.ip();
+    // Identification only: the throttle key follows the derived client IP, while
+    // the auth exemption below keeps the raw peer (design D5).
+    let ip = client_ip_for(web, peer, headers).ip;
     if matches!(web.login_limiter.check(ip, now), Throttle::Locked { .. }) {
         let throttle = web.login_limiter.record_failure(ip, now);
         return throttle_response(throttle, form.next.as_deref());
@@ -656,9 +844,9 @@ fn auth_routes(
     };
     let login_post = {
         let web = web.clone();
-        move |form: axum::extract::Form<LoginForm>| {
+        move |headers: axum::http::HeaderMap, form: axum::extract::Form<LoginForm>| {
             let web = web.clone();
-            async move { submit_login(&web, peer, form.0).await }
+            async move { submit_login(&web, peer, &headers, form.0).await }
         }
     };
     let logout_post = move |headers: axum::http::HeaderMap| {
@@ -689,6 +877,9 @@ pub fn auth_required(
     peer: std::net::SocketAddr,
     headers: &axum::http::HeaderMap,
 ) -> bool {
+    // D5: the loopback exemption is decided by the RAW TCP peer only. The
+    // derived client IP (`client_ip::resolve_client_ip`) must never reach here —
+    // otherwise a request header could grant kernel access.
     web.token.is_some()
         && !peer_is_loopback(peer)
         && !session_cookie(headers).is_some_and(|sid| web.is_valid_session(sid))
@@ -849,6 +1040,8 @@ fn prometheus_text(web: &WebConfig) -> String {
     push_login_ip_series(&mut out, &series, now);
     push_integrity_summary(&mut out, web.integrity());
     push_spot_summary(&mut out, &runtime);
+    push_client_ip_summary(web, &mut out);
+    push_state_summary(web, &mut out);
     out
 }
 
@@ -1010,6 +1203,66 @@ fn push_metric(out: &mut String, name: &str, kind: &str, help: &str, value: u64)
     ));
 }
 
+/// Resolved client-IP source tallies plus the unusable-forwarded-header count
+/// (design D6/G2). Labelled family: one header, then one sample per source.
+fn push_client_ip_summary(web: &WebConfig, out: &mut String) {
+    let totals = *web.ip_sources.read().unwrap_or_else(|e| e.into_inner());
+    out.push_str(
+        "# HELP agentj_web_client_ip_source_total Resolved client-IP sources.\n\
+         # TYPE agentj_web_client_ip_source_total counter\n",
+    );
+    for (source, value) in [
+        (IpSource::Peer, totals.peer),
+        (IpSource::XForwardedFor, totals.forwarded),
+        (IpSource::XRealIp, totals.real_ip),
+    ] {
+        out.push_str(&format!(
+            "agentj_web_client_ip_source_total{{source=\"{}\"}} {value}\n",
+            source.label()
+        ));
+    }
+    push_metric(
+        out,
+        "agentj_web_proxy_header_invalid_total",
+        "counter",
+        "Trusted requests whose forwarded headers were present but unusable.",
+        totals.invalid,
+    );
+}
+
+/// Persisted login-limiter state lifecycle (design D3/G2).
+fn push_state_summary(web: &WebConfig, out: &mut String) {
+    let report = *web.state_report.read().unwrap_or_else(|e| e.into_inner());
+    push_metric(
+        out,
+        "agentj_web_metrics_state_restored",
+        "gauge",
+        "Whether persisted login-limiter state was restored at startup (1) or not (0).",
+        u64::from(report.restored),
+    );
+    push_metric(
+        out,
+        "agentj_web_metrics_state_entries_restored",
+        "gauge",
+        "Per-IP login-limiter entries restored at startup.",
+        report.restored_entries,
+    );
+    push_metric(
+        out,
+        "agentj_web_metrics_state_write_failures_total",
+        "counter",
+        "Failed login-limiter state flushes since startup.",
+        report.write_failures,
+    );
+    push_metric(
+        out,
+        "agentj_web_metrics_state_last_flush_unix",
+        "gauge",
+        "Wall-clock seconds of the last successful state flush (0 = never).",
+        report.last_flush_unix,
+    );
+}
+
 /// Family header followed by one labelled sample per shown IP; the text format
 /// wants each family's samples contiguous, so callers loop one family at a time.
 fn push_ip_family(
@@ -1092,6 +1345,13 @@ mod tests {
     use super::*;
     use std::fs;
     use std::time::Duration;
+
+    /// True when `body` has a whole line equal to `expected`, so an exact-value
+    /// check cannot be satisfied by a longer number (`" 5"` vs `" 50"`).
+    fn has_metric_line(body: &str, expected: &str) -> bool {
+        body.lines()
+            .any(|line| line.trim_end_matches('\r') == expected)
+    }
 
     #[test]
     fn safe_next_whitelists_same_site_paths_only() {
@@ -1399,8 +1659,8 @@ mod tests {
         assert!(report.last_run.is_some());
         assert!(age.is_some());
         let text = prometheus_text(&web);
-        assert!(text.contains("agentj_web_spot_rounds_total 4"));
-        assert!(text.contains("agentj_web_spot_checked_total 3"));
+        assert!(has_metric_line(&text, "agentj_web_spot_rounds_total 4"));
+        assert!(has_metric_line(&text, "agentj_web_spot_checked_total 3"));
         web.warned
             .lock()
             .unwrap()
@@ -1731,8 +1991,8 @@ mod tests {
         let local: std::net::SocketAddr = "127.0.0.1:4444".parse().unwrap();
         let (status, _, body) = get(crate::web::build_router(state, local), "/metrics").await;
         assert_eq!(status, axum::http::StatusCode::OK);
-        assert!(body.contains("agentj_web_manifest_present 1"));
-        assert!(body.contains("agentj_web_assets_checked 2"));
+        assert!(has_metric_line(&body, "agentj_web_manifest_present 1"));
+        assert!(has_metric_line(&body, "agentj_web_assets_checked 2"));
         std::fs::remove_dir_all(&dist).ok();
     }
 
@@ -1788,7 +2048,10 @@ mod tests {
         let locked_at = body.find("ip=\"203.0.113.9\"").expect("locked series");
         let busy_at = body.find("ip=\"10.0.0.1\"").expect("allowed series");
         assert!(locked_at < busy_at, "locked IPs rank first");
-        assert!(body.contains("agentj_login_ip_locked{ip=\"203.0.113.9\"} 1"));
+        assert!(has_metric_line(
+            &body,
+            "agentj_login_ip_locked{ip=\"203.0.113.9\"} 1"
+        ));
         assert!(body.contains("agentj_login_ip_last_seen_seconds{ip=\"203.0.113.9\"}"));
         assert!(body.contains("ip=\"10.0.0.49\""));
         assert!(!body.contains("ip=\"10.0.0.50\""), "51st series is dropped");
@@ -1812,25 +2075,63 @@ mod tests {
         })
     }
 
+    async fn send(
+        router: axum::Router,
+        method: &str,
+        path: &str,
+        headers: &[(&str, &str)],
+        body: &str,
+    ) -> (axum::http::StatusCode, axum::http::HeaderMap, String) {
+        use tower::util::ServiceExt;
+        let mut builder = axum::http::Request::builder().method(method).uri(path);
+        for (name, value) in headers {
+            builder = builder.header(*name, *value);
+        }
+        let request = if body.is_empty() {
+            builder.body(axum::body::Body::empty()).unwrap()
+        } else {
+            builder
+                .header(
+                    axum::http::header::CONTENT_TYPE,
+                    "application/x-www-form-urlencoded",
+                )
+                .body(axum::body::Body::from(body.to_string()))
+                .unwrap()
+        };
+        let res = router.oneshot(request).await.unwrap();
+        let (status, response_headers) = (res.status(), res.headers().clone());
+        let bytes = axum::body::to_bytes(res.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        (
+            status,
+            response_headers,
+            String::from_utf8_lossy(&bytes).to_string(),
+        )
+    }
+
+    async fn get_with_headers(
+        router: axum::Router,
+        path: &str,
+        headers: &[(&str, &str)],
+    ) -> (axum::http::StatusCode, axum::http::HeaderMap, String) {
+        send(router, "GET", path, headers, "").await
+    }
+
+    async fn form_post_with_headers(
+        router: axum::Router,
+        path: &str,
+        headers: &[(&str, &str)],
+        body: &str,
+    ) -> (axum::http::StatusCode, axum::http::HeaderMap, String) {
+        send(router, "POST", path, headers, body).await
+    }
+
     async fn get(
         router: axum::Router,
         path: &str,
     ) -> (axum::http::StatusCode, axum::http::HeaderMap, String) {
-        use tower::util::ServiceExt;
-        let res = router
-            .oneshot(
-                axum::http::Request::builder()
-                    .uri(path)
-                    .body(axum::body::Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let (status, headers) = (res.status(), res.headers().clone());
-        let body = axum::body::to_bytes(res.into_body(), 1 << 20)
-            .await
-            .unwrap();
-        (status, headers, String::from_utf8_lossy(&body).to_string())
+        get_with_headers(router, path, &[]).await
     }
 
     async fn form_post(
@@ -1838,26 +2139,188 @@ mod tests {
         path: &str,
         body: &str,
     ) -> (axum::http::StatusCode, axum::http::HeaderMap, String) {
-        use tower::util::ServiceExt;
-        let res = router
-            .oneshot(
-                axum::http::Request::builder()
-                    .method("POST")
-                    .uri(path)
-                    .header(
-                        axum::http::header::CONTENT_TYPE,
-                        "application/x-www-form-urlencoded",
-                    )
-                    .body(axum::body::Body::from(body.to_string()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let (status, headers) = (res.status(), res.headers().clone());
-        let bytes = axum::body::to_bytes(res.into_body(), 1 << 20)
-            .await
-            .unwrap();
-        (status, headers, String::from_utf8_lossy(&bytes).to_string())
+        form_post_with_headers(router, path, &[], body).await
+    }
+
+    const LOOPBACK: &str = "127.0.0.1:41000";
+    const FORWARDED_CLIENT: &str = "198.51.100.9";
+
+    /// T6 asserts on a *live* lock (`agentj_login_ip_locked`, `blocked_total`).
+    /// The shared `small_policy()` locks for only 50 ms, which turns those
+    /// assertions into wall-clock races, so T6 uses a same-shape policy with a
+    /// 10 s base lockout: every lock below is still held when `/metrics` is read.
+    fn stable_policy() -> crate::login_limiter::Policy {
+        crate::login_limiter::Policy {
+            free_attempts: 3,
+            base_lockout: std::time::Duration::from_secs(10),
+            max_lockout: std::time::Duration::from_secs(900),
+            idle_ttl: std::time::Duration::from_secs(60),
+            max_tracked: 16,
+        }
+    }
+
+    fn trusted_web() -> crate::web::WebConfig {
+        crate::web::WebConfig::new(None, Some("secret".into()))
+            .with_login_limiter(crate::login_limiter::LoginLimiter::with_policy(
+                stable_policy(),
+            ))
+            .with_trust_proxy_headers(true)
+    }
+
+    /// `None` sends **no** `x-forwarded-for` header at all; `Some("")` would send an
+    /// empty one, which the resolver counts as "header present but unusable".
+    async fn login_failure(
+        state: &std::sync::Arc<crate::ws::WsServerState>,
+        peer: &str,
+        forwarded: Option<&str>,
+    ) {
+        let headers: Vec<(&str, &str)> = forwarded
+            .map(|value| vec![("x-forwarded-for", value)])
+            .unwrap_or_default();
+        let _ = form_post_with_headers(
+            crate::web::build_router(state.clone(), peer.parse().unwrap()),
+            "/login",
+            &headers,
+            "token=wrong&next=%2F",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn forwarded_ip_becomes_the_throttle_key() {
+        let state = test_state(trusted_web());
+        for _ in 0..5 {
+            login_failure(&state, LOOPBACK, Some(FORWARDED_CLIENT)).await;
+        }
+        // A DIFFERENT forwarded client behind the same proxy is unaffected.
+        login_failure(&state, LOOPBACK, Some("203.0.113.5")).await;
+        let (_, _, body) = get(
+            crate::web::build_router(state, LOOPBACK.parse().unwrap()),
+            "/metrics",
+        )
+        .await;
+        // free_attempts is 3, so the 3rd failure locks the entry. Attempts 4-5
+        // land while locked: each still bumps its per-IP entry's failures (5),
+        // but they are tallied on Counters.blocked (2) instead of
+        // Counters.failures, so only 3 failures are counted globally.
+        assert!(
+            has_metric_line(
+                &body,
+                &format!("agentj_login_ip_failures_total{{ip=\"{FORWARDED_CLIENT}\"}} 5")
+            ),
+            "{body}"
+        );
+        assert!(
+            has_metric_line(&body, "agentj_login_ip_locked{ip=\"198.51.100.9\"} 1"),
+            "the lockout follows the forwarded client, not 127.0.0.1:\n{body}"
+        );
+        assert!(
+            has_metric_line(&body, "agentj_login_blocked_total 2"),
+            "attempts 4-5 hit the locked entry and are counted as blocked:\n{body}"
+        );
+        assert!(
+            has_metric_line(&body, "agentj_login_failures_total 4"),
+            "3 unblocked failures for the proxy client + 1 for the other client:\n{body}"
+        );
+        assert!(
+            has_metric_line(
+                &body,
+                "agentj_login_ip_failures_total{ip=\"203.0.113.5\"} 1"
+            ),
+            "another forwarded client keeps its own budget:\n{body}"
+        );
+        assert!(
+            !body.contains("agentj_login_ip_failures_total{ip=\"127.0.0.1\"}"),
+            "loopback must not accumulate the forwarded client's failures:\n{body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn remote_peers_cannot_choose_their_throttle_key() {
+        let state = test_state(trusted_web());
+        for _ in 0..5 {
+            login_failure(&state, "203.0.113.7:41000", Some("127.0.0.1")).await;
+        }
+        let (_, _, body) = get(
+            crate::web::build_router(state, LOOPBACK.parse().unwrap()),
+            "/metrics",
+        )
+        .await;
+        // The peer's own entry keeps incrementing its failures even while
+        // locked, so the per-IP series shows all 5 attempts.
+        assert!(
+            has_metric_line(
+                &body,
+                "agentj_login_ip_failures_total{ip=\"203.0.113.7\"} 5"
+            ),
+            "{body}"
+        );
+        assert!(
+            !body.contains("agentj_login_ip_failures_total{ip=\"127.0.0.1\"}"),
+            "{body}"
+        );
+        assert!(
+            has_metric_line(
+                &body,
+                "agentj_web_client_ip_source_total{source=\"peer\"} 5"
+            ),
+            "a non-loopback peer always resolves to itself:\n{body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn forwarded_headers_cannot_buy_loopback_exemption() {
+        // D5 regression: the derived IP must never reach `auth_required`.
+        let state = test_state(trusted_web());
+        let spoof = [("x-forwarded-for", "127.0.0.1"), ("x-real-ip", "127.0.0.1")];
+        let (status, _, _) = get_with_headers(
+            crate::web::build_router(state, "203.0.113.7:41000".parse().unwrap()),
+            "/metrics",
+            &spoof,
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn a_header_less_loopback_request_is_not_a_failure() {
+        let state = test_state(trusted_web());
+        login_failure(&state, LOOPBACK, None).await;
+        let (_, _, body) = get(
+            crate::web::build_router(state, LOOPBACK.parse().unwrap()),
+            "/metrics",
+        )
+        .await;
+        assert!(
+            has_metric_line(&body, "agentj_web_proxy_header_invalid_total 0"),
+            "{body}"
+        );
+        assert!(
+            has_metric_line(
+                &body,
+                "agentj_web_client_ip_source_total{source=\"peer\"} 1"
+            ),
+            "{body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unusable_chain_counts_one_invalid_header() {
+        let state = test_state(trusted_web());
+        login_failure(&state, LOOPBACK, Some("unknown")).await;
+        let (_, _, body) = get(
+            crate::web::build_router(state, LOOPBACK.parse().unwrap()),
+            "/metrics",
+        )
+        .await;
+        assert!(
+            has_metric_line(&body, "agentj_web_proxy_header_invalid_total 1"),
+            "{body}"
+        );
+        assert!(
+            has_metric_line(&body, "agentj_login_ip_failures_total{ip=\"127.0.0.1\"} 1"),
+            "{body}"
+        );
     }
 
     #[tokio::test]
@@ -2210,5 +2673,205 @@ mod tests {
             "1",
             "sub-second locks floor to 1s"
         );
+    }
+
+    #[test]
+    fn restore_reads_a_persisted_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = crate::metrics_state::state_path_in(dir.path(), 4096);
+        let limiter = crate::login_limiter::LoginLimiter::with_policy(small_policy());
+        let now = std::time::Instant::now();
+        for _ in 0..3 {
+            limiter.record_failure("203.0.113.9".parse().unwrap(), now);
+        }
+        crate::metrics_state::write(
+            &path,
+            &limiter.to_state(now, crate::metrics_state::unix_now()),
+        )
+        .unwrap();
+
+        let web =
+            crate::web::WebConfig::new(None, Some("secret".into())).with_metrics_state(Some(path));
+        assert!(web.restore_metrics_state());
+        assert_eq!(
+            web.login_limiter
+                .counters(std::time::Instant::now())
+                .failures,
+            3
+        );
+
+        let out = prometheus_text(&web);
+        assert!(
+            has_metric_line(&out, "agentj_web_metrics_state_restored 1"),
+            "{out}"
+        );
+        assert!(
+            has_metric_line(&out, "agentj_web_metrics_state_entries_restored 1"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn restore_warns_once_and_starts_at_zero_on_a_corrupt_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = crate::metrics_state::state_path_in(dir.path(), 4096);
+        std::fs::write(&path, b"{ garbage").unwrap();
+        let web =
+            crate::web::WebConfig::new(None, Some("secret".into())).with_metrics_state(Some(path));
+        assert!(!web.restore_metrics_state());
+        assert!(
+            !web.restore_metrics_state(),
+            "the second attempt is still not restored"
+        );
+        assert_eq!(
+            web.warned
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|k| k.starts_with("metrics-state"))
+                .count(),
+            1,
+            "the warning is emitted once (warned set)"
+        );
+        assert_eq!(
+            web.login_limiter
+                .counters(std::time::Instant::now())
+                .failures,
+            0
+        );
+    }
+
+    #[test]
+    fn flush_writes_only_for_a_configured_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = crate::metrics_state::state_path_in(dir.path(), 4096);
+        // `spawn_metrics_flush` takes `self: &std::sync::Arc<Self>`, so this test
+        // must hold an Arc; with no configured path it returns `None`.
+        let web = std::sync::Arc::new(crate::web::WebConfig::new(None, None));
+        web.flush_metrics_state();
+        assert!(!path.exists(), "no path configured means no file");
+        assert!(web.spawn_metrics_flush().is_none());
+    }
+
+    #[test]
+    fn flush_reports_write_failures_and_keeps_the_state_dirty() {
+        // A path whose parent is a regular file: create_dir_all must fail.
+        let dir = tempfile::tempdir().unwrap();
+        let blocker = dir.path().join("blocker");
+        std::fs::write(&blocker, b"not a directory").unwrap();
+        let web = crate::web::WebConfig::new(None, None)
+            .with_metrics_state(Some(crate::metrics_state::state_path_in(&blocker, 4096)));
+        web.login_limiter
+            .check("203.0.113.9".parse().unwrap(), std::time::Instant::now());
+        web.flush_metrics_state();
+        let report = *web.state_report.read().unwrap();
+        assert_eq!(report.write_failures, 1);
+        assert!(web.login_limiter.dirty(), "a failed write must stay dirty");
+        let out = prometheus_text(&web);
+        assert!(
+            has_metric_line(&out, "agentj_web_metrics_state_write_failures_total 1"),
+            "{out}"
+        );
+        assert!(
+            has_metric_line(&out, "agentj_web_metrics_state_last_flush_unix 0"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn flush_clears_dirty_and_stamps_the_last_flush() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = crate::metrics_state::state_path_in(dir.path(), 4096);
+        let web = crate::web::WebConfig::new(None, None).with_metrics_state(Some(path.clone()));
+        web.login_limiter
+            .check("203.0.113.9".parse().unwrap(), std::time::Instant::now());
+        web.flush_metrics_state();
+        assert!(!web.login_limiter.dirty());
+        assert!(path.is_file());
+        let report = *web.state_report.read().unwrap();
+        assert!(report.last_flush_unix > 0);
+        assert_eq!(report.write_failures, 0);
+    }
+
+    #[tokio::test]
+    async fn prometheus_text_keeps_the_existing_metrics_and_adds_the_new_ones() {
+        let web = crate::web::WebConfig::new(None, None).with_trust_proxy_headers(true);
+        web.record_ip_source(crate::client_ip::IpSource::XForwardedFor, false);
+        web.record_ip_source(crate::client_ip::IpSource::Peer, true);
+        let out = prometheus_text(&web);
+        for name in [
+            "agentj_login_attempts_total",
+            "agentj_login_failures_total",
+            "agentj_login_lockouts_total",
+            "agentj_login_blocked_total",
+            "agentj_login_locked_ips",
+            "agentj_login_tracked_ips",
+            "agentj_web_manifest_present",
+            "agentj_web_assets_checked",
+            "agentj_web_assets_mismatched",
+            "agentj_web_assets_missing",
+            "agentj_web_spot_rounds_total",
+            "agentj_web_spot_checked_total",
+            "agentj_web_spot_mismatched_total",
+            "agentj_web_spot_missing_total",
+            "agentj_login_ip_series_truncated",
+        ] {
+            assert!(
+                out.contains(name),
+                "existing metric {name} vanished:\n{out}"
+            );
+        }
+        assert!(
+            has_metric_line(
+                &out,
+                "agentj_web_client_ip_source_total{source=\"forwarded\"} 1"
+            ),
+            "{out}"
+        );
+        assert!(
+            has_metric_line(&out, "agentj_web_client_ip_source_total{source=\"peer\"} 1"),
+            "{out}"
+        );
+        assert!(
+            has_metric_line(&out, "agentj_web_proxy_header_invalid_total 1"),
+            "{out}"
+        );
+        assert!(
+            has_metric_line(&out, "agentj_web_metrics_state_restored 0"),
+            "{out}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_flush_task_writes_only_when_dirty() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = crate::metrics_state::state_path_in(dir.path(), 4096);
+        let web = std::sync::Arc::new(
+            crate::web::WebConfig::new(None, None)
+                .with_metrics_state(Some(path.clone()))
+                .with_flush_interval(std::time::Duration::from_millis(10)),
+        );
+        let handle = web.spawn_metrics_flush().expect("flush task");
+
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(
+            !path.exists(),
+            "a clean limiter must not be written to disk"
+        );
+
+        web.login_limiter
+            .check("203.0.113.9".parse().unwrap(), std::time::Instant::now());
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert!(
+            path.is_file(),
+            "a dirty limiter must be flushed by the next tick"
+        );
+        assert!(
+            !web.login_limiter.dirty(),
+            "one successful flush clears dirty"
+        );
+
+        web.stop_metrics_flush();
+        handle.abort();
     }
 }

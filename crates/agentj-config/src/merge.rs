@@ -38,6 +38,9 @@ pub fn merge_config(base: AgentJConfig, file: AgentJConfig) -> AgentJConfig {
     if file.mcp.is_some() {
         config.mcp = file.mcp;
     }
+    if file.web.is_some() {
+        config.web = file.web;
+    }
     config
 }
 
@@ -84,6 +87,7 @@ mod tests {
             session: None,
             license: None,
             mcp: None,
+            web: None,
         };
         let merged = merge_config(base, file);
         assert_eq!(merged.model.providers.len(), 1);
@@ -123,8 +127,27 @@ mod tests {
             session: None,
             license: None,
             mcp: None,
+            web: None,
         };
         let merged = merge_config(base, file);
         assert_eq!(merged.model.default_model, "deepseek-chat");
+    }
+
+    #[test]
+    fn web_section_merges_only_when_the_file_has_one() {
+        let base = AgentJConfig::default();
+        let file = AgentJConfig {
+            web: Some(crate::WebSection {
+                trust_proxy_headers: true,
+                state_dir: None,
+            }),
+            ..AgentJConfig::default()
+        };
+        assert!(merge_config(base, file).web.unwrap().trust_proxy_headers);
+        assert!(
+            merge_config(AgentJConfig::default(), AgentJConfig::default())
+                .web
+                .is_none()
+        );
     }
 }

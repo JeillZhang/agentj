@@ -111,6 +111,10 @@ pub struct TcpBindOptions {
     pub max_connections: usize,
     pub trajectory_store: Option<Arc<crate::trajectory::TrajectoryStore>>,
     pub web_dist: Option<std::path::PathBuf>,
+    /// Trust `X-Forwarded-For` / `X-Real-IP` when the direct peer is loopback.
+    pub trust_proxy_headers: bool,
+    /// Directory for the persisted login-limiter state; `None` keeps it in memory.
+    pub metrics_state_dir: Option<std::path::PathBuf>,
     /// Optional ProviderService handle (`design D4`), copied onto the shared server at bind.
     pub provider_service: Option<Arc<dyn crate::ProviderService>>,
 }
@@ -122,6 +126,8 @@ impl Default for TcpBindOptions {
             max_connections: 16,
             trajectory_store: None,
             web_dist: None,
+            trust_proxy_headers: false,
+            metrics_state_dir: None,
             provider_service: None,
         }
     }
@@ -157,11 +163,23 @@ impl TcpIpcServer {
         server.attach_question_notifier();
         server.set_token(options.token.clone());
         let shared = Arc::new(server);
-        let web = Arc::new(crate::web::WebConfig::new(
-            options.web_dist.clone(),
-            options.token.clone(),
-        ));
+        let state_path = options.metrics_state_dir.as_deref().map(|dir| {
+            // The port is only known after the listener exists (--port 0), so the
+            // state file is port-scoped here and not in the CLI (design D4).
+            let port = listener
+                .local_addr()
+                .map(|addr| addr.port())
+                .unwrap_or_default();
+            crate::metrics_state::state_path_in(dir, port)
+        });
+        let web = Arc::new(
+            crate::web::WebConfig::new(options.web_dist.clone(), options.token.clone())
+                .with_trust_proxy_headers(options.trust_proxy_headers)
+                .with_metrics_state(state_path),
+        );
+        web.restore_metrics_state();
         let _ = web.spawn_spot_check();
+        let _ = web.spawn_metrics_flush();
         Ok(Self {
             listener,
             shared: shared.clone(),
@@ -634,5 +652,55 @@ mod tests {
         assert!(!looks_like_http(b""));
         assert!(!looks_like_http(b"\n"));
         assert!(!looks_like_http(b"{"));
+    }
+
+    #[tokio::test]
+    async fn state_path_is_derived_from_the_bound_port() {
+        let dir = tempfile::tempdir().unwrap();
+        let server = TcpIpcServer::bind(
+            "127.0.0.1:0",
+            agentj_core::kernel::Kernel::new(),
+            std::sync::Arc::new(agentj_session::InMemoryStore::new()),
+            None,
+            None,
+            TcpBindOptions {
+                max_connections: 16,
+                trust_proxy_headers: true,
+                metrics_state_dir: Some(dir.path().to_path_buf()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let port = server.local_addr().unwrap().port();
+        let web = server.web_config();
+        assert!(web.trust_proxy_headers());
+        assert_eq!(
+            web.metrics_state_path(),
+            Some(crate::metrics_state::state_path_in(dir.path(), port).as_path())
+        );
+        // The flush task exists only because a state path is configured.
+        web.stop_metrics_flush();
+        web.flush_metrics_state();
+        let path = crate::metrics_state::state_path_in(dir.path(), port);
+        assert!(path.is_file(), "the flush wrote {}", path.display());
+    }
+
+    #[tokio::test]
+    async fn default_options_keep_state_and_trust_off() {
+        let server = TcpIpcServer::bind(
+            "127.0.0.1:0",
+            agentj_core::kernel::Kernel::new(),
+            std::sync::Arc::new(agentj_session::InMemoryStore::new()),
+            None,
+            None,
+            TcpBindOptions::default(),
+        )
+        .await
+        .unwrap();
+        let web = server.web_config();
+        assert!(!web.trust_proxy_headers());
+        assert!(web.metrics_state_path().is_none());
+        assert!(web.spawn_metrics_flush().is_none());
     }
 }
