@@ -793,7 +793,7 @@ describe("files search mode", () => {
     await act(async () => {
       await setup.waitFor(() => setup.captureCharFrame().includes("index unavailable"));
     });
-    // C2: while the error is up, keystrokes filter locally and must not hide it
+    // C2: while the error is up, keystrokes must not resend or hide it
     await act(async () => { await input.type("x"); await setup.flush(); });
     await settleDebounce(setup);
     await repaint(setup);
