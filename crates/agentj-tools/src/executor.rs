@@ -8,6 +8,30 @@ use std::time::Duration;
 pub struct CommandSpec {
     pub program: String,
     pub args: Vec<String>,
+    pub cwd: Option<std::path::PathBuf>,
+}
+
+/// Why a guarded run failed at the executor level. Kept separate from `ToolError`
+/// so the "program is not installed" case stays type-safe: `grep` uses it to decide
+/// whether to fall back to the in-process walker (no string matching).
+#[derive(Debug)]
+pub enum RunFailure {
+    ProgramMissing { program: String, reason: String },
+    Timeout(Duration),
+    Failed(ToolError),
+}
+
+impl From<RunFailure> for ToolError {
+    fn from(failure: RunFailure) -> Self {
+        match failure {
+            RunFailure::ProgramMissing { program, reason } => ToolError::ExecutionFailed {
+                name: program,
+                reason,
+            },
+            RunFailure::Timeout(timeout) => ToolError::Timeout(timeout),
+            RunFailure::Failed(error) => error,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -139,19 +163,39 @@ impl ToolExecutor {
 
     /// Spawn a child into its own process group, wrapped in a kill_on_drop guard.
     pub async fn spawn_guarded(&self, spec: CommandSpec) -> Result<ChildGuard, ToolError> {
+        self.spawn_guarded_typed(spec)
+            .await
+            .map_err(ToolError::from)
+    }
+
+    /// Typed spawn: a missing program is reported as `RunFailure::ProgramMissing`
+    /// (not an opaque error string) so `grep` can decide to fall back.
+    async fn spawn_guarded_typed(&self, spec: CommandSpec) -> Result<ChildGuard, RunFailure> {
         use std::process::Stdio;
         let mut cmd = tokio::process::Command::new(&spec.program);
         cmd.args(&spec.args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        if let Some(dir) = &spec.cwd {
+            cmd.current_dir(dir);
+        }
         #[cfg(unix)]
         {
             cmd.process_group(0); // new process group with pgid = child pid
         }
-        let child = cmd.spawn().map_err(|e| ToolError::ExecutionFailed {
-            name: spec.program.clone(),
-            reason: e.to_string(),
+        let child = cmd.spawn().map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                RunFailure::ProgramMissing {
+                    program: spec.program.clone(),
+                    reason: e.to_string(),
+                }
+            } else {
+                RunFailure::Failed(ToolError::ExecutionFailed {
+                    name: spec.program.clone(),
+                    reason: e.to_string(),
+                })
+            }
         })?;
         let pid = child.id();
         Ok(ChildGuard {
@@ -167,18 +211,44 @@ impl ToolExecutor {
         self.run_guarded(guard).await
     }
 
+    /// Synchronous entry point for the sync `Tool` trait: build a dedicated
+    /// current-thread runtime and drive the guarded run to completion.
+    ///
+    /// Safe on a blocking-pool thread: `spawn_blocking` workers only call
+    /// `Handle::enter` (tokio blocking/pool.rs), they never set the
+    /// `EnterRuntime::Entered` flag that makes `Runtime::block_on` panic.
+    pub fn run_blocking(&self, spec: CommandSpec) -> Result<ExecOutput, RunFailure> {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all() // io driver is required by the process reaper (design D2)
+            .build()
+            .map_err(|e| {
+                RunFailure::Failed(ToolError::ExecutionFailed {
+                    name: "runtime".into(),
+                    reason: e.to_string(),
+                })
+            })?;
+        runtime.block_on(async {
+            let guard = self.spawn_guarded_typed(spec).await?;
+            self.run_guarded_typed(guard).await
+        })
+    }
+
     /// Timeout loop over an already-spawned guard (private; lets tests capture the pid
     /// before the timeout fires). On timeout the `wait_with_output` future is dropped —
     /// the tokio Child is gone and its kill_on_drop is false — so the group is reclaimed
     /// explicitly by pid.
-    async fn run_guarded(&self, mut guard: ChildGuard) -> Result<ExecOutput, ToolError> {
+    async fn run_guarded(&self, guard: ChildGuard) -> Result<ExecOutput, ToolError> {
+        self.run_guarded_typed(guard).await.map_err(ToolError::from)
+    }
+
+    async fn run_guarded_typed(&self, mut guard: ChildGuard) -> Result<ExecOutput, RunFailure> {
         let result = tokio::time::timeout(self.timeout, guard.wait_with_output()).await;
         match result {
             Ok(Ok(output)) => Ok(output),
-            Ok(Err(e)) => Err(e),
+            Ok(Err(e)) => Err(RunFailure::Failed(e)),
             Err(_) => {
                 guard.kill_group(); // kill the whole tree before returning
-                Err(ToolError::Timeout(self.timeout))
+                Err(RunFailure::Timeout(self.timeout))
             }
         }
     }
@@ -197,6 +267,7 @@ mod tests {
             .run(CommandSpec {
                 program: "echo".into(),
                 args: vec!["hi".into()],
+                cwd: None,
             })
             .await
             .unwrap();
@@ -214,6 +285,7 @@ mod tests {
             .spawn_guarded(CommandSpec {
                 program: "sh".into(),
                 args: vec!["-c".into(), "sleep 30".into()],
+                cwd: None,
             })
             .await
             .unwrap();
@@ -246,6 +318,7 @@ mod tests {
             .run(CommandSpec {
                 program: "sh".into(),
                 args: vec!["-c".into(), "sleep 30".into()],
+                cwd: None,
             })
             .await;
         assert!(matches!(result, Err(ToolError::Timeout(_))));
@@ -265,6 +338,7 @@ mod tests {
             .spawn_guarded(CommandSpec {
                 program: "sh".into(),
                 args: vec!["-c".into(), "sleep 30".into()],
+                cwd: None,
             })
             .await
             .unwrap();
@@ -281,6 +355,72 @@ mod tests {
             !process_alive(pid),
             "child pid {pid} must be reclaimed after drop"
         );
+    }
+
+    #[test]
+    fn run_blocking_returns_output_on_success() {
+        // Sync #[test] on purpose: no ambient runtime, exactly like the
+        // spawn_blocking thread that calls this in production.
+        let executor = ToolExecutor::new(Duration::from_secs(5), true);
+        let out = executor
+            .run_blocking(CommandSpec {
+                program: "echo".into(),
+                args: vec!["hi".into()],
+                cwd: None,
+            })
+            .unwrap();
+        assert_eq!(out.stdout.trim(), "hi");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_blocking_times_out_and_reclaims_the_group() {
+        let executor = ToolExecutor::new(Duration::from_millis(100), true);
+        let start = std::time::Instant::now();
+        let err = executor
+            .run_blocking(CommandSpec {
+                program: "sh".into(),
+                args: vec!["-c".into(), "sleep 30".into()],
+                cwd: None,
+            })
+            .unwrap_err();
+        assert!(matches!(err, RunFailure::Timeout(_)), "unexpected: {err:?}");
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "timeout must fire quickly"
+        );
+    }
+
+    #[test]
+    fn run_blocking_reports_a_missing_program() {
+        let executor = ToolExecutor::new(Duration::from_secs(5), true);
+        let err = executor
+            .run_blocking(CommandSpec {
+                program: "agentj-test-no-such-binary".into(),
+                args: vec![],
+                cwd: None,
+            })
+            .unwrap_err();
+        assert!(
+            matches!(&err, RunFailure::ProgramMissing { program, reason }
+                if program == "agentj-test-no-such-binary" && reason.contains("No such file")),
+            "unexpected: {err:?}"
+        );
+    }
+
+    #[test]
+    fn run_failure_converts_back_to_tool_error() {
+        let missing: ToolError = RunFailure::ProgramMissing {
+            program: "rg".into(),
+            reason: "No such file or directory (os error 2)".into(),
+        }
+        .into();
+        assert!(matches!(missing, ToolError::ExecutionFailed { ref name, .. } if name == "rg"));
+
+        // Also pins the model-visible wording for the timeout path (Review Focus #3).
+        let timeout: ToolError = RunFailure::Timeout(Duration::from_millis(1500)).into();
+        assert!(matches!(timeout, ToolError::Timeout(_)));
+        assert_eq!(timeout.to_string(), "tool timeout after 1.5s");
     }
 
     #[cfg(unix)]
