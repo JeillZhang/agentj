@@ -49,6 +49,7 @@
 | `cargo fmt --all --check` | 干净 |
 | `cargo test -p agentj-protocol -- drift` | 2 passed（78 schemas 无漂移） |
 | `./scripts/check-version.sh` | `version-ok`（0.1.0 / 0.18.0，本阶段不 bump） |
+| 测试验收（Round 1） | **0 Bug** — 8 个突变全部被测试抓到；独立复算 9/9 `ranks` + 2/2 `searches` 一致 |
 
 ### 真实提交（`df9a965..HEAD`，最旧 → 最新）
 

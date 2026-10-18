@@ -53,9 +53,10 @@
 
 | 门禁 | 结果 |
 |------|------|
-| `bun --cwd agentj-ui/apps/tui test` | **185 passed** / 0 failed（基线 177，+8） |
+| `bun --cwd agentj-ui/apps/tui test` | **192 passed** / 0 failed（基线 177，+15） |
 | `npm --prefix agentj-ui test --workspace=@agentj/web` | **679 passed**（未触碰；Web 仍无 Files 搜索 UI） |
 | `./scripts/check-version.sh` | `version-ok`（0.1.0 / 0.18.0） |
+| 测试验收（Round 1） | **0 Bug** — 8 个突变全部被测试抓到（含导出面守卫的 `searchRank` 重引入、mock 丢 `total`、夹具顺序/total/version 篡改） |
 
 ## 已完成（前端：工具卡片可读性 + BUG-017 / BUG-018，详见 `docs/changelog/v0.1.md`）
 
