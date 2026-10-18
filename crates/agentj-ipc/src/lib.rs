@@ -722,6 +722,15 @@ impl IpcServer {
         )
         .map_err(|e| DispatchError::invalid_params(e.to_string()))?;
         if let Ok(mut reg) = self.registry.write() {
+            // A run outlives a client disconnect (spec 8.11): ownership is dropped
+            // when the owning connection ends, so the first connection to
+            // re-attach to a session nobody owns becomes its owner again — only an
+            // owner may answer approvals, otherwise every subsequent tool approval
+            // in the still-running turn would be denied for lack of a responder.
+            // An existing owner is never stolen from.
+            if reg.session_owner(&params.session_id).is_none() {
+                reg.set_session_owner(&params.session_id, conn_id);
+            }
             reg.subscribe(&params.session_id, conn_id);
         }
         Ok(serde_json::json!({}))
@@ -5694,6 +5703,55 @@ mod tests {
         assert!(
             server.registry.read().unwrap().writers.is_empty(),
             "disconnected connection's writer handle must be unregistered"
+        );
+    }
+
+    /// A run outlives a client disconnect (spec 8.11): when the owning
+    /// connection ends, ownership is dropped and every later approval in the
+    /// still-running turn would be denied for lack of a responder. The first
+    /// connection to re-attach to a session nobody owns must become its owner
+    /// again — without ever stealing a live owner's session.
+    #[tokio::test]
+    async fn subscribe_reclaims_ownership_of_an_unowned_session() {
+        let (server, _module) = blocking_run_server();
+        let server = Arc::new(server);
+        let a = register_fake_conn(&server);
+        let b = register_fake_conn(&server);
+        let new_resp = server
+            .handle_request_from(r#"{"jsonrpc":"2.0","id":1,"method":"session/new"}"#, &a)
+            .await
+            .unwrap();
+        let sid = extract_sid(&new_resp);
+        let owner = |conn: &str| {
+            let reg = server.registry.read().unwrap();
+            reg.session_owner(&sid).cloned().as_deref() == Some(conn)
+        };
+        assert!(owner(&a), "session/new records the initiating connection");
+
+        // The owner connection ends: ownership is dropped (design 决策 #5).
+        server.cleanup_connection(&a);
+        assert!(
+            server
+                .registry
+                .read()
+                .unwrap()
+                .session_owner(&sid)
+                .is_none(),
+            "a disconnect drops ownership"
+        );
+
+        let subscribe = format!(
+            r#"{{"jsonrpc":"2.0","id":2,"method":"session/subscribe","params":{{"session_id":"{sid}"}}}}"#
+        );
+        server.handle_request_from(&subscribe, &b).await.unwrap();
+        assert!(owner(&b), "the re-attaching client owns the session again");
+
+        let c = register_fake_conn(&server);
+        let subscribe = subscribe.replace("\"id\":2", "\"id\":3");
+        server.handle_request_from(&subscribe, &c).await.unwrap();
+        assert!(
+            owner(&b),
+            "a subscription must never steal a live owner's session"
         );
     }
 

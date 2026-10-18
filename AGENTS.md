@@ -1,6 +1,6 @@
 # AGENTS.md
 
-> **当前版本 0.29.11** · `PROTOCOL_VERSION` **0.18.0**（28 方法 / 78 schemas / 18 crates）
+> **当前版本 0.29.12** · `PROTOCOL_VERSION` **0.18.0**（28 方法 / 78 schemas / 18 crates）
 > 本文件只记录**约束、入口与基线**（Setup / Commands / Architecture / Conventions / Rules）。
 > **逐版本变更与历史决策不写在这里** —— 见 [`docs/changelog/`](docs/changelog/)、
 > [`docs/guide/`](docs/guide/)、[`docs/specs/`](docs/specs/) 与 `.agents/summary/`。
@@ -96,7 +96,9 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
   60s 安全余量、失败不落盘））。
 - `agentj-session`：会话生命周期（InMemoryStore/FileBackedStore + 过期清理
   + 会话级 `project_root` 持久化，serde default 兼容旧快照）。
-- `agentj-permission`：权限系统（决策引擎 + 60s 超时 + allow_always）。
+- `agentj-permission`：权限系统（决策引擎 + 60s 超时 + allow_always；
+  `respond`/`cancel_session` 只投递决定、保留待决条目至工具消费，`PENDING_TTL` 300s 回收；
+  重复/迟到答复返回 `false` 不覆盖首次决定）。
 - `agentj-question`：提问通道（`QuestionModule` + `AskTool`，镜像 permission 的
   pending/owner 归属；`ask_blocking` 阻塞等待、`respond` 幂等 `accepted:false`、
   `timeout_s` 可空、`set_notifier`/`set_settle_hook` 统一结算一次）。
@@ -109,7 +111,9 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
   + `gateway_error`（三 wire 共用错误映射：429 → `RateLimited`、上下文超限 →
   `TokenLimitExceeded { used, max }`、其余 → `Api { status, message }`）
   + `retry`（`temperature` 被拒时去参数重试一次）。
-- `agentj-tools`：内置工具（bash/glob/grep/read/write + `todo`，共 6 个）。
+- `agentj-tools`：内置工具（bash/glob/grep/read/write + `todo`，共 6 个）；`grep` 优先
+  `rg`、缺失时回退进程内检索（`regex` + `globset` + `walkdir`，行匹配 + `include` 通配 +
+  跳目录/二进制/超大文件 + 2000 条上限）。
 - `agentj-context`：上下文管线（装配/回流纯函数；预算裁剪由 `agentj-core::budget` 统一下发）。
 - `agentj-stats`：用量统计 UsageCollector。
 - `agentj-license`：Ed25519 许可证校验（entitlements + free mode）。
@@ -121,7 +125,8 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
   + 注入式 `ProviderService` handle（`model/list` / `auth/status` / `provider/usage` /
   `auth/deviceStart` / `auth/devicePoll` / `auth/setApiKey` / `auth/clearCredential`；
   未注入统一 `-32603 provider_service_unavailable`，ipc 不依赖 auth/model）
-  + WsServerState/ws_router/serve_http + per-session 路由
+  + WsServerState/ws_router/serve_http + per-session 路由（`session/subscribe` 在会话
+  无 owner 时认领归属，供断线重连后继续审批）
   + `file/list` dispatch（沙箱 + git 状态；目录聚合后代最高优先级字母；`query` 子树搜索
   独立访问预算 20000 + rank + Top-100 + `total`）+ question notifier/settle hook 接线
   + owner 断连结算（question 与 permission 待决项）

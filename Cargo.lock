@@ -247,10 +247,13 @@ name = "agentj-tools"
 version = "0.29.11"
 dependencies = [
  "agentj-core",
+ "globset",
  "libc",
+ "regex",
  "serde_json",
  "tempfile",
  "tokio",
+ "walkdir",
 ]
 
 [[package]]

@@ -10,7 +10,7 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::watch;
 
 use agentj_core::error::ModuleError;
@@ -39,6 +39,11 @@ pub enum ApprovalDecision {
     AllowAlways,
 }
 
+/// How long a settled-but-unconsumed pending entry may linger before
+/// `prune_pending` drops it. Far above the approval timeout (60s default), so no
+/// live waiter can lose its decision to pruning.
+const PENDING_TTL: Duration = Duration::from_secs(300);
+
 /// Pending approval entry. `decision` is None while awaiting, Some(resolved)
 /// once respond() delivers (watch keeps the value across the respond/await race).
 ///
@@ -57,6 +62,8 @@ struct PendingRequest {
     tool: String,
     args: serde_json::Value,
     session_id: String,
+    /// Registration instant; drives `prune_pending` (bounded pending map).
+    created_at: Instant,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -120,12 +127,23 @@ impl PermissionModule {
     /// Deliver the client's decision to a pending request. `AllowAlways`
     /// derives the fingerprint from the stored args and grants it for the
     /// request's session (session-scoped, in-memory).
-    /// Returns true if the request was found and resolved; false if the
-    /// request_id is unknown (caller must return an error to the client).
+    ///
+    /// The entry is NOT removed here: the awaiting tool loop consumes it in
+    /// `await_approval` (and again `await_approval` is what removes it). A
+    /// decision that arrives before the waiter subscribes must stay readable —
+    /// removing it here made the tool loop deny its own approved call with
+    /// "request not found" whenever the client answered first.
+    /// Returns true when this call is the first decision for the request;
+    /// false for an unknown id or an already-settled request (a second decision
+    /// must not silently override the first).
     pub fn respond(&self, request_id: &PermissionRequestId, decision: ApprovalDecision) -> bool {
-        let Some(req) = self.pending.lock().unwrap().remove(request_id) else {
-            return false; // unknown request id
+        let map = self.pending.lock().unwrap();
+        let Some(req) = map.get(request_id) else {
+            return false; // unknown (or already consumed/pruned) request id
         };
+        if req._keepalive.borrow().is_some() {
+            return false; // already settled (respond / cancel_session / shutdown)
+        }
         let resolved = match decision {
             ApprovalDecision::Allow => PermissionDecision::Allow,
             ApprovalDecision::Deny => PermissionDecision::Deny {
@@ -148,21 +166,20 @@ impl PermissionModule {
     }
 
     /// Resolve ALL pending approvals for a session to Deny (session
-    /// termination / $/cancelRequest / client disconnect).
+    /// termination / $/cancelRequest / client disconnect). The entries stay
+    /// until their tool loop consumes the decision, so the waiter reports the
+    /// real reason instead of a missing request.
     pub fn cancel_session(&self, session_id: &str, reason: &str) -> usize {
-        let mut map = self.pending.lock().unwrap();
+        let map = self.pending.lock().unwrap();
         let mut n = 0;
-        map.retain(|_rid, req| {
-            if req.session_id == session_id {
+        for req in map.values() {
+            if req.session_id == session_id && req._keepalive.borrow().is_none() {
                 let _ = req.decision.send(Some(PermissionDecision::Deny {
                     reason: reason.to_string(),
                 }));
                 n += 1;
-                false
-            } else {
-                true
             }
-        });
+        }
         n
     }
 
@@ -242,18 +259,23 @@ impl PermissionModule {
     fn register_ask(&self, ctx: &PermissionContext) -> PermissionDecision {
         let request_id = PermissionRequestId(Uuid::new_v4().to_string());
         let (tx, rx) = watch::channel(None);
-        self.pending.lock().unwrap().insert(
-            request_id.clone(),
-            PendingRequest {
-                decision: Arc::new(tx),
-                // Keep the initial receiver alive so an early respond() (before
-                // await_approval subscribes) is stored, not silently dropped.
-                _keepalive: rx,
-                tool: ctx.tool.clone(),
-                args: ctx.args.clone(),
-                session_id: ctx.session_id.clone(),
-            },
-        );
+        {
+            let mut map = self.pending.lock().unwrap();
+            prune_pending(&mut map, PENDING_TTL);
+            map.insert(
+                request_id.clone(),
+                PendingRequest {
+                    decision: Arc::new(tx),
+                    // Keep the initial receiver alive so an early respond() (before
+                    // await_approval subscribes) is stored, not silently dropped.
+                    _keepalive: rx,
+                    tool: ctx.tool.clone(),
+                    args: ctx.args.clone(),
+                    session_id: ctx.session_id.clone(),
+                    created_at: std::time::Instant::now(),
+                },
+            );
+        }
         let params = PermissionRequestParams {
             request_id: request_id.0.clone(),
             tool: ctx.tool.clone(),
@@ -335,7 +357,7 @@ impl PermissionChecker for PermissionModule {
     async fn await_approval(&self, request_id: &PermissionRequestId) -> PermissionDecision {
         let Some(req) = self.pending.lock().unwrap().get(request_id).cloned() else {
             return PermissionDecision::Deny {
-                reason: "request not found".into(),
+                reason: "unknown or expired approval request".into(),
             };
         };
         let mut rx = req.decision.subscribe();
@@ -344,7 +366,7 @@ impl PermissionChecker for PermissionModule {
         let received = tokio::time::timeout(self.timeout, rx.wait_for(|d| d.is_some()))
             .await
             .map(|res| res.is_ok());
-        match received {
+        let decision = match received {
             Ok(true) => rx.borrow().clone().unwrap_or(PermissionDecision::Deny {
                 reason: "no decision".into(),
             }),
@@ -368,7 +390,12 @@ impl PermissionChecker for PermissionModule {
                     reason: "timeout".into(),
                 }
             }
-        }
+        };
+        // The decision is delivered exactly once: drop the entry now so the
+        // pending map stays bounded (a late respond then gets a clean "unknown
+        // request" error instead of silently overriding what the tool acted on).
+        self.prune_consumed(request_id);
+        decision
     }
 }
 
@@ -411,13 +438,47 @@ impl PermissionModule {
     /// Clear session grants and resolve every pending approval to Deny.
     pub fn clear_all(&self) {
         self.session_state.clear_all();
-        let mut map = self.pending.lock().unwrap();
-        for (_, req) in map.drain() {
+        let map = self.pending.lock().unwrap();
+        for req in map.values() {
             let _ = req.decision.send(Some(PermissionDecision::Deny {
                 reason: "shutdown".into(),
             }));
         }
     }
+
+    /// Entries currently registered: awaiting a decision, or settled and still
+    /// waiting for their tool loop to consume the decision. (test/observability)
+    #[cfg(test)]
+    fn pending_len(&self) -> usize {
+        self.pending.lock().unwrap().len()
+    }
+
+    /// Drop entries older than `ttl` (called on every registration).
+    #[cfg(test)]
+    fn prune_pending(&self, ttl: Duration) {
+        prune_pending(&mut self.pending.lock().unwrap(), ttl);
+    }
+
+    /// Remove the entry a waiter just consumed (exactly-once delivery).
+    fn prune_consumed(&self, request_id: &PermissionRequestId) {
+        let mut map = self.pending.lock().unwrap();
+        if map
+            .get(request_id)
+            .is_some_and(|req| req._keepalive.borrow().is_some())
+        {
+            map.remove(request_id);
+        }
+    }
+}
+
+/// Drop pending entries older than `ttl`. The awaiting tool loop removes the
+/// entry it consumed, so a leftover is a settled-but-unconsumed request (a
+/// respond that arrived after the approval timeout) or one nobody ever awaited;
+/// either way it can no longer be legitimately awaited, because an approval wait
+/// is bounded by the (much shorter) approval timeout.
+fn prune_pending(map: &mut HashMap<PermissionRequestId, PendingRequest>, ttl: Duration) {
+    let now = Instant::now();
+    map.retain(|_, req| now.duration_since(req.created_at) < ttl);
 }
 
 #[cfg(test)]
@@ -560,6 +621,88 @@ mod tests {
         } else {
             panic!("expected Ask");
         }
+    }
+
+    /// Regression (0.29.12): a decision that arrives BEFORE the waiter
+    /// subscribes must still be delivered. `respond` used to remove the entry,
+    /// so the awaiting tool loop looked up a missing id and denied the call with
+    /// the misleading "request not found" even though the user had allowed it.
+    #[tokio::test]
+    async fn approval_survives_a_respond_that_arrives_before_the_await() {
+        let m = module();
+        let c = ctx(&m, "curl http://example.com");
+        let PermissionDecision::Ask { request_id } = m.check(&c) else {
+            panic!("expected Ask");
+        };
+        assert!(m.respond(&request_id, ApprovalDecision::Allow));
+        assert_eq!(
+            m.await_approval(&request_id).await,
+            PermissionDecision::Allow
+        );
+    }
+
+    /// Regression (0.29.12): a settled disconnect must reach the waiter as the
+    /// disconnect reason — the awaiting tool loop used to find no entry at all
+    /// and report "request not found", hiding what actually happened.
+    #[tokio::test]
+    async fn a_settled_disconnect_still_tells_the_waiter_why() {
+        let m = module();
+        let c = ctx(&m, "curl http://example.com");
+        let PermissionDecision::Ask { request_id } = m.check(&c) else {
+            panic!("expected Ask");
+        };
+        assert_eq!(m.cancel_session("s1", "disconnected"), 1);
+        assert_eq!(
+            m.await_approval(&request_id).await,
+            PermissionDecision::Deny {
+                reason: "disconnected".into()
+            }
+        );
+    }
+
+    /// A second decision on an already-settled request is refused (the client
+    /// sees an error instead of silently overriding the first answer).
+    #[tokio::test]
+    async fn respond_refuses_a_second_decision_for_the_same_request() {
+        let m = module();
+        let c = ctx(&m, "curl http://example.com");
+        let PermissionDecision::Ask { request_id } = m.check(&c) else {
+            panic!("expected Ask");
+        };
+        assert!(m.respond(&request_id, ApprovalDecision::Allow));
+        assert!(!m.respond(&request_id, ApprovalDecision::Deny));
+        assert_eq!(
+            m.await_approval(&request_id).await,
+            PermissionDecision::Allow
+        );
+    }
+
+    /// Settled requests are consumed by their waiter; anything nobody ever
+    /// consumed (late respond after the timeout, cancelled run) is pruned so the
+    /// pending map cannot grow without bound.
+    #[tokio::test]
+    async fn stale_pending_entries_are_pruned() {
+        let m = module();
+        let c = ctx(&m, "curl http://example.com");
+        let PermissionDecision::Ask { request_id } = m.check(&c) else {
+            panic!("expected Ask");
+        };
+        assert_eq!(m.pending_len(), 1, "registered while awaiting");
+        assert!(m.respond(&request_id, ApprovalDecision::Allow));
+        assert_eq!(m.pending_len(), 1, "kept until the waiter consumes it");
+        assert_eq!(
+            m.await_approval(&request_id).await,
+            PermissionDecision::Allow
+        );
+        assert_eq!(m.pending_len(), 0, "consumed by the waiter");
+
+        let c2 = ctx(&m, "curl http://example.com");
+        let PermissionDecision::Ask { request_id } = m.check(&c2) else {
+            panic!("expected Ask");
+        };
+        assert!(m.respond(&request_id, ApprovalDecision::Allow));
+        m.prune_pending(Duration::ZERO); // test hook: every entry counts as stale
+        assert_eq!(m.pending_len(), 0);
     }
 
     #[test]
@@ -1018,8 +1161,8 @@ mod tests {
         assert_eq!(m.check(&c), PermissionDecision::Allow);
     }
 
-    #[test]
-    fn session_of_peeks_pending_request_session() {
+    #[tokio::test]
+    async fn session_of_peeks_pending_request_session() {
         let module = PermissionModule::new(HashMap::new(), Duration::from_secs(1));
         let ctx = PermissionContext {
             session_id: "s-1".into(),
@@ -1032,9 +1175,15 @@ mod tests {
             assert_eq!(module.session_of(&request_id).as_deref(), Some("s-1"));
             assert!(module.respond(&request_id, ApprovalDecision::Allow));
             assert_eq!(
+                module.session_of(&request_id).as_deref(),
+                Some("s-1"),
+                "a settled entry stays readable until its waiter consumes it"
+            );
+            module.await_approval(&request_id).await;
+            assert_eq!(
                 module.session_of(&request_id),
                 None,
-                "respond consumes the entry"
+                "the waiter consumes the entry"
             );
         } else {
             panic!("expected Ask");
@@ -1064,8 +1213,8 @@ mod tests {
         assert_eq!(seen.lock().unwrap().as_deref(), Some("s-9"));
     }
 
-    #[test]
-    fn view_peeks_without_consuming() {
+    #[tokio::test]
+    async fn view_peeks_without_consuming() {
         let module = PermissionModule::new(HashMap::new(), Duration::from_secs(1));
         let ctx = PermissionContext {
             session_id: "s-1".into(),
@@ -1082,7 +1231,17 @@ mod tests {
                 module.respond(&request_id, ApprovalDecision::Allow),
                 "a view peek must not consume the entry"
             );
-            assert_eq!(module.view(&request_id), None, "respond consumed the entry");
+            assert_eq!(
+                module.view(&request_id).map(|v| v.tool),
+                Some("bash".to_string()),
+                "a settled entry stays readable until its waiter consumes it"
+            );
+            module.await_approval(&request_id).await;
+            assert_eq!(
+                module.view(&request_id),
+                None,
+                "the waiter consumed the entry"
+            );
             assert_eq!(module.view("nope"), None);
         } else {
             panic!("expected Ask");

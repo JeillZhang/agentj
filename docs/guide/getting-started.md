@@ -61,6 +61,13 @@ bun --cwd agentj-ui/apps/tui install
 bun --cwd agentj-ui/apps/tui run dev
 ```
 
+## 内置工具
+
+内核自带 6 个工具：`bash`、`glob`、`grep`、`read`、`write`、`todo`。除 `bash` 外都不需要外部
+命令（不装 `find` / `rg` 也能用）：`grep` 优先调用 `rg`（命令行体验一致），机器上没有
+ripgrep 时自动回退到进程内检索（按行匹配、支持 `include` 通配、跳过 `.git` / `target` /
+`node_modules`、跳过二进制与超大文件、命中上限 2000 条）。
+
 ## 下一步
 
 - 命令行细节 → [CLI](cli.md)
