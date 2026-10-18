@@ -1,8 +1,4 @@
 //! Unified Connection abstraction (design 决策 #1/#2) — transport-agnostic serve.
-// `IpSource::label` is an exported helper the metrics renderer does not consume
-// yet (it inlines its own label strings); the module-level allowance stays until
-// that changes.
-#[allow(dead_code)]
 pub(crate) mod client_ip;
 pub mod file_list;
 pub(crate) mod login_limiter;

@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::task::JoinHandle;
 
+use crate::client_ip::IpSource;
 use crate::login_limiter::{Counters, IpSnapshot, LoginLimiter, Throttle};
 
 /// Cookie carrying the opaque session id issued after a successful login.
@@ -1211,12 +1212,13 @@ fn push_client_ip_summary(web: &WebConfig, out: &mut String) {
          # TYPE agentj_web_client_ip_source_total counter\n",
     );
     for (source, value) in [
-        ("peer", totals.peer),
-        ("forwarded", totals.forwarded),
-        ("real_ip", totals.real_ip),
+        (IpSource::Peer, totals.peer),
+        (IpSource::XForwardedFor, totals.forwarded),
+        (IpSource::XRealIp, totals.real_ip),
     ] {
         out.push_str(&format!(
-            "agentj_web_client_ip_source_total{{source=\"{source}\"}} {value}\n"
+            "agentj_web_client_ip_source_total{{source=\"{}\"}} {value}\n",
+            source.label()
         ));
     }
     push_metric(
