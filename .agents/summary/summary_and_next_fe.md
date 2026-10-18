@@ -145,7 +145,7 @@
 
 > 后端侧门禁（`cargo test --workspace` 877 passed / clippy 0 warning）见 `summary_and_next_se.md`。
 
-## 已完成（0.29.0 – 0.29.7，详见 `docs/changelog/v0.29.md`）
+## 已完成（0.29.0 – 0.29.7，详见 `docs/changelog/v0.1.md`）
 
 - ✅ **0.29.11**：模型选择器不再虚构模型名（删除 `MODEL_LIST` 占位 + `.pop-empty` 空态；
   本地 `prefs.model` 只在仍被内核提供时才显示；`ProjectEditDialog` 的默认模型选项改由内核列表驱动）。
