@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { testRender } from "@opentui/react/test-utils";
 import type { TestRendererSetup } from "@opentui/core/testing";
 import { act } from "react";
-import { App, getBackoffDelay } from "./app.tsx";
+import { App, applySearchReply, getBackoffDelay, initialSearchState, SEARCH_UNSUPPORTED_HINT } from "./app.tsx";
 import type { TransportHandle } from "./app.tsx";
 import { METHODS, ResponseRouter } from "@agentj/sdk";
 import type { TransportStatus } from "@agentj/sdk";
@@ -115,8 +115,8 @@ type FakeKernel = {
   handle: TransportHandle & { send: (line: string) => Promise<string> };
 };
 
-// Server mode answers a string query with ranked matches + total; legacy mode
-// (and the default) ignores the query and returns the depth-8 listing as v0.21.
+// Server mode (the default) answers a string query with ranked matches + total;
+// legacy mode ignores the query and returns the depth-8 listing without a total.
 function rankEntry(entry: RawFileEntry, query: string): number {
   const name = entry.name.toLowerCase();
   if (name.startsWith(query)) return 0;
@@ -156,7 +156,7 @@ function fakeKernel(options: { search?: "server" | "legacy"; sessionRoot?: strin
             depthEightFailures -= 1;
             throw new Error("index unavailable");
           }
-          if (options.search === "server") {
+          if (options.search !== "legacy") {
             const query = typeof params.query === "string" ? params.query.trim().toLowerCase() : "";
             const matches = flat().filter(
               (e) => query.length > 0 && (e.name.toLowerCase().includes(query) ||
@@ -979,25 +979,28 @@ describe("files search mode", () => {
     act(() => setup.renderer.destroy());
   });
 
-  test("falls back to the local index when the kernel omits total", async () => {
-    const kernel = fakeKernel({ search: "legacy" });
+  test("reports an unsupported kernel instead of falling back to a local index", async () => {
+    const kernel = fakeKernel({ search: "legacy" }); // reply carries no total
     const { setup, input } = await renderApp(kernel);
     await openFilesSidebar(setup, input);
     await act(async () => { input.press("s"); await setup.flush(); });
-    await act(async () => { await input.type("main"); await setup.flush(); });
+    await act(async () => { await input.type("components"); await setup.flush(); });
     await settleDebounce(setup);
-    const withQuery = (): number =>
-      kernel.calls.filter(
-        (c) => c.method === METHODS.fileList && typeof c.query === "string",
-      ).length;
-    expect(withQuery()).toBe(1); // first reply (no total) becomes the local index
-    await act(async () => {
-      await setup.waitFor(() => setup.captureCharFrame().includes("main.rs"));
-    });
-    await act(async () => { await input.type("."); await setup.flush(); });
-    await settleDebounce(setup);
-    expect(withQuery()).toBe(1); // local filtering issues no further requests
+
+    // the sidebar wraps the hint across cells, so compare on a single-line projection
+    const frame = setup.captureCharFrame().replace(/[\s│]+/g, " ");
+    expect(frame).toContain(SEARCH_UNSUPPORTED_HINT);
     act(() => setup.renderer.destroy());
+  });
+
+  test("a server reply clears the unsupported notice", () => {
+    const unsupported = applySearchReply(initialSearchState(), "q", { entries: [] });
+    expect(unsupported.mode).toBe("unsupported");
+    expect(unsupported.notice).toBe(SEARCH_UNSUPPORTED_HINT);
+    const server = applySearchReply(unsupported, "q", { entries: [], total: 7 });
+    expect(server.mode).toBe("server");
+    expect(server.notice).toBeNull();
+    expect(server.total).toBe(7);
   });
 });
 

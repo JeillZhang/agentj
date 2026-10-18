@@ -8,7 +8,8 @@ import {
   buildFileNode, flattenVisible, formatFileRowParts, formatSearchRowParts, MAX_INDENT_DEPTH,
   parentPath, statusLetterColor, updateNode,
 } from "./files.ts";
-import type { FileNode, RawFileEntry, SearchEntry } from "./files.ts";
+import type { FileNode, SearchEntry } from "./files.ts";
+import type { FileListSearchReply } from "./app";
 import { DEFAULT_PROJECT_KEY, loadFileTreePrefs, saveFileTreePrefs } from "./filetreePrefs.ts";
 
 const MAX_RESTORE_PATHS = 50;
@@ -35,8 +36,6 @@ function ancestorPaths(path: string): string[] {
   return out;
 }
 
-export type FileListReply = { entries?: RawFileEntry[]; truncated?: boolean };
-
 export type FilesSearchState = {
   active: boolean;
   query: string;
@@ -44,6 +43,7 @@ export type FilesSearchState = {
   total: number;
   truncated: boolean;
   error: string | null;
+  notice: string | null;
 };
 
 export type FilesViewProps = {
@@ -106,7 +106,7 @@ export function FilesView(props: FilesViewProps) {
     const partial = search.truncated ? " · partial" : "";
     const remaining = search.total - search.rows.length;
     const more = remaining > 0 ? ` · ${remaining} more` : "";
-    const hint = `${SEARCH_HINT}${partial}${more}`;
+    const hint = search.notice ?? `${SEARCH_HINT}${partial}${more}`;
     return (
       <box flexDirection="column" flexGrow={1}>
         <text style={{ fg: palette.textMuted }}>{hint}</text>
@@ -168,11 +168,11 @@ export function useFileTree(
     setTree(updateNode(nodesRef.current ?? [], path, patch));
   }, [setTree]);
 
-  const request = useCallback(async (path: string | null): Promise<FileListReply> => {
+  const request = useCallback(async (path: string | null): Promise<FileListSearchReply> => {
     if (!client || !sessionId) throw new Error("no active session");
     return (await client.request(METHODS.fileList, {
       session_id: sessionId, path, depth: 1,
-    })) as FileListReply;
+    })) as FileListSearchReply;
   }, [client, sessionId]);
 
   const loadDir = useCallback(async (path: string): Promise<void> => {
