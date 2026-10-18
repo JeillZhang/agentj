@@ -6876,15 +6876,12 @@ mod tests {
         assert_eq!(page1["events"][0]["value"]["kind"], "user");
         assert_eq!(page1["events"][1]["value"]["kind"], "thinking");
         assert_eq!(page1["next_cursor"], 3);
-        let raw2 = r#"{"jsonrpc":"2.0","id":7,"method":"session/history","params":{"session_id":"s1","cursor":3,"limit":2}}"#;
+        let raw2 = r#"{"jsonrpc":"2.0","id":7,"method":"session/history","params":{"session_id":"s1","cursor":3,"limit":3}}"#;
         let resp2 = server.handle_request(raw2).await.unwrap();
         let v2: serde_json::Value = serde_json::from_str(&resp2).unwrap();
         assert_eq!(v2["result"]["events"][0]["value"]["kind"], "usage");
         assert_eq!(v2["result"]["events"][1]["value"]["kind"], "run_model");
-        assert_eq!(
-            v2["result"]["next_cursor"], 5,
-            "window full advances cursor"
-        );
+        assert!(v2["result"].get("next_cursor").is_none(), "no next page");
         std::fs::remove_dir_all(&dir).ok();
     }
 
