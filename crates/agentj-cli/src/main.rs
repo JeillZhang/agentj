@@ -185,13 +185,26 @@ fn provider_cfgs(config: &agentj_config::Config) -> Vec<provider_service::Provid
 
 fn spawn_signal_task(sender: agentj_core::kernel::KernelSender) -> tokio::task::JoinHandle<()> {
     // design #13: SIGINT/SIGTERM → same graceful shutdown chain as stdin EOF.
+    //
+    // BUG-019: create — and therefore install — the OS signal handlers *synchronously*
+    // here, before this function returns. `tokio::signal` installs the process-global
+    // handler on the first `signal()` call; `tokio::spawn` is lazy, so if the streams
+    // were created inside the async block, a signal delivered before the task's first
+    // poll would hit the default disposition and kill the process with the signal's wait
+    // status (15 for SIGTERM) instead of running the graceful shutdown chain. The caller
+    // invokes this before `serve_stdio()`, so the handler is guaranteed live before the
+    // serve loop can answer any request. `SignalKind::interrupt()` is the SIGINT
+    // equivalent of `ctrl_c()` and lets us install both handlers up front.
+    #[cfg(unix)]
+    let (mut sigint, mut sigterm) = (
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt()).unwrap(),
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).unwrap(),
+    );
     tokio::spawn(async move {
         #[cfg(unix)]
         {
-            let mut sigterm =
-                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).unwrap();
             tokio::select! {
-                _ = tokio::signal::ctrl_c() => {}
+                _ = sigint.recv() => {}
                 _ = sigterm.recv() => {}
             }
         }
@@ -204,13 +217,25 @@ fn spawn_signal_task(sender: agentj_core::kernel::KernelSender) -> tokio::task::
 }
 
 fn spawn_tcp_signal_task(shared: Arc<IpcServer>) -> tokio::task::JoinHandle<()> {
+    // BUG-019: install the first-wait handlers synchronously before spawning, exactly as
+    // in `spawn_signal_task`; the caller runs this before `tcp.run()` enters its loop.
+    //
+    // The second wait keeps its streams created lazily *inside* the task. Preparing both
+    // pairs up front would make a single SIGTERM notify `sigint2`/`sigterm2` as well, so
+    // the force-exit path would fire immediately instead of on a second signal (verified:
+    // exit 130 vs 0 — a semantic regression). The second pair is only reached after the
+    // first signal has been received, i.e. once the task is already running, so it has no
+    // handler-installation race.
+    #[cfg(unix)]
+    let (mut sigint, mut sigterm) = (
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt()).unwrap(),
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).unwrap(),
+    );
     tokio::spawn(async move {
         #[cfg(unix)]
         {
-            let mut sigterm =
-                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).unwrap();
             tokio::select! {
-                _ = tokio::signal::ctrl_c() => {}
+                _ = sigint.recv() => {}
                 _ = sigterm.recv() => {}
             }
         }
@@ -221,10 +246,12 @@ fn spawn_tcp_signal_task(shared: Arc<IpcServer>) -> tokio::task::JoinHandle<()> 
         let _ = shared.signal_shutdown();
         #[cfg(unix)]
         {
-            let mut sigterm2 =
-                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).unwrap();
+            let (mut sigint2, mut sigterm2) = (
+                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt()).unwrap(),
+                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).unwrap(),
+            );
             tokio::select! {
-                _ = tokio::signal::ctrl_c() => {}
+                _ = sigint2.recv() => {}
                 _ = sigterm2.recv() => {}
             }
         }
@@ -343,6 +370,11 @@ async fn serve_tcp(
     )
     .await?;
     let local = tcp.local_addr()?;
+    // BUG-019: the shutdown handlers must be installed *before* the readiness output.
+    // Supervisors act on `listening on` immediately (read line, send SIGTERM); if the
+    // handler were installed afterwards, that SIGTERM would still hit the default
+    // disposition and kill the process without a graceful shutdown.
+    let signal_task = spawn_tcp_signal_task(tcp.shared_server());
     println!("listening on {local}");
     println!(
         "websocket on ws://{}:{}/ws",
@@ -367,7 +399,6 @@ async fn serve_tcp(
     if let Some(warning) = warning {
         eprintln!("{warning}");
     }
-    let signal_task = spawn_tcp_signal_task(tcp.shared_server());
     // Resident mode: exits when the last client disconnects or a shutdown
     // request arrives (决策 #3 按需常驻).
     tcp.run().await?;
