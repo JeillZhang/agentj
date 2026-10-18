@@ -2,6 +2,28 @@ use agentj_core::error::ToolError;
 use agentj_core::module::{Tool, ToolCallContext};
 use std::sync::Arc;
 
+use crate::executor::{CommandSpec, ToolExecutor};
+
+/// Lower bound for a model-supplied `timeout_ms`. Anything smaller is almost
+/// always a units mistake (seconds read as milliseconds) and would kill the
+/// command before it could do any work.
+pub const MIN_TOOL_TIMEOUT_MS: i64 = 1_000;
+/// Upper bound for a model-supplied `timeout_ms` (10 minutes), so a single tool
+/// call cannot pin a turn forever.
+pub const MAX_TOOL_TIMEOUT_MS: i64 = 600_000;
+pub const BASH_DEFAULT_TIMEOUT_MS: i64 = 120_000;
+pub const SEARCH_DEFAULT_TIMEOUT_MS: i64 = 60_000;
+
+/// Clamp a caller-supplied `timeout_ms` into `[MIN, MAX]`; a missing or
+/// non-integer value falls back to `default_ms` (clamping, not rejecting,
+/// matches the `agent.max_tool_iterations` config style).
+pub fn clamp_timeout_ms(raw: Option<i64>, default_ms: i64) -> std::time::Duration {
+    let ms = raw
+        .unwrap_or(default_ms)
+        .clamp(MIN_TOOL_TIMEOUT_MS, MAX_TOOL_TIMEOUT_MS);
+    std::time::Duration::from_millis(ms as u64)
+}
+
 pub struct ReadTool;
 impl Tool for ReadTool {
     fn name(&self) -> &str {
@@ -86,18 +108,18 @@ impl BashTool {
             })
     }
 
-    fn run(command: &str, cwd: Option<&std::path::Path>) -> Result<serde_json::Value, ToolError> {
-        let mut cmd = std::process::Command::new("sh");
-        cmd.arg("-c").arg(command);
-        if let Some(dir) = cwd {
-            cmd.current_dir(dir);
-        }
-        let output = cmd.output().map_err(|e| ToolError::ExecutionFailed {
-            name: "bash".into(),
-            reason: e.to_string(),
-        })?;
-        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        Ok(serde_json::Value::String(stdout))
+    fn run(
+        command: &str,
+        cwd: Option<&std::path::Path>,
+        timeout: std::time::Duration,
+    ) -> Result<serde_json::Value, ToolError> {
+        let spec = CommandSpec {
+            program: "sh".into(),
+            args: vec!["-c".into(), command.to_string()],
+            cwd: cwd.map(std::path::Path::to_path_buf),
+        };
+        let out = ToolExecutor::new(timeout, true).run_blocking(spec)?;
+        Ok(serde_json::Value::String(out.stdout))
     }
 }
 
@@ -111,19 +133,31 @@ impl Tool for BashTool {
     fn input_schema(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
-            "properties": { "command": { "type": "string", "description": "Command to execute" } },
+            "properties": {
+                "command": { "type": "string", "description": "Command to execute" },
+                "timeout_ms": {
+                    "type": "integer",
+                    "description": "Optional timeout in milliseconds (1000-600000; default 120000)"
+                }
+            },
             "required": ["command"]
         })
     }
     fn execute(&self, input: serde_json::Value) -> Result<serde_json::Value, ToolError> {
-        Self::run(Self::command_arg(&input)?, None)
+        let timeout = clamp_timeout_ms(input["timeout_ms"].as_i64(), BASH_DEFAULT_TIMEOUT_MS);
+        Self::run(Self::command_arg(&input)?, None, timeout)
     }
     fn execute_with_context(
         &self,
         input: serde_json::Value,
         ctx: &ToolCallContext,
     ) -> Result<serde_json::Value, ToolError> {
-        Self::run(Self::command_arg(&input)?, Some(&ctx.workspace_root))
+        let timeout = clamp_timeout_ms(input["timeout_ms"].as_i64(), BASH_DEFAULT_TIMEOUT_MS);
+        Self::run(
+            Self::command_arg(&input)?,
+            Some(&ctx.workspace_root),
+            timeout,
+        )
     }
 }
 
@@ -436,32 +470,11 @@ pub fn register_builtins(registry: &agentj_core::module::ToolRegistry) {
     registry.register(Arc::new(TodoTool));
 }
 
-/// v0.1: timeout wrapper — spawns execution, returns Timeout if it exceeds `timeout_dur`.
-/// Uses recv_timeout so the caller is never blocked by a hung tool.
-pub fn execute_with_timeout(
-    tool: &Arc<dyn agentj_core::module::Tool>,
-    input: serde_json::Value,
-    timeout_dur: std::time::Duration,
-) -> Result<serde_json::Value, ToolError> {
-    let tool = tool.clone();
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let result = tool.execute(input);
-        let _ = tx.send(result);
-    });
-    match rx.recv_timeout(timeout_dur) {
-        Ok(Ok(result)) => Ok(result),
-        Ok(Err(e)) => Err(e),
-        Err(_) => Err(ToolError::Timeout(timeout_dur)),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use agentj_core::error::ToolError;
     use agentj_core::module::{Tool, ToolCallContext};
-    use std::sync::Arc;
 
     #[test]
     fn read_tool_reads_file() -> Result<(), ToolError> {
@@ -475,17 +488,157 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(unix)]
+    fn process_alive(pid: u32) -> bool {
+        unsafe { libc::kill(pid as i32, 0) == 0 }
+    }
+
+    #[cfg(unix)]
+    fn wait_for_exit(pid: u32) {
+        for _ in 0..50 {
+            if !process_alive(pid) {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+
     #[test]
-    fn bash_tool_timeout_detected() {
-        let tool: Arc<dyn Tool> = Arc::new(BashTool);
-        let started = std::time::Instant::now();
-        let result = execute_with_timeout(
-            &tool,
-            serde_json::json!({"command": "sleep 5"}),
-            std::time::Duration::from_millis(100),
+    fn clamp_timeout_ms_clamps_into_the_supported_range() {
+        assert_eq!(
+            clamp_timeout_ms(None, 120_000),
+            std::time::Duration::from_secs(120)
         );
-        assert!(matches!(result, Err(ToolError::Timeout(_))));
-        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+        assert_eq!(
+            clamp_timeout_ms(Some(500), 120_000),
+            std::time::Duration::from_secs(1)
+        );
+        assert_eq!(
+            clamp_timeout_ms(Some(-5_000), 120_000),
+            std::time::Duration::from_secs(1)
+        );
+        assert_eq!(
+            clamp_timeout_ms(Some(2_000), 120_000),
+            std::time::Duration::from_secs(2)
+        );
+        assert_eq!(
+            clamp_timeout_ms(Some(10_000_000), 60_000),
+            std::time::Duration::from_secs(600)
+        );
+    }
+
+    #[test]
+    fn clamp_timeout_ms_falls_back_for_non_integer_values() {
+        // A model may send 1200.5 or "1200"; neither is an i64, so the default applies
+        // instead of failing the whole tool call.
+        let float = serde_json::json!({ "timeout_ms": 1200.5 });
+        let text = serde_json::json!({ "timeout_ms": "1200" });
+        assert_eq!(
+            clamp_timeout_ms(float["timeout_ms"].as_i64(), 60_000),
+            std::time::Duration::from_secs(60)
+        );
+        assert_eq!(
+            clamp_timeout_ms(text["timeout_ms"].as_i64(), 60_000),
+            std::time::Duration::from_secs(60)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bash_tool_times_out_and_reclaims_its_process_group() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let pidfile = dir.path().join("pid");
+        // $$ is the `sh -c` process itself, which is the process-group leader
+        // (spawn_guarded sets process_group(0)), so killpg(-pid) must take it down.
+        let command = format!("echo $$ > {}; sleep 30", pidfile.display());
+        let started = std::time::Instant::now();
+        let err = BashTool
+            .execute(serde_json::json!({ "command": command, "timeout_ms": 1500 }))
+            .unwrap_err();
+        // 1500 ms proves the per-call value was honoured: the 120 s default could not
+        // have returned inside the 5 s budget asserted below.
+        assert!(matches!(&err, ToolError::Timeout(_)), "unexpected: {err}");
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        let pid: u32 = std::fs::read_to_string(&pidfile)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        wait_for_exit(pid);
+        assert!(!process_alive(pid), "child pid {pid} must be reclaimed");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bash_tool_kills_grandchildren_on_timeout() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let childfile = dir.path().join("child");
+        let command = format!("sleep 30 & echo $! > {}; sleep 30", childfile.display());
+        let err = BashTool
+            .execute(serde_json::json!({ "command": command, "timeout_ms": 1500 }))
+            .unwrap_err();
+        assert!(matches!(&err, ToolError::Timeout(_)), "unexpected: {err}");
+        let child: u32 = std::fs::read_to_string(&childfile)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        wait_for_exit(child);
+        assert!(
+            !process_alive(child),
+            "background child {child} must be reclaimed with the group"
+        );
+    }
+
+    #[test]
+    fn bash_timeout_error_renders_the_model_visible_message() {
+        let err = ToolError::Timeout(std::time::Duration::from_secs(120));
+        assert_eq!(err.to_string(), "tool timeout after 120s");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bash_tool_runs_from_the_blocking_pool_inside_a_runtime() {
+        // The production path is spawn_blocking inside a runtime (agentj-core
+        // module.rs:451). Runtime::block_on is only safe on such a thread because
+        // blocking-pool workers never set EnterRuntime::Entered (design D1).
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let out = runtime.block_on(async {
+            tokio::task::spawn_blocking(|| {
+                BashTool
+                    .execute(serde_json::json!({ "command": "echo hi" }))
+                    .unwrap()
+            })
+            .await
+            .unwrap()
+        });
+        assert_eq!(out.as_str().unwrap().trim(), "hi");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bash_tool_drains_large_stdout_without_deadlock() {
+        // 1 MiB is far past the 64 KiB pipe buffer: if the implementation waited for
+        // exit before reading, this would hang instead of returning the output.
+        let out = BashTool
+            .execute(serde_json::json!({
+                "command": "head -c 1048576 /dev/zero | tr '\\0' 'x'",
+                "timeout_ms": 60000
+            }))
+            .unwrap();
+        assert_eq!(out.as_str().unwrap().len(), 1_048_576);
+    }
+
+    #[test]
+    fn bash_schema_declares_an_optional_timeout_ms() {
+        // The model only learns about timeout_ms from the schema, so the declaration
+        // itself is part of the contract (nothing else in the repo asserts tool schemas).
+        let schema = BashTool.input_schema();
+        assert_eq!(schema["properties"]["timeout_ms"]["type"], "integer");
+        assert_eq!(schema["required"], serde_json::json!(["command"]));
     }
 
     #[test]
