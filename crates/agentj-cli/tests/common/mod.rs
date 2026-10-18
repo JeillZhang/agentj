@@ -1,7 +1,7 @@
 // crates/agentj-cli/tests/common/mod.rs
 #![allow(dead_code)] // each test binary uses a subset
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use tempfile::TempDir;
 
@@ -51,7 +51,15 @@ impl TempEnv {
         cmd
     }
 
-    /// Writes the project config that the CLI resolves via `XDG_CONFIG_HOME`.
+    /// The data root `XDG_DATA_HOME` points at: the kernel writes `agentj/auth.json`
+    /// and its metrics state files underneath it.
+    pub fn data_dir(&self) -> &Path {
+        &self.data
+    }
+
+    /// Writes `agentj/config.toml` under the temp config root — a stable path for
+    /// callers that only need the file to exist. The CLI itself loads its config
+    /// from `--config <path>` (default `./config.toml`), not from `XDG_CONFIG_HOME`.
     pub fn write_config(&self, body: &str) {
         let dir = self.config.join("agentj");
         std::fs::create_dir_all(&dir).expect("config dir");

@@ -1,10 +1,13 @@
 //! E2E: `agentj auth login|status|logout` round-trip and the keyless startup failure.
 //!
 //! Integration tests are per-binary, so the temp-dir/config helpers are local copies
-//! of the `e2e_cli.rs` patterns.
+//! of the `e2e_cli.rs` patterns; every spawn runs inside a `common::TempEnv` so the
+//! real credential store is never read or written.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+
+mod common;
 
 fn e2e_temp_dir(tag: &str) -> PathBuf {
     let nanos = std::time::SystemTime::now()
@@ -26,24 +29,23 @@ fn write_cfg(dir: &Path, body: &str) -> PathBuf {
     path
 }
 
-fn run(home: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_agentj"))
-        .env("XDG_DATA_HOME", home)
-        .env("HOME", home)
-        .env_remove("AGENTJ_MISSING_KEY")
-        .args(args)
-        .output()
-        .unwrap()
+/// `agentj <args…>` with an isolated data/config/home root; API keys inherited from
+/// the developer's shell are removed by `apply`.
+fn run(env: &common::TempEnv, args: &[&str]) -> Output {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_agentj"));
+    env.apply(&mut cmd);
+    cmd.args(args).output().unwrap()
 }
 
 #[test]
 fn login_status_logout_roundtrip() {
-    let home = e2e_temp_dir("roundtrip");
-    let cfg = write_cfg(&home, "[model]\nprovider = \"opencode-go\"\n");
+    let env = common::TempEnv::new();
+    let cfg_dir = e2e_temp_dir("roundtrip");
+    let cfg = write_cfg(&cfg_dir, "[model]\nprovider = \"opencode-go\"\n");
     let cfg_str = cfg.to_str().unwrap();
 
     let login = run(
-        &home,
+        &env,
         &[
             "--config",
             cfg_str,
@@ -60,18 +62,15 @@ fn login_status_logout_roundtrip() {
         String::from_utf8_lossy(&login.stderr)
     );
 
+    let cred = env.data_dir().join("agentj/auth.json");
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mode = std::fs::metadata(home.join("agentj/auth.json"))
-            .unwrap()
-            .permissions()
-            .mode()
-            & 0o777;
+        let mode = std::fs::metadata(&cred).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "credential file must be 0600");
     }
 
-    let status = run(&home, &["--config", cfg_str, "auth", "status", "--offline"]);
+    let status = run(&env, &["--config", cfg_str, "auth", "status", "--offline"]);
     assert!(status.status.success());
     let out = String::from_utf8_lossy(&status.stdout);
     assert!(out.contains("…1234"), "status must show last 4: {out}");
@@ -80,27 +79,28 @@ fn login_status_logout_roundtrip() {
         "status must not leak the key: {out}"
     );
 
-    let logout = run(&home, &["--config", cfg_str, "auth", "logout"]);
+    let logout = run(&env, &["--config", cfg_str, "auth", "logout"]);
     assert!(logout.status.success());
     assert!(
-        !home.join("agentj/auth.json").exists(),
+        !cred.exists(),
         "logout must delete the emptied credential file"
     );
-    let _ = std::fs::remove_dir_all(&home);
+    let _ = std::fs::remove_dir_all(&cfg_dir);
 }
 
 /// A keyless real provider makes one-shot `run` fail: there is no client to link a
 /// credential into this kernel later, so the failure must land before any HTTP attempt.
 #[test]
 fn keyless_real_provider_fails_run() {
-    let home = e2e_temp_dir("keyless");
+    let env = common::TempEnv::new();
+    let cfg_dir = e2e_temp_dir("keyless");
     let cfg = write_cfg(
-        &home,
+        &cfg_dir,
         "[model]\nprovider = \"deepseek\"\n[[model.providers]]\nname = \"deepseek\"\n\
          kind = \"openai-compat\"\nbase_url = \"https://example.invalid\"\n\
          api_key_env = \"AGENTJ_MISSING_KEY\"\n",
     );
-    let out = run(&home, &["--config", cfg.to_str().unwrap(), "run", "hi"]);
+    let out = run(&env, &["--config", cfg.to_str().unwrap(), "run", "hi"]);
     assert!(!out.status.success(), "keyless run must fail");
     assert!(
         String::from_utf8_lossy(&out.stderr).contains("no usable model provider"),
@@ -112,5 +112,5 @@ fn keyless_real_provider_fails_run() {
         "failure must happen before any HTTP attempt against base_url: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let _ = std::fs::remove_dir_all(&home);
+    let _ = std::fs::remove_dir_all(&cfg_dir);
 }

@@ -31,6 +31,8 @@ use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
+mod common;
+
 /// Whole-test budget: covers process startup, the run, and the 800ms auto-deny.
 const DEADLINE: Duration = Duration::from_secs(20);
 
@@ -114,7 +116,12 @@ fn permission_request_notified_and_timeout_denies() {
     )
     .unwrap();
 
-    let child = Command::new(env!("CARGO_BIN_EXE_agentj"))
+    // Bound here, not inside a spawn helper: the temp env (and therefore the
+    // child's data/config/home roots) must outlive the server this test drives.
+    let env = common::TempEnv::new();
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_agentj"));
+    env.apply(&mut cmd);
+    let child = cmd
         .args(["--config", cfg.to_str().unwrap(), "serve"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
