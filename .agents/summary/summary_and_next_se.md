@@ -61,7 +61,31 @@
 clippy 0 warning / `agentj-tools` lib 33 passed / version-ok；8 MiB stdout 不死锁；超时后孙进程
 `ps` 确认 GONE 且无 `defunct`；`timeout_ms` 为 0 / -1 → 钳到 1s，`1000.5` / `"1000"` / `null`
 → 回退默认；相对路径 cwd 正确。清单 `.superpowers/acceptance/bugs.md` 无新增行（BUG-019 未使用）。
-故本阶段**不 bump 版本**（计划把工作区固定在 0.1.0 / PROTOCOL 0.18.0，且无验收修复）。
+
+### 验收（test 轮 2 → BUG-019，PR CI 回归）✅
+
+PR #86 的 `ci.yml`（`cargo llvm-cov --workspace`）在 `e2e_serve_exits_gracefully_on_sigterm` 上失败：
+`crates/agentj-cli/tests/e2e_cli.rs:123 expected graceful exit 0, got: ExitStatus(unix_wait_status(15))`
+（8 passed / 1 failed；本地连跑 25/25 通过 → 窄窗竞态）。与本次 `agentj-tools` 改动无关
+（`git diff --stat main..HEAD` 未触及 `agentj-cli` / `agentj-ipc`），但阻塞门禁，故在本轮验收内修复。
+
+- **根因**（BUG-019）：`crates/agentj-cli/src/main.rs:186 fn spawn_signal_task` /
+  `:206 fn spawn_tcp_signal_task` 把 `tokio::signal::unix::signal(SignalKind::terminate())` 写在
+  `tokio::spawn` 的 async 块**内**——tokio 在 `signal()` 首次被调用时才安装进程级 OS 处理器，
+  而 `tokio::spawn` 是惰性的，故任务首次被 poll 之前到达的 SIGTERM 仍是默认处置（进程被信号杀死，
+  `exit 15`），不走 `KernelMessage::Shutdown`（stdio 调用点 `main.rs:772`）/ `shared.signal_shutdown()`
+  （TCP 调用点 `main.rs:370`）的优雅关闭链；测试 `e2e_cli.rs:92-100` 注释里的「收到 `session/new`
+  回包即处理器已装」假设不成立。llvm-cov 插桩使窗口变大，故 CI 偶发、本地难复现。
+- **修复**（commit `737844a`，仅 `crates/agentj-cli/src/main.rs`）：首等待的 `SIGINT`/`SIGTERM` 流
+  （`SignalKind::interrupt()` 替代 `ctrl_c()`）上移到函数体**同步创建**，确定早于 `serve_stdio()` /
+  `tcp.run()`；TCP 第二次信号（强制退出 `exit 130`）仍惰性创建——若两对都提前创建，单次 SIGTERM 会
+  同时通知第二对而立即强制退出（实测 `exit 130` vs 期望 `0`），属语义回归，故只上移首等待。
+- **证据**：修复者以「首等待前插入 800ms 延迟」的临时插桩在新旧代码上跑出 RED（exit 15）→ GREEN（exit 0）；
+  本地 `e2e_cli` 9 passed、`--exact e2e_serve_exits_gracefully_on_sigterm` 连跑 **30/30 通过**、
+  `cargo test --workspace` 0 failed、clippy 0 warning、`cargo fmt --all --check` OK、`version-ok`。
+
+故本阶段**不 bump 版本**（计划把工作区固定在 0.1.0 / PROTOCOL 0.18.0；BUG-019 作为 0.1.x 的 Fixed
+条目记入 `docs/changelog/v0.1.md`）。
 
 ### 前序阶段（归档，详见 `docs/changelog/v0.1.md`）
 
