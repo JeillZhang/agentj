@@ -82,6 +82,10 @@ fn default_max_tool_iterations() -> i64 {
     50
 }
 
+fn default_max_tool_result_chars() -> i64 {
+    100_000
+}
+
 /// Bounds for the agent loop (`[agent]`). @since 0.29.9
 #[derive(Debug, Clone, Deserialize)]
 pub struct AgentSection {
@@ -90,12 +94,17 @@ pub struct AgentSection {
     /// `MIN_TOOL_ITERATIONS..=MAX_TOOL_ITERATIONS` by the accessor. @since 0.29.9
     #[serde(default = "default_max_tool_iterations")]
     pub max_tool_iterations: i64,
+    /// Largest single tool result the kernel hands back to the model. Clamped to
+    /// `MIN_TOOL_RESULT_CHARS..=MAX_TOOL_RESULT_CHARS` by the accessor.
+    #[serde(default = "default_max_tool_result_chars")]
+    pub max_tool_result_chars: i64,
 }
 
 impl Default for AgentSection {
     fn default() -> Self {
         Self {
             max_tool_iterations: default_max_tool_iterations(),
+            max_tool_result_chars: default_max_tool_result_chars(),
         }
     }
 }
@@ -109,6 +118,16 @@ pub const MAX_TOOL_ITERATIONS: i64 = 1_000;
 /// Clamp a configured tool-iteration budget into the supported range. @since 0.29.9
 pub fn clamp_tool_iterations(value: i64) -> i64 {
     value.clamp(MIN_TOOL_ITERATIONS, MAX_TOOL_ITERATIONS)
+}
+
+/// Lower bound of `agent.max_tool_result_chars` (a zero budget would truncate everything).
+pub const MIN_TOOL_RESULT_CHARS: i64 = 1_000;
+/// Upper bound of `agent.max_tool_result_chars`.
+pub const MAX_TOOL_RESULT_CHARS: i64 = 1_000_000;
+
+/// Clamp a configured tool-result budget into the supported range.
+pub fn clamp_tool_result_chars(value: i64) -> i64 {
+    value.clamp(MIN_TOOL_RESULT_CHARS, MAX_TOOL_RESULT_CHARS)
 }
 
 /// Default `[web] spot_interval_secs` — matches the pre-existing hard-coded 60s sweep.
@@ -312,6 +331,12 @@ impl Config {
     pub fn inner(&self) -> &AgentJConfig {
         &self.inner
     }
+
+    /// Largest single tool result (in characters) the kernel may hand back to the model,
+    /// clamped into the supported range.
+    pub fn max_tool_result_chars(&self) -> usize {
+        clamp_tool_result_chars(self.inner.agent.max_tool_result_chars) as usize
+    }
 }
 
 impl ConfigProvider for Config {
@@ -336,6 +361,9 @@ impl ConfigProvider for Config {
             "agent.max_tool_iterations" => {
                 Some(clamp_tool_iterations(self.inner.agent.max_tool_iterations))
             }
+            "agent.max_tool_result_chars" => Some(clamp_tool_result_chars(
+                self.inner.agent.max_tool_result_chars,
+            )),
             "model.max_context_tokens" => Some(self.inner.model.max_context_tokens.clamp(
                 agentj_core::budget::MIN_CONTEXT_TOKENS as i64,
                 agentj_core::budget::MAX_CONTEXT_TOKENS as i64,
@@ -597,6 +625,30 @@ mod tests {
             high.get_int("agent.max_tool_iterations"),
             Some(MAX_TOOL_ITERATIONS)
         );
+    }
+
+    #[test]
+    fn max_tool_result_chars_defaults_and_clamps() {
+        let cfg = parse_config("");
+        assert_eq!(cfg.max_tool_result_chars(), 100_000);
+        assert_eq!(
+            parse_config("[agent]\nmax_tool_result_chars = 2000\n").max_tool_result_chars(),
+            2000
+        );
+        assert_eq!(
+            parse_config("[agent]\nmax_tool_result_chars = 0\n").max_tool_result_chars(),
+            MIN_TOOL_RESULT_CHARS as usize
+        );
+        assert_eq!(
+            parse_config("[agent]\nmax_tool_result_chars = 9999999\n").max_tool_result_chars(),
+            MAX_TOOL_RESULT_CHARS as usize
+        );
+    }
+
+    #[test]
+    fn max_tool_result_chars_is_readable_through_get_int() {
+        let cfg = parse_config("[agent]\nmax_tool_result_chars = 2000\n");
+        assert_eq!(cfg.get_int("agent.max_tool_result_chars"), Some(2000));
     }
 
     #[test]
