@@ -111,6 +111,54 @@ pub fn clamp_tool_iterations(value: i64) -> i64 {
     value.clamp(MIN_TOOL_ITERATIONS, MAX_TOOL_ITERATIONS)
 }
 
+/// Default `[web] spot_interval_secs` — matches the pre-existing hard-coded 60s sweep.
+pub fn default_spot_interval_secs() -> u64 {
+    60
+}
+
+/// Default `[web] spot_sample` — matches the pre-existing hard-coded 8 files per tick.
+pub fn default_spot_sample() -> usize {
+    8
+}
+
+/// Default `[web] verify_on_request` — request-path verification is on by default.
+pub fn default_verify_on_request() -> bool {
+    true
+}
+
+/// Default `[web] verify_cache_ttl_secs` — the request-path memo window.
+pub fn default_verify_cache_ttl_secs() -> u64 {
+    60
+}
+
+/// Lower bound of `web.spot_interval_secs` (`tokio::time::interval(0)` would panic).
+pub const MIN_SPOT_INTERVAL_SECS: u64 = 5;
+/// Upper bound of `web.spot_interval_secs`.
+pub const MAX_SPOT_INTERVAL_SECS: u64 = 3600;
+/// Lower bound of `web.spot_sample` (a zero budget would never sample anything).
+pub const MIN_SPOT_SAMPLE: usize = 1;
+/// Upper bound of `web.spot_sample`.
+pub const MAX_SPOT_SAMPLE: usize = 1024;
+/// Lower bound of `web.verify_cache_ttl_secs` (a zero TTL would hash on every request).
+pub const MIN_VERIFY_CACHE_TTL_SECS: u64 = 1;
+/// Upper bound of `web.verify_cache_ttl_secs`.
+pub const MAX_VERIFY_CACHE_TTL_SECS: u64 = 3600;
+
+/// Clamp a configured runtime spot-check interval into the supported range.
+pub fn clamp_spot_interval_secs(value: u64) -> u64 {
+    value.clamp(MIN_SPOT_INTERVAL_SECS, MAX_SPOT_INTERVAL_SECS)
+}
+
+/// Clamp a configured runtime spot-check sample size into the supported range.
+pub fn clamp_spot_sample(value: usize) -> usize {
+    value.clamp(MIN_SPOT_SAMPLE, MAX_SPOT_SAMPLE)
+}
+
+/// Clamp a configured request-path verification cache TTL into the supported range.
+pub fn clamp_verify_cache_ttl_secs(value: u64) -> u64 {
+    value.clamp(MIN_VERIFY_CACHE_TTL_SECS, MAX_VERIFY_CACHE_TTL_SECS)
+}
+
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct SessionConfig {
     #[serde(default)]
@@ -144,17 +192,59 @@ pub struct McpConfig {
     pub servers: Vec<McpServerConfig>,
 }
 
-/// `[web]` HTTP surface options: proxy-header trust for client-IP derivation
-/// and the directory holding the persisted login-limiter state.
+/// `[web]` HTTP surface options: proxy-header trust for client-IP derivation,
+/// the directory holding the persisted login-limiter state, and the integrity
+/// verification knobs (runtime spot-check cadence + request-path verification).
 ///
 /// `trust_proxy_headers` defaults to `false`; enabling it only takes effect when
 /// the direct TCP peer is loopback (design D1), so it is safe for same-host proxies.
-#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+/// The four integrity knobs default to the pre-existing behaviour (60s sweep,
+/// 8 files per tick, request-path verification on, 60s memo) and are clamped by
+/// the `clamped_*` accessors before use.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct WebSection {
     pub trust_proxy_headers: bool,
     /// Overrides `$XDG_DATA_HOME/agentj`; `None` means "resolve from the environment".
     pub state_dir: Option<PathBuf>,
+    /// Runtime spot-check cadence in seconds (clamped to 5..=3600).
+    pub spot_interval_secs: u64,
+    /// Files hashed per spot-check tick (clamped to 1..=1024).
+    pub spot_sample: usize,
+    /// Whether the static surface verifies served assets on request.
+    pub verify_on_request: bool,
+    /// How long a request-path verification verdict is memoized (clamped to 1..=3600).
+    pub verify_cache_ttl_secs: u64,
+}
+
+impl Default for WebSection {
+    fn default() -> Self {
+        Self {
+            trust_proxy_headers: false,
+            state_dir: None,
+            spot_interval_secs: default_spot_interval_secs(),
+            spot_sample: default_spot_sample(),
+            verify_on_request: default_verify_on_request(),
+            verify_cache_ttl_secs: default_verify_cache_ttl_secs(),
+        }
+    }
+}
+
+impl WebSection {
+    /// `spot_interval_secs` clamped into the supported range.
+    pub fn clamped_spot_interval_secs(&self) -> u64 {
+        clamp_spot_interval_secs(self.spot_interval_secs)
+    }
+
+    /// `spot_sample` clamped into the supported range.
+    pub fn clamped_spot_sample(&self) -> usize {
+        clamp_spot_sample(self.spot_sample)
+    }
+
+    /// `verify_cache_ttl_secs` clamped into the supported range.
+    pub fn clamped_verify_cache_ttl_secs(&self) -> u64 {
+        clamp_verify_cache_ttl_secs(self.verify_cache_ttl_secs)
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -305,6 +395,52 @@ mod tests {
         )
         .unwrap();
         assert!(cfg.web.expect("[web] section present").trust_proxy_headers);
+    }
+
+    #[test]
+    fn web_section_integrity_knobs_default_to_today_behaviour() {
+        let section = WebSection::default();
+        assert_eq!(section.spot_interval_secs, default_spot_interval_secs());
+        assert_eq!(section.spot_sample, default_spot_sample());
+        assert!(section.verify_on_request);
+        assert_eq!(
+            section.verify_cache_ttl_secs,
+            default_verify_cache_ttl_secs()
+        );
+        assert_eq!(section.spot_interval_secs, 60);
+        assert_eq!(section.spot_sample, 8);
+        assert_eq!(section.verify_cache_ttl_secs, 60);
+    }
+
+    #[test]
+    fn web_section_integrity_knobs_are_clamped() {
+        let section = WebSection {
+            spot_interval_secs: 1,
+            spot_sample: 0,
+            verify_cache_ttl_secs: 99_999,
+            ..WebSection::default()
+        };
+        assert_eq!(section.clamped_spot_interval_secs(), MIN_SPOT_INTERVAL_SECS);
+        assert_eq!(section.clamped_spot_sample(), MIN_SPOT_SAMPLE);
+        assert_eq!(
+            section.clamped_verify_cache_ttl_secs(),
+            MAX_VERIFY_CACHE_TTL_SECS
+        );
+        assert_eq!(clamp_spot_interval_secs(0), 5);
+        assert_eq!(clamp_spot_interval_secs(u64::MAX), 3600);
+        assert_eq!(clamp_spot_sample(4096), 1024);
+    }
+
+    #[test]
+    fn web_section_reads_the_integrity_knobs_from_toml() {
+        let cfg = parse_config(
+            "[web]\nspot_interval_secs = 30\nspot_sample = 2\nverify_on_request = false\nverify_cache_ttl_secs = 15\n",
+        );
+        let web = cfg.inner().web.as_ref().expect("web section");
+        assert_eq!(web.spot_interval_secs, 30);
+        assert_eq!(web.spot_sample, 2);
+        assert!(!web.verify_on_request);
+        assert_eq!(web.verify_cache_ttl_secs, 15);
     }
 
     #[test]
