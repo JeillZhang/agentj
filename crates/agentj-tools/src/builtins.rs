@@ -167,7 +167,7 @@ impl GrepTool {
     /// Directories the in-process walker never descends into. The `rg` path
     /// honours `.gitignore`; the fallback has no ignore engine, so this list
     /// keeps it from crawling build output and dependency trees.
-    const SKIP_DIRS: [&'static str; 9] = [
+    pub(crate) const SKIP_DIRS: [&'static str; 9] = [
         ".git",
         "target",
         "node_modules",
