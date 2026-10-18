@@ -218,6 +218,78 @@ impl Default for SpotCheckConfig {
     }
 }
 
+/// Request-path integrity knobs derived from the `[web]` config section.
+///
+/// The bounds are re-clamped inside [`WebConfig::with_integrity_options`]
+/// instead of depending on `agentj-config`: these fields are `pub`, and
+/// `tokio::time::interval(0)` panics.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct IntegrityOptions {
+    pub spot_interval: Duration,
+    pub spot_sample: usize,
+    pub verify_on_request: bool,
+    pub verify_cache_ttl: Duration,
+}
+
+impl Default for IntegrityOptions {
+    fn default() -> Self {
+        Self {
+            spot_interval: Duration::from_secs(60),
+            spot_sample: 8,
+            verify_on_request: true,
+            verify_cache_ttl: Duration::from_secs(60),
+        }
+    }
+}
+
+/// Clamp bounds for [`IntegrityOptions`], mirroring `agentj-config`'s `[web]` bounds.
+///
+/// `allow(dead_code)`: the bounds are consumed by the request-path verification and
+/// the manual sweep, which land in the following changes; the annotations come off
+/// with each consumer.
+#[allow(dead_code)]
+pub(crate) const MIN_SPOT_INTERVAL: Duration = Duration::from_secs(5);
+#[allow(dead_code)]
+pub(crate) const MAX_SPOT_INTERVAL: Duration = Duration::from_secs(3600);
+#[allow(dead_code)]
+pub(crate) const MIN_SPOT_SAMPLE: usize = 1;
+#[allow(dead_code)]
+pub(crate) const MAX_SPOT_SAMPLE: usize = 1024;
+#[allow(dead_code)]
+pub(crate) const MIN_VERIFY_TTL: Duration = Duration::from_secs(1);
+#[allow(dead_code)]
+pub(crate) const MAX_VERIFY_TTL: Duration = Duration::from_secs(3600);
+
+/// Cumulative outcome of the manual `POST /integrity/verify` sweeps (design G7):
+/// written by the sweep handler, read by `/version`.
+#[allow(dead_code)] // the sweep handler and /version read these in the following changes
+#[derive(Debug, Clone, Default)]
+pub(crate) struct IntegrityOnDemandReport {
+    pub(crate) sweeps: u64,
+    pub(crate) checked: u64,
+    pub(crate) mismatched: u64,
+    pub(crate) missing: u64,
+    pub(crate) last_run: Option<Instant>,
+}
+
+/// Request-path verification counters plus the current memo size (design G2).
+#[allow(dead_code)] // /metrics reads these in the following changes
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct RequestIntegritySnapshot {
+    pub(crate) checked: u64,
+    pub(crate) mismatched: u64,
+    pub(crate) missing: u64,
+    pub(crate) cache_entries: usize,
+}
+
+/// One memoised request-path verdict plus the instant it was taken, so the
+/// expiry check is absolute (a cache hit never extends the TTL).
+#[allow(dead_code)] // read once the request-path verification lands
+struct VerifyEntry {
+    verdict: AssetCheck,
+    checked_at: Instant,
+}
+
 /// Cumulative runtime spot-check state (design D7): written by the periodic
 /// task, read by `/version` and `/metrics`.
 #[derive(Debug, Clone, Default)]
@@ -270,6 +342,13 @@ pub struct WebConfig {
     integrity_error: Option<String>,
     manifest: Option<AssetManifest>,
     spot: SpotCheckConfig,
+    verify_on_request: bool,
+    verify_cache_ttl: Duration,
+    verify_cache: std::sync::Mutex<std::collections::HashMap<String, VerifyEntry>>,
+    on_demand: std::sync::RwLock<IntegrityOnDemandReport>,
+    request_checked: std::sync::atomic::AtomicU64,
+    request_mismatched: std::sync::atomic::AtomicU64,
+    request_missing: std::sync::atomic::AtomicU64,
     spot_report: std::sync::RwLock<SpotCheckReport>,
     warned: std::sync::Mutex<std::collections::HashSet<String>>,
     spot_cursor: std::sync::atomic::AtomicUsize,
@@ -301,6 +380,13 @@ impl WebConfig {
             integrity_error,
             manifest,
             spot: SpotCheckConfig::default(),
+            verify_on_request: true,
+            verify_cache_ttl: Duration::from_secs(60),
+            verify_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
+            on_demand: std::sync::RwLock::new(IntegrityOnDemandReport::default()),
+            request_checked: std::sync::atomic::AtomicU64::new(0),
+            request_mismatched: std::sync::atomic::AtomicU64::new(0),
+            request_missing: std::sync::atomic::AtomicU64::new(0),
             spot_report: std::sync::RwLock::new(SpotCheckReport::default()),
             warned: std::sync::Mutex::new(std::collections::HashSet::new()),
             spot_cursor: std::sync::atomic::AtomicUsize::new(0),
@@ -323,6 +409,36 @@ impl WebConfig {
     #[cfg(test)]
     pub(crate) fn with_spot_check(mut self, spot: SpotCheckConfig) -> Self {
         self.spot = spot;
+        self
+    }
+    #[cfg(test)]
+    pub(crate) fn spot_interval(&self) -> Duration {
+        self.spot.interval
+    }
+    #[cfg(test)]
+    pub(crate) fn spot_sample(&self) -> usize {
+        self.spot.sample
+    }
+    #[cfg(test)]
+    pub(crate) fn verify_cache_ttl(&self) -> Duration {
+        self.verify_cache_ttl
+    }
+    #[cfg(test)]
+    pub(crate) fn verify_on_request_enabled(&self) -> bool {
+        self.verify_on_request
+    }
+    /// Apply the `[web]` integrity knobs. Re-clamps defensively: the fields of
+    /// `IntegrityOptions` are `pub`, and `tokio::time::interval(0)` panics.
+    #[allow(dead_code)] // wired into the bind path in a following change
+    pub(crate) fn with_integrity_options(mut self, opts: IntegrityOptions) -> Self {
+        self.spot = SpotCheckConfig {
+            interval: opts
+                .spot_interval
+                .clamp(MIN_SPOT_INTERVAL, MAX_SPOT_INTERVAL),
+            sample: opts.spot_sample.clamp(MIN_SPOT_SAMPLE, MAX_SPOT_SAMPLE),
+        };
+        self.verify_on_request = opts.verify_on_request;
+        self.verify_cache_ttl = opts.verify_cache_ttl.clamp(MIN_VERIFY_TTL, MAX_VERIFY_TTL);
         self
     }
     /// Opt in to forwarded-header trust (design D1). Takes effect only when the
@@ -518,6 +634,41 @@ impl WebConfig {
     pub(crate) fn runtime_snapshot(&self) -> (SpotCheckReport, Option<u64>) {
         let report = self
             .spot_report
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let age = report
+            .last_run
+            .map(|t| Instant::now().duration_since(t).as_secs());
+        (report, age)
+    }
+    /// Request-path verification counters plus the current memo size (design G2).
+    #[allow(dead_code)] // /metrics reads this in a following change
+    pub(crate) fn request_integrity_snapshot(&self) -> RequestIntegritySnapshot {
+        let cache_entries = self
+            .verify_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .len();
+        RequestIntegritySnapshot {
+            checked: self
+                .request_checked
+                .load(std::sync::atomic::Ordering::Relaxed),
+            mismatched: self
+                .request_mismatched
+                .load(std::sync::atomic::Ordering::Relaxed),
+            missing: self
+                .request_missing
+                .load(std::sync::atomic::Ordering::Relaxed),
+            cache_entries,
+        }
+    }
+    /// The manual-sweep report plus the age of its last sweep in whole seconds;
+    /// the age is `None` until the first sweep has run (design G7).
+    #[allow(dead_code)] // /version reads this in a following change
+    pub(crate) fn on_demand_snapshot(&self) -> (IntegrityOnDemandReport, Option<u64>) {
+        let report = self
+            .on_demand
             .read()
             .unwrap_or_else(|e| e.into_inner())
             .clone();
@@ -1364,6 +1515,51 @@ mod tests {
         assert_eq!(safe_next(Some("/\\evil")), "/");
         assert_eq!(safe_next(Some("/\tevil")), "/");
     }
+    #[test]
+    fn integrity_options_defaults_match_the_documented_values() {
+        let opts = IntegrityOptions::default();
+        assert_eq!(opts.spot_interval, Duration::from_secs(60));
+        assert_eq!(opts.spot_sample, 8);
+        assert!(opts.verify_on_request);
+        assert_eq!(opts.verify_cache_ttl, Duration::from_secs(60));
+    }
+
+    #[test]
+    fn new_web_config_starts_with_zero_integrity_counters() {
+        let web = WebConfig::new(None, None);
+        let snapshot = web.request_integrity_snapshot();
+        assert_eq!(
+            (snapshot.checked, snapshot.mismatched, snapshot.missing),
+            (0, 0, 0)
+        );
+        assert_eq!(snapshot.cache_entries, 0);
+        let (report, age) = web.on_demand_snapshot();
+        assert_eq!(
+            (
+                report.sweeps,
+                report.checked,
+                report.mismatched,
+                report.missing
+            ),
+            (0, 0, 0, 0)
+        );
+        assert_eq!(age, None);
+    }
+
+    #[test]
+    fn with_integrity_options_clamps_zero_durations_and_oversized_samples() {
+        let web = WebConfig::new(None, None).with_integrity_options(IntegrityOptions {
+            spot_interval: Duration::ZERO,
+            spot_sample: 10_000,
+            verify_on_request: false,
+            verify_cache_ttl: Duration::ZERO,
+        });
+        assert_eq!(web.spot_interval(), MIN_SPOT_INTERVAL);
+        assert_eq!(web.spot_sample(), MAX_SPOT_SAMPLE);
+        assert_eq!(web.verify_cache_ttl(), MIN_VERIFY_TTL);
+        assert!(!web.verify_on_request_enabled());
+    }
+
     #[test]
     fn loopback_detection_covers_v4_mapped_peers() {
         assert!(peer_is_loopback("127.0.0.1:5555".parse().unwrap()));
