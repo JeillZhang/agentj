@@ -68,7 +68,7 @@ fn registry_lists_all_v01_methods() {
         assert_eq!(m["params"], params, "{name} params");
         assert_eq!(m["result"], result, "{name} result");
     }
-    assert_eq!(reg["protocol_version"], "0.18.0");
+    assert_eq!(reg["protocol_version"], "0.19.0");
 }
 
 #[test]
@@ -116,14 +116,14 @@ fn registry_extension_method_shapes() {
     assert_eq!(clear["result"], "AuthClearCredentialResult");
 
     assert_eq!(find("session/new")["params"], "SessionNewParams");
-    assert_eq!(reg["protocol_version"], "0.18.0");
+    assert_eq!(reg["protocol_version"], "0.19.0");
 }
 
 #[test]
 fn protocol_version_and_new_methods_are_registered() {
     let raw = include_str!("../../../protocol/methods.json");
     let reg: serde_json::Value = serde_json::from_str(raw).unwrap();
-    assert_eq!(reg["protocol_version"], "0.18.0");
+    assert_eq!(reg["protocol_version"], "0.19.0");
     let methods = reg["methods"].as_array().unwrap();
     assert_eq!(methods.len(), 28, "unexpected method count");
     let names: Vec<&str> = methods
