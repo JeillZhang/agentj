@@ -11,5 +11,38 @@
     { "name": "index.ts", "path": "src/auth/index.ts", "query": "auth", "expected_rank": 2 },
     { "name": "lib.rs", "path": "src/lib.rs", "query": "main", "expected_rank": null },
     { "name": "main.rs", "path": "src/main.rs", "query": "  main  ", "expected_rank": null }
+  ],
+  "searches": [
+    {
+      "query": "main",
+      "entries": [
+        { "name": "readme.md", "path": "docs/main-guide/readme.md", "kind": "file" },
+        { "name": "main", "path": "src/main", "kind": "directory" },
+        { "name": "domain_main.rs", "path": "src/domain/domain_main.rs", "kind": "file" },
+        { "name": "main.rs", "path": "src/main.rs", "kind": "file" }
+      ],
+      "expected_ranked_paths": [
+        "src/main.rs",
+        "src/domain/domain_main.rs",
+        "docs/main-guide/readme.md"
+      ],
+      "expected_total": 3
+    },
+    {
+      "query": "auth",
+      "entries": [
+        { "name": "my-auth-helper.ts", "path": "src/helpers/my-auth-helper.ts", "kind": "file" },
+        { "name": "index.ts", "path": "src/auth/index.ts", "kind": "file" },
+        { "name": "auth.ts", "path": "src/auth.ts", "kind": "file" },
+        { "name": "auth.test.ts", "path": "tests/auth.test.ts", "kind": "file" }
+      ],
+      "expected_ranked_paths": [
+        "src/auth.ts",
+        "tests/auth.test.ts",
+        "src/helpers/my-auth-helper.ts",
+        "src/auth/index.ts"
+      ],
+      "expected_total": 4
+    }
   ]
 }
