@@ -239,6 +239,25 @@ pub(crate) struct SpotRound {
     pub(crate) offenses: Vec<String>,
 }
 
+/// Client-IP source tallies for `agentj_web_client_ip_source_total` plus the
+/// derivation failures (trust on, header present, nothing usable).
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct IpSourceTotals {
+    pub(crate) peer: u64,
+    pub(crate) forwarded: u64,
+    pub(crate) real_ip: u64,
+    pub(crate) invalid: u64,
+}
+
+/// Outcome of the persisted-state lifecycle, exposed as gauges/counters.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct StateReport {
+    pub(crate) restored: bool,
+    pub(crate) restored_entries: u64,
+    pub(crate) write_failures: u64,
+    pub(crate) last_flush_unix: u64,
+}
+
 /// Static-web-UI runtime config: resolved dist directory plus the optional
 /// access token and the in-memory set of issued sessions (D3, no persistence).
 pub struct WebConfig {
@@ -256,6 +275,12 @@ pub struct WebConfig {
     spot_task: std::sync::Mutex<Option<tokio::task::AbortHandle>>,
     sessions: std::sync::RwLock<std::collections::HashSet<String>>,
     login_limiter: LoginLimiter,
+    trust_proxy_headers: bool,
+    metrics_state: Option<std::path::PathBuf>,
+    ip_sources: std::sync::RwLock<IpSourceTotals>,
+    state_report: std::sync::RwLock<StateReport>,
+    flush_task: std::sync::Mutex<Option<tokio::task::AbortHandle>>,
+    flush_interval: Duration,
 }
 
 impl WebConfig {
@@ -281,6 +306,12 @@ impl WebConfig {
             spot_task: std::sync::Mutex::new(None),
             sessions: std::sync::RwLock::new(std::collections::HashSet::new()),
             login_limiter: LoginLimiter::new(),
+            trust_proxy_headers: false,
+            metrics_state: None,
+            ip_sources: std::sync::RwLock::new(IpSourceTotals::default()),
+            state_report: std::sync::RwLock::new(StateReport::default()),
+            flush_task: std::sync::Mutex::new(None),
+            flush_interval: Duration::from_secs(5),
         }
     }
     #[cfg(test)]
@@ -292,6 +323,149 @@ impl WebConfig {
     pub(crate) fn with_spot_check(mut self, spot: SpotCheckConfig) -> Self {
         self.spot = spot;
         self
+    }
+    /// Opt in to forwarded-header trust (design D1). Takes effect only when the
+    /// direct peer is loopback.
+    #[allow(dead_code)] // wired by the CLI bind path in T7
+    pub(crate) fn with_trust_proxy_headers(mut self, trust: bool) -> Self {
+        self.trust_proxy_headers = trust;
+        self
+    }
+    /// Opt in to state persistence (design D3). `None` keeps the limiter purely
+    /// in memory — which is what every directly constructed `WebConfig` does.
+    #[allow(dead_code)] // wired by the CLI bind path in T7
+    pub(crate) fn with_metrics_state(mut self, path: Option<std::path::PathBuf>) -> Self {
+        self.metrics_state = path;
+        self
+    }
+    #[cfg(test)]
+    pub(crate) fn with_flush_interval(mut self, interval: Duration) -> Self {
+        self.flush_interval = interval;
+        self
+    }
+    #[allow(dead_code)] // consumed by the client-IP resolution in T6
+    pub(crate) fn trust_proxy_headers(&self) -> bool {
+        self.trust_proxy_headers
+    }
+    #[allow(dead_code)] // consumed by the CLI bind path in T7
+    pub(crate) fn metrics_state_path(&self) -> Option<&std::path::Path> {
+        self.metrics_state.as_deref()
+    }
+    /// Tally one resolved client IP (design D6). `invalid` is set by the caller
+    /// only when trust applied, a header was present and nothing usable came out.
+    #[allow(dead_code)] // consumed by the client-IP resolution in T6
+    pub(crate) fn record_ip_source(&self, source: crate::client_ip::IpSource, invalid: bool) {
+        let mut totals = self.ip_sources.write().unwrap_or_else(|e| e.into_inner());
+        match source {
+            crate::client_ip::IpSource::Peer => totals.peer += 1,
+            crate::client_ip::IpSource::XForwardedFor => totals.forwarded += 1,
+            crate::client_ip::IpSource::XRealIp => totals.real_ip += 1,
+        }
+        if invalid {
+            totals.invalid += 1;
+        }
+    }
+    fn warn_once(&self, key: &str, message: &str) {
+        let first = self
+            .warned
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(key.to_string());
+        if first {
+            tracing::warn!("{message}");
+        }
+    }
+    /// Load the persisted limiter state (design D3): a missing file is a normal
+    /// first run; an unusable one warns once and starts from zero, never blocking
+    /// startup. Returns whether state was restored.
+    #[allow(dead_code)] // wired by the CLI bind path in T7
+    pub(crate) fn restore_metrics_state(&self) -> bool {
+        let Some(path) = self.metrics_state.as_deref() else {
+            return false;
+        };
+        match crate::metrics_state::read(path) {
+            Ok(Some(state)) => {
+                let entries = self.login_limiter.restore_from(
+                    &state,
+                    Instant::now(),
+                    crate::metrics_state::unix_now(),
+                );
+                let mut report = self.state_report.write().unwrap_or_else(|e| e.into_inner());
+                report.restored = true;
+                report.restored_entries = entries as u64;
+                true
+            }
+            Ok(None) => false,
+            Err(error) => {
+                self.warn_once(
+                    "metrics-state-read",
+                    &format!(
+                        "warning: login metrics state at {} is unusable ({error}); counters start at zero",
+                        path.display()
+                    ),
+                );
+                false
+            }
+        }
+    }
+    /// Write the limiter state if a path is configured (design D3). Failures are
+    /// counted and warned once; the dirty flag stays set so the next tick retries.
+    pub(crate) fn flush_metrics_state(&self) {
+        let Some(path) = self.metrics_state.as_deref() else {
+            return;
+        };
+        let now = Instant::now();
+        let now_unix = crate::metrics_state::unix_now();
+        let state = self.login_limiter.to_state(now, now_unix);
+        match crate::metrics_state::write(path, &state) {
+            Ok(()) => {
+                self.login_limiter.mark_clean();
+                let mut report = self.state_report.write().unwrap_or_else(|e| e.into_inner());
+                report.last_flush_unix = now_unix;
+            }
+            Err(error) => {
+                {
+                    let mut report = self.state_report.write().unwrap_or_else(|e| e.into_inner());
+                    report.write_failures += 1;
+                }
+                self.warn_once(
+                    "metrics-state-write",
+                    &format!(
+                        "warning: cannot persist login metrics state to {} ({error})",
+                        path.display()
+                    ),
+                );
+            }
+        }
+    }
+    /// Periodic debounced flush (design D3): one tick writes only when the
+    /// limiter is dirty, mirroring the spot-check task's lifecycle.
+    #[allow(dead_code)] // wired by the CLI bind path in T7
+    pub(crate) fn spawn_metrics_flush(self: &Arc<Self>) -> Option<JoinHandle<()>> {
+        self.metrics_state.as_ref()?;
+        let web = Arc::clone(self);
+        let handle = tokio::spawn(async move {
+            let mut ticks = tokio::time::interval(web.flush_interval);
+            loop {
+                ticks.tick().await;
+                if web.login_limiter.dirty() {
+                    web.flush_metrics_state();
+                }
+            }
+        });
+        *self.flush_task.lock().unwrap_or_else(|e| e.into_inner()) = Some(handle.abort_handle());
+        Some(handle)
+    }
+    #[allow(dead_code)] // wired by the CLI shutdown path in T7
+    pub(crate) fn stop_metrics_flush(&self) {
+        let task = self
+            .flush_task
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        if let Some(task) = task {
+            task.abort();
+        }
     }
     /// Run one spot-check round (design D6): hash up to `spot.sample` manifest
     /// entries starting at the rotating cursor over the sorted key set, fold the
@@ -844,6 +1018,8 @@ fn prometheus_text(web: &WebConfig) -> String {
     push_login_ip_series(&mut out, &series, now);
     push_integrity_summary(&mut out, web.integrity());
     push_spot_summary(&mut out, &runtime);
+    push_client_ip_summary(web, &mut out);
+    push_state_summary(web, &mut out);
     out
 }
 
@@ -1003,6 +1179,65 @@ fn push_metric(out: &mut String, name: &str, kind: &str, help: &str, value: u64)
     out.push_str(&format!(
         "# HELP {name} {help}\n# TYPE {name} {kind}\n{name} {value}\n"
     ));
+}
+
+/// Resolved client-IP source tallies plus the unusable-forwarded-header count
+/// (design D6/G2). Labelled family: one header, then one sample per source.
+fn push_client_ip_summary(web: &WebConfig, out: &mut String) {
+    let totals = *web.ip_sources.read().unwrap_or_else(|e| e.into_inner());
+    out.push_str(
+        "# HELP agentj_web_client_ip_source_total Resolved client-IP sources.\n\
+         # TYPE agentj_web_client_ip_source_total counter\n",
+    );
+    for (source, value) in [
+        ("peer", totals.peer),
+        ("forwarded", totals.forwarded),
+        ("real_ip", totals.real_ip),
+    ] {
+        out.push_str(&format!(
+            "agentj_web_client_ip_source_total{{source=\"{source}\"}} {value}\n"
+        ));
+    }
+    push_metric(
+        out,
+        "agentj_web_proxy_header_invalid_total",
+        "counter",
+        "Trusted requests whose forwarded headers were present but unusable.",
+        totals.invalid,
+    );
+}
+
+/// Persisted login-limiter state lifecycle (design D3/G2).
+fn push_state_summary(web: &WebConfig, out: &mut String) {
+    let report = *web.state_report.read().unwrap_or_else(|e| e.into_inner());
+    push_metric(
+        out,
+        "agentj_web_metrics_state_restored",
+        "gauge",
+        "Whether persisted login-limiter state was restored at startup (1) or not (0).",
+        u64::from(report.restored),
+    );
+    push_metric(
+        out,
+        "agentj_web_metrics_state_entries_restored",
+        "gauge",
+        "Per-IP login-limiter entries restored at startup.",
+        report.restored_entries,
+    );
+    push_metric(
+        out,
+        "agentj_web_metrics_state_write_failures_total",
+        "counter",
+        "Failed login-limiter state flushes since startup.",
+        report.write_failures,
+    );
+    push_metric(
+        out,
+        "agentj_web_metrics_state_last_flush_unix",
+        "gauge",
+        "Wall-clock seconds of the last successful state flush (0 = never).",
+        report.last_flush_unix,
+    );
 }
 
 /// Family header followed by one labelled sample per shown IP; the text format
@@ -2205,5 +2440,196 @@ mod tests {
             "1",
             "sub-second locks floor to 1s"
         );
+    }
+
+    #[test]
+    fn restore_reads_a_persisted_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = crate::metrics_state::state_path_in(dir.path(), 4096);
+        let limiter = crate::login_limiter::LoginLimiter::with_policy(small_policy());
+        let now = std::time::Instant::now();
+        for _ in 0..3 {
+            limiter.record_failure("203.0.113.9".parse().unwrap(), now);
+        }
+        crate::metrics_state::write(
+            &path,
+            &limiter.to_state(now, crate::metrics_state::unix_now()),
+        )
+        .unwrap();
+
+        let web =
+            crate::web::WebConfig::new(None, Some("secret".into())).with_metrics_state(Some(path));
+        assert!(web.restore_metrics_state());
+        assert_eq!(
+            web.login_limiter
+                .counters(std::time::Instant::now())
+                .failures,
+            3
+        );
+
+        let out = prometheus_text(&web);
+        assert!(out.contains("agentj_web_metrics_state_restored 1"), "{out}");
+        assert!(
+            out.contains("agentj_web_metrics_state_entries_restored 1"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn restore_warns_once_and_starts_at_zero_on_a_corrupt_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = crate::metrics_state::state_path_in(dir.path(), 4096);
+        std::fs::write(&path, b"{ garbage").unwrap();
+        let web =
+            crate::web::WebConfig::new(None, Some("secret".into())).with_metrics_state(Some(path));
+        assert!(!web.restore_metrics_state());
+        assert!(
+            !web.restore_metrics_state(),
+            "the second attempt is still not restored"
+        );
+        assert_eq!(
+            web.warned
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|k| k.starts_with("metrics-state"))
+                .count(),
+            1,
+            "the warning is emitted once (warned set)"
+        );
+        assert_eq!(
+            web.login_limiter
+                .counters(std::time::Instant::now())
+                .failures,
+            0
+        );
+    }
+
+    #[test]
+    fn flush_writes_only_for_a_configured_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = crate::metrics_state::state_path_in(dir.path(), 4096);
+        // `spawn_metrics_flush` takes `self: &std::sync::Arc<Self>`, so this test
+        // must hold an Arc; with no configured path it returns `None`.
+        let web = std::sync::Arc::new(crate::web::WebConfig::new(None, None));
+        web.flush_metrics_state();
+        assert!(!path.exists(), "no path configured means no file");
+        assert!(web.spawn_metrics_flush().is_none());
+    }
+
+    #[test]
+    fn flush_reports_write_failures_and_keeps_the_state_dirty() {
+        // A path whose parent is a regular file: create_dir_all must fail.
+        let dir = tempfile::tempdir().unwrap();
+        let blocker = dir.path().join("blocker");
+        std::fs::write(&blocker, b"not a directory").unwrap();
+        let web = crate::web::WebConfig::new(None, None)
+            .with_metrics_state(Some(crate::metrics_state::state_path_in(&blocker, 4096)));
+        web.login_limiter
+            .check("203.0.113.9".parse().unwrap(), std::time::Instant::now());
+        web.flush_metrics_state();
+        let report = *web.state_report.read().unwrap();
+        assert_eq!(report.write_failures, 1);
+        assert!(web.login_limiter.dirty(), "a failed write must stay dirty");
+        let out = prometheus_text(&web);
+        assert!(
+            out.contains("agentj_web_metrics_state_write_failures_total 1"),
+            "{out}"
+        );
+        assert!(
+            out.contains("agentj_web_metrics_state_last_flush_unix 0"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn flush_clears_dirty_and_stamps_the_last_flush() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = crate::metrics_state::state_path_in(dir.path(), 4096);
+        let web = crate::web::WebConfig::new(None, None).with_metrics_state(Some(path.clone()));
+        web.login_limiter
+            .check("203.0.113.9".parse().unwrap(), std::time::Instant::now());
+        web.flush_metrics_state();
+        assert!(!web.login_limiter.dirty());
+        assert!(path.is_file());
+        let report = *web.state_report.read().unwrap();
+        assert!(report.last_flush_unix > 0);
+        assert_eq!(report.write_failures, 0);
+    }
+
+    #[tokio::test]
+    async fn prometheus_text_keeps_the_existing_metrics_and_adds_the_new_ones() {
+        let web = crate::web::WebConfig::new(None, None).with_trust_proxy_headers(true);
+        web.record_ip_source(crate::client_ip::IpSource::XForwardedFor, false);
+        web.record_ip_source(crate::client_ip::IpSource::Peer, true);
+        let out = prometheus_text(&web);
+        for name in [
+            "agentj_login_attempts_total",
+            "agentj_login_failures_total",
+            "agentj_login_lockouts_total",
+            "agentj_login_blocked_total",
+            "agentj_login_locked_ips",
+            "agentj_login_tracked_ips",
+            "agentj_web_manifest_present",
+            "agentj_web_assets_checked",
+            "agentj_web_assets_mismatched",
+            "agentj_web_assets_missing",
+            "agentj_web_spot_rounds_total",
+            "agentj_web_spot_checked_total",
+            "agentj_web_spot_mismatched_total",
+            "agentj_web_spot_missing_total",
+            "agentj_login_ip_series_truncated",
+        ] {
+            assert!(
+                out.contains(name),
+                "existing metric {name} vanished:\n{out}"
+            );
+        }
+        assert!(
+            out.contains("agentj_web_client_ip_source_total{source=\"forwarded\"} 1"),
+            "{out}"
+        );
+        assert!(
+            out.contains("agentj_web_client_ip_source_total{source=\"peer\"} 1"),
+            "{out}"
+        );
+        assert!(
+            out.contains("agentj_web_proxy_header_invalid_total 1"),
+            "{out}"
+        );
+        assert!(out.contains("agentj_web_metrics_state_restored 0"), "{out}");
+    }
+
+    #[tokio::test]
+    async fn the_flush_task_writes_only_when_dirty() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = crate::metrics_state::state_path_in(dir.path(), 4096);
+        let web = std::sync::Arc::new(
+            crate::web::WebConfig::new(None, None)
+                .with_metrics_state(Some(path.clone()))
+                .with_flush_interval(std::time::Duration::from_millis(10)),
+        );
+        let handle = web.spawn_metrics_flush().expect("flush task");
+
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(
+            !path.exists(),
+            "a clean limiter must not be written to disk"
+        );
+
+        web.login_limiter
+            .check("203.0.113.9".parse().unwrap(), std::time::Instant::now());
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert!(
+            path.is_file(),
+            "a dirty limiter must be flushed by the next tick"
+        );
+        assert!(
+            !web.login_limiter.dirty(),
+            "one successful flush clears dirty"
+        );
+
+        web.stop_metrics_flush();
+        handle.abort();
     }
 }
