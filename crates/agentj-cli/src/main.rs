@@ -435,16 +435,36 @@ async fn serve_tcp(
     // disposition and kill the process without a graceful shutdown.
     let signal_task = spawn_tcp_signal_task(tcp.shared_server());
     println!("listening on {local}");
-    println!(
-        "websocket on ws://{}:{}/ws",
-        bracket_ipv6(&options.host),
-        local.port()
+    emit_serve_banner(
+        &tcp.web_config(),
+        &web_dist,
+        &options.host,
+        local.port(),
+        [warning, state_warning, trust_warning],
     );
-    match &web_dist {
+    // Resident mode: exits when the last client disconnects or a shutdown
+    // request arrives (design #3, on-demand resident).
+    let run_result = tcp.run().await;
+    // Tear down unconditionally: a serve-loop error must not skip the metrics flush.
+    shutdown_tcp_server(&tcp, signal_task, &mcp_manager, run_result).await
+}
+
+/// Print the readiness banner (websocket + resolved web-dist line) and the
+/// config-level warnings in the order the CLI has always emitted them
+/// (websocket → dist → web config → bind → proxy trust).
+fn emit_serve_banner(
+    web: &agentj_ipc::web::WebConfig,
+    web_dist: &Option<std::path::PathBuf>,
+    host: &str,
+    port: u16,
+    warnings: [Option<String>; 3],
+) {
+    println!("websocket on ws://{}:{}/ws", bracket_ipv6(host), port);
+    match web_dist {
         Some(dir) => println!(
             "web ui on http://{}:{}/ (dist: {})",
-            bracket_ipv6(&options.host),
-            local.port(),
+            bracket_ipv6(host),
+            port,
             dir.display()
         ),
         None => eprintln!(
@@ -452,26 +472,28 @@ async fn serve_tcp(
              --workspace=@agentj/web` or pass --web-dist <PATH>"
         ),
     }
-    for warning in tcp.web_config().startup_warnings() {
+    for warning in web.startup_warnings() {
         eprintln!("{warning}");
     }
-    if let Some(warning) = warning {
+    for warning in warnings.into_iter().flatten() {
         eprintln!("{warning}");
     }
-    if let Some(warning) = state_warning {
-        eprintln!("{warning}");
-    }
-    if let Some(warning) = trust_warning {
-        eprintln!("{warning}");
-    }
-    // Resident mode: exits when the last client disconnects or a shutdown
-    // request arrives (决策 #3 按需常驻).
-    tcp.run().await?;
-    // Graceful shutdown: persist the limiter state before the task is aborted.
+}
+
+/// Tear the resident server down unconditionally: persist the limiter state
+/// before aborting the debounce task, release the MCP connections, then surface
+/// any error the serve loop returned.
+async fn shutdown_tcp_server(
+    tcp: &agentj_ipc::tcp::TcpIpcServer,
+    signal_task: tokio::task::JoinHandle<()>,
+    mcp_manager: &McpConnectionManager,
+    run_result: Result<(), agentj_core::error::IpcError>,
+) -> anyhow::Result<()> {
     tcp.web_config().flush_metrics_state();
     tcp.web_config().stop_metrics_flush();
     signal_task.abort();
     mcp_manager.close_all().await;
+    run_result?;
     Ok(())
 }
 
