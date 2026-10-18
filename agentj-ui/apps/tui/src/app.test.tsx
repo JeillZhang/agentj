@@ -138,7 +138,9 @@ function serverSearchReply(tree: RawFileEntry[], query: string) {
   return { entries: matches, total: matches.length };
 }
 
-function fakeKernel(options: { search?: "server" | "legacy"; sessionRoot?: string } = {}): FakeKernel {
+function fakeKernel(
+  options: { search?: "server" | "legacy"; sessionRoot?: string; truncatedSearch?: boolean } = {},
+): FakeKernel {
   const calls: KernelCall[] = [];
   const dropped = new Set<string>();
   let depthEightFailures = 0;
@@ -172,7 +174,7 @@ function fakeKernel(options: { search?: "server" | "legacy"; sessionRoot?: strin
           }
           if (options.search !== "legacy") {
             const query = typeof params.query === "string" ? params.query.trim().toLowerCase() : "";
-            result = { ...serverSearchReply(flat(), query), truncated: false };
+            result = { ...serverSearchReply(flat(), query), truncated: options.truncatedSearch === true };
           } else {
             result = { entries: flat(), truncated: false };
           }
@@ -1032,6 +1034,54 @@ describe("files search mode", () => {
     // the sidebar wraps the hint across cells, so compare on a single-line projection
     const frame = setup.captureCharFrame().replace(/[\s│]+/g, " ");
     expect(frame).toContain(SEARCH_UNSUPPORTED_HINT);
+    act(() => setup.renderer.destroy());
+  });
+
+  test("a whitespace-only query issues no request and never shows the unsupported notice", async () => {
+    const kernel = fakeKernel({ search: "legacy" }); // legacy would fake the notice if dispatched
+    const { setup, input } = await renderApp(kernel);
+    await openFilesSidebar(setup, input);
+    await act(async () => { input.press("s"); await setup.flush(); });
+    await act(async () => { await input.type("  "); await setup.flush(); });
+    await settleDebounce(setup);
+    expect(depthEightCalls(kernel)).toHaveLength(0); // a blank query must not be dispatched
+    const frame = setup.captureCharFrame().replace(/[\s│]+/g, " ");
+    expect(frame).not.toContain(SEARCH_UNSUPPORTED_HINT);
+    expect(setup.captureCharFrame()).not.toContain("main.rs"); // rows stay empty
+    act(() => setup.renderer.destroy());
+  });
+
+  test("esc clears the unsupported notice along with the query", async () => {
+    const kernel = fakeKernel({ search: "legacy" }); // reply carries no total
+    const { setup, input } = await renderApp(kernel);
+    await openFilesSidebar(setup, input);
+    await act(async () => { input.press("s"); await setup.flush(); });
+    await act(async () => { await input.type("main"); await setup.flush(); });
+    await settleDebounce(setup);
+    await repaint(setup);
+    expect(setup.captureCharFrame().replace(/[\s│]+/g, " ")).toContain(SEARCH_UNSUPPORTED_HINT);
+    await pressEscape(setup, input); // clears the query: the notice must not survive it
+    await repaint(setup);
+    expect(setup.captureCharFrame().replace(/[\s│]+/g, " ")).not.toContain(SEARCH_UNSUPPORTED_HINT);
+    act(() => setup.renderer.destroy());
+  });
+
+  test("a failed search request does not leave a stale partial hint", async () => {
+    const kernel = fakeKernel({ search: "server", truncatedSearch: true });
+    const { setup, input } = await renderApp(kernel);
+    await openFilesSidebar(setup, input);
+    await act(async () => { input.press("s"); await setup.flush(); });
+    await act(async () => { await input.type("main"); await setup.flush(); });
+    await settleDebounce(setup);
+    await repaint(setup);
+    expect(setup.captureCharFrame()).toContain("partial"); // the first reply was truncated
+    kernel.failDepthEight(1);
+    await act(async () => { await input.type("x"); await setup.flush(); }); // "mainx" fails
+    await settleDebounce(setup);
+    await repaint(setup);
+    const frame = setup.captureCharFrame();
+    expect(frame).toContain("index unavailable");
+    expect(frame).not.toContain("partial");
     act(() => setup.renderer.destroy());
   });
 

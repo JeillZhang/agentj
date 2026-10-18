@@ -556,7 +556,9 @@ function AppInner({ url, createTransport, backoffBaseMs = 1000 }: AppProps) {
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         setSearch((prev) =>
-          prev && prev.query === query ? { ...prev, rows: [], total: 0, idx: 0, error: msg } : prev,
+          prev && prev.query === query
+            ? { ...prev, rows: [], total: 0, idx: 0, error: msg, notice: null, truncated: false }
+            : prev,
         );
       }
     },
@@ -566,12 +568,18 @@ function AppInner({ url, createTransport, backoffBaseMs = 1000 }: AppProps) {
     (next: string): void => {
       cancelSearchDebounce();
       searchQueryRef.current = next;
+      // Whitespace-only is empty: it must not be dispatched (the kernel trims it to
+      // an unranked listing, which would be misread as an old-kernel reply).
+      const blank = next.trim().length === 0;
       setSearch((prev) => {
         if (!prev) return prev;
-        if (next.length === 0) return { ...prev, query: "", rows: [], total: 0, idx: 0 };
-        return { ...prev, query: next, idx: 0 };
+        if (blank) {
+          return { ...prev, query: "", rows: [], total: 0, idx: 0, notice: null, truncated: false };
+        }
+        if (next === prev.query) return prev;
+        return { ...prev, query: next, idx: 0, notice: null, truncated: false };
       });
-      if (next.length === 0) return;
+      if (blank) return;
       searchTimerRef.current = setTimeout(() => {
         searchTimerRef.current = null;
         void runServerSearch(next);
