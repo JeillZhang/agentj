@@ -3,6 +3,7 @@
 //! init/shutdown run in the real process; stdin EOF and signals share the same
 //! graceful-shutdown chain (design #13).
 
+use std::io::IsTerminal;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -64,6 +65,9 @@ enum Commands {
         /// Model id to use for this run only, e.g. "opencode-go/kimi-k3" (default: model.default_model).
         #[arg(long)]
         model: Option<String>,
+        /// Approve every permission request without asking (scripts, CI).
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
     /// Serve the JSON-RPC API over stdio, or over TCP with --port (resident kernel).
     Serve {
@@ -113,12 +117,77 @@ fn permission_policies_from_config(
     cfg.inner().permission.clone().unwrap_or_default().tools
 }
 
-/// Approval wait budget from `[permission] timeout_ms`, defaulting to the
-/// design's 60s. Tests lower it so the auto-deny path stays fast.
+/// Approval wait budget from `[permission] timeout_ms`, clamped to 100..=600_000
+/// (0 or anything below the minimum clamps up to 100 with a warning, not an error).
 fn permission_timeout(cfg: &agentj_permission::PermissionConfig) -> std::time::Duration {
-    cfg.timeout_ms
-        .map(std::time::Duration::from_millis)
-        .unwrap_or_else(|| std::time::Duration::from_secs(60))
+    let raw = cfg.timeout_ms.unwrap_or(60_000);
+    let clamped = raw.clamp(100, 600_000);
+    if clamped != raw {
+        eprintln!("warning: permission.timeout_ms {raw} clamped to {clamped}");
+    }
+    std::time::Duration::from_millis(clamped)
+}
+
+/// Map one stdin approval line to a decision. `y`/`yes` allow; anything else —
+/// including EOF (closed pipe / Ctrl-D), represented here as `None` — denies.
+/// Pure so the TTY approver's mapping is unit-tested without a TTY.
+fn decision_from_input(input: Option<String>) -> agentj_permission::ApprovalDecision {
+    let allow = input
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|s| matches!(s.to_ascii_lowercase().as_str(), "y" | "yes"));
+    if allow {
+        agentj_permission::ApprovalDecision::Allow
+    } else {
+        agentj_permission::ApprovalDecision::Deny
+    }
+}
+
+/// Argument fields a compact approval prompt shows verbatim, most actionable
+/// first (a raw JSON dump buries the string the operator has to judge).
+const APPROVAL_ARG_KEYS: [&str; 3] = ["command", "pattern", "path"];
+
+/// Cap on the argument summary so a huge command cannot flood the terminal.
+const APPROVAL_ARG_MAX_CHARS: usize = 200;
+
+/// One-line, length-bounded summary of a permission request's arguments: the
+/// first recognised high-signal field as a bare string (`command` for bash,
+/// `pattern` for glob/grep, `path` for the file tools), else the compact JSON
+/// object. Whitespace collapses to single spaces so the prompt stays on one line.
+fn compact_args(args: &serde_json::Value) -> String {
+    let raw = APPROVAL_ARG_KEYS
+        .iter()
+        .find_map(|key| args.get(key).and_then(serde_json::Value::as_str))
+        .map_or_else(|| args.to_string(), str::to_string);
+    let flat = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    match flat.char_indices().nth(APPROVAL_ARG_MAX_CHARS) {
+        Some((cut, _)) => format!("{}…", &flat[..cut]),
+        None => flat,
+    }
+}
+
+/// The interactive approval prompt printed to stderr before the decision is read:
+/// the tool name, a compact one-line argument summary and the engine's reason.
+/// Pure so the exact prompt is unit-tested without a TTY.
+fn approval_prompt(tool: &str, args: &serde_json::Value, reason: &str) -> String {
+    format!(
+        "approve {tool}? {}\n  reason: {reason}\n[y/N] ",
+        compact_args(args)
+    )
+}
+
+/// Read one approval line from stdin (the interactive TTY approver). Runs on its
+/// own thread — never on the permission request path — so a pending human answer
+/// cannot block the approval timeout. EOF (closed pipe) denies without hanging.
+fn read_decision_from_stdin() -> agentj_permission::ApprovalDecision {
+    use std::io::BufRead;
+    let stdin = std::io::stdin();
+    let mut line = String::new();
+    match stdin.lock().read_line(&mut line) {
+        Ok(0) => agentj_permission::ApprovalDecision::Deny,
+        Ok(_) => decision_from_input(Some(line)),
+        Err(_) => agentj_permission::ApprovalDecision::Deny,
+    }
 }
 
 fn resolve_session_dir(cfg: &agentj_config::Config) -> std::path::PathBuf {
@@ -732,6 +801,10 @@ async fn main() -> anyhow::Result<()> {
         .validate()
         .expect("invalid [permission] config");
     let permission_policies = permission_policies_from_config(&config);
+    // `question_timeout_s` must go through the CLAMPING accessor — the raw
+    // `[agent]` fields are unclamped i64, so a TOML 0/-5/999999 would slip
+    // through. Captured before `config` moves into the KernelContext.
+    let question_timeout_s = config.question_timeout_s();
     let mcp_servers = config.inner().mcp.clone();
     // `[web]` settings feed the serve paths: resolve them before the config is
     // moved into the kernel context, because `TcpServeOptions` is built later.
@@ -855,6 +928,7 @@ async fn main() -> anyhow::Result<()> {
             attach,
             provider,
             model,
+            yes,
         }) => {
             if let Some(url) = attach {
                 let failure =
@@ -865,6 +939,40 @@ async fn main() -> anyhow::Result<()> {
                     std::process::exit(1);
                 }
             } else {
+                // Inject the configured question budget. `run` attaches no question
+                // notifier, so `ask_blocking` settles `Skipped` immediately — this
+                // default only matters once a notifier exists (serve, T14).
+                question_module.set_default_timeout_s(Some(question_timeout_s));
+                // Approval path: `--yes` auto-approves; a TTY spawns a thread that
+                // owns stdin and answers y/n; a non-TTY without `--yes` attaches
+                // nothing and the pending request auto-denies at the timeout
+                // (today's behaviour — no stdin read on the request path).
+                if yes {
+                    let module = permission_module.clone();
+                    permission_module.set_notifier(Arc::new(move |req, _session| {
+                        eprintln!("auto-approved {} (--yes)", req.tool);
+                        let _ = module.respond(
+                            &agentj_core::permission::PermissionRequestId(req.request_id.clone()),
+                            agentj_permission::ApprovalDecision::Allow,
+                        );
+                    }));
+                } else if std::io::stdin().is_terminal() {
+                    let module = permission_module.clone();
+                    permission_module.set_notifier(Arc::new(move |req, _session| {
+                        // Print the prompt synchronously (the notifier is the only
+                        // place holding the request details) before the detached
+                        // reader blocks; reading stdin on this thread would interlock
+                        // with the approval await.
+                        eprintln!("{}", approval_prompt(&req.tool, &req.args, &req.reason));
+                        let module = module.clone();
+                        let request_id =
+                            agentj_core::permission::PermissionRequestId(req.request_id.clone());
+                        std::thread::spawn(move || {
+                            let decision = read_decision_from_stdin();
+                            let _ = module.respond(&request_id, decision);
+                        });
+                    }));
+                }
                 let ipc_server = build_ipc_server(
                     kernel,
                     session_for_ipc.clone(),
@@ -1041,19 +1149,113 @@ mod tests {
     }
 
     #[test]
-    fn permission_timeout_defaults_to_60s_and_honors_config() {
-        let bare = load_test_config("");
-        let bare = bare.inner().permission.clone().unwrap_or_default();
+    fn permission_timeout_is_bounded() {
+        let mut cfg = agentj_permission::PermissionConfig::default();
+        assert_eq!(permission_timeout(&cfg), std::time::Duration::from_secs(60));
+        cfg.timeout_ms = Some(800);
         assert_eq!(
-            permission_timeout(&bare),
-            std::time::Duration::from_secs(60)
-        );
-
-        let tuned = load_test_config("[permission]\ntimeout_ms = 800");
-        let tuned = tuned.inner().permission.clone().unwrap_or_default();
-        assert_eq!(
-            permission_timeout(&tuned),
+            permission_timeout(&cfg),
             std::time::Duration::from_millis(800)
+        );
+        cfg.timeout_ms = Some(0);
+        assert_eq!(
+            permission_timeout(&cfg),
+            std::time::Duration::from_millis(100)
+        );
+        cfg.timeout_ms = Some(700_000);
+        assert_eq!(
+            permission_timeout(&cfg),
+            std::time::Duration::from_millis(600_000)
+        );
+    }
+
+    #[test]
+    fn stdin_decision_maps_yn_and_eof() {
+        assert_eq!(
+            decision_from_input(Some("y\n".into())),
+            agentj_permission::ApprovalDecision::Allow
+        );
+        assert_eq!(
+            decision_from_input(Some("yes\n".into())),
+            agentj_permission::ApprovalDecision::Allow
+        );
+        assert_eq!(
+            decision_from_input(Some("n\n".into())),
+            agentj_permission::ApprovalDecision::Deny
+        );
+        assert_eq!(
+            decision_from_input(Some("  \n".into())),
+            agentj_permission::ApprovalDecision::Deny
+        );
+        assert_eq!(
+            decision_from_input(None),
+            agentj_permission::ApprovalDecision::Deny
+        );
+    }
+
+    #[test]
+    fn approval_prompt_renders_tool_args_and_reason() {
+        let prompt = approval_prompt(
+            "bash",
+            &serde_json::json!({"command": "curl http://example.com"}),
+            "tool default mode",
+        );
+        assert_eq!(
+            prompt,
+            "approve bash? curl http://example.com\n  reason: tool default mode\n[y/N] "
+        );
+    }
+
+    #[test]
+    fn approval_prompt_shows_the_pattern_for_a_search_tool() {
+        let prompt = approval_prompt(
+            "glob",
+            &serde_json::json!({"pattern": "**/*.rs", "include": "*.toml"}),
+            "matched rule: ask",
+        );
+        // The high-signal `pattern` is shown as a bare string, not a JSON dump.
+        assert_eq!(
+            prompt,
+            "approve glob? **/*.rs\n  reason: matched rule: ask\n[y/N] "
+        );
+    }
+
+    #[test]
+    fn approval_prompt_compacts_long_and_multiline_arguments() {
+        let long = format!("echo {} && rm -rf /tmp/x", "a ".repeat(300));
+        let prompt = approval_prompt(
+            "bash",
+            &serde_json::json!({"command": long}),
+            "tool default mode",
+        );
+        let first = prompt.lines().next().unwrap();
+        assert!(first.starts_with("approve bash? echo a a a"), "{first}");
+        assert!(
+            first.ends_with('…'),
+            "the long command must be cut: {first}"
+        );
+        // Whitespace collapses so the prompt stays on one line; no raw JSON braces.
+        assert!(!first.contains('{') && !first.contains('\n'), "{first}");
+        assert!(
+            first.chars().count() <= "approve bash? ".chars().count() + 201,
+            "{first}"
+        );
+        let multi = approval_prompt(
+            "bash",
+            &serde_json::json!({"command": "printf 'a  b\nc'"}),
+            "tool default mode",
+        );
+        assert_eq!(
+            multi,
+            "approve bash? printf 'a b c'\n  reason: tool default mode\n[y/N] "
+        );
+    }
+
+    #[test]
+    fn compact_args_falls_back_to_json_for_an_unrecognised_shape() {
+        assert_eq!(
+            compact_args(&serde_json::json!({"weird": 1})),
+            "{\"weird\":1}"
         );
     }
 
@@ -1202,11 +1404,13 @@ mod tests {
                 attach,
                 provider,
                 model,
+                yes,
             }) => {
                 assert_eq!(prompt, "hi");
                 assert!(attach.is_none());
                 assert_eq!(provider.as_deref(), Some("opencode-go"));
                 assert_eq!(model.as_deref(), Some("m1"));
+                assert!(!yes);
             }
             _ => panic!("expected run subcommand"),
         }
