@@ -463,12 +463,7 @@ impl WebConfig {
 
 /// Whether the request peer is a loopback address (hybrid auth exemption, D2).
 pub fn peer_is_loopback(peer: std::net::SocketAddr) -> bool {
-    match peer.ip() {
-        std::net::IpAddr::V4(v4) => v4.is_loopback(),
-        std::net::IpAddr::V6(v6) => {
-            v6.is_loopback() || v6.to_ipv4_mapped().is_some_and(|v4| v4.is_loopback())
-        }
-    }
+    crate::client_ip::is_loopback_ip(peer.ip())
 }
 
 /// Extract the `agentj_session` cookie value from a `Cookie` header.

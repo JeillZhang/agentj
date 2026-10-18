@@ -1,4 +1,9 @@
 //! Unified Connection abstraction (design 决策 #1/#2) — transport-agnostic serve.
+// Consumed by the per-IP metrics / throttle wiring landed in the following
+// tasks of this feature branch (T5/T6); until then the module is exercised only
+// by its own tests.
+#[allow(dead_code)]
+pub(crate) mod client_ip;
 pub mod file_list;
 pub(crate) mod login_limiter;
 pub mod tcp;
