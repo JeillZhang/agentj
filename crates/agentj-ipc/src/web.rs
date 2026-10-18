@@ -797,7 +797,6 @@ impl WebConfig {
     }
     /// Report the manual-sweep totals plus the age of the last sweep in whole
     /// seconds; `None` until the first sweep has run (design G7).
-    #[allow(dead_code)] // /version reads this in a following change
     pub(crate) fn on_demand_snapshot(&self) -> (IntegrityOnDemandReport, Option<u64>) {
         let report = self
             .on_demand
@@ -1314,6 +1313,7 @@ async fn version_handler(web: std::sync::Arc<WebConfig>) -> axum::response::Resp
     let counters = web.login_limiter.counters(Instant::now());
     let integrity = web.integrity();
     let (runtime, last_run_age) = web.runtime_snapshot();
+    let (on_demand, on_demand_age) = web.on_demand_snapshot();
     let mut runtime_json = serde_json::json!({
         "rounds": runtime.rounds,
         "checked": runtime.checked,
@@ -1322,6 +1322,15 @@ async fn version_handler(web: std::sync::Arc<WebConfig>) -> axum::response::Resp
     });
     if let Some(age) = last_run_age {
         runtime_json["last_run_age_secs"] = serde_json::json!(age);
+    }
+    let mut on_demand_json = serde_json::json!({
+        "sweeps": on_demand.sweeps,
+        "checked": on_demand.checked,
+        "mismatched": on_demand.mismatched,
+        "missing": on_demand.missing,
+    });
+    if let Some(age) = on_demand_age {
+        on_demand_json["last_run_age_secs"] = serde_json::json!(age);
     }
     let body = serde_json::json!({
         "product_version": env!("CARGO_PKG_VERSION"),
@@ -1346,6 +1355,7 @@ async fn version_handler(web: std::sync::Arc<WebConfig>) -> axum::response::Resp
             "mismatched": integrity.mismatched,
             "missing": integrity.missing,
             "runtime": runtime_json,
+            "on_demand": on_demand_json,
         },
     });
     let mut res = axum::Json(body).into_response();
