@@ -640,6 +640,23 @@ pub fn peer_is_loopback(peer: std::net::SocketAddr) -> bool {
     crate::client_ip::is_loopback_ip(peer.ip())
 }
 
+/// Derive the client IP used for identification (design D2/D5). Tally the source
+/// as a side effect. `invalid` is true only when trust applied, the request
+/// carried a proxy header and nothing usable came out of it.
+fn client_ip_for(
+    web: &WebConfig,
+    peer: std::net::SocketAddr,
+    headers: &axum::http::HeaderMap,
+) -> crate::client_ip::ClientIp {
+    let trust = web.trust_proxy_headers() && peer_is_loopback(peer);
+    let resolved = crate::client_ip::resolve_client_ip(peer, headers, trust);
+    let invalid = trust
+        && resolved.source == crate::client_ip::IpSource::Peer
+        && crate::client_ip::has_proxy_header(headers);
+    web.record_ip_source(resolved.source, invalid);
+    resolved
+}
+
 /// Extract the `agentj_session` cookie value from a `Cookie` header.
 pub fn session_cookie(headers: &axum::http::HeaderMap) -> Option<&str> {
     headers
@@ -744,10 +761,13 @@ fn redirect_found(location: &str) -> axum::response::Response {
 async fn submit_login(
     web: &WebConfig,
     peer: std::net::SocketAddr,
+    headers: &axum::http::HeaderMap,
     form: LoginForm,
 ) -> axum::response::Response {
     let now = Instant::now();
-    let ip = peer.ip();
+    // Identification only: the throttle key follows the derived client IP, while
+    // the auth exemption below keeps the raw peer (design D5).
+    let ip = client_ip_for(web, peer, headers).ip;
     if matches!(web.login_limiter.check(ip, now), Throttle::Locked { .. }) {
         let throttle = web.login_limiter.record_failure(ip, now);
         return throttle_response(throttle, form.next.as_deref());
@@ -825,9 +845,9 @@ fn auth_routes(
     };
     let login_post = {
         let web = web.clone();
-        move |form: axum::extract::Form<LoginForm>| {
+        move |headers: axum::http::HeaderMap, form: axum::extract::Form<LoginForm>| {
             let web = web.clone();
-            async move { submit_login(&web, peer, form.0).await }
+            async move { submit_login(&web, peer, &headers, form.0).await }
         }
     };
     let logout_post = move |headers: axum::http::HeaderMap| {
@@ -858,6 +878,9 @@ pub fn auth_required(
     peer: std::net::SocketAddr,
     headers: &axum::http::HeaderMap,
 ) -> bool {
+    // D5: the loopback exemption is decided by the RAW TCP peer only. The
+    // derived client IP (`client_ip::resolve_client_ip`) must never reach here —
+    // otherwise a request header could grant kernel access.
     web.token.is_some()
         && !peer_is_loopback(peer)
         && !session_cookie(headers).is_some_and(|sid| web.is_valid_session(sid))
@@ -2042,25 +2065,63 @@ mod tests {
         })
     }
 
+    async fn send(
+        router: axum::Router,
+        method: &str,
+        path: &str,
+        headers: &[(&str, &str)],
+        body: &str,
+    ) -> (axum::http::StatusCode, axum::http::HeaderMap, String) {
+        use tower::util::ServiceExt;
+        let mut builder = axum::http::Request::builder().method(method).uri(path);
+        for (name, value) in headers {
+            builder = builder.header(*name, *value);
+        }
+        let request = if body.is_empty() {
+            builder.body(axum::body::Body::empty()).unwrap()
+        } else {
+            builder
+                .header(
+                    axum::http::header::CONTENT_TYPE,
+                    "application/x-www-form-urlencoded",
+                )
+                .body(axum::body::Body::from(body.to_string()))
+                .unwrap()
+        };
+        let res = router.oneshot(request).await.unwrap();
+        let (status, response_headers) = (res.status(), res.headers().clone());
+        let bytes = axum::body::to_bytes(res.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        (
+            status,
+            response_headers,
+            String::from_utf8_lossy(&bytes).to_string(),
+        )
+    }
+
+    async fn get_with_headers(
+        router: axum::Router,
+        path: &str,
+        headers: &[(&str, &str)],
+    ) -> (axum::http::StatusCode, axum::http::HeaderMap, String) {
+        send(router, "GET", path, headers, "").await
+    }
+
+    async fn form_post_with_headers(
+        router: axum::Router,
+        path: &str,
+        headers: &[(&str, &str)],
+        body: &str,
+    ) -> (axum::http::StatusCode, axum::http::HeaderMap, String) {
+        send(router, "POST", path, headers, body).await
+    }
+
     async fn get(
         router: axum::Router,
         path: &str,
     ) -> (axum::http::StatusCode, axum::http::HeaderMap, String) {
-        use tower::util::ServiceExt;
-        let res = router
-            .oneshot(
-                axum::http::Request::builder()
-                    .uri(path)
-                    .body(axum::body::Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let (status, headers) = (res.status(), res.headers().clone());
-        let body = axum::body::to_bytes(res.into_body(), 1 << 20)
-            .await
-            .unwrap();
-        (status, headers, String::from_utf8_lossy(&body).to_string())
+        get_with_headers(router, path, &[]).await
     }
 
     async fn form_post(
@@ -2068,26 +2129,175 @@ mod tests {
         path: &str,
         body: &str,
     ) -> (axum::http::StatusCode, axum::http::HeaderMap, String) {
-        use tower::util::ServiceExt;
-        let res = router
-            .oneshot(
-                axum::http::Request::builder()
-                    .method("POST")
-                    .uri(path)
-                    .header(
-                        axum::http::header::CONTENT_TYPE,
-                        "application/x-www-form-urlencoded",
-                    )
-                    .body(axum::body::Body::from(body.to_string()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let (status, headers) = (res.status(), res.headers().clone());
-        let bytes = axum::body::to_bytes(res.into_body(), 1 << 20)
-            .await
-            .unwrap();
-        (status, headers, String::from_utf8_lossy(&bytes).to_string())
+        form_post_with_headers(router, path, &[], body).await
+    }
+
+    const LOOPBACK: &str = "127.0.0.1:41000";
+    const FORWARDED_CLIENT: &str = "198.51.100.9";
+
+    /// T6 asserts on a *live* lock (`agentj_login_ip_locked`, `blocked_total`).
+    /// The shared `small_policy()` locks for only 50 ms, which turns those
+    /// assertions into wall-clock races, so T6 uses a same-shape policy with a
+    /// 10 s base lockout: every lock below is still held when `/metrics` is read.
+    fn stable_policy() -> crate::login_limiter::Policy {
+        crate::login_limiter::Policy {
+            free_attempts: 3,
+            base_lockout: std::time::Duration::from_secs(10),
+            max_lockout: std::time::Duration::from_secs(900),
+            idle_ttl: std::time::Duration::from_secs(60),
+            max_tracked: 16,
+        }
+    }
+
+    fn trusted_web() -> crate::web::WebConfig {
+        crate::web::WebConfig::new(None, Some("secret".into()))
+            .with_login_limiter(crate::login_limiter::LoginLimiter::with_policy(
+                stable_policy(),
+            ))
+            .with_trust_proxy_headers(true)
+    }
+
+    /// `None` sends **no** `x-forwarded-for` header at all; `Some("")` would send an
+    /// empty one, which the resolver counts as "header present but unusable".
+    async fn login_failure(
+        state: &std::sync::Arc<crate::ws::WsServerState>,
+        peer: &str,
+        forwarded: Option<&str>,
+    ) {
+        let headers: Vec<(&str, &str)> = forwarded
+            .map(|value| vec![("x-forwarded-for", value)])
+            .unwrap_or_default();
+        let _ = form_post_with_headers(
+            crate::web::build_router(state.clone(), peer.parse().unwrap()),
+            "/login",
+            &headers,
+            "token=wrong&next=%2F",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn forwarded_ip_becomes_the_throttle_key() {
+        let state = test_state(trusted_web());
+        for _ in 0..5 {
+            login_failure(&state, LOOPBACK, Some(FORWARDED_CLIENT)).await;
+        }
+        // A DIFFERENT forwarded client behind the same proxy is unaffected.
+        login_failure(&state, LOOPBACK, Some("203.0.113.5")).await;
+        let (_, _, body) = get(
+            crate::web::build_router(state, LOOPBACK.parse().unwrap()),
+            "/metrics",
+        )
+        .await;
+        // free_attempts is 3, so the 3rd failure locks the entry. Attempts 4-5
+        // land while locked: each still bumps its per-IP entry's failures (5),
+        // but they are tallied on Counters.blocked (2) instead of
+        // Counters.failures, so only 3 failures are counted globally.
+        assert!(
+            body.contains(&format!(
+                "agentj_login_ip_failures_total{{ip=\"{FORWARDED_CLIENT}\"}} 5"
+            )),
+            "{body}"
+        );
+        assert!(
+            body.contains("agentj_login_ip_locked{ip=\"198.51.100.9\"} 1"),
+            "the lockout follows the forwarded client, not 127.0.0.1:\n{body}"
+        );
+        assert!(
+            body.contains("agentj_login_blocked_total 2"),
+            "attempts 4-5 hit the locked entry and are counted as blocked:\n{body}"
+        );
+        assert!(
+            body.contains("agentj_login_failures_total 4"),
+            "3 unblocked failures for the proxy client + 1 for the other client:\n{body}"
+        );
+        assert!(
+            body.contains("agentj_login_ip_failures_total{ip=\"203.0.113.5\"} 1"),
+            "another forwarded client keeps its own budget:\n{body}"
+        );
+        assert!(
+            !body.contains("agentj_login_ip_failures_total{ip=\"127.0.0.1\"}"),
+            "loopback must not accumulate the forwarded client's failures:\n{body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn remote_peers_cannot_choose_their_throttle_key() {
+        let state = test_state(trusted_web());
+        for _ in 0..5 {
+            login_failure(&state, "203.0.113.7:41000", Some("127.0.0.1")).await;
+        }
+        let (_, _, body) = get(
+            crate::web::build_router(state, LOOPBACK.parse().unwrap()),
+            "/metrics",
+        )
+        .await;
+        // The peer's own entry keeps incrementing its failures even while
+        // locked, so the per-IP series shows all 5 attempts.
+        assert!(
+            body.contains("agentj_login_ip_failures_total{ip=\"203.0.113.7\"} 5"),
+            "{body}"
+        );
+        assert!(
+            !body.contains("agentj_login_ip_failures_total{ip=\"127.0.0.1\"}"),
+            "{body}"
+        );
+        assert!(
+            body.contains("agentj_web_client_ip_source_total{source=\"peer\"} 5"),
+            "a non-loopback peer always resolves to itself:\n{body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn forwarded_headers_cannot_buy_loopback_exemption() {
+        // D5 regression: the derived IP must never reach `auth_required`.
+        let state = test_state(trusted_web());
+        let spoof = [("x-forwarded-for", "127.0.0.1"), ("x-real-ip", "127.0.0.1")];
+        let (status, _, _) = get_with_headers(
+            crate::web::build_router(state, "203.0.113.7:41000".parse().unwrap()),
+            "/metrics",
+            &spoof,
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn a_header_less_loopback_request_is_not_a_failure() {
+        let state = test_state(trusted_web());
+        login_failure(&state, LOOPBACK, None).await;
+        let (_, _, body) = get(
+            crate::web::build_router(state, LOOPBACK.parse().unwrap()),
+            "/metrics",
+        )
+        .await;
+        assert!(
+            body.contains("agentj_web_proxy_header_invalid_total 0"),
+            "{body}"
+        );
+        assert!(
+            body.contains("agentj_web_client_ip_source_total{source=\"peer\"} 1"),
+            "{body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unusable_chain_counts_one_invalid_header() {
+        let state = test_state(trusted_web());
+        login_failure(&state, LOOPBACK, Some("unknown")).await;
+        let (_, _, body) = get(
+            crate::web::build_router(state, LOOPBACK.parse().unwrap()),
+            "/metrics",
+        )
+        .await;
+        assert!(
+            body.contains("agentj_web_proxy_header_invalid_total 1"),
+            "{body}"
+        );
+        assert!(
+            body.contains("agentj_login_ip_failures_total{ip=\"127.0.0.1\"} 1"),
+            "{body}"
+        );
     }
 
     #[tokio::test]
