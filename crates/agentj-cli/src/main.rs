@@ -370,6 +370,11 @@ async fn serve_tcp(
     )
     .await?;
     let local = tcp.local_addr()?;
+    // BUG-019: the shutdown handlers must be installed *before* the readiness output.
+    // Supervisors act on `listening on` immediately (read line, send SIGTERM); if the
+    // handler were installed afterwards, that SIGTERM would still hit the default
+    // disposition and kill the process without a graceful shutdown.
+    let signal_task = spawn_tcp_signal_task(tcp.shared_server());
     println!("listening on {local}");
     println!(
         "websocket on ws://{}:{}/ws",
@@ -394,7 +399,6 @@ async fn serve_tcp(
     if let Some(warning) = warning {
         eprintln!("{warning}");
     }
-    let signal_task = spawn_tcp_signal_task(tcp.shared_server());
     // Resident mode: exits when the last client disconnects or a shutdown
     // request arrives (决策 #3 按需常驻).
     tcp.run().await?;
