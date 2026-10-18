@@ -469,7 +469,6 @@ impl WebConfig {
     }
     /// Apply the `[web]` integrity knobs. Re-clamps defensively: the fields of
     /// `IntegrityOptions` are `pub`, and `tokio::time::interval(0)` panics.
-    #[allow(dead_code)] // wired into the bind path in a following change
     pub(crate) fn with_integrity_options(mut self, opts: IntegrityOptions) -> Self {
         self.spot = SpotCheckConfig {
             interval: opts

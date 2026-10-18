@@ -171,6 +171,20 @@ fn resolve_metrics_state_dir(cfg: &agentj_config::Config) -> Option<std::path::P
     )
 }
 
+/// Pure mapping from `[web]` to the ipc-layer integrity knobs; an absent section
+/// keeps `IntegrityOptions::default()` (60s / 8 / on / 60s).
+fn resolve_integrity_options(cfg: &agentj_config::Config) -> agentj_ipc::web::IntegrityOptions {
+    let Some(web) = cfg.inner().web.as_ref() else {
+        return agentj_ipc::web::IntegrityOptions::default();
+    };
+    agentj_ipc::web::IntegrityOptions {
+        spot_interval: std::time::Duration::from_secs(web.clamped_spot_interval_secs()),
+        spot_sample: web.clamped_spot_sample(),
+        verify_on_request: web.verify_on_request,
+        verify_cache_ttl: std::time::Duration::from_secs(web.clamped_verify_cache_ttl_secs()),
+    }
+}
+
 /// Warn when forwarding trust is enabled on a non-loopback bind: the trust
 /// predicate is the direct peer, so remote clients' headers stay ignored.
 fn proxy_trust_warning(host: &str, trust: bool) -> Option<String> {
@@ -328,6 +342,8 @@ struct TcpServeOptions {
     metrics_state_dir: Option<std::path::PathBuf>,
     /// Optional subscription handle (design D4); `run` passes none.
     provider_service: Option<Arc<dyn agentj_ipc::ProviderService>>,
+    /// `[web]` spot cadence + per-request verification knobs.
+    integrity: agentj_ipc::web::IntegrityOptions,
 }
 
 /// Whether `host` refers to the loopback interface (the local-trust default).
@@ -425,6 +441,7 @@ async fn serve_tcp(
             trust_proxy_headers: options.trust_proxy_headers,
             metrics_state_dir: options.metrics_state_dir.clone(),
             provider_service: options.provider_service,
+            integrity: options.integrity,
         },
     )
     .await?;
@@ -724,6 +741,7 @@ async fn main() -> anyhow::Result<()> {
         .as_ref()
         .is_some_and(|web| web.trust_proxy_headers);
     let web_metrics_state_dir = resolve_metrics_state_dir(&config);
+    let web_integrity = resolve_integrity_options(&config);
 
     let ctx = KernelContext {
         session: session.clone(),
@@ -926,6 +944,7 @@ async fn main() -> anyhow::Result<()> {
                     trust_proxy_headers: web_trust_proxy_headers,
                     metrics_state_dir: web_metrics_state_dir.clone(),
                     provider_service: provider_service.clone(),
+                    integrity: web_integrity,
                 },
                 mcp_manager.clone(),
             )
@@ -952,6 +971,7 @@ async fn main() -> anyhow::Result<()> {
                     trust_proxy_headers: web_trust_proxy_headers,
                     metrics_state_dir: web_metrics_state_dir.clone(),
                     provider_service: provider_service.clone(),
+                    integrity: web_integrity,
                 },
                 mcp_manager.clone(),
             )
@@ -1469,6 +1489,52 @@ mod tests {
             }
             None => agentj_config::Config::load(None).unwrap(),
         }
+    }
+
+    /// Mirrors `config_with_web`: a temp file holding the given `[web]` body, loaded
+    /// through the real loader.
+    fn config_with_web_body(body: &str) -> agentj_config::Config {
+        let path = std::env::temp_dir().join(format!(
+            "agentj-web-integrity-{}-{:?}.toml",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::write(&path, body).unwrap();
+        let loaded = agentj_config::Config::load(Some(path.clone())).unwrap();
+        std::fs::remove_file(&path).ok();
+        loaded
+    }
+
+    #[test]
+    fn resolve_integrity_options_reads_the_web_section() {
+        let cfg = config_with_web_body(
+            "[web]\nspot_interval_secs = 45\nspot_sample = 3\n\
+             verify_on_request = false\nverify_cache_ttl_secs = 9\n",
+        );
+        let opts = resolve_integrity_options(&cfg);
+        assert_eq!(opts.spot_interval, std::time::Duration::from_secs(45));
+        assert_eq!(opts.spot_sample, 3);
+        assert!(!opts.verify_on_request);
+        assert_eq!(opts.verify_cache_ttl, std::time::Duration::from_secs(9));
+    }
+
+    #[test]
+    fn resolve_integrity_options_defaults_without_a_web_section() {
+        let cfg = config_with_web_body("[permission]\ntimeout_ms = 800\n");
+        assert_eq!(
+            resolve_integrity_options(&cfg),
+            agentj_ipc::web::IntegrityOptions::default()
+        );
+    }
+
+    #[test]
+    fn resolve_integrity_options_clamps_a_zero_spot_interval() {
+        let cfg = config_with_web_body("[web]\nspot_interval_secs = 0\n");
+        assert_eq!(
+            resolve_integrity_options(&cfg).spot_interval,
+            std::time::Duration::from_secs(5),
+            "Duration::ZERO would panic tokio::time::interval"
+        );
     }
 
     #[test]
