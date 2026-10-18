@@ -84,6 +84,28 @@ PR #86 的 `ci.yml`（`cargo llvm-cov --workspace`）在 `e2e_serve_exits_gracef
   本地 `e2e_cli` 9 passed、`--exact e2e_serve_exits_gracefully_on_sigterm` 连跑 **30/30 通过**、
   `cargo test --workspace` 0 failed、clippy 0 warning、`cargo fmt --all --check` OK、`version-ok`。
 
+### 验收（test 轮 3 → BUG-019 reopen → 二次修复）✅
+
+回归验证发现首修只保证「首请求之前」装上处理器，未保证「**就绪宣告之前**」装上：
+`crates/agentj-cli/src/main.rs` 的 `serve_tcp()` 中，`println!("listening on {local}")` 等就绪输出与
+`tcp.web_config().startup_warnings()` 循环（旧 373–388 行）早于
+`let signal_task = spawn_tcp_signal_task(tcp.shared_server());`（旧 389 行）——行监督者语义（读到
+`listening on` 即刻 SIGTERM）下仍有竞态窗口。
+
+- **二次修复**（commit `b51110c`，仅 `crates/agentj-cli/src/main.rs`，+5/-1）：把信号任务创建上移到
+  `TcpIpcServer::bind(...)` 成功之后、**第一个就绪输出之前**；`signal_task.abort()` 与
+  `tcp.run().await?` 后的清理顺序不变，TCP 第二对信号仍惰性创建。
+- **RED → GREEN（harness `/tmp/harness.py`，每次改源码均 `cargo build --bin agentj` 刷新二进制）**：
+  旧码（`224a1f1` 的 `main.rs`）`tcp-term`（读回 `listening on` 立刻发 SIGTERM）
+  两批 `{0: 17, -15: 3}` + `{0: 15, -15: 5}` = **40 次中 8 次以信号 15 退出（20%）**；修复后
+  `{0: 20}` × 2 = **40/40 exit 0**，`stdio-term 20` = 20/20、`tcp-int 10` = 10/10、
+  `tcp-double 20` = 20/20（首信号后 0.15s 内已优雅退出，未观察到 `exit 130`，已如实记录）。
+- **未新增回归测试**（有意为之）：旧码单次 `-15` 概率 ≈20%，「同一 e2e 用例重复 5 次」的批次失败率仅
+  ≈67%，达不到「连续 5 批 ≥4 批失败」的稳定 RED 门槛；要达标需同用例重复 ≥20 次进程 spawn（热点 e2e 变慢
+  且易 flaky），故保留既有 stdio e2e 用例作为门禁，未用同义反复断言充数。
+- **终态门禁（HEAD `b51110c`）**：`cargo fmt --all --check` OK；`e2e_cli` 9 passed；exact 用例 **20/20**；
+  `cargo test --workspace` 0 failed；clippy 0 warning；`version-ok`。
+
 故本阶段**不 bump 版本**（计划把工作区固定在 0.1.0 / PROTOCOL 0.18.0；BUG-019 作为 0.1.x 的 Fixed
 条目记入 `docs/changelog/v0.1.md`）。
 
