@@ -55,6 +55,14 @@
 | `cargo fmt --all --check` | FMT-OK |
 | `./scripts/check-version.sh` | `version-ok`（0.1.0 / 0.18.0） |
 
+### 验收（test 轮 1，零 Bug）
+
+`ajteam-tester` 跑门禁 + 探索式 QA（探针置于 `/tmp`，未改仓库）：fmt OK / workspace 全绿 /
+clippy 0 warning / `agentj-tools` lib 33 passed / version-ok；8 MiB stdout 不死锁；超时后孙进程
+`ps` 确认 GONE 且无 `defunct`；`timeout_ms` 为 0 / -1 → 钳到 1s，`1000.5` / `"1000"` / `null`
+→ 回退默认；相对路径 cwd 正确。清单 `.superpowers/acceptance/bugs.md` 无新增行（BUG-019 未使用）。
+故本阶段**不 bump 版本**（计划把工作区固定在 0.1.0 / PROTOCOL 0.18.0，且无验收修复）。
+
 ### 前序阶段（归档，详见 `docs/changelog/v0.1.md`）
 
 - BUG-017/018（PR #84）：空 thinking（零宽 / 空白 / BOM）不再落盘，前端同步丢弃空气泡。
