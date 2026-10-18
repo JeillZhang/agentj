@@ -95,7 +95,7 @@ fn validate_manifest(manifest: &AssetManifest) -> Result<(), String> {
 
 /// Outcome of hashing one manifest entry against the bytes on disk.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum AssetCheck {
+enum AssetCheck {
     Match,
     Mismatch,
     Missing,
@@ -499,17 +499,6 @@ impl WebConfig {
     /// window closes instead of being trusted forever. Keys absent from the
     /// manifest are ignored (they are never hashed).
     pub(crate) fn verify_cached_asset(&self, key: &str) {
-        let Some(dist) = self.dist.as_deref() else {
-            return;
-        };
-        let Some(expected) = self
-            .manifest
-            .as_ref()
-            .and_then(|m| m.assets.get(key))
-            .cloned()
-        else {
-            return;
-        };
         let now = Instant::now();
         {
             let cache = self.verify_cache.lock().unwrap_or_else(|e| e.into_inner());
@@ -520,7 +509,14 @@ impl WebConfig {
                 }
             }
         }; // release before any IO — never hold this lock across a read + hash
-        let verdict = check_asset(dist, key, &expected);
+        // Only a miss consults the manifest: a hit must not even clone the digest.
+        let Some(dist) = self.dist.as_deref() else {
+            return;
+        };
+        let Some(expected) = self.manifest.as_ref().and_then(|m| m.assets.get(key)) else {
+            return;
+        };
+        let verdict = check_asset(dist, key, expected);
         match verdict {
             AssetCheck::Match => {
                 self.request_checked
@@ -570,7 +566,7 @@ impl WebConfig {
     }
     /// The memoised verdict for `key`, for tests that need to see the cache.
     #[cfg(test)]
-    pub(crate) fn verify_cache_verdict(&self, key: &str) -> Option<AssetCheck> {
+    fn verify_cache_verdict(&self, key: &str) -> Option<AssetCheck> {
         self.verify_cache
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -2044,6 +2040,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn version_omits_the_on_demand_age_before_any_sweep() {
+        let dist = temp_dist("version-ondemand");
+        write_temp_dist_manifest(&dist);
+        let state = test_state(WebConfig::new(Some(dist.clone()), None));
+        let local: std::net::SocketAddr = LOOPBACK.parse().unwrap();
+        let (status, _, body) =
+            get(crate::web::build_router(state.clone(), local), "/version").await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["integrity"]["on_demand"]["sweeps"], serde_json::json!(0));
+        assert_eq!(v["integrity"]["on_demand"]["checked"], serde_json::json!(0));
+        assert!(
+            v["integrity"]["on_demand"]
+                .get("last_run_age_secs")
+                .is_none()
+        );
+        std::fs::remove_dir_all(&dist).ok();
+    }
+
+    #[tokio::test]
+    async fn version_reports_on_demand_after_a_sweep() {
+        let dist = temp_dist("version-ondemand-after");
+        write_temp_dist_manifest(&dist);
+        std::fs::write(dist.join("assets/app.js"), "tampered").unwrap();
+        let state = test_state(WebConfig::new(Some(dist.clone()), None));
+        let local: std::net::SocketAddr = LOOPBACK.parse().unwrap();
+        form_post(
+            crate::web::build_router(state.clone(), local),
+            "/integrity/verify",
+            "",
+        )
+        .await;
+        let (_s, _, body) = get(crate::web::build_router(state.clone(), local), "/version").await;
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["integrity"]["on_demand"]["sweeps"], serde_json::json!(1));
+        assert_eq!(
+            v["integrity"]["on_demand"]["mismatched"],
+            serde_json::json!(1)
+        );
+        assert!(
+            v["integrity"]["on_demand"]["last_run_age_secs"]
+                .as_u64()
+                .is_some()
+        );
+        assert_eq!(
+            v["integrity"]["runtime"]["rounds"],
+            serde_json::json!(0),
+            "the counters never mix"
+        );
+        std::fs::remove_dir_all(&dist).ok();
+    }
+
+    #[tokio::test]
     async fn integrity_verify_reports_a_full_sweep() {
         let dist = temp_dist("sweep");
         write_temp_dist_manifest(&dist);
@@ -2400,6 +2449,37 @@ mod tests {
         std::fs::write(dist.join("assets/app.js"), "tampered").unwrap();
         web.verify_cached_asset("/assets/app.js"); // must not panic
         assert_eq!(web.request_integrity_snapshot().mismatched, 1);
+        assert_eq!(
+            web.verify_cache_verdict("/assets/app.js"),
+            Some(AssetCheck::Mismatch),
+            "a poisoned memo stays readable and usable"
+        );
+        web.verify_cached_asset("/assets/app.js"); // still a hit, still no panic
+        assert_eq!(web.request_integrity_snapshot().mismatched, 1);
+        std::fs::remove_dir_all(&dist).ok();
+    }
+
+    #[test]
+    fn verify_cached_asset_counts_a_missing_key_without_counting_a_check() {
+        let dist = temp_dist("counts-missing");
+        let gone = sha384_b64(b"absent");
+        write_manifest(&dist, &[("/assets/gone.js", gone.as_str())]);
+        let web = WebConfig::new(Some(dist.clone()), None);
+        web.verify_cached_asset("/assets/gone.js");
+        let s = web.request_integrity_snapshot();
+        assert_eq!((s.checked, s.mismatched, s.missing), (0, 0, 1));
+        std::fs::remove_dir_all(&dist).ok();
+    }
+
+    #[test]
+    fn verify_cached_asset_counts_a_fresh_mismatch_as_a_check() {
+        let dist = temp_dist("counts-mismatch");
+        write_temp_dist_manifest(&dist);
+        std::fs::write(dist.join("assets/app.js"), "tampered").unwrap();
+        let web = WebConfig::new(Some(dist.clone()), None);
+        web.verify_cached_asset("/assets/app.js");
+        let s = web.request_integrity_snapshot();
+        assert_eq!((s.checked, s.mismatched, s.missing), (1, 1, 0));
         std::fs::remove_dir_all(&dist).ok();
     }
 
