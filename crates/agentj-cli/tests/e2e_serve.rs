@@ -1,7 +1,7 @@
 //! E2E resident-kernel lifecycle test (T12): `agentj serve --port 0` binds an
 //! ephemeral TCP port, prints `listening on <addr>` on stdout, serves a TCP
 //! client's session/new, and exits gracefully when the last client disconnects
-//! (design 决策 #3 按需常驻).
+//! (design #3: reap on demand).
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
