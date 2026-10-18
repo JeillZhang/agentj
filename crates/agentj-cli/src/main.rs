@@ -140,6 +140,57 @@ fn resolve_session_dir(cfg: &agentj_config::Config) -> std::path::PathBuf {
     std::path::PathBuf::from(".agentj").join("sessions")
 }
 
+/// Pure resolution of the metrics state directory (design D4): an explicit
+/// `[web] state_dir` wins, then `$XDG_DATA_HOME/agentj`, then
+/// `$HOME/.local/share/agentj`; `None` means "keep the counters in memory".
+fn metrics_state_dir_from(
+    cfg: &agentj_config::Config,
+    xdg: Option<&str>,
+    home: Option<&str>,
+) -> Option<std::path::PathBuf> {
+    let explicit = cfg
+        .inner()
+        .web
+        .as_ref()
+        .and_then(|web| web.state_dir.clone());
+    if let Some(dir) = explicit {
+        return Some(dir);
+    }
+    if let Some(xdg) = xdg.filter(|value| !value.is_empty()) {
+        return Some(Path::new(xdg).join("agentj"));
+    }
+    let home = home.filter(|value| !value.is_empty())?;
+    Some(Path::new(home).join(".local").join("share").join("agentj"))
+}
+
+fn resolve_metrics_state_dir(cfg: &agentj_config::Config) -> Option<std::path::PathBuf> {
+    metrics_state_dir_from(
+        cfg,
+        std::env::var("XDG_DATA_HOME").ok().as_deref(),
+        std::env::var("HOME").ok().as_deref(),
+    )
+}
+
+/// Warn when forwarding trust is enabled on a non-loopback bind: the trust
+/// predicate is the direct peer, so remote clients' headers stay ignored.
+fn proxy_trust_warning(host: &str, trust: bool) -> Option<String> {
+    if !trust || is_loopback_host(host) {
+        return None;
+    }
+    Some(format!(
+        "warning: [web] trust_proxy_headers is enabled but {host} is not loopback; forwarded headers \
+         are ignored unless the direct peer is loopback (put a same-host proxy in front)"
+    ))
+}
+
+fn metrics_state_warning(dir: Option<&Path>) -> Option<String> {
+    dir.is_none().then(|| {
+        "warning: no metrics state directory (set XDG_DATA_HOME, HOME or [web] state_dir); login \
+         counters stay in memory and reset on restart"
+            .to_string()
+    })
+}
+
 fn record_completed_turn(
     collector: &agentj_stats::UsageCollector,
     sid: String,
@@ -271,6 +322,10 @@ struct TcpServeOptions {
     max_connections: usize,
     web_dist: Option<std::path::PathBuf>,
     trajectory_store: Option<Arc<agentj_ipc::trajectory::TrajectoryStore>>,
+    /// `[web] trust_proxy_headers`: trust forwarded headers from a loopback peer.
+    trust_proxy_headers: bool,
+    /// `[web] state_dir` (or the XDG/HOME fallback) for the persisted limiter state.
+    metrics_state_dir: Option<std::path::PathBuf>,
     /// Optional subscription handle (design D4); `run` passes none.
     provider_service: Option<Arc<dyn agentj_ipc::ProviderService>>,
 }
@@ -353,6 +408,8 @@ async fn serve_tcp(
     mcp_manager: Arc<McpConnectionManager>,
 ) -> anyhow::Result<()> {
     let warning = insecure_bind_warning(&options.host, options.token.as_deref());
+    let state_warning = metrics_state_warning(options.metrics_state_dir.as_deref());
+    let trust_warning = proxy_trust_warning(&options.host, options.trust_proxy_headers);
     let web_dist = discover_web_dist(options.web_dist.clone());
     let mut tcp = agentj_ipc::tcp::TcpIpcServer::bind(
         &format!("{}:{}", bracket_ipv6(&options.host), options.port),
@@ -365,6 +422,8 @@ async fn serve_tcp(
             max_connections: options.max_connections,
             trajectory_store: options.trajectory_store,
             web_dist: web_dist.clone(),
+            trust_proxy_headers: options.trust_proxy_headers,
+            metrics_state_dir: options.metrics_state_dir.clone(),
             provider_service: options.provider_service,
         },
     )
@@ -399,9 +458,18 @@ async fn serve_tcp(
     if let Some(warning) = warning {
         eprintln!("{warning}");
     }
+    if let Some(warning) = state_warning {
+        eprintln!("{warning}");
+    }
+    if let Some(warning) = trust_warning {
+        eprintln!("{warning}");
+    }
     // Resident mode: exits when the last client disconnects or a shutdown
     // request arrives (决策 #3 按需常驻).
     tcp.run().await?;
+    // Graceful shutdown: persist the limiter state before the task is aborted.
+    tcp.web_config().flush_metrics_state();
+    tcp.web_config().stop_metrics_flush();
     signal_task.abort();
     mcp_manager.close_all().await;
     Ok(())
@@ -625,6 +693,14 @@ async fn main() -> anyhow::Result<()> {
         .expect("invalid [permission] config");
     let permission_policies = permission_policies_from_config(&config);
     let mcp_servers = config.inner().mcp.clone();
+    // `[web]` settings feed the serve paths: resolve them before the config is
+    // moved into the kernel context, because `TcpServeOptions` is built later.
+    let web_trust_proxy_headers = config
+        .inner()
+        .web
+        .as_ref()
+        .is_some_and(|web| web.trust_proxy_headers);
+    let web_metrics_state_dir = resolve_metrics_state_dir(&config);
 
     let ctx = KernelContext {
         session: session.clone(),
@@ -824,6 +900,8 @@ async fn main() -> anyhow::Result<()> {
                     max_connections,
                     web_dist,
                     trajectory_store: Some(Arc::clone(&trajectory_store)),
+                    trust_proxy_headers: web_trust_proxy_headers,
+                    metrics_state_dir: web_metrics_state_dir.clone(),
                     provider_service: provider_service.clone(),
                 },
                 mcp_manager.clone(),
@@ -848,6 +926,8 @@ async fn main() -> anyhow::Result<()> {
                     max_connections: 16,
                     web_dist,
                     trajectory_store: Some(Arc::clone(&trajectory_store)),
+                    trust_proxy_headers: web_trust_proxy_headers,
+                    metrics_state_dir: web_metrics_state_dir.clone(),
                     provider_service: provider_service.clone(),
                 },
                 mcp_manager.clone(),
@@ -1347,5 +1427,110 @@ mod tests {
         let v: serde_json::Value =
             serde_json::from_str(r#"{"jsonrpc":"2.0","id":2,"result":{"content":"x"}}"#).unwrap();
         assert!(run_error_line(&v).is_none());
+    }
+
+    /// `agentj_config::Config` has no `Default` impl, so every case goes through the
+    /// real loader: a temp file for an explicit `[web]` section, `load(None)` otherwise.
+    fn config_with_web(state_dir: Option<&str>) -> agentj_config::Config {
+        match state_dir {
+            Some(dir) => {
+                let path = std::env::temp_dir().join(format!(
+                    "agentj-web-test-{}-{:?}.toml",
+                    std::process::id(),
+                    std::thread::current().id()
+                ));
+                std::fs::write(&path, format!("[web]\nstate_dir = \"{dir}\"\n")).unwrap();
+                let loaded = agentj_config::Config::load(Some(path.clone())).unwrap();
+                std::fs::remove_file(&path).ok();
+                loaded
+            }
+            None => agentj_config::Config::load(None).unwrap(),
+        }
+    }
+
+    #[test]
+    fn explicit_state_dir_wins_over_the_environment() {
+        let cfg = config_with_web(Some("/var/lib/agentj"));
+        assert_eq!(
+            metrics_state_dir_from(&cfg, Some("/xdg"), Some("/home/u")),
+            Some(std::path::PathBuf::from("/var/lib/agentj"))
+        );
+    }
+
+    #[test]
+    fn state_dir_falls_back_to_xdg_then_home() {
+        let cfg = config_with_web(None);
+        assert_eq!(
+            metrics_state_dir_from(&cfg, Some("/xdg"), Some("/home/u")),
+            Some(std::path::PathBuf::from("/xdg/agentj"))
+        );
+        assert_eq!(
+            metrics_state_dir_from(&cfg, None, Some("/home/u")),
+            Some(std::path::PathBuf::from("/home/u/.local/share/agentj"))
+        );
+        assert_eq!(
+            metrics_state_dir_from(&cfg, Some(""), Some("/home/u")),
+            Some(std::path::PathBuf::from("/home/u/.local/share/agentj")),
+            "an empty XDG_DATA_HOME is not a path"
+        );
+    }
+
+    #[test]
+    fn state_dir_is_none_without_any_env_input() {
+        let cfg = config_with_web(None);
+        assert_eq!(metrics_state_dir_from(&cfg, None, None), None);
+        assert!(metrics_state_warning(None).is_some());
+        assert!(metrics_state_warning(Some(std::path::Path::new("/tmp/x"))).is_none());
+    }
+
+    #[test]
+    fn metrics_state_warning_explains_the_in_memory_fallback() {
+        let warning = metrics_state_warning(None).expect("warning expected");
+        assert!(warning.contains("XDG_DATA_HOME"), "{warning}");
+        assert!(warning.contains("in memory"), "{warning}");
+    }
+
+    #[test]
+    fn proxy_trust_warning_only_for_non_loopback_hosts() {
+        assert!(proxy_trust_warning("127.0.0.1", true).is_none());
+        assert!(proxy_trust_warning("localhost", true).is_none());
+        assert!(proxy_trust_warning("0.0.0.0", false).is_none());
+        let warning = proxy_trust_warning("0.0.0.0", true).expect("warning expected");
+        assert!(warning.contains("trust_proxy_headers"), "{warning}");
+    }
+
+    /// The graceful-shutdown contract `serve_tcp` relies on: `flush_metrics_state()`
+    /// (persist) runs before `stop_metrics_flush()` (abort the debounce task), and the
+    /// snapshot outlives the abort. Uses the same public seam the CLI calls, so the
+    /// state path is the real `<dir>/metrics-state-<bound port>.json`.
+    #[tokio::test]
+    async fn graceful_shutdown_persists_metrics_state_before_aborting_the_task() {
+        let dir = tempfile::tempdir().unwrap();
+        let tcp = agentj_ipc::tcp::TcpIpcServer::bind(
+            "127.0.0.1:0",
+            agentj_core::kernel::Kernel::new(),
+            std::sync::Arc::new(agentj_session::InMemoryStore::new()),
+            None,
+            None,
+            agentj_ipc::tcp::TcpBindOptions {
+                metrics_state_dir: Some(dir.path().to_path_buf()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("bind");
+        let port = tcp.local_addr().expect("local addr").port();
+        let path = dir.path().join(format!("metrics-state-{port}.json"));
+        assert!(
+            !path.exists(),
+            "the debounce task must not write on its own"
+        );
+        // Exactly what `serve_tcp` does on shutdown, in order.
+        tcp.web_config().flush_metrics_state();
+        tcp.web_config().stop_metrics_flush();
+        assert!(path.is_file(), "flush must persist {}", path.display());
+        let body = std::fs::read_to_string(&path).unwrap();
+        assert!(body.contains("\"version\":1"), "{body}");
+        assert!(body.contains("\"counters\""), "{body}");
     }
 }
