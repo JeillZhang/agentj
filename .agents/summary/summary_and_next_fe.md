@@ -148,7 +148,13 @@ RED 证据：Web **7 failed / 662 passed**（+ `blankText.test.ts` 整文件 imp
 | # | 特性 | 内容 | 依赖 | 状态 |
 |---|------|------|------|------|
 | ③ | Web 接入服务端搜索 | Web Files 搜索态打通（消费服务端 `query`/`total`；提示行搜索态可达） | 无（基于服务端搜索） | 待实施 |
+| ㉑ | 【债】前端 CI 门禁 | `.github/workflows/` 三个 workflow（`ci.yml` / `smoke.yml` / `e2e.yml`）**全部只跑 Rust、只跑 ubuntu-latest**（实测 `grep -rn "npm\|bun" .github/` 为空）→ 679 web 测试 / 55 文件、21 个 TUI 测试文件、`tsc -b`、`oxlint`、`check-desktop-ui.mjs` **均无门禁**，前端 30,722 行（占总代码 38%）靠本地自觉。新增 frontend job：`npm ci` → protocol `generate` → `tsc --noEmit` → web vitest → `bun --cwd agentj-ui/apps/tui test` → desktop UI 校验 | 无 | 待实施 |
+| ㉒ | 【债】跨平台 CI 矩阵 | desktop 声称产 deb / AppImage / **dmg / msi**（`docs/guide/desktop.md`），但 CI 无 macOS / Windows 矩阵，跨平台从未被验证（Rust 侧亦只在 Linux 编译） | 依赖 ㉑ 的 workflow 结构 | 待实施 |
+| ㉓ | 【修复】`isBlankText` 上提 SDK + TUI 盲区 | BUG-017 的视觉空白过滤现散落两处（内核 `flush_thinking` + Web `blankText.ts`），而 `agentj-ui/apps/tui/src/runview.tsx:126` 的 `case "text"` 仍无条件 `next.push(...)` → 零宽帧多一个空行（同源盲区未修）。把 `isBlankText` 上提 `@agentj/sdk`，三端共享（需同改 Web import 与 SDK 测试） | 无 | 待实施 |
+| ㉔ | 【债】三端共享逻辑收敛 | Web 19,930 行 / TUI 7,939 行各自重写会话、运行视图、文件树、搜索（`toolSummary`、files 懒加载、空文本过滤等均为双份实现）；评估把无 UI 依赖的纯函数上提 `@agentj/sdk`，避免同一缺陷修两次 | 与 ㉓ 同向 | 待实施 |
+| ㉕ | 【修复】版本元数据与依赖残留 | ① `scripts/check-version.sh` 未覆盖 `agentj-ui/package-lock.json`（根条目仍记陈旧的 `0.29.1`）与 `agentj-ui/apps/web/package.json`（`"version": "0.0.0"`）；② 清理 `agentj-ui/node_modules/.old_modules-245c1e1a995d5f43/` 等迁移残留 | 无 | 待实施 |
 
+> 类型标记：`【债】` = 工程债 / 质量门禁，`【修复】` = 已确认缺陷或元数据不一致；无标记 = 特性。
 > 规则：本表条目在未实施时必须**跨阶段保留**（不得随内容替换删除）；实施完成后从本表移除，
 > 并记入对应功能章节。下一特性选择（`jskill-feature-next`）合并本表与 `_se.md` 待实施表。
 
@@ -160,7 +166,8 @@ RED 证据：Web **7 failed / 662 passed**（+ `blankText.test.ts` 整文件 imp
   更新 PR #84 的 title / body 以覆盖验收修复（用户负责合并）。
 - 本轮验收记录见本地 `.superpowers/acceptance/bugs.md`（gitignored；上轮已归档为
   `archive-bugs-20261018-103252.md`）。
-- 前端候选：③ Web 接入服务端搜索；或订阅状态常驻指示（需先定义新鲜度语义）；
+- 前端候选：③ Web 接入服务端搜索，以及 ㉑–㉕ 工程债 / 修复（前端 CI、跨平台矩阵、SDK 共享、
+  版本覆盖）；或订阅状态常驻指示（需先定义新鲜度语义）；
   或清理 `TopbarMenu` / `SettingsDialog` 测试里的重复 stub helper；
   或 TUI `/models` 与 Web 选择语义对齐（TUI 仍是内存态、不跨进程持久化）。
 - 后端候选见 `summary_and_next_se.md`。
