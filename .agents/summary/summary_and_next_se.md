@@ -7,87 +7,93 @@
 > 待实施），不得随内容替换而删除；仅当该特性实际实施完成后才能移除（移入功能记录）。
 > 前端总结独立存放于 `summary_and_next_fe.md`；两文件内容隔离，互不写入对方文件。
 
-> 当前功能：**指标导出扩展（代理头解析 + 计数持久化）** —— 分支 `feature/metrics-export-extension`。
-> 改 `crates/agentj-ipc`（新增 `client_ip.rs` / `metrics_state.rs`，扩展 `login_limiter.rs` /
-> `web.rs` / `tcp.rs`）+ `crates/agentj-config`（新增 `[web]`）+ `crates/agentj-cli`（serve 装配与
-> 优雅落盘）；协议 wire 面**不变**（`PROTOCOL_VERSION` 仍 0.18.0 / 28 方法 / 78 schemas；工作区仍
-> **0.1.0**）。下方 0.29.x / BUG-017 等前序章节为**上一阶段记录**（归档）。
+> 当前功能：**抽检扩展（逐请求校验 + 手动全量端点）** —— 分支 `feature/spot-check-extension`。
+> 改 `crates/agentj-config`（`[web]` 4 键）+ `crates/agentj-ipc`（`web.rs` 逐请求校验层 /
+> `POST /integrity/verify` / `integrity.on_demand` / 8 指标；`tcp.rs` 绑定传参）+ `crates/agentj-cli`
+> （配置 → `IntegrityOptions` 装配）+ e2e + 文档。协议 wire 面**不变**（`PROTOCOL_VERSION` 仍
+> 0.18.0 / 28 方法 / 78 schemas；工作区仍 **0.1.0**）。下方 0.29.x / BUG-017 等前序章节为归档记录。
 
-## 指标导出扩展：代理头解析 + 计数持久化 ✅
+## 抽检扩展：逐请求校验 + 手动全量端点 ✅
 
-分支 `feature/metrics-export-extension`。无 wire 变更（无新方法 / 无 schema / 无 `PROTOCOL_VERSION` 变更）。
+分支 `feature/spot-check-extension`（自 `0cd87be` 起）。无 wire 变更：无新 JSON-RPC 方法、无 schema
+改动、`protocol/methods.json` 未动；`PROTOCOL_VERSION` 仍 0.18.0、工作区仍 0.1.0（AGENTS.md：版本号
+不随特性递增）。
 
 ### 交付
 
-- **客户端 IP 派生**（`crates/agentj-ipc/src/client_ip.rs`，新增，纯函数、无 IO）：
-  `resolve_client_ip(peer, headers, trust) -> ClientIp { ip, source: IpSource }`——仅在**信任生效**
-  时读 `X-Forwarded-For` / `X-Real-IP`，而信任生效的唯一前提是**直接 TCP peer 为回环**；
-  `X-Forwarded-For` 从右向左扫描、跳过回环跳，取第一个合法非回环项（最右 = 代理实际观测值，
-  客户端伪造的左前缀无效）；`X-Real-IP` 为回退；否则回退原始 peer。
-  `IpSource::{Peer, XForwardedFor, XRealIp}::label()` → `peer` / `forwarded` / `real_ip`。
-- **计数持久化**（`crates/agentj-ipc/src/metrics_state.rs`，新增）：`version: 1` 的 JSON 快照 +
-  `state_path_in(dir, port)` = `metrics-state-<port>.json`；原子写（目录 `0700` / 文件 `0600` /
-  同目录 tmp + `rename`，**每条失败路径都清理 tmp**）；`read` 缺文件 → `Ok(None)`，损坏 / 超
-  1 MiB / `version` 不符 → `Err`；`restore_seeds()` 做钳制换算（锁 ≤ 900 s、idle 年龄 ≤ 1800 s、
-  超 TTL 丢弃、按 `max_tracked` 截断；锁过期仍保留失败数）。
-- **限流器**（`crates/agentj-ipc/src/login_limiter.rs`）：新增 `to_state` / `restore_from` /
-  `dirty` / `mark_clean`；**既有公开签名一律未动**。
-- **Web 面**（`crates/agentj-ipc/src/web.rs`）：`WebConfig` 增信任开关 / 状态路径 / 5 s debounce
-  flush 任务（**仅 dirty 才写**）+ `restore_metrics_state()` + `flush_metrics_state()` /
-  `stop_metrics_flush()`（供优雅关闭）；`prometheus_text` 增 6 个**加性**指标——
-  `agentj_web_client_ip_source_total{source=peer|forwarded|real_ip}` /
-  `agentj_web_proxy_header_invalid_total` / `agentj_web_metrics_state_restored` /
-  `agentj_web_metrics_state_entries_restored` / `agentj_web_metrics_state_write_failures_total` /
-  `agentj_web_metrics_state_last_flush_unix`；既有指标名与 `PER_IP_SERIES_LIMIT = 50` 不变。
-- **TCP 绑定**（`crates/agentj-ipc/src/tcp.rs`）：`TcpBindOptions` 增 `trust_proxy_headers` +
-  `metrics_state_dir`；状态路径按**实际绑定端口**（`local_addr()`）拼出，故 `--port 0` 亦正确。
-- **配置 / CLI**：`crates/agentj-config` 新增 `[web]`（`trust_proxy_headers` 默认 `false` /
-  `state_dir`）→ `AgentJConfig.web`；`crates/agentj-cli/src/main.rs` 装配进 `serve`——状态目录
-  依次取 `[web] state_dir` → `$XDG_DATA_HOME/agentj` → `$HOME/.local/share/agentj`，全空则仅内存
-  并启动警告；非回环绑定 + 信任开启另发启动警告；**优雅关闭先落盘再停 flush 任务，且 serve 循环
-  返回错误时也不跳过**。
-- **安全红线（永久不变量）**：派生 IP **只**用于登录限流键、per-IP 指标序列与日志/指标字段；
-  `auth_required` 始终按**原始 TCP peer** 判定，故转发头**永远不能**换取 `/metrics` 的回环豁免
-  （回归测试 `forwarded_headers_cannot_buy_loopback_exemption` 钉住）。
-- **口径**：持久化为**每进程、每端口一个文件**；同机多实例共享聚合为**非目标**（Prometheus 侧
-  `sum by`）。
+- **`[web]` 完整性 4 键**（`crates/agentj-config/src/lib.rs`）：`spot_interval_secs`（默认 60，钳制
+  5..=3600）、`spot_sample`（默认 8，钳制 1..=1024）、`verify_on_request`（默认 `true`）、
+  `verify_cache_ttl_secs`（默认 60，钳制 1..=3600）；`MIN_/MAX_` 常量 + `clamp_*` 自由函数 +
+  `clamped_*` 访问器；`WebSection` 改为手写 `Default`；未知键仍容忍。
+- **ipc 侧再钳制**（`crates/agentj-ipc/src/web.rs`）：`IntegrityOptions { spot_interval,
+  spot_sample, verify_on_request, verify_cache_ttl }`（Default 60s / 8 / true / 60s）；
+  `WebConfig::with_integrity_options()` 自行再钳制（`tokio::time::interval(0)` 会 panic，配置层钳制
+  不能是唯一防线）。
+- **逐请求校验**（`verify_asset` 中间件，位于登录门**之内**：`gate.layer(verify.layer(face))`）：
+  静态面核验本次将服务的文件，SPA 面未知路径回落 `/index.html`；`nest_service("/assets")` 会剥掉
+  挂载前缀，故 `manifest_key_for` 复原前缀后再查清单；按路径 memoize + **绝对 TTL**（命中不刷新
+  `checked_at`）、缓存上限 `VERIFY_CACHE_MAX = 1024`（溢出先清过期、仍超则整体清空）；锁绝不跨 IO
+  持有、中毒一律 `into_inner()`；fail-open（只计数 + 按路径去重 `warn!`，响应与响应头不变）；未通过
+  鉴权的请求零哈希。
+- **手动全量**（`POST /integrity/verify`）：鉴权与 `GET /metrics` 完全一致（401 `text/plain` +
+  `no-store`，不重定向）；200 `application/json` + `no-store`，body
+  `{manifest_present, checked, mismatched, missing, offenses, truncated, duration_ms}`；`offenses`
+  路径升序、上限 `INTEGRITY_OFFENSES_LIMIT = 50` + `truncated`（计数仍精确）；空清单算
+  `manifest_present: true` 且计一次全量，无可用清单 → `false` 且不增 `sweeps`；非 POST → 405。
+- **`/version` 加性 `integrity.on_demand`**：`{sweeps, checked, mismatched, missing,
+  last_run_age_secs?}`（未触发时省略年龄键）；`runtime` 只记定时轮转、`on_demand` 只记手动全量
+  （语义隔离）；既有 4 字段与 `runtime` 不变。
+- **8 个加性指标**：`agentj_web_integrity_request_{checked,mismatched,missing}_total`、
+  `agentj_web_integrity_request_cache_entries`（gauge）、`agentj_web_integrity_sweeps_total`、
+  `agentj_web_integrity_sweep_{checked,mismatched,missing}_total`；既有序列逐字节不变。
+- **装配链**：`TcpBindOptions.integrity`（Default = `IntegrityOptions::default()`），`bind` 在
+  `spawn_spot_check` 之前 `with_integrity_options`；`crates/agentj-cli/src/main.rs` 新增
+  `resolve_integrity_options(&Config)`，在 config 移入 `KernelContext` 之前取值，`serve` 与
+  `dashboard` 两条路径都带上。
+- **文档**：`docs/specs/ipc-protocol.md` §2.3（6 条 HTTP 层加性条目，纯新增）、
+  `docs/guide/http-and-auth.md`（路由表 + `/version` + `/metrics` + 资产完整性四节）、
+  `docs/changelog/v0.1.md`。
 
-### 验证
+### 验证（最终门禁，全绿）
 
 | 门禁 | 结果 |
 |------|------|
-| `cargo test --workspace` | **980 passed** / 0 failed |
+| `cargo test --workspace` | **1022 passed** / 0 failed（基线 980） |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 0 warning |
-| `cargo clippy -p agentj-ipc -- -D warnings` | 0 warning |
-| `cargo fmt --all --check` | FMT-OK |
-| `cargo test -p agentj-protocol -- drift` | 2 passed |
+| `cargo fmt --all --check` | 干净 |
+| `cargo test -p agentj-protocol -- drift` | 2 passed（78 schemas 无漂移） |
 | `./scripts/check-version.sh` | `version-ok`（0.1.0 / 0.18.0，本阶段不 bump） |
-| `cargo test -p agentj-ipc --lib` | 239 passed |
-| `cargo test -p agentj-cli --bin agentj` | 110 passed |
-| `cargo test -p agentj-cli --test e2e_serve` | 9 passed |
 
-### 真实提交（`9f2bc15..HEAD`，最旧 → 最新）
+分项：`agentj-ipc` lib 271、`agentj-cli` bin 113、`e2e_http_static` 10（E1–E4 新增）、
+`ws_classifier` 6、`agentj-config` lib 37。
 
-- `1ec9e5b` feat(config): add [web] section with trust_proxy_headers and state_dir
-- `8986885` feat(ipc): derive the client IP from loopback-gated forwarded headers
-- `55e6d29` feat(ipc): add atomic metrics state snapshot with clamped clock conversion
-- `55d63de` feat(ipc): snapshot and restore login limiter state with dirty tracking
-- `5b6f16a` fix(ipc): clean up the metrics state tmp file on every write failure
-- `3ae4f87` feat(ipc): restore and debounce-flush login metrics state behind WebConfig
-- `b4c77eb` feat(ipc): throttle on the derived client IP while auth keeps the raw peer
-- `853a760` feat(ipc): resolve the metrics state path from the bound port
-- `54db01c` refactor(ipc): make the metrics state flush and stop API public for graceful shutdown
-- `496a0af` feat(cli): wire [web] proxy trust and metrics state dir into serve
-- `ca52ff5` test(cli): prove login counters survive a serve restart
-- `e36db88` docs: document proxy-header trust and persisted login metrics
-- `ac44b66` refactor(ipc): drop the staging dead_code allowances now that the metrics wiring is live
-- `c6fbf16` refactor(cli): always tear down the serve loop and trim serve_tcp
-- `f5955a1` test(cli): assert exact metric lines in the restart e2e
-- `2eaf0ec` refactor(ipc): render client IP source labels from IpSource::label
-- `d888b24` docs: record the per-IP last-seen metric and snapshot-only history
-- `b8b5493` test(cli): translate the last Chinese comment fragment in the serve e2e
-- `d45e30c` test(cli): cover the error-path teardown of the serve loop
-- `965dcf4` test(ipc): assert exact metric lines in the web unit tests
+### 真实提交（`0cd87be..HEAD`，最旧 → 最新）
+
+- `54ab9d9` feat(config): add [web] integrity knobs (spot cadence + request verification)
+- `ff6f5a9` feat(ipc): add IntegrityOptions and the WebConfig integrity state
+- `3110d70` feat(ipc): memoized per-request asset verification with bound and warn-once
+- `25162bb` feat(ipc): verify served static assets per request behind the login gate
+- `4937b21` feat(ipc): add the manual full integrity sweep and POST /integrity/verify
+- `0a7b893` test(ipc): close the T2 review findings on counter coverage and memo hits
+- `cfe290b` feat(ipc): expose integrity.on_demand on the /version probe
+- `f9bc367` feat(ipc): publish the integrity request and sweep metrics
+- `b3f20db` test(ipc): pin the gauge kind and zero values of the integrity series
+- `4206b90` feat(cli): carry the [web] integrity knobs into the tcp bind path
+- `3af0759` test(cli): cover the integrity chain end to end
+- `3f83773` test(ipc): give the new metrics test its own temp dist tag
+- `d83c32c` docs: document the http-layer integrity surface
+- `92a807a` test(cli): prove a second spot round instead of just the first tick
+
+### 遗留问题（非阻塞）
+
+- **E4 的判别力**：`tokio::time::interval` 首 tick 立即触发，故 e2e 只能断言「15s 内出现**第二**轮」
+  才真正证明 `[web] spot_interval_secs` 到达 `spawn_spot_check`（已按此实现）；若将来把抽检改成
+  `sleep` 语义需重新校准该断言。
+- **`temp_dist` 固定 `/tmp` 目录**：`agentj-cli-e2e-web-{tag}` 仅按 tag 区分，同 tag 并发跑同一测试
+  目标（或残留服务）会互踩；既有模式，未在本阶段改动。
+- **fixture 基线重复**：`web_verify_off.toml` / `web_fast_spot.toml` 各自复制了
+  `permission_deny.toml` 的完整基线（含 `timeout_ms = 800`），基线变更时需同步三处。
+- **计划文本笔误**：计划 T2 的 AC4 写 `mismatched is 2`，正确值为 1（代码与测试是对的）。
 
 ## 已完成（0.29.0 – 0.29.12 + BUG-017/018，详见 `docs/changelog/v0.1.md`）
 
@@ -217,7 +223,6 @@
 
 | # | 特性 | 内容 | 依赖 | 状态 |
 |---|------|------|------|------|
-| ② | 抽检扩展 | 逐请求校验 / 手动全量触发端点 | 无（基于 v0.22.0 运行期抽检） | 待实施 |
 | ④ | rank 规则单一真源化 | Rust `file_list::search_rank` 为唯一真源，TUI / mock 镜像退役 | 无（前端跟进见 `_fe.md` 遗留 ③） | 待实施 |
 | ⑥ | 用量历史（服务端持久化 + 趋势） | `provider/usage` 由按需 TTL 300s 扩为服务端持久化采样 + 历史/趋势查询（协议加性）、Web/TUI 趋势视图与保留策略 | 无（基于 v0.27.0 用量面板；设计需先定采样归属/保留/加性 wire） | 待实施 |
 | ⑦ | 工具结果落库上限 | 落库前对单个工具结果设上限（或摘要 + 「已截断」标记），避免 7.9MB 级 `glob` 结果撑爆快照 | 0.29.8 已落库工具往返（存储侧尚无上限） | 待实施 |
@@ -247,11 +252,12 @@
 
 ## 下一步
 
-- 指标导出扩展（代理头解析 + 计数持久化）代码 + 文档 + summary(se) 已收尾；剩余：提交 →
-  推送**两个远端**（本工作副本 `github` = GitHub 权威、`origin` = GitCode 镜像；与 `AGENTS.md`
-  远端命名相反）→ 开 GitHub PR（用户负责合并）→ 自动进入测试验收。
-- 下一特性：待实施 ②「抽检扩展」（逐请求校验 / 手动全量触发端点，基于 v0.22.0 运行期抽检）。
-- 后端候选：上表 ②④⑥⑦⑧⑨（特性）+ ⑩–⑳、㉗–㉜（工程债 / 修复 / 合规）；或前端跟进见
+- 抽检扩展（逐请求校验 + 手动全量端点）代码 / 测试 / 文档 / summary(se) 全部收尾，最终门禁全绿；
+  剩余：推送**两个远端**（本工作副本 `github` = GitHub 权威、`origin` = GitCode 镜像；与
+  `AGENTS.md` 远端命名相反）→ 开 GitHub PR（用户负责合并）→ 进入测试验收。
+- 下一特性候选：待实施 ④「rank 规则单一真源化」、⑥「用量历史服务端持久化」、⑦「工具结果落库
+  上限」、⑧「`session/run` 回显生效模型」、⑨「`glob` 路径语义」。
+- 后端候选：上表 ④⑥⑦⑧⑨（特性）+ ⑩–⑳、㉗–㉜（工程债 / 修复 / 合规）；或前端跟进见
   `summary_and_next_fe.md`（含 ㉑–㉕ 前端债 / 修复）。
 - 可选跟进：为 `run` 增加 `--yes`（或非 TTY 自动拒绝）；`ask` 问题默认超时；把「会话已裁剪
   N 条消息」作为可观测事件；`ModelEvent` 增加 `reasoning_content` 承载。

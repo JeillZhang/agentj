@@ -77,6 +77,23 @@ fn http_get(addr: &str, path: &str) -> String {
     buf
 }
 
+/// Issue a raw HTTP/1.1 POST with an empty body; same read-timeout guard as
+/// `http_get`.
+fn http_post(addr: &str, path: &str) -> String {
+    let mut stream = TcpStream::connect(addr).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    write!(
+        stream,
+        "POST {path} HTTP/1.1\r\nHost: {addr}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+    )
+    .unwrap();
+    let mut buf = String::new();
+    let _ = stream.read_to_string(&mut buf);
+    buf
+}
+
 /// Read server stdout lines until the resident server prints
 /// `listening on <addr>`; returns the address (pattern mirrored from
 /// tests/e2e_serve.rs; panics on EOF / timeout / absence).
@@ -116,15 +133,21 @@ fn serve_config() -> &'static str {
     )
 }
 
-/// Spawn `agentj serve --web-dist <dist>`, wait for its listening address, run
-/// `probe` against that address, then kill the child and return its stderr.
-/// The stdout reader is held for the whole run (see the static e2e note).
+/// Serve `<dist>` with the shared deny-all fixture, run `probe` once the
+/// server prints its address, then return the child's stderr (read after the
+/// kill, so the already-emitted warnings do not block).
 fn run_serve_and_capture(dist: &std::path::Path, probe: impl FnOnce(&str)) -> String {
+    run_serve_with_config(serve_config(), dist, probe)
+}
+
+/// `run_serve_and_capture` with an explicit fixture, so tests can drive `[web]`
+/// knobs through the real config file.
+fn run_serve_with_config(config: &str, dist: &std::path::Path, probe: impl FnOnce(&str)) -> String {
     let mut child = AutoReap(
         Command::new(env!("CARGO_BIN_EXE_agentj"))
             .args([
                 "--config",
-                serve_config(),
+                config,
                 "serve",
                 "--port",
                 "0",
@@ -141,15 +164,21 @@ fn run_serve_and_capture(dist: &std::path::Path, probe: impl FnOnce(&str)) -> St
     let mut reader = BufReader::new(child.0.stdout.take().unwrap());
     let addr = read_listening_addr(&mut reader);
     probe(&addr);
-
-    // The warning is written before the accept loop; kill the child to close
-    // stderr and read the already-emitted output without blocking.
     let _ = child.0.kill();
     let _ = child.0.wait();
     let mut err = String::new();
     let _ = stderr.read_to_string(&mut err);
     err
 }
+
+const VERIFY_OFF: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/web_verify_off.toml"
+);
+const FAST_SPOT: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/web_fast_spot.toml"
+);
 
 #[test]
 fn serve_serves_web_dist_with_spa_fallback_and_cache_headers() {
@@ -391,5 +420,82 @@ fn manifest_with_root_level_public_asset_verifies_silently() {
         "unexpected warning: {stderr}"
     );
 
+    std::fs::remove_dir_all(&dist).ok();
+}
+
+#[test]
+fn e1_per_request_check_is_visible_on_metrics() {
+    let dist = temp_dist("e1");
+    write_matching_manifest(&dist);
+    let err = run_serve_and_capture(&dist, |addr| {
+        assert!(http_get(addr, "/assets/app.js").contains("200 OK"));
+        let metrics = http_get(addr, "/metrics");
+        assert!(
+            metrics.contains("agentj_web_integrity_request_checked_total 1\n"),
+            "the served asset must be hashed exactly once: {metrics}"
+        );
+    });
+    assert!(
+        !err.contains("integrity check failed"),
+        "unexpected warning: {err}"
+    );
+    std::fs::remove_dir_all(&dist).ok();
+}
+
+#[test]
+fn e2_manual_sweep_reports_a_mismatch() {
+    let dist = temp_dist("e2");
+    write_asset_manifest(&dist, &[("/assets/app.js", "sha384-not-the-real-digest")]);
+    run_serve_and_capture(&dist, |addr| {
+        let body = http_post(addr, "/integrity/verify");
+        assert!(body.contains("200 OK"), "{body}");
+        let payload = body.split("\r\n\r\n").nth(1).unwrap();
+        let json: serde_json::Value = serde_json::from_str(payload).unwrap();
+        assert_eq!(json["manifest_present"], serde_json::json!(true));
+        assert_eq!(json["mismatched"], serde_json::json!(1));
+    });
+    std::fs::remove_dir_all(&dist).ok();
+}
+
+#[test]
+fn e3_verify_on_request_false_suppresses_the_check() {
+    let dist = temp_dist("e3");
+    write_matching_manifest(&dist);
+    run_serve_with_config(VERIFY_OFF, &dist, |addr| {
+        assert!(http_get(addr, "/assets/app.js").contains("200 OK"));
+        let metrics = http_get(addr, "/metrics");
+        assert!(
+            metrics.contains("agentj_web_integrity_request_checked_total 0\n"),
+            "verify_on_request = false must suppress hashing: {metrics}"
+        );
+    });
+    std::fs::remove_dir_all(&dist).ok();
+}
+
+#[test]
+fn e4_spot_cadence_comes_from_the_config_file() {
+    let dist = temp_dist("e4");
+    write_matching_manifest(&dist);
+    let err = run_serve_with_config(FAST_SPOT, &dist, |addr| {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while Instant::now() < deadline {
+            let body = http_get(addr, "/version");
+            if let Some(payload) = body.split("\r\n\r\n").nth(1) {
+                let json: serde_json::Value = serde_json::from_str(payload).unwrap();
+                // `tokio::time::interval` ticks once immediately, so `>= 1` proves
+                // nothing about the cadence; a second round inside 15s is what
+                // distinguishes the 5s fixture from the 60s default.
+                if json["integrity"]["runtime"]["rounds"].as_u64().unwrap_or(0) >= 2 {
+                    return;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
+        panic!("the runtime spot-check never reached a second round within 15s");
+    });
+    assert!(
+        !err.contains("integrity check failed"),
+        "unexpected warning: {err}"
+    );
     std::fs::remove_dir_all(&dist).ok();
 }

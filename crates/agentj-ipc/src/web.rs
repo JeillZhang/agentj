@@ -94,10 +94,37 @@ fn validate_manifest(manifest: &AssetManifest) -> Result<(), String> {
 }
 
 /// Outcome of hashing one manifest entry against the bytes on disk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AssetCheck {
     Match,
     Mismatch,
     Missing,
+}
+
+/// Resolve the manifest key for a mount prefix plus a stripped request path
+/// (the `/assets` service sees `path` without its mount prefix; `mount_prefix`
+/// is a static so the allocation happens only on a miss).
+fn manifest_key_for(mount_prefix: &'static str, path: &str) -> String {
+    format!("{mount_prefix}{path}")
+}
+
+/// Pick the manifest key for a request: the exact `mount_prefix + path` key when
+/// the manifest has it, otherwise `fallback_key` (the SPA shell for history
+/// routes) when that is present too. `None` means "not a manifest asset", so the
+/// request is never hashed against an unrelated digest.
+fn verify_key(
+    manifest: &AssetManifest,
+    mount_prefix: &'static str,
+    fallback_key: Option<&'static str>,
+    path: &str,
+) -> Option<String> {
+    let key = manifest_key_for(mount_prefix, path);
+    if manifest.assets.contains_key(&key) {
+        return Some(key);
+    }
+    fallback_key
+        .filter(|fallback| manifest.assets.contains_key(*fallback))
+        .map(str::to_string)
 }
 
 /// Hash one manifest entry against the bytes on disk; shared by the startup
@@ -218,6 +245,84 @@ impl Default for SpotCheckConfig {
     }
 }
 
+/// Request-path integrity knobs derived from the `[web]` config section.
+///
+/// The bounds are re-clamped inside [`WebConfig::with_integrity_options`]
+/// instead of depending on `agentj-config`: these fields are `pub`, and
+/// `tokio::time::interval(0)` panics.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct IntegrityOptions {
+    pub spot_interval: Duration,
+    pub spot_sample: usize,
+    pub verify_on_request: bool,
+    pub verify_cache_ttl: Duration,
+}
+
+impl Default for IntegrityOptions {
+    fn default() -> Self {
+        Self {
+            spot_interval: Duration::from_secs(60),
+            spot_sample: 8,
+            verify_on_request: true,
+            verify_cache_ttl: Duration::from_secs(60),
+        }
+    }
+}
+
+/// Clamp bounds for [`IntegrityOptions`], mirroring `agentj-config`'s `[web]` bounds.
+pub(crate) const MIN_SPOT_INTERVAL: Duration = Duration::from_secs(5);
+pub(crate) const MAX_SPOT_INTERVAL: Duration = Duration::from_secs(3600);
+pub(crate) const MIN_SPOT_SAMPLE: usize = 1;
+pub(crate) const MAX_SPOT_SAMPLE: usize = 1024;
+pub(crate) const MIN_VERIFY_TTL: Duration = Duration::from_secs(1);
+pub(crate) const MAX_VERIFY_TTL: Duration = Duration::from_secs(3600);
+/// Upper bound on the request-path verification memo (design: bounded cache).
+pub(crate) const VERIFY_CACHE_MAX: usize = 1024;
+
+/// How many offending paths a single manual sweep reports (counts stay exact;
+/// the list is truncated to this many, sorted, with `truncated` set).
+pub(crate) const INTEGRITY_OFFENSES_LIMIT: usize = 50;
+
+/// Cumulative outcome of the manual `POST /integrity/verify` sweeps (design G7):
+/// written by the sweep handler, read by `/version`.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct IntegrityOnDemandReport {
+    pub(crate) sweeps: u64,
+    pub(crate) checked: u64,
+    pub(crate) mismatched: u64,
+    pub(crate) missing: u64,
+    pub(crate) last_run: Option<Instant>,
+}
+
+/// The one-off result of a manual sweep (design G3), serialised by the endpoint.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct FullSweepOutcome {
+    pub(crate) manifest_present: bool,
+    pub(crate) checked: u64,
+    pub(crate) mismatched: u64,
+    pub(crate) missing: u64,
+    pub(crate) offenses: Vec<String>,
+    pub(crate) truncated: bool,
+    pub(crate) duration_ms: u64,
+}
+
+/// Request-path verification counters plus the current memo size (design G2).
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct RequestIntegritySnapshot {
+    pub(crate) checked: u64,
+    pub(crate) mismatched: u64,
+    pub(crate) missing: u64,
+    pub(crate) cache_entries: usize,
+}
+
+/// One memoised request-path verdict plus the instant it was taken, so the
+/// expiry check is absolute (a cache hit never extends the TTL).
+struct VerifyEntry {
+    #[allow(dead_code)] // inspected by the test-only `verify_cache_verdict`
+    verdict: AssetCheck,
+    checked_at: Instant,
+}
+
 /// Cumulative runtime spot-check state (design D7): written by the periodic
 /// task, read by `/version` and `/metrics`.
 #[derive(Debug, Clone, Default)]
@@ -270,6 +375,13 @@ pub struct WebConfig {
     integrity_error: Option<String>,
     manifest: Option<AssetManifest>,
     spot: SpotCheckConfig,
+    verify_on_request: bool,
+    verify_cache_ttl: Duration,
+    verify_cache: std::sync::Mutex<std::collections::HashMap<String, VerifyEntry>>,
+    on_demand: std::sync::RwLock<IntegrityOnDemandReport>,
+    request_checked: std::sync::atomic::AtomicU64,
+    request_mismatched: std::sync::atomic::AtomicU64,
+    request_missing: std::sync::atomic::AtomicU64,
     spot_report: std::sync::RwLock<SpotCheckReport>,
     warned: std::sync::Mutex<std::collections::HashSet<String>>,
     spot_cursor: std::sync::atomic::AtomicUsize,
@@ -301,6 +413,13 @@ impl WebConfig {
             integrity_error,
             manifest,
             spot: SpotCheckConfig::default(),
+            verify_on_request: true,
+            verify_cache_ttl: Duration::from_secs(60),
+            verify_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
+            on_demand: std::sync::RwLock::new(IntegrityOnDemandReport::default()),
+            request_checked: std::sync::atomic::AtomicU64::new(0),
+            request_mismatched: std::sync::atomic::AtomicU64::new(0),
+            request_missing: std::sync::atomic::AtomicU64::new(0),
             spot_report: std::sync::RwLock::new(SpotCheckReport::default()),
             warned: std::sync::Mutex::new(std::collections::HashSet::new()),
             spot_cursor: std::sync::atomic::AtomicUsize::new(0),
@@ -324,6 +443,123 @@ impl WebConfig {
     pub(crate) fn with_spot_check(mut self, spot: SpotCheckConfig) -> Self {
         self.spot = spot;
         self
+    }
+    #[cfg(test)]
+    pub(crate) fn spot_interval(&self) -> Duration {
+        self.spot.interval
+    }
+    #[cfg(test)]
+    pub(crate) fn spot_sample(&self) -> usize {
+        self.spot.sample
+    }
+    #[cfg(test)]
+    pub(crate) fn verify_cache_ttl(&self) -> Duration {
+        self.verify_cache_ttl
+    }
+    #[cfg(test)]
+    pub(crate) fn verify_on_request_enabled(&self) -> bool {
+        self.verify_on_request
+    }
+    /// Test-only escape hatch past the `MIN_VERIFY_TTL` clamp, so TTL tests can use
+    /// sub-second windows instead of sleeping a full second.
+    #[cfg(test)]
+    pub(crate) fn with_raw_verify_cache_ttl(mut self, ttl: Duration) -> Self {
+        self.verify_cache_ttl = ttl;
+        self
+    }
+    /// Apply the `[web]` integrity knobs. Re-clamps defensively: the fields of
+    /// `IntegrityOptions` are `pub`, and `tokio::time::interval(0)` panics.
+    pub(crate) fn with_integrity_options(mut self, opts: IntegrityOptions) -> Self {
+        self.spot = SpotCheckConfig {
+            interval: opts
+                .spot_interval
+                .clamp(MIN_SPOT_INTERVAL, MAX_SPOT_INTERVAL),
+            sample: opts.spot_sample.clamp(MIN_SPOT_SAMPLE, MAX_SPOT_SAMPLE),
+        };
+        self.verify_on_request = opts.verify_on_request;
+        self.verify_cache_ttl = opts.verify_cache_ttl.clamp(MIN_VERIFY_TTL, MAX_VERIFY_TTL);
+        self
+    }
+    /// Verify one manifest entry, memoised for `verify_cache_ttl` (design D9/D10).
+    ///
+    /// The memo is keyed by manifest key and expires on an absolute deadline: a
+    /// hit never refreshes `checked_at`, so a tampered file is re-hashed once the
+    /// window closes instead of being trusted forever. Keys absent from the
+    /// manifest are ignored (they are never hashed).
+    pub(crate) fn verify_cached_asset(&self, key: &str) {
+        let now = Instant::now();
+        {
+            let cache = self.verify_cache.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(entry) = cache.get(key) {
+                // Absolute TTL: a hit never refreshes `checked_at`.
+                if now.duration_since(entry.checked_at) < self.verify_cache_ttl {
+                    return;
+                }
+            }
+        }; // release before any IO — never hold this lock across a read + hash
+        // Only a miss consults the manifest: a hit must not even clone the digest.
+        let Some(dist) = self.dist.as_deref() else {
+            return;
+        };
+        let Some(expected) = self.manifest.as_ref().and_then(|m| m.assets.get(key)) else {
+            return;
+        };
+        let verdict = check_asset(dist, key, expected);
+        match verdict {
+            AssetCheck::Match => {
+                self.request_checked
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+            AssetCheck::Mismatch => {
+                self.request_checked
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                self.request_mismatched
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+            AssetCheck::Missing => {
+                self.request_missing
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+        if verdict != AssetCheck::Match {
+            self.warn_offense_once(key);
+        }
+        self.store_verify_entry(key.to_string(), verdict, now);
+    }
+    /// Insert one verdict, keeping the memo bounded: expired entries are dropped
+    /// first, and a still-full cache is cleared rather than grown without limit.
+    fn store_verify_entry(&self, key: String, verdict: AssetCheck, at: Instant) {
+        let mut cache = self.verify_cache.lock().unwrap_or_else(|e| e.into_inner());
+        if cache.len() >= VERIFY_CACHE_MAX && !cache.contains_key(&key) {
+            let ttl = self.verify_cache_ttl;
+            cache.retain(|_, entry| at.duration_since(entry.checked_at) < ttl);
+            if cache.len() >= VERIFY_CACHE_MAX {
+                cache.clear();
+            }
+        }
+        cache.insert(
+            key,
+            VerifyEntry {
+                verdict,
+                checked_at: at,
+            },
+        );
+    }
+    /// One `warn!` per path for the whole process; shared by every integrity path.
+    pub(crate) fn warn_offense_once(&self, path: &str) {
+        let mut warned = self.warned.lock().unwrap_or_else(|e| e.into_inner());
+        if warned.insert(path.to_string()) {
+            tracing::warn!(path = %path, "web asset integrity check failed");
+        }
+    }
+    /// The memoised verdict for `key`, for tests that need to see the cache.
+    #[cfg(test)]
+    fn verify_cache_verdict(&self, key: &str) -> Option<AssetCheck> {
+        self.verify_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(key)
+            .map(|entry| entry.verdict)
     }
     /// Opt in to forwarded-header trust (design D1). Takes effect only when the
     /// direct peer is loopback.
@@ -525,6 +761,75 @@ impl WebConfig {
             .last_run
             .map(|t| Instant::now().duration_since(t).as_secs());
         (report, age)
+    }
+    /// Request-path verification counters plus the current memo size (design G2).
+    pub(crate) fn request_integrity_snapshot(&self) -> RequestIntegritySnapshot {
+        let cache_entries = self
+            .verify_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .len();
+        RequestIntegritySnapshot {
+            checked: self
+                .request_checked
+                .load(std::sync::atomic::Ordering::Relaxed),
+            mismatched: self
+                .request_mismatched
+                .load(std::sync::atomic::Ordering::Relaxed),
+            missing: self
+                .request_missing
+                .load(std::sync::atomic::Ordering::Relaxed),
+            cache_entries,
+        }
+    }
+    /// Report the manual-sweep totals plus the age of the last sweep in whole
+    /// seconds; `None` until the first sweep has run (design G7).
+    pub(crate) fn on_demand_snapshot(&self) -> (IntegrityOnDemandReport, Option<u64>) {
+        let report = self
+            .on_demand
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let age = report
+            .last_run
+            .map(|t| Instant::now().duration_since(t).as_secs());
+        (report, age)
+    }
+    /// Sweep every manifest entry once (design G3/D5): the totals are folded into
+    /// the manual-sweep report first (the write lock only wraps that arithmetic),
+    /// then each offending path warns once per process and the returned list is
+    /// sorted and truncated to [`INTEGRITY_OFFENSES_LIMIT`]. An absent dist or
+    /// manifest does no work and is not counted.
+    pub(crate) fn run_full_integrity_sweep(&self) -> FullSweepOutcome {
+        let (Some(dist), Some(manifest)) = (&self.dist, &self.manifest) else {
+            return FullSweepOutcome::default();
+        };
+        let started = Instant::now();
+        let report = verify_assets(dist, manifest);
+        {
+            let mut on_demand = self.on_demand.write().unwrap_or_else(|e| e.into_inner());
+            on_demand.sweeps += 1;
+            on_demand.checked += report.checked;
+            on_demand.mismatched += report.mismatched;
+            on_demand.missing += report.missing;
+            on_demand.last_run = Some(started);
+        }
+        let mut offenses = report.offenses.clone();
+        offenses.sort();
+        for path in &offenses {
+            self.warn_offense_once(path);
+        }
+        let truncated = offenses.len() > INTEGRITY_OFFENSES_LIMIT;
+        offenses.truncate(INTEGRITY_OFFENSES_LIMIT);
+        FullSweepOutcome {
+            manifest_present: true,
+            checked: report.checked,
+            mismatched: report.mismatched,
+            missing: report.missing,
+            offenses,
+            truncated,
+            duration_ms: started.elapsed().as_millis() as u64,
+        }
     }
     /// Spawn the periodic spot-check task (design D6/D7): every tick runs one
     /// round and warns once per newly offending path. `None` when the manifest
@@ -902,6 +1207,29 @@ async fn gate(
     next.run(req).await
 }
 
+/// Per-request integrity gate for one static mount (D9: fail-open — the
+/// verdict never changes the response, the served bytes are checked and
+/// counted). `mount_prefix` re-attaches what `nest_service` stripped so the
+/// manifest key can be resolved, and `fallback_key` is the SPA fallback's
+/// document for non-asset paths.
+async fn verify_asset(
+    web: std::sync::Arc<WebConfig>,
+    mount_prefix: &'static str,
+    fallback_key: Option<&'static str>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    if web.verify_on_request {
+        let key = web.manifest.as_ref().and_then(|manifest| {
+            verify_key(manifest, mount_prefix, fallback_key, req.uri().path())
+        });
+        if let Some(key) = key {
+            web.verify_cached_asset(&key);
+        }
+    }
+    next.run(req).await
+}
+
 /// Mount the static SPA surface (D6: cache headers + login gate wrapped around
 /// each service individually — `Router::layer` would leak onto `/ws`). The root
 /// mount is `fallback_service` (unknown paths -> index.html, 200) because
@@ -940,9 +1268,24 @@ fn static_surface(
             async move { gate(web, peer, "", req, next).await }
         })
     };
+    let verify_assets = {
+        let web = web.clone();
+        axum::middleware::from_fn(move |req, next| {
+            let web = web.clone();
+            async move { verify_asset(web, "/assets", None, req, next).await }
+        })
+    };
+    let verify_spa = {
+        let web = web.clone();
+        axum::middleware::from_fn(move |req, next| {
+            let web = web.clone();
+            async move { verify_asset(web, "", Some("/index.html"), req, next).await }
+        })
+    };
+    // Gate outermost, verify innermost: an unauthorised request must not hash.
     router
-        .nest_service("/assets", gate_assets.layer(assets))
-        .fallback_service(gate_spa.layer(spa))
+        .nest_service("/assets", gate_assets.layer(verify_assets.layer(assets)))
+        .fallback_service(gate_spa.layer(verify_spa.layer(spa)))
 }
 
 /// Unauthenticated version probe: reports this server's product/protocol
@@ -957,6 +1300,7 @@ async fn version_handler(web: std::sync::Arc<WebConfig>) -> axum::response::Resp
     let counters = web.login_limiter.counters(Instant::now());
     let integrity = web.integrity();
     let (runtime, last_run_age) = web.runtime_snapshot();
+    let (on_demand, on_demand_age) = web.on_demand_snapshot();
     let mut runtime_json = serde_json::json!({
         "rounds": runtime.rounds,
         "checked": runtime.checked,
@@ -965,6 +1309,15 @@ async fn version_handler(web: std::sync::Arc<WebConfig>) -> axum::response::Resp
     });
     if let Some(age) = last_run_age {
         runtime_json["last_run_age_secs"] = serde_json::json!(age);
+    }
+    let mut on_demand_json = serde_json::json!({
+        "sweeps": on_demand.sweeps,
+        "checked": on_demand.checked,
+        "mismatched": on_demand.mismatched,
+        "missing": on_demand.missing,
+    });
+    if let Some(age) = on_demand_age {
+        on_demand_json["last_run_age_secs"] = serde_json::json!(age);
     }
     let body = serde_json::json!({
         "product_version": env!("CARGO_PKG_VERSION"),
@@ -989,6 +1342,7 @@ async fn version_handler(web: std::sync::Arc<WebConfig>) -> axum::response::Resp
             "mismatched": integrity.mismatched,
             "missing": integrity.missing,
             "runtime": runtime_json,
+            "on_demand": on_demand_json,
         },
     });
     let mut res = axum::Json(body).into_response();
@@ -1027,6 +1381,46 @@ async fn metrics_handler(
         .into_response()
 }
 
+/// Manual full-sweep endpoint (design G3): same gate as `/metrics` — a rejected
+/// remote peer gets `401` and no hashing work at all. The response is never
+/// cached: it reports the sweep it just ran.
+async fn integrity_verify_handler(
+    web: std::sync::Arc<WebConfig>,
+    peer: std::net::SocketAddr,
+    headers: axum::http::HeaderMap,
+) -> axum::response::Response {
+    if auth_required(&web, peer, &headers) {
+        return (
+            axum::http::StatusCode::UNAUTHORIZED,
+            [
+                ("content-type", "text/plain"),
+                ("cache-control", "no-store"),
+            ],
+            "unauthorized\n",
+        )
+            .into_response();
+    }
+    let outcome = web.run_full_integrity_sweep();
+    let body = serde_json::json!({
+        "manifest_present": outcome.manifest_present,
+        "checked": outcome.checked,
+        "mismatched": outcome.mismatched,
+        "missing": outcome.missing,
+        "offenses": outcome.offenses,
+        "truncated": outcome.truncated,
+        "duration_ms": outcome.duration_ms,
+    })
+    .to_string();
+    (
+        [
+            ("content-type", "application/json"),
+            ("cache-control", "no-store"),
+        ],
+        body,
+    )
+        .into_response()
+}
+
 /// Prometheus text exposition (design G2): limiter aggregates, the ranked
 /// per-IP series capped at [`PER_IP_SERIES_LIMIT`], the startup integrity
 /// summary and the runtime spot-check counters.
@@ -1040,6 +1434,9 @@ fn prometheus_text(web: &WebConfig) -> String {
     push_login_ip_series(&mut out, &series, now);
     push_integrity_summary(&mut out, web.integrity());
     push_spot_summary(&mut out, &runtime);
+    push_integrity_request_summary(&mut out, &web.request_integrity_snapshot());
+    let (on_demand, _) = web.on_demand_snapshot();
+    push_integrity_sweep_summary(&mut out, &on_demand);
     push_client_ip_summary(web, &mut out);
     push_state_summary(web, &mut out);
     out
@@ -1197,6 +1594,72 @@ fn push_spot_summary(out: &mut String, report: &SpotCheckReport) {
     );
 }
 
+/// Request-path verification series (design G2): how many served assets were
+/// hashed, how many of those were tampered with or already gone, and how many
+/// verdicts the memo currently holds.
+fn push_integrity_request_summary(out: &mut String, snapshot: &RequestIntegritySnapshot) {
+    push_metric(
+        out,
+        "agentj_web_integrity_request_checked_total",
+        "counter",
+        "Per-request web asset checks that read and hashed a file.",
+        snapshot.checked,
+    );
+    push_metric(
+        out,
+        "agentj_web_integrity_request_mismatched_total",
+        "counter",
+        "Per-request web asset checks that found a digest mismatch.",
+        snapshot.mismatched,
+    );
+    push_metric(
+        out,
+        "agentj_web_integrity_request_missing_total",
+        "counter",
+        "Per-request web asset checks whose manifest entry was missing on disk.",
+        snapshot.missing,
+    );
+    push_metric(
+        out,
+        "agentj_web_integrity_request_cache_entries",
+        "gauge",
+        "Memoised per-request verification verdicts currently held.",
+        snapshot.cache_entries as u64,
+    );
+}
+
+/// Manual-sweep series (design G3/G7): swept runs and their cumulative outcome.
+fn push_integrity_sweep_summary(out: &mut String, report: &IntegrityOnDemandReport) {
+    push_metric(
+        out,
+        "agentj_web_integrity_sweeps_total",
+        "counter",
+        "On-demand full asset sweeps actually executed.",
+        report.sweeps,
+    );
+    push_metric(
+        out,
+        "agentj_web_integrity_sweep_checked_total",
+        "counter",
+        "On-demand sweeps: files read and hashed.",
+        report.checked,
+    );
+    push_metric(
+        out,
+        "agentj_web_integrity_sweep_mismatched_total",
+        "counter",
+        "On-demand sweeps: digest mismatches.",
+        report.mismatched,
+    );
+    push_metric(
+        out,
+        "agentj_web_integrity_sweep_missing_total",
+        "counter",
+        "On-demand sweeps: manifest entries missing on disk.",
+        report.missing,
+    );
+}
+
 fn push_metric(out: &mut String, name: &str, kind: &str, help: &str, value: u64) {
     out.push_str(&format!(
         "# HELP {name} {help}\n# TYPE {name} {kind}\n{name} {value}\n"
@@ -1329,10 +1792,21 @@ pub fn build_router(
             async move { metrics_handler(web, peer, headers).await }
         }
     };
+    let integrity_verify_route = {
+        let web = state.web.clone();
+        move |headers: axum::http::HeaderMap| {
+            let web = web.clone();
+            async move { integrity_verify_handler(web, peer, headers).await }
+        }
+    };
     let mut router = axum::Router::new()
         .route("/ws", ws_route)
         .route("/version", axum::routing::get(version_route))
-        .route("/metrics", axum::routing::get(metrics_route));
+        .route("/metrics", axum::routing::get(metrics_route))
+        .route(
+            "/integrity/verify",
+            axum::routing::post(integrity_verify_route),
+        );
     router = auth_routes(router, state.web.clone(), peer);
     if let Some(dist) = state.web.dist.clone() {
         router = static_surface(router, state.web.clone(), peer, &dist);
@@ -1364,6 +1838,51 @@ mod tests {
         assert_eq!(safe_next(Some("/\\evil")), "/");
         assert_eq!(safe_next(Some("/\tevil")), "/");
     }
+    #[test]
+    fn integrity_options_defaults_match_the_documented_values() {
+        let opts = IntegrityOptions::default();
+        assert_eq!(opts.spot_interval, Duration::from_secs(60));
+        assert_eq!(opts.spot_sample, 8);
+        assert!(opts.verify_on_request);
+        assert_eq!(opts.verify_cache_ttl, Duration::from_secs(60));
+    }
+
+    #[test]
+    fn new_web_config_starts_with_zero_integrity_counters() {
+        let web = WebConfig::new(None, None);
+        let snapshot = web.request_integrity_snapshot();
+        assert_eq!(
+            (snapshot.checked, snapshot.mismatched, snapshot.missing),
+            (0, 0, 0)
+        );
+        assert_eq!(snapshot.cache_entries, 0);
+        let (report, age) = web.on_demand_snapshot();
+        assert_eq!(
+            (
+                report.sweeps,
+                report.checked,
+                report.mismatched,
+                report.missing
+            ),
+            (0, 0, 0, 0)
+        );
+        assert_eq!(age, None);
+    }
+
+    #[test]
+    fn with_integrity_options_clamps_zero_durations_and_oversized_samples() {
+        let web = WebConfig::new(None, None).with_integrity_options(IntegrityOptions {
+            spot_interval: Duration::ZERO,
+            spot_sample: 10_000,
+            verify_on_request: false,
+            verify_cache_ttl: Duration::ZERO,
+        });
+        assert_eq!(web.spot_interval(), MIN_SPOT_INTERVAL);
+        assert_eq!(web.spot_sample(), MAX_SPOT_SAMPLE);
+        assert_eq!(web.verify_cache_ttl(), MIN_VERIFY_TTL);
+        assert!(!web.verify_on_request_enabled());
+    }
+
     #[test]
     fn loopback_detection_covers_v4_mapped_peers() {
         assert!(peer_is_loopback("127.0.0.1:5555".parse().unwrap()));
@@ -1474,6 +1993,591 @@ mod tests {
         for d in [aligned, mismatched, legacy, broken] {
             std::fs::remove_dir_all(&d).ok();
         }
+    }
+
+    #[tokio::test]
+    async fn per_request_check_hashes_the_served_asset() {
+        let dist = temp_dist("req-asset");
+        write_temp_dist_manifest(&dist);
+        let state = test_state(WebConfig::new(Some(dist.clone()), None));
+        let local: std::net::SocketAddr = LOOPBACK.parse().unwrap();
+        let (status, _, _) = get(
+            crate::web::build_router(state.clone(), local),
+            "/assets/app.js",
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert_eq!(state.web.request_integrity_snapshot().checked, 1);
+        std::fs::remove_dir_all(&dist).ok();
+    }
+
+    #[tokio::test]
+    async fn per_request_check_skips_unknown_asset_paths() {
+        let dist = temp_dist("req-unknown");
+        let digest = sha384_b64(b"console.log(1)");
+        write_manifest(&dist, &[("/app.js", digest.as_str())]); // no /assets prefix
+        let state = test_state(WebConfig::new(Some(dist.clone()), None));
+        let local: std::net::SocketAddr = LOOPBACK.parse().unwrap();
+        // Not in the manifest and not on disk: the v0.19.0 404, and never the SPA fallback.
+        let (missing, _, body) = get(
+            crate::web::build_router(state.clone(), local),
+            "/assets/typo.js",
+        )
+        .await;
+        assert_eq!(missing, axum::http::StatusCode::NOT_FOUND);
+        assert!(
+            !body.contains("agentj"),
+            "the assets face must not fall back to index.html"
+        );
+        // On disk but keyed differently in the manifest: served, still unhashed.
+        let (served, _, _) = get(
+            crate::web::build_router(state.clone(), local),
+            "/assets/app.js",
+        )
+        .await;
+        assert_eq!(served, axum::http::StatusCode::OK);
+        assert_eq!(state.web.request_integrity_snapshot().checked, 0);
+        std::fs::remove_dir_all(&dist).ok();
+    }
+
+    #[tokio::test]
+    async fn per_request_check_verifies_the_spa_fallback_key() {
+        let dist = temp_dist("req-spa");
+        write_temp_dist_manifest(&dist);
+        let state = test_state(WebConfig::new(Some(dist.clone()), None));
+        let local: std::net::SocketAddr = LOOPBACK.parse().unwrap();
+        let (status, _, _) = get(crate::web::build_router(state.clone(), local), "/sessions").await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert_eq!(state.web.request_integrity_snapshot().checked, 1);
+        std::fs::remove_dir_all(&dist).ok();
+    }
+
+    #[tokio::test]
+    async fn per_request_check_is_off_when_configured_off() {
+        let dist = temp_dist("req-off");
+        write_temp_dist_manifest(&dist);
+        let web =
+            WebConfig::new(Some(dist.clone()), None).with_integrity_options(IntegrityOptions {
+                verify_on_request: false,
+                ..IntegrityOptions::default()
+            });
+        let state = test_state(web);
+        let local: std::net::SocketAddr = LOOPBACK.parse().unwrap();
+        let (status, _, _) = get(
+            crate::web::build_router(state.clone(), local),
+            "/assets/app.js",
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert_eq!(state.web.request_integrity_snapshot().checked, 0);
+        std::fs::remove_dir_all(&dist).ok();
+    }
+
+    #[tokio::test]
+    async fn per_request_check_never_runs_for_a_rejected_remote_request() {
+        let dist = temp_dist("req-remote");
+        write_temp_dist_manifest(&dist);
+        let state = test_state(WebConfig::new(Some(dist.clone()), Some("s3cret".into())));
+        let remote: std::net::SocketAddr = "203.0.113.7:41000".parse().unwrap();
+        let (status, headers, _) = get(
+            crate::web::build_router(state.clone(), remote),
+            "/assets/app.js",
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::FOUND);
+        assert!(headers.get(axum::http::header::LOCATION).is_some());
+        assert_eq!(state.web.request_integrity_snapshot().checked, 0);
+        std::fs::remove_dir_all(&dist).ok();
+    }
+
+    #[tokio::test]
+    async fn per_request_check_is_a_noop_without_a_manifest() {
+        let dist = temp_dist("req-no-manifest");
+        let state = test_state(WebConfig::new(Some(dist.clone()), None));
+        let local: std::net::SocketAddr = LOOPBACK.parse().unwrap();
+        let (status, _, _) = get(
+            crate::web::build_router(state.clone(), local),
+            "/assets/app.js",
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert_eq!(state.web.request_integrity_snapshot().checked, 0);
+        std::fs::remove_dir_all(&dist).ok();
+    }
+
+    #[tokio::test]
+    async fn version_omits_the_on_demand_age_before_any_sweep() {
+        let dist = temp_dist("version-ondemand");
+        write_temp_dist_manifest(&dist);
+        let state = test_state(WebConfig::new(Some(dist.clone()), None));
+        let local: std::net::SocketAddr = LOOPBACK.parse().unwrap();
+        let (status, _, body) =
+            get(crate::web::build_router(state.clone(), local), "/version").await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["integrity"]["on_demand"]["sweeps"], serde_json::json!(0));
+        assert_eq!(v["integrity"]["on_demand"]["checked"], serde_json::json!(0));
+        assert!(
+            v["integrity"]["on_demand"]
+                .get("last_run_age_secs")
+                .is_none()
+        );
+        std::fs::remove_dir_all(&dist).ok();
+    }
+
+    #[tokio::test]
+    async fn version_reports_on_demand_after_a_sweep() {
+        let dist = temp_dist("version-ondemand-after");
+        write_temp_dist_manifest(&dist);
+        std::fs::write(dist.join("assets/app.js"), "tampered").unwrap();
+        let state = test_state(WebConfig::new(Some(dist.clone()), None));
+        let local: std::net::SocketAddr = LOOPBACK.parse().unwrap();
+        form_post(
+            crate::web::build_router(state.clone(), local),
+            "/integrity/verify",
+            "",
+        )
+        .await;
+        let (_s, _, body) = get(crate::web::build_router(state.clone(), local), "/version").await;
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["integrity"]["on_demand"]["sweeps"], serde_json::json!(1));
+        assert_eq!(
+            v["integrity"]["on_demand"]["mismatched"],
+            serde_json::json!(1)
+        );
+        assert!(
+            v["integrity"]["on_demand"]["last_run_age_secs"]
+                .as_u64()
+                .is_some()
+        );
+        assert_eq!(
+            v["integrity"]["runtime"]["rounds"],
+            serde_json::json!(0),
+            "the counters never mix"
+        );
+        std::fs::remove_dir_all(&dist).ok();
+    }
+
+    #[tokio::test]
+    async fn integrity_verify_reports_a_full_sweep() {
+        let dist = temp_dist("sweep");
+        write_temp_dist_manifest(&dist);
+        std::fs::write(dist.join("assets/app.js"), "tampered").unwrap();
+        let state = test_state(WebConfig::new(Some(dist.clone()), None));
+        let local: std::net::SocketAddr = LOOPBACK.parse().unwrap();
+        let (status, headers, body) = form_post(
+            crate::web::build_router(state.clone(), local),
+            "/integrity/verify",
+            "",
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert!(
+            headers
+                .get(axum::http::header::CONTENT_TYPE)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with("application/json")
+        );
+        assert_eq!(
+            headers.get(axum::http::header::CACHE_CONTROL).unwrap(),
+            "no-store"
+        );
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["manifest_present"], serde_json::json!(true));
+        assert_eq!(v["mismatched"], serde_json::json!(1));
+        assert_eq!(v["offenses"], serde_json::json!(["/assets/app.js"]));
+        assert_eq!(v["truncated"], serde_json::json!(false));
+        assert!(v["duration_ms"].as_u64().is_some());
+        assert_eq!(state.web.on_demand_snapshot().0.sweeps, 1);
+        std::fs::remove_dir_all(&dist).ok();
+    }
+
+    #[tokio::test]
+    async fn integrity_verify_counts_a_missing_file_without_incrementing_checked() {
+        let dist = temp_dist("sweep-missing");
+        let good = sha384_b64(b"console.log(1)");
+        let gone = sha384_b64(b"absent");
+        write_manifest(
+            &dist,
+            &[
+                ("/assets/app.js", good.as_str()),
+                ("/assets/gone.js", gone.as_str()),
+            ],
+        );
+        let state = test_state(WebConfig::new(Some(dist.clone()), None));
+        let local: std::net::SocketAddr = LOOPBACK.parse().unwrap();
+        let (_s, _, body) = form_post(
+            crate::web::build_router(state.clone(), local),
+            "/integrity/verify",
+            "",
+        )
+        .await;
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["checked"], serde_json::json!(1));
+        assert_eq!(v["mismatched"], serde_json::json!(0));
+        assert_eq!(v["missing"], serde_json::json!(1));
+        std::fs::remove_dir_all(&dist).ok();
+    }
+
+    #[tokio::test]
+    async fn integrity_verify_is_gated_like_metrics() {
+        let dist = temp_dist("sweep-gate");
+        write_temp_dist_manifest(&dist);
+        let state = test_state(WebConfig::new(Some(dist.clone()), Some("s3cret".into())));
+        let remote: std::net::SocketAddr = "203.0.113.7:41000".parse().unwrap();
+        let (status, headers, body) = form_post(
+            crate::web::build_router(state.clone(), remote),
+            "/integrity/verify",
+            "",
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::UNAUTHORIZED);
+        assert_eq!(body, "unauthorized\n");
+        assert!(
+            headers
+                .get(axum::http::header::CONTENT_TYPE)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with("text/plain")
+        );
+        assert_eq!(
+            headers.get(axum::http::header::CACHE_CONTROL).unwrap(),
+            "no-store"
+        );
+        assert!(
+            headers.get(axum::http::header::LOCATION).is_none(),
+            "no redirect"
+        );
+        assert_eq!(state.web.on_demand_snapshot().0.sweeps, 0);
+        std::fs::remove_dir_all(&dist).ok();
+    }
+
+    #[tokio::test]
+    async fn integrity_verify_rejects_get_with_405() {
+        let dist = temp_dist("sweep-405");
+        write_temp_dist_manifest(&dist);
+        let state = test_state(WebConfig::new(Some(dist.clone()), None));
+        let local: std::net::SocketAddr = LOOPBACK.parse().unwrap();
+        let (status, _, _) = get(
+            crate::web::build_router(state.clone(), local),
+            "/integrity/verify",
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::METHOD_NOT_ALLOWED);
+        std::fs::remove_dir_all(&dist).ok();
+    }
+
+    #[tokio::test]
+    async fn integrity_verify_without_a_manifest_does_not_count_a_sweep() {
+        let dist = temp_dist("sweep-no-manifest");
+        let state = test_state(WebConfig::new(Some(dist.clone()), None));
+        let local: std::net::SocketAddr = LOOPBACK.parse().unwrap();
+        let (_s, _, body) = form_post(
+            crate::web::build_router(state.clone(), local),
+            "/integrity/verify",
+            "",
+        )
+        .await;
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["manifest_present"], serde_json::json!(false));
+        assert_eq!(v["checked"], serde_json::json!(0));
+        assert_eq!(
+            state.web.on_demand_snapshot().0.sweeps,
+            0,
+            "no work, no sweep count"
+        );
+        std::fs::remove_dir_all(&dist).ok();
+    }
+
+    #[tokio::test]
+    async fn integrity_verify_counts_an_empty_manifest_as_present_and_swept() {
+        let dist = temp_dist("sweep-empty");
+        write_manifest(&dist, &[]);
+        let state = test_state(WebConfig::new(Some(dist.clone()), None));
+        let local: std::net::SocketAddr = LOOPBACK.parse().unwrap();
+        for _ in 0..2 {
+            let (_s, _, body) = form_post(
+                crate::web::build_router(state.clone(), local),
+                "/integrity/verify",
+                "",
+            )
+            .await;
+            let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+            assert_eq!(v["manifest_present"], serde_json::json!(true));
+            assert_eq!(v["checked"], serde_json::json!(0));
+        }
+        assert_eq!(state.web.on_demand_snapshot().0.sweeps, 2);
+        std::fs::remove_dir_all(&dist).ok();
+    }
+
+    #[tokio::test]
+    async fn integrity_verify_truncates_offenses_but_keeps_counts_exact() {
+        let dist = temp_dist("sweep-truncate");
+        let keys: Vec<String> = (0..55).map(|i| format!("/assets/missing-{i}.js")).collect();
+        let digest = sha384_b64(b"absent");
+        let entries: Vec<(&str, &str)> =
+            keys.iter().map(|k| (k.as_str(), digest.as_str())).collect();
+        write_manifest(&dist, &entries);
+        let state = test_state(WebConfig::new(Some(dist.clone()), None));
+        let local: std::net::SocketAddr = LOOPBACK.parse().unwrap();
+        let (_s, _, body) = form_post(
+            crate::web::build_router(state.clone(), local),
+            "/integrity/verify",
+            "",
+        )
+        .await;
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let offenses = v["offenses"].as_array().unwrap();
+        assert_eq!(offenses.len(), INTEGRITY_OFFENSES_LIMIT);
+        assert_eq!(v["truncated"], serde_json::json!(true));
+        assert_eq!(v["missing"], serde_json::json!(55), "counts stay exact");
+        let paths: Vec<&str> = offenses.iter().filter_map(|o| o.as_str()).collect();
+        assert_eq!(paths.len(), offenses.len());
+        assert!(
+            paths.windows(2).all(|pair| pair[0] <= pair[1]),
+            "offenses are sorted: {paths:?}"
+        );
+        std::fs::remove_dir_all(&dist).ok();
+    }
+
+    #[tokio::test]
+    async fn a_swept_offense_is_not_rewarned_by_a_spot_round() {
+        let dist = temp_dist("sweep-dedup");
+        let wrong = sha384_b64(b"not the real digest");
+        write_manifest(&dist, &[("/assets/app.js", wrong.as_str())]);
+        let local: std::net::SocketAddr = LOOPBACK.parse().unwrap();
+        let (buf, _guard) = capture_warnings();
+
+        // Control: without a preceding sweep the round reports the offense.
+        let fresh = WebConfig::new(Some(dist.clone()), None).with_spot_check(msec_spot(20, 1));
+        assert_eq!(
+            fresh.run_spot_round().offenses,
+            vec!["/assets/app.js".to_string()]
+        );
+
+        // After a sweep has warned once, the shared `warned` set suppresses it.
+        let state =
+            test_state(WebConfig::new(Some(dist.clone()), None).with_spot_check(msec_spot(20, 1)));
+        let (status, _, _) = form_post(
+            crate::web::build_router(state.clone(), local),
+            "/integrity/verify",
+            "",
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        let round = state.web.run_spot_round();
+        assert_eq!(round.mismatched, 1, "the round still counts the offense");
+        assert!(
+            round.offenses.is_empty(),
+            "no second warning for a known path"
+        );
+        let out = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap_or_default();
+        assert_eq!(out.matches("/assets/app.js").count(), 1, "{out}");
+        std::fs::remove_dir_all(&dist).ok();
+    }
+
+    #[test]
+    fn manifest_key_for_reattaches_the_stripped_mount_prefix() {
+        assert_eq!(manifest_key_for("/assets", "/app.js"), "/assets/app.js");
+        assert_eq!(manifest_key_for("", "/index.html"), "/index.html");
+    }
+
+    #[test]
+    fn verify_key_prefers_the_exact_key_then_the_fallback() {
+        let dist = temp_dist("verify-key");
+        let digest = sha384_b64(b"console.log(1)");
+        write_manifest(
+            &dist,
+            &[
+                ("/assets/app.js", digest.as_str()),
+                ("/index.html", digest.as_str()),
+            ],
+        );
+        let web = WebConfig::new(Some(dist.clone()), None);
+        let manifest = web.manifest.as_ref().expect("usable manifest");
+        assert_eq!(
+            verify_key(manifest, "/assets", None, "/app.js").as_deref(),
+            Some("/assets/app.js"),
+        );
+        assert_eq!(verify_key(manifest, "/assets", None, "/typo.js"), None);
+        assert_eq!(
+            verify_key(manifest, "", Some("/index.html"), "/sessions").as_deref(),
+            Some("/index.html"),
+        );
+        std::fs::remove_dir_all(&dist).ok();
+    }
+
+    #[test]
+    fn verify_cached_asset_memoizes_within_an_absolute_ttl() {
+        let dist = temp_dist("memo");
+        write_temp_dist_manifest(&dist);
+        let web =
+            WebConfig::new(Some(dist.clone()), None).with_integrity_options(IntegrityOptions {
+                verify_cache_ttl: Duration::from_secs(60),
+                ..IntegrityOptions::default()
+            });
+        web.verify_cached_asset("/assets/app.js");
+        std::fs::write(dist.join("assets/app.js"), "tampered").unwrap();
+        web.verify_cached_asset("/assets/app.js");
+        assert_eq!(web.request_integrity_snapshot().checked, 1);
+        assert_eq!(web.request_integrity_snapshot().mismatched, 0);
+        assert!(
+            web.verify_cache_verdict("/assets/app.js")
+                .is_some_and(|v| v == AssetCheck::Match)
+        );
+    }
+
+    #[test]
+    fn verify_cached_asset_rechecks_after_the_absolute_ttl_expires() {
+        let dist = temp_dist("ttl");
+        write_temp_dist_manifest(&dist);
+        // `with_raw_verify_cache_ttl` bypasses the 1s production clamp so this stays fast.
+        let web = WebConfig::new(Some(dist.clone()), None)
+            .with_raw_verify_cache_ttl(Duration::from_millis(1));
+        web.verify_cached_asset("/assets/app.js");
+        std::fs::write(dist.join("assets/app.js"), "tampered").unwrap();
+        std::thread::sleep(Duration::from_millis(5));
+        web.verify_cached_asset("/assets/app.js");
+        let snapshot = web.request_integrity_snapshot();
+        assert_eq!((snapshot.checked, snapshot.mismatched), (2, 1));
+    }
+
+    #[test]
+    fn verify_cache_entries_stay_within_the_bound() {
+        let dist = temp_dist("bound");
+        let keys: Vec<String> = (0..VERIFY_CACHE_MAX + 8)
+            .map(|i| format!("/assets/generated-{i}.js"))
+            .collect();
+        let digest = sha384_b64(b"x");
+        let entries: Vec<(&str, &str)> = keys
+            .iter()
+            .map(|key| (key.as_str(), digest.as_str()))
+            .collect();
+        write_manifest(&dist, &entries);
+        // Sub-second TTL: every insertion already sees expired entries, so the
+        // retain-then-clear branch inside `store_verify_entry` runs.
+        let web = WebConfig::new(Some(dist.clone()), None)
+            .with_raw_verify_cache_ttl(Duration::from_millis(1));
+        for key in &keys {
+            web.verify_cached_asset(key);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(
+            web.request_integrity_snapshot().cache_entries <= VERIFY_CACHE_MAX,
+            "the memo must stay bounded"
+        );
+        std::fs::remove_dir_all(&dist).ok();
+    }
+
+    #[test]
+    fn verify_cached_asset_warns_once_per_path_across_expiries() {
+        let dist = temp_dist("warn-once");
+        write_temp_dist_manifest(&dist);
+        std::fs::write(dist.join("assets/app.js"), "tampered").unwrap();
+        let web = WebConfig::new(Some(dist.clone()), None)
+            .with_raw_verify_cache_ttl(Duration::from_millis(1));
+        let (buf, _guard) = capture_warnings();
+        for _ in 0..3 {
+            web.verify_cached_asset("/assets/app.js");
+            std::thread::sleep(Duration::from_millis(3));
+        }
+        let out = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap_or_default();
+        assert_eq!(
+            out.matches("web asset integrity check failed").count(),
+            1,
+            "{out}"
+        );
+        assert_eq!(out.matches("/assets/app.js").count(), 1, "{out}");
+        let snapshot = web.request_integrity_snapshot();
+        assert_eq!(
+            (snapshot.checked, snapshot.mismatched),
+            (3, 3),
+            "warning de-duplication must not touch the counters"
+        );
+        std::fs::remove_dir_all(&dist).ok();
+    }
+
+    #[test]
+    fn verify_cached_asset_survives_poisoned_locks() {
+        let dist = temp_dist("poison");
+        write_temp_dist_manifest(&dist);
+        let web = std::sync::Arc::new(WebConfig::new(Some(dist.clone()), None));
+        let poisoned = std::sync::Arc::clone(&web);
+        let _ = std::thread::spawn(move || {
+            let _cache = poisoned.verify_cache.lock().unwrap();
+            let _warned = poisoned.warned.lock().unwrap();
+            panic!("poison both locks");
+        })
+        .join();
+        std::fs::write(dist.join("assets/app.js"), "tampered").unwrap();
+        web.verify_cached_asset("/assets/app.js"); // must not panic
+        assert_eq!(web.request_integrity_snapshot().mismatched, 1);
+        assert_eq!(
+            web.verify_cache_verdict("/assets/app.js"),
+            Some(AssetCheck::Mismatch),
+            "a poisoned memo stays readable and usable"
+        );
+        web.verify_cached_asset("/assets/app.js"); // still a hit, still no panic
+        assert_eq!(web.request_integrity_snapshot().mismatched, 1);
+        std::fs::remove_dir_all(&dist).ok();
+    }
+
+    #[test]
+    fn verify_cached_asset_counts_a_missing_key_without_counting_a_check() {
+        let dist = temp_dist("counts-missing");
+        let gone = sha384_b64(b"absent");
+        write_manifest(&dist, &[("/assets/gone.js", gone.as_str())]);
+        let web = WebConfig::new(Some(dist.clone()), None);
+        web.verify_cached_asset("/assets/gone.js");
+        let s = web.request_integrity_snapshot();
+        assert_eq!((s.checked, s.mismatched, s.missing), (0, 0, 1));
+        std::fs::remove_dir_all(&dist).ok();
+    }
+
+    #[test]
+    fn verify_cached_asset_counts_a_fresh_mismatch_as_a_check() {
+        let dist = temp_dist("counts-mismatch");
+        write_temp_dist_manifest(&dist);
+        std::fs::write(dist.join("assets/app.js"), "tampered").unwrap();
+        let web = WebConfig::new(Some(dist.clone()), None);
+        web.verify_cached_asset("/assets/app.js");
+        let s = web.request_integrity_snapshot();
+        assert_eq!((s.checked, s.mismatched, s.missing), (1, 1, 0));
+        std::fs::remove_dir_all(&dist).ok();
+    }
+
+    #[test]
+    fn concurrent_cold_cache_checks_stay_correct() {
+        let dist = temp_dist("concurrent");
+        write_temp_dist_manifest(&dist);
+        std::fs::write(dist.join("assets/app.js"), "tampered").unwrap();
+        let web = std::sync::Arc::new(WebConfig::new(Some(dist.clone()), None));
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                let web = std::sync::Arc::clone(&web);
+                std::thread::spawn(move || web.verify_cached_asset("/assets/app.js"))
+            })
+            .collect();
+        for handle in handles {
+            handle.join().expect("no thread may panic");
+        }
+        let snapshot = web.request_integrity_snapshot();
+        assert!(
+            snapshot.mismatched >= 1,
+            "at least one hash reports the mismatch"
+        );
+        assert_eq!(
+            snapshot.cache_entries, 1,
+            "one key -> exactly one cache entry"
+        );
+        assert_eq!(
+            web.verify_cache_verdict("/assets/app.js"),
+            Some(AssetCheck::Mismatch)
+        );
+        std::fs::remove_dir_all(&dist).ok();
     }
 
     #[test]
@@ -2794,6 +3898,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn integrity_metrics_reflect_a_request_check_and_a_sweep() {
+        // Its own tag: sharing `metrics-integrity` with the startup-summary test
+        // made the two delete each other's dist under a parallel run.
+        let dist = temp_dist("metrics-integrity-request");
+        write_manifest(&dist, &[("/assets/app.js", "sha384-AAAA")]);
+        let state = test_state(WebConfig::new(Some(dist.clone()), None));
+        let local: std::net::SocketAddr = LOOPBACK.parse().unwrap();
+        get(
+            crate::web::build_router(state.clone(), local),
+            "/assets/app.js",
+        )
+        .await;
+        form_post(
+            crate::web::build_router(state.clone(), local),
+            "/integrity/verify",
+            "",
+        )
+        .await;
+        let (_s, _, body) = get(crate::web::build_router(state.clone(), local), "/metrics").await;
+        for line in [
+            "agentj_web_integrity_request_checked_total 1",
+            "agentj_web_integrity_request_cache_entries 1",
+            "agentj_web_integrity_sweeps_total 1",
+        ] {
+            assert!(body.lines().any(|l| l == line), "missing {line} in\n{body}");
+        }
+        std::fs::remove_dir_all(&dist).ok();
+    }
+
+    #[tokio::test]
     async fn prometheus_text_keeps_the_existing_metrics_and_adds_the_new_ones() {
         let web = crate::web::WebConfig::new(None, None).with_trust_proxy_headers(true);
         web.record_ip_source(crate::client_ip::IpSource::XForwardedFor, false);
@@ -2821,6 +3955,29 @@ mod tests {
                 "existing metric {name} vanished:\n{out}"
             );
         }
+        for name in [
+            "agentj_web_integrity_request_checked_total",
+            "agentj_web_integrity_request_mismatched_total",
+            "agentj_web_integrity_request_missing_total",
+            "agentj_web_integrity_request_cache_entries",
+            "agentj_web_integrity_sweeps_total",
+            "agentj_web_integrity_sweep_checked_total",
+            "agentj_web_integrity_sweep_mismatched_total",
+            "agentj_web_integrity_sweep_missing_total",
+        ] {
+            assert!(
+                out.contains(&format!("# TYPE {name} ")),
+                "missing TYPE for {name}:\n{out}"
+            );
+            assert!(
+                has_metric_line(&out, &format!("{name} 0")),
+                "a fresh server must publish {name} as 0:\n{out}"
+            );
+        }
+        assert!(
+            out.contains("# TYPE agentj_web_integrity_request_cache_entries gauge"),
+            "the memo size is a gauge, not a counter:\n{out}"
+        );
         assert!(
             has_metric_line(
                 &out,
