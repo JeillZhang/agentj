@@ -457,6 +457,9 @@ export default function RunPanel({
 }: Props) {
   const [entries, setEntries] = useState<RunEntry[]>(initialEntries);
   const [elapsedMs, setElapsedMs] = useState<number | undefined>(undefined);
+  // The effective model the kernel reported for the last turn. It wins over the
+  // picker selection so the chip can no longer lag behind what actually ran.
+  const [effectiveModel, setEffectiveModel] = useState<{ provider?: string; model: string } | null>(null);
   const quotaHintIndex = useMemo(
     () => entries.findIndex((e) => e.kind === "error" && isQuotaLimitError(e.text)),
     [entries],
@@ -770,7 +773,12 @@ export default function RunPanel({
     setElapsedMs(undefined);
     const startedAt = performance.now();
     setEntries((prev) => [...prev, { kind: "user", text }]);
-    let usage: { usage?: { prompt_tokens?: number; completion_tokens?: number }; run_id?: string | null } | null = null;
+    let usage: {
+      usage?: { prompt_tokens?: number; completion_tokens?: number };
+      run_id?: string | null;
+      model?: string | null;
+      provider?: string | null;
+    } | null = null;
     try {
       try {
         const params: Record<string, unknown> = { session_id: activeSessionId, content: text };
@@ -781,7 +789,10 @@ export default function RunPanel({
         usage = (await client.request(METHODS.sessionRun, params)) as {
           usage?: { prompt_tokens?: number; completion_tokens?: number };
           run_id?: string | null;
+          model?: string | null;
+          provider?: string | null;
         } | null;
+        setEffectiveModel(usage?.model ? { provider: usage.provider ?? undefined, model: usage.model } : null);
         if (usage && typeof usage.run_id === "string" && usage.run_id.length > 0) {
           onRunId?.(usage.run_id);
         }
@@ -826,7 +837,7 @@ export default function RunPanel({
   // The chip names the model this run will send — an explicit pick wins over the
   // configured default, so the label can no longer lag behind the actual selection.
   // @since 0.29.8
-  const chipModel = selected?.name ?? model;
+  const chipModel = effectiveModel?.model ?? selected?.name ?? model;
 
   return (
     <section ref={cardRef} aria-label="run" className="aj-card">
@@ -953,7 +964,7 @@ export default function RunPanel({
           )}
           <div className="aj-composer__header-meta">
             {chipModel !== undefined && chipModel !== null && chipModel !== "" && (
-              <span className="aj-chip aj-chip--model">{chipModel}</span>
+              <span data-testid="run-model-chip" className="aj-chip aj-chip--model">{chipModel}</span>
             )}
             {usageReadout && (
               <span className="aj-composer__usage" title={usageText} aria-label={usageText}>
