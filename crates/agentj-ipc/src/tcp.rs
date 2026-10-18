@@ -117,6 +117,9 @@ pub struct TcpBindOptions {
     pub metrics_state_dir: Option<std::path::PathBuf>,
     /// Optional ProviderService handle (`design D4`), copied onto the shared server at bind.
     pub provider_service: Option<Arc<dyn crate::ProviderService>>,
+    /// `[web]` spot cadence + per-request verification knobs; `Default` keeps today's
+    /// 60s / 8 / on / 60s behaviour.
+    pub integrity: crate::web::IntegrityOptions,
 }
 
 impl Default for TcpBindOptions {
@@ -129,6 +132,7 @@ impl Default for TcpBindOptions {
             trust_proxy_headers: false,
             metrics_state_dir: None,
             provider_service: None,
+            integrity: crate::web::IntegrityOptions::default(),
         }
     }
 }
@@ -175,7 +179,8 @@ impl TcpIpcServer {
         let web = Arc::new(
             crate::web::WebConfig::new(options.web_dist.clone(), options.token.clone())
                 .with_trust_proxy_headers(options.trust_proxy_headers)
-                .with_metrics_state(state_path),
+                .with_metrics_state(state_path)
+                .with_integrity_options(options.integrity),
         );
         web.restore_metrics_state();
         let _ = web.spawn_spot_check();
@@ -702,5 +707,41 @@ mod tests {
         assert!(!web.trust_proxy_headers());
         assert!(web.metrics_state_path().is_none());
         assert!(web.spawn_metrics_flush().is_none());
+    }
+
+    #[test]
+    fn default_options_keep_spot_cadence_and_per_request_verification_on() {
+        let options = TcpBindOptions::default();
+        assert_eq!(options.integrity, crate::web::IntegrityOptions::default());
+        assert_eq!(
+            options.integrity.spot_interval,
+            std::time::Duration::from_secs(60)
+        );
+        assert!(options.integrity.verify_on_request);
+    }
+
+    #[tokio::test]
+    async fn bind_applies_the_integrity_options_to_the_web_config() {
+        let server = TcpIpcServer::bind(
+            "127.0.0.1:0",
+            agentj_core::kernel::Kernel::new(),
+            std::sync::Arc::new(agentj_session::InMemoryStore::new()),
+            None,
+            None,
+            TcpBindOptions {
+                integrity: crate::web::IntegrityOptions {
+                    spot_interval: std::time::Duration::from_secs(7),
+                    verify_on_request: false,
+                    ..crate::web::IntegrityOptions::default()
+                },
+                ..TcpBindOptions::default()
+            },
+        )
+        .await
+        .unwrap();
+        let web = server.web_config();
+        assert_eq!(web.spot_interval(), std::time::Duration::from_secs(7));
+        assert!(!web.verify_on_request_enabled());
+        web.stop_spot_check();
     }
 }

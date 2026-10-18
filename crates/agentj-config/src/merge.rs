@@ -140,6 +140,7 @@ mod tests {
             web: Some(crate::WebSection {
                 trust_proxy_headers: true,
                 state_dir: None,
+                ..Default::default()
             }),
             ..AgentJConfig::default()
         };
