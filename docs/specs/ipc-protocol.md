@@ -2,7 +2,7 @@
 
 > 本文档是 AgentJ 内核对外暴露的统一 UI 接口协议（IPC）的**人类可读权威规范**。
 > 机器可读工件（`schemas/*.json` 与 `protocol/methods.json`）是本规范的机器事实来源，见 [机器可读模型](#10-机器可读模型)。
-> 协议当前版本：`0.18.0`。
+> 协议当前版本：`0.19.0`。
 
 ## 1. 范围与一致性
 
@@ -539,7 +539,9 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 { "jsonrpc": "2.0", "id": 3, "result": {
   "content": "这段代码的主要职责是……",
   "tool_calls": [ { "id": "tc-1", "name": "read_file", "arguments": { "path": "src/main.rs" } } ],
-  "run_id": "550e8400-e29b-41d4-a716-446655440000"
+  "run_id": "550e8400-e29b-41d4-a716-446655440000",
+  "provider": "opencode-go",
+  "model": "opencode-go/kimi-k3"
 } }
 ```
 
@@ -548,6 +550,8 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 | `content` | string | 是 | 本轮完整结果文本 |
 | `tool_calls` | ToolCall[] | 否 | 本轮模型请求的工具调用列表；`ToolCall = { id, name, arguments }` |
 | `run_id` | string | 否 | 本轮 `run_id`（UUID v4，`@since 0.15.0`）；用于关联同 run 的 `todo` / `file_change` 脉冲与回放过滤 |
+| `provider` | string | 否 | 本轮**实际生效**的 provider 名（`@since 0.19.0` 加性字段），即 `kernel/status.providers[].id` 之一；**未知时整键省略、绝不为 `null`** |
+| `model` | string | 否 | 本轮**实际生效**的 model id（`@since 0.19.0` 加性字段）；请求未显式覆盖时为 `config.model.default_model`；**未知时整键省略、绝不为 `null`** |
 
 - **部分结果**：增量数据通过 `$/progress` 通知带外下发（见 §7），最终仍返回一个完整响应。
 - **error.data**：会话不存在 → `-32802`，MAY 携带 `{ "session_id": "s-1" }`；会话已 archived / deleted → `-32803`，MAY 携带 `{ "session_id": "s-1", "status": "archived" }`；被取消 → `-32800 RequestCancelled`，MAY 携带已产生的部分结果；`provider` / `model` 类型非法 → `-32602`，MAY 携带 `{ "field": "<provider|model>" }`（`@since 0.16.0`）。
@@ -754,7 +758,7 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 
 - **run_id 过滤语义（`@since 0.15.0`）**：当 `run_id` 存在时，仅返回该 `run_id` 的 `Todo` / `FileChange` 事件（其余 `TrajectoryValue` kind 保持全量以不破坏时间线）；先过滤再按 `cursor` / `limit` 分页；`run_id` 无匹配时 `events:[]`（不报错）；缺省 `run_id` 时全量分页与旧语义一致。
 - **TrajectoryEvent**：`seq`（integer，会话内单调递增，页游标基准）、`ts`（integer，epoch **毫秒**）、`value: TrajectoryValue`（按 `value.kind` 判别的联合类型，见下）。轨迹是**追加式**事件日志，存储文件与 `session/history` payload 逐字节同构。
-- **TrajectoryValue kind**：`user`、`thinking`、`tool_call`、`tool_result`、`permission`、`usage`、`error`（`session/history` 引入时既有）；`todo`、`file_change`、`ask_question`、`question_answer`（`@since 0.13.0`）。未知 `kind` 按 §7.3 的 `$` 前缀约定忽略。
+- **TrajectoryValue kind**：`user`、`thinking`、`tool_call`、`tool_result`、`permission`、`usage`、`error`（`session/history` 引入时既有）；`todo`、`file_change`、`ask_question`、`question_answer`（`@since 0.13.0`）；`run_model`（`@since 0.19.0`：本轮**实际生效**的 `provider` / `model`，紧随同 run 的 `usage` 条目至多记录一次，两者皆未知时**不记录**）。未知 `kind` 按 §7.3 的 `$` 前缀约定忽略。
 - **未知 session**：返回空 `events`（`next_cursor` 省略），**不报错**、不泄露会话信息。
 - **部分结果**：无（分页以 `next_cursor` 表达，非流式）。
 - **error.data**：`-32603` 时 MAY 携带内部上下文（如轨迹存储读取失败）；`run_id` 非法 → `-32602` + `data{reason:"invalid_run_id"}`。
@@ -1249,10 +1253,11 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 - 协议扩展（0.15.0）新增的 `FileChangeSource` 值枚举与 `FileChange` / `ProgressValue::Todo` / `ProgressValue::FileChange` / `TrajectoryValue::Todo` / `TrajectoryValue::FileChange` / `SessionRunResult` / `SessionHistoryParams` 的 `run_id` / `seq` / `source` / `total_bytes` 四加性字段同为**加性字段**（标注 `@since 0.15.0`；不新增方法、不改既有字段语义；新增 `FileChangeSource.json` 一个 schema，去重键由全局 `path` 升为 `(run_id, path)`）。
 - 协议扩展（0.16.0）新增的 `session/run` 参数 `provider` / `model` 同为**加性字段**（标注 `@since 0.16.0`；不新增方法、不新增 schema——仅更新 `SessionRunParams.json` 内容，21 方法 / 52 schemas 不变；两者均省略 / `null` / 空串时行为逐字不变）。
 - 协议扩展（0.17.0）新增 **5 个请求方法**（`model/list` / `auth/status` / `provider/usage` / `auth/deviceStart` / `auth/devicePoll`）与 **20 个 schema**（`ModelListParams` / `ModelListResult` / `ModelEntry` / `ModelSource`；`AuthStatusParams` / `AuthStatusResult` / `CredentialInfo` / `CredentialKind` / `CredentialSource`；`ProviderUsageParams` / `ProviderUsageResult` / `ProviderUsageError` / `UsageWindow` / `UsageWindowKind` / `UsageWindowStatus`；`AuthDeviceStartParams` / `AuthDeviceStartResult` / `AuthDevicePollParams` / `AuthDevicePollResult` / `DeviceAuthState`）与 6 个新值枚举，全部标注 `@since 0.17.0`；方法数 21 → 26、schema 总数 52 → 72，**不新增错误码**（复用 `-32602` / `-32603` + `error.data.reason`，见 §3.4），既有方法 / 既有字段的语义与 wire 形状零变化——全部为加性变更，此前客户端零破坏。
+- 协议扩展（0.19.0）新增的 `session/run` 结果 `provider` / `model` 两个加性可选字段与 `TrajectoryValue::RunModel`（`kind: "run_model"`）轨迹值同为**加性变更**（标注 `@since 0.19.0`；**不新增方法**——仍 28 个，**不新增 schema**——仍 78 个，仅更新 `SessionRunResult.json` 与 `SessionHistoryResult.json` 的内容；两字段未知时整键省略，绝不写 `null`）。
 
 ## 10. 机器可读模型
 
-- **`protocol/methods.json`**：方法注册表，捕获 JSON Schema 表达不了的方法语义（method 字符串 ↔ params/result schema 引用、方向、类型）。当前收录 28 个方法，`protocol_version` 为 `0.18.0`。
+- **`protocol/methods.json`**：方法注册表，捕获 JSON Schema 表达不了的方法语义（method 字符串 ↔ params/result schema 引用、方向、类型）。当前收录 28 个方法，`protocol_version` 为 `0.19.0`。
 
 对应关系：
 
@@ -1295,7 +1300,7 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 
 ### 11.1 版本策略
 
-协议版本遵循语义化版本（semver），规则见 §4.3：major 破坏 / minor 加方法或加性字段 / patch 修 bug。当前版本 `0.18.0`（`protocol/methods.json` 中 `protocol_version` 字段为准）。
+协议版本遵循语义化版本（semver），规则见 §4.3：major 破坏 / minor 加方法或加性字段 / patch 修 bug。当前版本 `0.19.0`（`protocol/methods.json` 中 `protocol_version` 字段为准）。
 
 ### 11.2 命名归一化决策（v0.1.0 记录）
 
@@ -1397,7 +1402,7 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 #### 0.16.0（运行期切模型）
 
 - **方法面不变**：仍为 21 方法、**52 schemas**（仅 `SessionRunParams.json` 内容更新）；本版本为 `session/run` 的**两个加性可选字段**，无新方法、无新错误码。
-- **`session/run` 加性参数**：`SessionRunParams { provider?, model? }`（均 `@since 0.16.0`，snake_case）——`provider` 为已注册 provider 名（= `kernel/status.providers[].id`，如 `opencode-go`），`model` 为模型 id（如 `opencode-go/kimi-k3`）。省略 / `null` / 空串或纯空白 = 今天行为（provider 走 `get_default()`、model 走 `config.model.default_model`）；覆盖**只作用于显式给出的维度**（只给 `provider` 时模型仍取配置默认，只给 `model` 时 provider 仍取内核默认），两者均为**按 run** 生效（不写会话快照、不改 `SessionRunResult`、不回显生效模型）。
+- **`session/run` 加性参数**：`SessionRunParams { provider?, model? }`（均 `@since 0.16.0`，snake_case）——`provider` 为已注册 provider 名（= `kernel/status.providers[].id`，如 `opencode-go`），`model` 为模型 id（如 `opencode-go/kimi-k3`）。省略 / `null` / 空串或纯空白 = 今天行为（provider 走 `get_default()`、model 走 `config.model.default_model`）；覆盖**只作用于显式给出的维度**（只给 `provider` 时模型仍取配置默认，只给 `model` 时 provider 仍取内核默认），两者均为**按 run** 生效（不写会话快照）。本版本当时的两条非目标——不改 `SessionRunResult`、不回显生效模型——**自 `0.19.0` 起被推翻**：`session/run` 结果现回显本轮实际生效的 `provider` / `model`（加性字段，见 §11.3 的 0.19.0 条目）。
 - **校验与失败可行动**：非字符串类型（数字 / 对象 / 数组）→ `-32602`，`error.data` 携带 `{ "field": "provider" | "model" }`；未知但格式合法的 provider 名 → 本轮运行失败（与今天 `no default provider` 同一 turn 错误通道），文案含 `unknown provider: <name>` 与已注册 provider 名列表，**不回落默认 provider**；不属于所选 provider 的 `model` 沿用既有 `UnknownModel` 路径。
 - **纯前端（无 wire 变化）**：Web composer 模型弹层与 TUI `/models` 选择器在选中后于**下一次** `session/run` 携带两个字段；未选择时**不携带**新字段（no-selection 路径逐字不变）；选择仅本地保存（Web localStorage / TUI 会话内存）。
 - 协议版本 minor 递增 `0.15.0 → 0.16.0`；工作区 `0.25.2 → 0.26.0`；此前客户端零破坏（旧内核忽略未知字段 → 行为不变）。
@@ -1421,5 +1426,13 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 - **凭据语义零变化**：解析优先级仍为 `--api-key` flag > `api_key_env`（非空）> `auth.json`；`effective_source` 如实回告 env 遮蔽；结果仅经 `redact()` 暴露 `key_hint`，完整 key 不出现在结果 / 日志 / 错误文案中；`auth/status` 仍是纯读投影。
 - **已知时序风险**：替换 / 注销注册与并发 `session/run` 之间无全局互斥——**进行中的一轮 run 可能仍使用旧凭据，下一轮生效**。
 - 全部为**加性变更（只加不改）**：既有方法、既有字段的语义与 wire 形状零变化（`kernel/status` 逐字不变），此前客户端零破坏；协议版本 minor 递增 `0.17.0 → 0.18.0`。
+
+#### 0.19.0（回显生效 provider / model）
+
+- **方法面不变**：仍为 28 方法、**78 schemas**（仅 `SessionRunResult.json` 与 `SessionHistoryResult.json` 内容更新）；本版本为**加性 wire 变更**，无新方法、无新错误码。
+- **`session/run` 结果加性字段**：`SessionRunResult { provider?, model? }`（均 `@since 0.19.0`）——本轮的**实际生效** provider 名与 model id（未显式覆盖时即内核默认 provider 与 `config.model.default_model`）；两者均**未知时整键省略**（`skip_serializing_if`），**绝不为 `null`**。结果示例与字段表见 §8.7。
+- **新增轨迹值 `run_model`**：`TrajectoryValue::RunModel { provider?, model? }`（`kind: "run_model"`，均 `@since 0.19.0`；`skip_serializing_if` 同上），每轮 run 在 `usage` 条目之后记录**至多一次**，且仅当两个字段至少一个为 `Some`（皆未知则不落盘）；`session/history` 逐字节同构，未知 `kind` 按 §7.3 的 `$` 前缀约定忽略。
+- **纯前端（无 wire 变化）**：Web 运行详情右栏的模型标签在结果带值时显示内核回报的**生效模型**，否则回退到本次请求所选的模型。
+- 协议版本 minor 递增 `0.18.0 → 0.19.0`；工作区版本不变（仍 `0.1.0`）；此前客户端零破坏。
 
 #### 后续版本

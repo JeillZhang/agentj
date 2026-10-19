@@ -18,6 +18,12 @@ pub const MAX_CONTEXT_TOKENS: usize = 10_000_000;
 /// Retries allowed after an upstream context-window rejection. @since 0.29.7
 pub const MAX_OVERFLOW_RETRIES: usize = 2;
 
+/// Notice appended to a truncated **tool result**. Deliberately distinct from the
+/// token-budget marker in `truncate` (`budget.rs:123`): the token path must stay
+/// byte-identical, and a model-facing tool result needs an actionable hint. @since 0.29.7
+pub const TOOL_RESULT_TRUNCATION_NOTICE: &str =
+    "\n…[已截断 {dropped} 字符，原文 {total} 字符；请缩小查询范围]…\n";
+
 /// Approximate tokens: ASCII at ~4 chars/token, everything else at ~1 char/token (CJK is
 /// close to one token per character, and under-counting is what breaks the request).
 /// @since 0.29.7
@@ -136,6 +142,21 @@ fn byte_offset(text: &str, n: usize) -> usize {
     text.char_indices().nth(n).map_or(text.len(), |(i, _)| i)
 }
 
+/// Truncates on a `char` boundary and returns the head plus a notice.
+/// `max_chars` counts **characters of the kept head**, not bytes. @since 0.29.7
+pub fn truncate_chars(text: &str, max_chars: usize) -> (String, usize) {
+    let total = text.chars().count();
+    if total <= max_chars {
+        return (text.to_string(), 0);
+    }
+    let dropped = total - max_chars;
+    let head: String = text.chars().take(max_chars).collect();
+    let notice = TOOL_RESULT_TRUNCATION_NOTICE
+        .replace("{dropped}", &dropped.to_string())
+        .replace("{total}", &total.to_string());
+    (format!("{head}{notice}"), dropped)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -235,5 +256,53 @@ mod tests {
             fitted[0].tool_calls[0].arguments["_truncated"].is_string(),
             "an oversized tool-call payload must be replaced by a marker"
         );
+    }
+
+    #[test]
+    fn truncate_chars_reports_dropped_count() {
+        let text = "a".repeat(10_000);
+        let (out, dropped) = truncate_chars(&text, 4_000);
+        assert_eq!(dropped, 6_000);
+        // The notice is pinned literally, not rebuilt from the constant under test,
+        // so a corrupted notice text cannot stay green on the length assertion alone.
+        let expected = format!(
+            "{}\n…[已截断 6000 字符，原文 10000 字符；请缩小查询范围]…\n",
+            "a".repeat(4_000)
+        );
+        assert_eq!(out, expected);
+    }
+
+    #[test]
+    fn truncate_chars_at_zero_cap_drops_everything() {
+        let (out, dropped) = truncate_chars("hello", 0);
+        assert_eq!(dropped, 5);
+        assert_eq!(out, "\n…[已截断 5 字符，原文 5 字符；请缩小查询范围]…\n");
+    }
+
+    #[test]
+    fn truncate_chars_on_empty_input_is_a_no_op() {
+        let (out, dropped) = truncate_chars("", 100);
+        assert_eq!((out.as_str(), dropped), ("", 0));
+    }
+
+    #[test]
+    fn truncate_chars_at_exactly_the_cap_is_a_no_op() {
+        let text = "x".repeat(4_000);
+        let (out, dropped) = truncate_chars(&text, 4_000);
+        assert_eq!((out.as_str(), dropped), (text.as_str(), 0));
+    }
+
+    #[test]
+    fn truncate_chars_respects_char_boundaries() {
+        let text = "中".repeat(5_000) + "\u{1f642}";
+        let (out, _) = truncate_chars(&text, 1_000);
+        assert!(out.chars().count() > 1_000);
+        assert!(out.contains("已截断"));
+    }
+
+    #[test]
+    fn truncate_chars_is_a_no_op_below_the_cap() {
+        let (out, dropped) = truncate_chars("short", 4_000);
+        assert_eq!((out.as_str(), dropped), ("short", 0));
     }
 }

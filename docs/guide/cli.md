@@ -18,6 +18,7 @@ agentj run --attach tcp://127.0.0.1:4096 --provider opencode-go "hi"   # 附着�
 | --- | --- |
 | `--provider <NAME>` | 仅本次运行使用的 provider 名（默认：内核默认 provider） |
 | `--model <MODEL_ID>` | 仅本次运行使用的模型 id，如 `opencode-go/kimi-k3`（默认：`[model].default_model`） |
+| `--yes` | 自动批准所有权限请求（`ask` 模式工具直接放行），不进入交互式审批；适合脚本 / CI |
 
 - 两个 flag **相互独立**：只给 `--model` 合法（用默认 provider 跑指定模型）；`serve` /
   `dashboard` **不接受**这两个 flag（常驻内核的覆盖由各客户端在 `session/run` 中携带）。
@@ -27,6 +28,33 @@ agentj run --attach tcp://127.0.0.1:4096 --provider opencode-go "hi"   # 附着�
   stderr 打印一行 `error: agent error: unknown provider: nope (registered: …)` 并以退出码 `1`
   结束，stdout 不会出现最终回答；`--attach` 的远端错误同样映射为这一行。
 - 未知模型 / 上游网络或鉴权失败同样以 `error: …` + 退出码 `1` 结束。
+
+### 权限审批（交互式 / `--yes`）
+
+`run` 遇到 `ask` 模式的工具（如默认需要审批的 `bash`）时，按下列方式决策：
+
+- **TTY（交互终端）**：审批提示同步打印到 **stderr**，并另起线程从 stdin 读取回答（读取不占用审批
+  等待计时）：
+
+  ```text
+  approve <tool>? <精简参数>
+    reason: <原因>
+  [y/N]
+  ```
+
+  `<精简参数>` 取 `command` / `pattern` / `path` 中第一个有值的字段（其余折叠为单行、超 200 字符
+  省略）；回答 `y` / `yes`（大小写不敏感）批准，其余输入一律拒绝。读到 **EOF**（`Ctrl-D` / 输入已
+  关闭、无更多输入）同样拒绝——代码里没有单独的「no input」文案，EOF 只是把决策映射为普通拒绝，
+  工具最终收到的拒绝理由是 `denied by user`。
+
+- **`--yes`**：自动批准、不进入交互，每次批准在 stderr 打印 `auto-approved <tool> (--yes)`。
+
+- **非 TTY 且未加 `--yes`**：不读 stdin、也不挂审批器，待决请求仍按 `[permission] timeout_ms`
+  预算自动拒绝（管道 / CI 环境下不会挂起等待人工输入，但要等到该预算耗尽才拒绝）。
+
+- **`[permission] timeout_ms`**：审批等待预算（毫秒；省略 = `60000`）。越界值钳制到
+  `100..=600_000`（如 `0` 钳到 `100`、超大值钳到 `600_000`），越界时在 stderr 打印
+  `warning: permission.timeout_ms <原始值> clamped to <钳制值>`，不视为错误。
 
 ## `agentj serve`
 

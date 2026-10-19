@@ -1,6 +1,6 @@
 # AGENTS.md
 
-> **当前版本 0.1.0** · `PROTOCOL_VERSION` **0.18.0**（28 方法 / 78 schemas / 18 crates）
+> **当前版本 0.1.0** · `PROTOCOL_VERSION` **0.19.0**（28 方法 / 78 schemas / 18 crates）
 > 本文件只记录**约束、入口与基线**（Setup / Commands / Architecture / Conventions / Rules）。
 > **逐版本变更与历史决策不写在这里** —— 见 [`docs/changelog/`](docs/changelog/)、
 > [`docs/guide/`](docs/guide/)、[`docs/specs/`](docs/specs/) 与 `.agents/summary/`。
@@ -72,7 +72,7 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
 
 - `agentj-protocol`（leaf）：IPC 协议权威 wire 类型（JSON-RPC 2.0、错误码、
   28 方法 params/result、流式/订阅/权限/提问/文件列举/订阅服务类型），serde + schemars，
-  零内核耦合。协议版本 `0.18.0`，78 schemas。
+  零内核耦合。协议版本 `0.19.0`，78 schemas。
 - `agentj-core`（内核）：Kernel 混合总线 + 模块 trait 注册表
   + ServiceRegistry（同步/异步） + TurnRunner 总线化 turn 编排
   + `budget`（请求 token 预算：`estimate_tokens` 估算 + `fit_messages` 裁剪
@@ -81,12 +81,18 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
   + `text_tool_call`（把模型写成纯文本方言的工具调用还原成真正的调用；无法无歧义还原时
   纠偏重发并如实报错，不把标记当结论）
   + `TurnArtifact`（FileChange/Todo 产出 + 自研 unified diff，per-run `run_id`/`seq`）
+  + 工具结果单点裁剪（`[agent] max_tool_result_chars`：超限只截一次并广播
+  `ToolResultTruncated`；`AgentEvent::Done` 携带本轮生效的 `provider`/`model`）
   + 事件总线重入防护（EventGuard thread_local + MAX_EVENT_DEPTH=16）。
 - `agentj-config`：TOML 配置（[model]/[agent]/[permission]/[session]/[license]/[[mcp.servers]]；
-  `[permission] timeout_ms` 调整 `ask` 自动拒绝等待预算（默认 60s，e2e fixture 调至 800ms）；
+  `[permission] timeout_ms` 调整 `ask` 自动拒绝等待预算（缺省 60s，钳制 100..=600_000，
+  越界钳制并告警；e2e fixture 调至 800ms）；
   `[model] max_context_tokens` 调整单次请求 token 预算（默认 128k，钳制 1k..=10M）；
   `[agent] max_tool_iterations` 调整单轮工具调用轮数（默认 50，钳制 1..=1000；
   用尽后内核改为无工具收尾要结论）；
+  `[agent] max_tool_result_chars` 调整单个工具结果字符上限（默认 100_000，
+  钳制 1_000..=1_000_000）；`[agent] question_timeout_s` 调整提问默认超时
+  （默认 600s，钳制 1..=86_400）；
   `toml_edit` 定点写回 `[model]` 保留注释）。
 - `agentj-auth`：订阅凭据（`Credential` api_key/oauth + `AuthStore`
   XDG 路径 / 目录 0700 / 文件 0600 / 原子写 / 权限与 JSON 校验拒绝降级
@@ -113,9 +119,11 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
   + `retry`（`temperature` 被拒时去参数重试一次）。
 - `agentj-tools`：内置工具（bash/glob/grep/read/write + `todo`，共 6 个）；`grep` 优先
   `rg`、缺失时回退进程内检索（`regex` + `globset` + `walkdir`，行匹配 + `include` 通配 +
-  跳目录/二进制/超大文件 + 2000 条上限）；三个进程型工具（`bash` / `grep` / `glob`）统一经
-  `ToolExecutor`（`executor.rs`）以独立进程组执行，超时杀整组并按工具默认值
-  （`bash` 120s、`grep` / `glob` 60s）生效，可经入参 `timeout_ms` 覆盖（钳制 1s–600s）。
+  跳目录/二进制/超大文件 + 2000 条上限）；`glob` 改为进程内匹配（`globset` + `walkdir`，
+  无 `find` 子进程，复用 `GrepTool::SKIP_DIRS` 同一跳目录表，默认 60s 到点即停）；
+  两个进程型工具（`bash` / `grep`）统一经 `ToolExecutor`（`executor.rs`）以独立进程组
+  执行，超时杀整组并按工具默认值（`bash` 120s、`grep` 60s）生效，可经入参 `timeout_ms`
+  覆盖（钳制 1s–600s）。
 - `agentj-context`：上下文管线（装配/回流纯函数；预算裁剪由 `agentj-core::budget` 统一下发）。
 - `agentj-stats`：用量统计 UsageCollector。
 - `agentj-license`：Ed25519 许可证校验（entitlements + free mode）。
@@ -164,7 +172,7 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
 - `agentj-plugin-fixture`（dev-only）：插件 cdylib 测试夹具。
 - `schemas/*.json`：78 JSON Schema（schemars 生成，提交件 + drift 门禁）。
 - `protocol/methods.json`：方法注册表（method ↔ schema/方向/类型；28 方法，
-  protocol_version 0.18.0）。
+  protocol_version 0.19.0）。
 - `docs/specs/ipc-protocol.md`：人类可读协议规范——**错误码表、WS/HTTP 鉴权
   通道、各方法参数/结果契约的权威来源**。
 

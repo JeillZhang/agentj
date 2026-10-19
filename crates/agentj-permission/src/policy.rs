@@ -75,9 +75,11 @@ pub fn builtin_default_mode(tool: &str) -> PermissionMode {
 pub struct PermissionConfig {
     /// Approval wait budget in milliseconds before an `ask` auto-denies.
     /// `None` keeps the design default (60s); e2e fixtures lower it so the
-    /// auto-deny path does not dominate a workspace test run.
+    /// auto-deny path does not dominate a workspace test run. Signed, so an
+    /// out-of-range negative (`-7`) deserializes and reaches the CLI clamp
+    /// (100..=600_000) instead of failing the whole config parse.
     #[serde(default)]
-    pub timeout_ms: Option<u64>,
+    pub timeout_ms: Option<i64>,
     #[serde(default)]
     pub tools: HashMap<String, ToolPolicy>,
 }
@@ -107,6 +109,22 @@ mod tests {
         assert_eq!(p.mode, PermissionMode::Ask);
         assert!(p.path_rules.is_empty());
         assert!(p.command_rules.is_empty());
+    }
+
+    /// A negative `[permission] timeout_ms` must survive deserialization so the CLI
+    /// clamp can report and clamp it; it must NOT fail the whole config parse.
+    /// (TOML hands `-7` to serde as an i64 exactly like JSON does, so this pins the
+    /// same u64-visitor rejection behind the reported `expected u64` TOML error.)
+    #[test]
+    fn timeout_ms_deserializes_a_negative_signed_value() {
+        let parsed: Result<PermissionConfig, serde_json::Error> =
+            serde_json::from_str(r#"{"timeout_ms": -7}"#);
+        let cfg = parsed.unwrap_or_else(|e| {
+            panic!("a negative timeout_ms must deserialize, not fail the parse: {e}")
+        });
+        // The raw signed value must survive so the CLI warning can print what the
+        // user wrote (`-7 clamped to 100`), not a silently zeroed `0`.
+        assert_eq!(cfg.timeout_ms.map(|ms| ms.to_string()), Some("-7".into()));
     }
 
     #[test]

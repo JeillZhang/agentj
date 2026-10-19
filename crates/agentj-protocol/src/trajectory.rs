@@ -83,6 +83,13 @@ pub enum TrajectoryValue {
         answers: Vec<String>,
         skipped: bool,
     },
+    /// The provider/model that actually served this run. @since 0.19.0
+    RunModel {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
+    },
 }
 
 #[cfg(test)]
@@ -169,6 +176,10 @@ mod tests {
                 answers: vec!["o1".into()],
                 skipped: false,
             },
+            "run_model" => TrajectoryValue::RunModel {
+                provider: Some("p1".into()),
+                model: Some("m1".into()),
+            },
             other => panic!("bad kind {other}"),
         };
         serde_json::to_value(TrajectoryEvent {
@@ -194,6 +205,7 @@ mod tests {
             "file_change",
             "ask_question",
             "question_answer",
+            "run_model",
         ] {
             let json = event(7, kind);
             assert_eq!(json["session_id"], "s-1");
@@ -326,11 +338,42 @@ mod tests {
             "file_change",
             "ask_question",
             "question_answer",
+            "run_model",
         ] {
             assert!(
                 text.contains(&format!("\"{kind}\"")),
                 "schema must list kind {kind}"
             );
         }
+    }
+
+    #[test]
+    fn run_model_variant_serializes_kind_and_omits_absent_fields() {
+        let json = event(8, "run_model");
+        assert_eq!(json["value"]["kind"], "run_model");
+        assert_eq!(json["value"]["provider"], "p1");
+        assert_eq!(json["value"]["model"], "m1");
+        let back: TrajectoryEvent = serde_json::from_value(json).unwrap();
+        match back.value {
+            TrajectoryValue::RunModel { provider, model } => {
+                assert_eq!(provider.as_deref(), Some("p1"));
+                assert_eq!(model.as_deref(), Some("m1"));
+            }
+            other => panic!("expected run_model, got {other:?}"),
+        }
+
+        // Absent identity fields are omitted, not serialized as null.
+        let none = serde_json::to_value(TrajectoryEvent {
+            session_id: "s-1".into(),
+            seq: 9,
+            ts: 1,
+            value: TrajectoryValue::RunModel {
+                provider: None,
+                model: None,
+            },
+        })
+        .unwrap();
+        assert!(none["value"].get("provider").is_none());
+        assert!(none["value"].get("model").is_none());
     }
 }

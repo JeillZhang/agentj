@@ -10,6 +10,8 @@ use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+mod common;
+
 #[test]
 fn e2e_serve_run_result_includes_usage() {
     let nanos = std::time::SystemTime::now()
@@ -35,7 +37,11 @@ fn e2e_serve_run_result_includes_usage() {
         ),
     )
     .unwrap();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_agentj"))
+    // Bound here, not inside a helper: the temp env must outlive the child.
+    let env = common::TempEnv::new();
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_agentj"));
+    env.apply(&mut cmd);
+    let mut child = cmd
         .args(["--config", cfg.to_str().unwrap(), "serve"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -120,23 +126,25 @@ impl Drop for AutoReap {
 
 #[test]
 fn serve_port_resident_kernel_lifecycle() {
+    let env = common::TempEnv::new();
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_agentj"));
+    env.apply(&mut cmd);
     let mut child = AutoReap(
-        Command::new(env!("CARGO_BIN_EXE_agentj"))
-            .args([
-                "--config",
-                concat!(
-                    env!("CARGO_MANIFEST_DIR"),
-                    "/tests/fixtures/permission_deny.toml"
-                ),
-                "serve",
-                "--port",
-                "0",
-            ])
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap(),
+        cmd.args([
+            "--config",
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/permission_deny.toml"
+            ),
+            "serve",
+            "--port",
+            "0",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap(),
     );
     let stdout = child.0.stdout.take().unwrap();
     let mut reader = BufReader::new(stdout);
@@ -199,9 +207,11 @@ fn e2e_tcp_ask_roundtrip() {
         ),
     )
     .unwrap();
+    let env = common::TempEnv::new();
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_agentj"));
+    env.apply(&mut cmd);
     let mut child = AutoReap(
-        Command::new(env!("CARGO_BIN_EXE_agentj"))
-            .args(["--config", cfg.to_str().unwrap(), "serve", "--port", "0"])
+        cmd.args(["--config", cfg.to_str().unwrap(), "serve", "--port", "0"])
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -350,9 +360,11 @@ fn e2e_tcp_session_history_replays_run_events() {
         ),
     )
     .unwrap();
+    let env = common::TempEnv::new();
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_agentj"));
+    env.apply(&mut cmd);
     let mut child = AutoReap(
-        Command::new(env!("CARGO_BIN_EXE_agentj"))
-            .args(["--config", cfg.to_str().unwrap(), "serve", "--port", "0"])
+        cmd.args(["--config", cfg.to_str().unwrap(), "serve", "--port", "0"])
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -466,8 +478,8 @@ fn keyless_provider_set_still_boots_serve() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("sessions")).unwrap();
     // No credential anywhere: the builtin opencode-go entry resolves through the auth store,
-    // and XDG_DATA_HOME/HOME point at the temp dir so a developer's real auth.json cannot
-    // leak in and turn this into a networked test.
+    // and the shared temp env keeps a developer's real auth.json out of this process, so the
+    // test cannot turn into a networked one.
     let cfg = dir.join("keyless_config.toml");
     std::fs::write(
         &cfg,
@@ -482,12 +494,11 @@ fn keyless_provider_set_still_boots_serve() {
     )
     .unwrap();
 
+    let env = common::TempEnv::new();
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_agentj"));
+    env.apply(&mut cmd);
     let mut child = AutoReap(
-        Command::new(env!("CARGO_BIN_EXE_agentj"))
-            .args(["--config", cfg.to_str().unwrap(), "serve", "--port", "0"])
-            .env("XDG_DATA_HOME", dir.join("data"))
-            .env("HOME", dir.join("home"))
-            .env_remove("AGENTJ_E2E_KEYLESS")
+        cmd.args(["--config", cfg.to_str().unwrap(), "serve", "--port", "0"])
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -548,9 +559,11 @@ fn serve_exposes_the_subscription_methods() {
     )
     .unwrap();
 
+    let env = common::TempEnv::new();
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_agentj"));
+    env.apply(&mut cmd);
     let mut child = AutoReap(
-        Command::new(env!("CARGO_BIN_EXE_agentj"))
-            .args(["--config", cfg.to_str().unwrap(), "serve", "--port", "0"])
+        cmd.args(["--config", cfg.to_str().unwrap(), "serve", "--port", "0"])
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -714,7 +727,10 @@ fn assert_link_list_clear_never_touch_config(console: &wiremock::MockServer) {
     let config_path = kernel.home().join("config.toml");
     let auth_path = kernel.auth_path();
     let config_before = sha256_hex(&std::fs::read(&config_path).unwrap());
-    assert!(!auth_path.exists(), "the temp home starts unlinked");
+    assert!(
+        !auth_path.exists(),
+        "no credential file under the temp data dir yet"
+    );
     initialize(&mut client);
 
     let linked = client.call(
@@ -820,8 +836,8 @@ fn assert_unattached_kernel_has_no_provider_service() {
     );
 }
 
-/// A per-test tempdir holding `config.toml`, the session store and `XDG_DATA_HOME`, so
-/// `auth.json` never touches the developer's real store. Removed on drop.
+/// A per-test tempdir holding `config.toml` and the session store; the data root that keeps
+/// `auth.json` out of the developer's real store comes from `common::TempEnv`. Removed on drop.
 struct TempHome(PathBuf);
 
 impl TempHome {
@@ -901,29 +917,33 @@ impl SocketClient {
     }
 }
 
-/// A served kernel plus the handles that keep it and its temp home alive: the child is
+/// A served kernel plus the handles that keep it and its temp dirs alive: the child is
 /// reaped on drop, the stdout pipe stays open (a closed pipe would fail the server's
-/// later prints), and the tempdir (config + sessions + `auth.json`) is removed last.
+/// later prints), and the temp home (config + sessions) plus the temp env (whose data
+/// root holds `auth.json`) are removed last.
 struct ServedKernel {
     _child: AutoReap,
     _server_stdout: BufReader<std::process::ChildStdout>,
     _home: TempHome,
+    /// Declared last so the temp env's dirs are unlinked only after the child is reaped.
+    _env: common::TempEnv,
 }
 
 impl ServedKernel {
-    /// The temp home holding `config.toml`, the session store and `auth.json`.
+    /// The temp home holding `config.toml` and the session store (the credential file
+    /// lives under the temp env's data root, not here).
     fn home(&self) -> &Path {
         self._home.path()
     }
 
-    /// `$XDG_DATA_HOME/agentj/auth.json` — the credential file the kernel writes (T12).
+    /// The credential file the kernel writes (T12), under the temp data root.
     fn auth_path(&self) -> PathBuf {
-        self.home().join("agentj").join("auth.json")
+        self._env.data_dir().join("agentj").join("auth.json")
     }
 }
 
-/// T11 harness: a kernel whose `XDG_DATA_HOME` is a tempdir (so `auth.json` lands in the
-/// temp home) and whose console base and `opencode-go` base URL point at `console_uri`
+/// T11 harness: a kernel whose data root is a tempdir (so `auth.json` never reaches the
+/// developer's store) and whose console base and `opencode-go` base URL point at `console_uri`
 /// (a local wiremock). The default provider is the keyless `mock`, so startup never probes
 /// the real network and never needs a credential.
 fn serve_linked_kernel(console_uri: &str) -> (ServedKernel, SocketClient) {
@@ -944,10 +964,11 @@ fn serve_linked_kernel(console_uri: &str) -> (ServedKernel, SocketClient) {
         ),
     )
     .unwrap();
+    let env = common::TempEnv::new();
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_agentj"));
+    env.apply(&mut cmd);
     let mut child = AutoReap(
-        Command::new(env!("CARGO_BIN_EXE_agentj"))
-            .args(["--config", cfg.to_str().unwrap(), "serve", "--port", "0"])
-            .env("XDG_DATA_HOME", home.path())
+        cmd.args(["--config", cfg.to_str().unwrap(), "serve", "--port", "0"])
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -963,6 +984,7 @@ fn serve_linked_kernel(console_uri: &str) -> (ServedKernel, SocketClient) {
             _child: child,
             _server_stdout: server_stdout,
             _home: home,
+            _env: env,
         },
         client,
     )
@@ -1106,14 +1128,15 @@ fn http_get(addr: &str, path: &str) -> String {
 }
 
 /// Spawns `serve` with stdout captured (unlike the inheriting helper) so the test
-/// can wait for `listening on` and later restart on the same port.
-fn serve_capturing_stdout(home: &TempHome, args: &[&str]) -> AutoReap {
+/// can wait for `listening on` and later restart on the same port. `env` is borrowed,
+/// not owned: the caller keeps it alive for as long as the returned child runs.
+fn serve_capturing_stdout(env: &common::TempEnv, home: &TempHome, args: &[&str]) -> AutoReap {
     let mut command = Command::new(env!("CARGO_BIN_EXE_agentj"));
+    env.apply(&mut command);
     command
         .arg("--config")
         .arg(home.path().join("config.toml"))
         .args(args)
-        .env("XDG_DATA_HOME", home.path())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
@@ -1130,6 +1153,7 @@ fn has_metric_line(body: &str, expected: &str) -> bool {
 /// The persisted login-limiter snapshot must outlive a graceful restart.
 #[test]
 fn login_counters_survive_a_restart() {
+    let env = common::TempEnv::new();
     let home = TempHome::new("metrics-state-restore");
     std::fs::write(
         home.path().join("config.toml"),
@@ -1137,7 +1161,8 @@ fn login_counters_survive_a_restart() {
     )
     .unwrap();
 
-    let mut first = serve_capturing_stdout(&home, &["serve", "--port", "0", "--token", "secret"]);
+    let mut first =
+        serve_capturing_stdout(&env, &home, &["serve", "--port", "0", "--token", "secret"]);
     // Keep the stdout pipe open for the whole test: the resident server prints
     // more lines after `listening on`, and a closed reader would fail those.
     let mut first_stdout = BufReader::new(first.0.stdout.take().unwrap());
@@ -1199,8 +1224,8 @@ fn login_counters_survive_a_restart() {
     assert!(exited, "the first server did not shut down gracefully");
 
     let port = addr.rsplit(':').next().unwrap().to_string();
-    let state_file = home
-        .path()
+    let state_file = env
+        .data_dir()
         .join("agentj")
         .join(format!("metrics-state-{port}.json"));
     assert!(
@@ -1209,8 +1234,11 @@ fn login_counters_survive_a_restart() {
         state_file.display()
     );
 
-    let mut second =
-        serve_capturing_stdout(&home, &["serve", "--port", &port, "--token", "secret"]);
+    let mut second = serve_capturing_stdout(
+        &env,
+        &home,
+        &["serve", "--port", &port, "--token", "secret"],
+    );
     let mut second_stdout = BufReader::new(second.0.stdout.take().unwrap());
     let addr = read_listening_addr(&mut second_stdout);
     let after = http_get(&addr, "/metrics");

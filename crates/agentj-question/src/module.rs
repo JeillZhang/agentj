@@ -2,7 +2,8 @@
 //! owner-delivery notifier and exactly-once settle hook (design 决策 #6).
 //!
 //! Mirrors `agentj-permission`'s pending/notifier mechanism, but the semantics
-//! are question-specific: `timeout_s` is optional (absent = wait forever),
+//! are question-specific: `timeout_s` is optional (absent falls back to the
+//! configured default; `0`/`None` = unbounded),
 //! duplicate/unknown responses are idempotent `accepted=false` (not errors),
 //! and every terminal path funnels through [`QuestionModule::settle_once`].
 //!
@@ -14,6 +15,7 @@
 
 use std::collections::HashMap;
 use std::fmt;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
@@ -121,6 +123,9 @@ pub struct QuestionModule {
     settled: Mutex<HashMap<String, SettledQuestion>>,
     notifier: RwLock<Option<QuestionNotifier>>,
     settle_hook: RwLock<Option<SettleHook>>,
+    /// Configured default timeout for requests that omit `timeout_s`;
+    /// `0` == unbounded (the library default until the CLI injects one).
+    default_timeout_s: AtomicU64,
 }
 
 impl Default for QuestionModule {
@@ -136,6 +141,7 @@ impl QuestionModule {
             settled: Mutex::new(HashMap::new()),
             notifier: RwLock::new(None),
             settle_hook: RwLock::new(None),
+            default_timeout_s: AtomicU64::new(0),
         }
     }
 
@@ -149,11 +155,31 @@ impl QuestionModule {
         *self.settle_hook.write().unwrap() = Some(f);
     }
 
+    /// Set the default timeout applied when a request omits `timeout_s`.
+    /// `None` (or `0`) means unbounded — `QuestionModule::new()` leaves it
+    /// unset; the CLI injects `cfg.question_timeout_s()` in T15.
+    pub fn set_default_timeout_s(&self, secs: Option<u64>) {
+        self.default_timeout_s
+            .store(secs.unwrap_or(0), Ordering::Relaxed);
+    }
+
+    /// Resolve the effective timeout: an explicit per-call `timeout_s` wins;
+    /// otherwise the configured default applies (0 == unbounded).
+    fn effective_timeout(&self, params: &AskQuestionParams) -> Option<u64> {
+        params
+            .timeout_s
+            .or_else(|| match self.default_timeout_s.load(Ordering::Relaxed) {
+                0 => None,
+                s => Some(s),
+            })
+    }
+
     /// Register a question and block until it settles. Generates the
     /// `question_id` (overwriting `params.question_id`), delivers `params` to
-    /// the owner notifier, then waits on an mpsc channel — bounded by
-    /// `params.timeout_s` when present, unbounded otherwise. An undelivered
-    /// question (no notifier / no owner) settles as skipped immediately.
+    /// the owner notifier, then waits on an mpsc channel — bounded by the
+    /// effective timeout (an explicit `params.timeout_s`, else the configured
+    /// default; `0`/`None` = unbounded). An undelivered question (no notifier
+    /// / no owner) settles as skipped immediately.
     pub fn ask_blocking(
         &self,
         session_id: &str,
@@ -176,7 +202,12 @@ impl QuestionModule {
             self.settle_skipped(&question_id, session_id);
             return (question_id, QuestionOutcome::Skipped);
         }
-        let outcome = self.wait_outcome(&question_id, session_id, &receiver, params.timeout_s);
+        let outcome = self.wait_outcome(
+            &question_id,
+            session_id,
+            &receiver,
+            self.effective_timeout(params),
+        );
         (question_id, outcome)
     }
 
@@ -707,6 +738,114 @@ mod tests {
         assert_eq!(seen[0].question_id, qid);
         assert_eq!(seen[0].session_id, "s1");
         assert_eq!(seen[0].outcome, QuestionOutcome::Skipped);
+    }
+
+    #[test]
+    fn default_timeout_settles_a_never_answered_question() {
+        let module = delivering_module();
+        module.set_default_timeout_s(Some(1));
+        let mut params = params_with_options();
+        params.timeout_s = None;
+        let started = Instant::now();
+        let (qid, outcome) = module.ask_blocking("s1", &params);
+        assert!(matches!(outcome, QuestionOutcome::Skipped));
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed >= Duration::from_millis(900),
+            "default 1s timeout returned before firing: {elapsed:?}"
+        );
+        assert!(elapsed < Duration::from_millis(3_000));
+        assert_eq!(module.pending_count(), 0);
+        assert_eq!(module.settled_of(&qid), Some(QuestionOutcome::Skipped));
+    }
+
+    #[test]
+    fn default_timeout_deadline_tracks_the_configured_value() {
+        let module = delivering_module();
+        let mut params = params_with_options();
+        params.timeout_s = None;
+
+        module.set_default_timeout_s(Some(1));
+        let started = Instant::now();
+        let (_id, outcome) = module.ask_blocking("s1", &params);
+        assert!(matches!(outcome, QuestionOutcome::Skipped));
+        let one_sec = started.elapsed();
+        assert!(
+            one_sec >= Duration::from_millis(900),
+            "1s default returned early: {one_sec:?}"
+        );
+
+        module.set_default_timeout_s(Some(2));
+        let started = Instant::now();
+        let (_id, outcome) = module.ask_blocking("s1", &params);
+        assert!(matches!(outcome, QuestionOutcome::Skipped));
+        let two_sec = started.elapsed();
+        assert!(
+            two_sec >= Duration::from_millis(1_900),
+            "2s default returned early: {two_sec:?}"
+        );
+        assert!(
+            two_sec > one_sec,
+            "a longer default must produce a longer deadline: {one_sec:?} vs {two_sec:?}"
+        );
+    }
+
+    #[test]
+    fn explicit_timeout_beats_the_default() {
+        let module = delivering_module();
+        module.set_default_timeout_s(Some(9));
+        let mut params = params_with_options();
+        params.timeout_s = Some(1);
+        let started = Instant::now();
+        let (_id, _outcome) = module.ask_blocking("s1", &params);
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed >= Duration::from_millis(900),
+            "explicit 1s must be honoured, not the 9s default: {elapsed:?}"
+        );
+        assert!(elapsed < Duration::from_millis(3_000));
+    }
+
+    #[test]
+    fn default_timeout_settles_once_and_late_respond_is_rejected() {
+        let module = delivering_module();
+        let (seen, hook) = recording_hook();
+        module.set_settle_hook(hook);
+        module.set_default_timeout_s(Some(1));
+        let mut params = params_with_options();
+        params.timeout_s = None;
+        let (qid, outcome) = module.ask_blocking("s1", &params);
+        assert!(matches!(outcome, QuestionOutcome::Skipped));
+        assert_eq!(module.pending_count(), 0);
+        assert_eq!(module.session_of(&qid), None);
+        assert_eq!(
+            module.respond(&qid, vec!["a".into()], false).unwrap(),
+            RespondOutcome::Accepted(false),
+            "a late response must be rejected idempotently, not resurrect the question"
+        );
+        assert_eq!(module.pending_count(), 0);
+        let seen = seen.lock().unwrap();
+        assert_eq!(
+            seen.len(),
+            1,
+            "settle hook must fire exactly once on the default-timeout path"
+        );
+        assert_eq!(seen[0].question_id, qid);
+        assert_eq!(seen[0].outcome, QuestionOutcome::Skipped);
+    }
+
+    #[test]
+    fn set_default_timeout_none_restores_unbounded_wait() {
+        let module = QuestionModule::new();
+        let params = params_with_options(); // timeout_s: None
+        assert_eq!(module.effective_timeout(&params), None);
+        module.set_default_timeout_s(Some(1));
+        assert_eq!(module.effective_timeout(&params), Some(1));
+        let mut explicit = params.clone();
+        explicit.timeout_s = Some(5);
+        assert_eq!(module.effective_timeout(&explicit), Some(5));
+        module.set_default_timeout_s(None);
+        assert_eq!(module.effective_timeout(&params), None);
     }
 
     #[test]

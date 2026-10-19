@@ -2,6 +2,8 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+mod common;
+
 #[test]
 fn e2e_serve_responds_to_jsonrpc_session_new() {
     // Temp config — avoids touching any real config.toml
@@ -14,7 +16,10 @@ fn e2e_serve_responds_to_jsonrpc_session_new() {
     )
     .unwrap();
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_agentj"))
+    let env = common::TempEnv::new();
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_agentj"));
+    env.apply(&mut cmd);
+    let mut child = cmd
         .args(["--config", cfg.to_str().unwrap(), "serve"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -76,7 +81,10 @@ fn e2e_serve_exits_gracefully_on_sigterm() {
     )
     .unwrap();
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_agentj"))
+    let env = common::TempEnv::new();
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_agentj"));
+    env.apply(&mut cmd);
+    let mut child = cmd
         .args(["--config", cfg.to_str().unwrap(), "serve"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -156,8 +164,10 @@ fn write_serve_config(dir: &Path, model: &str, extra: &str, sessions: &Path) -> 
 /// Spawn `agentj --config <cfg> serve`; CWD is the project root so relative tool
 /// paths fall back to it when a session has no `project_root`.
 fn spawn_serve(cfg: &Path, workdir: &Path) -> std::process::Child {
-    Command::new(env!("CARGO_BIN_EXE_agentj"))
-        .args(["--config", cfg.to_str().unwrap(), "serve"])
+    let env = common::TempEnv::new();
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_agentj"));
+    env.apply(&mut cmd);
+    cmd.args(["--config", cfg.to_str().unwrap(), "serve"])
         .current_dir(workdir)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -368,10 +378,38 @@ fn write_run_config(dir: &Path) -> PathBuf {
     cfg
 }
 
+/// Like `write_run_config` but with a tunable `bash` mode and an optional
+/// `[permission] timeout_ms` override.
+fn write_run_config_with(dir: &Path, bash_mode: &str, timeout_ms: Option<u64>) -> PathBuf {
+    let cfg = dir.join("run_config.toml");
+    let permission_section = match timeout_ms {
+        Some(ms) => format!(
+            "[permission]\ntimeout_ms = {ms}\n\n[permission.tools.bash]\nmode = \"{bash_mode}\"\n\n"
+        ),
+        None => format!("[permission.tools.bash]\nmode = \"{bash_mode}\"\n\n"),
+    };
+    std::fs::write(
+        &cfg,
+        format!(
+            "[model]\nprovider = \"mock\"\n\n\
+             [[model.providers]]\nname = \"mock\"\nkind = \"mock\"\n\
+             base_url = \"mock://local\"\napi_key_env = \"\"\n\n\
+             {}\
+             [session]\ndir = \"{}\"\n",
+            permission_section,
+            dir.join("sessions").display()
+        ),
+    )
+    .unwrap();
+    cfg
+}
+
 /// `agentj --config <cfg> run <args…>` from the project root, output captured.
 fn run_cli(cfg: &Path, workdir: &Path, args: &[&str]) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_agentj"))
-        .arg("--config")
+    let env = common::TempEnv::new();
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_agentj"));
+    env.apply(&mut cmd);
+    cmd.arg("--config")
         .arg(cfg)
         .arg("run")
         .args(args)
@@ -456,6 +494,114 @@ fn e2e_run_without_flags_prints_final_response() {
     assert_eq!(last_line(&String::from_utf8_lossy(&out.stdout)), "done");
 }
 
+// ---- T15: `--yes`, stdin approver, permission timeout clamp, question budget ----
+
+#[test]
+// `--yes` auto-approves the `bash` tool (mode=ask) so a non-interactive run that
+// would otherwise block on approval completes with the final response. The
+// auto-approve notice on stderr plus the ABSENCE of the deny/timeout marker
+// (present on the non-`--yes` path) prove the request was actually allowed, not
+// silently timed out.
+fn run_yes_allows_a_tool_without_a_tty() {
+    let dir = run_temp_dir("yes-allow");
+    let cfg = write_run_config_with(&dir, "ask", Some(800));
+    let out = run_cli(&cfg, &dir, &["--yes", "go"]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(last_line(&stdout), "done");
+    // Positive proof of Allow: the `--yes` notifier printed the auto-approve line.
+    assert!(
+        stderr.contains("auto-approved bash (--yes)"),
+        "stderr={stderr}"
+    );
+    // Negative proof: no deny/timeout marker (which the non-`--yes` path prints).
+    assert!(
+        !stdout.contains("permission approval timed out"),
+        "stdout={stdout}"
+    );
+    assert!(!stdout.contains("permission denied"), "stdout={stdout}");
+}
+
+#[test]
+// Regression: non-TTY without `--yes` must NOT auto-approve. The `bash` request
+// auto-denies at the 800 ms fixture (no human, no hang) and the run still exits 0
+// with the final response; the deny/timeout marker (absent on the `--yes` path)
+// proves the request was NOT allowed.
+fn run_without_yes_autodenies() {
+    let dir = run_temp_dir("no-yes-deny");
+    let cfg = write_run_config_with(&dir, "ask", Some(800));
+    let out = run_cli(&cfg, &dir, &["go"]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(last_line(&stdout), "done");
+    assert!(
+        stdout.contains("permission approval timed out"),
+        "the no-`--yes` path must auto-deny at the fixture timeout; stdout={stdout} stderr={stderr}"
+    );
+    assert!(!stderr.contains("auto-approved"), "stderr={stderr}");
+}
+
+#[test]
+// `timeout_ms = 0` clamps up to the 100 ms floor and warns — a hard error would
+// abort before the run prints anything.
+fn run_timeout_ms_zero_clamps_and_warns() {
+    let dir = run_temp_dir("timeout-zero");
+    let cfg = write_run_config_with(&dir, "allow", Some(0));
+    let out = run_cli(&cfg, &dir, &["--yes", "go"]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(last_line(&String::from_utf8_lossy(&out.stdout)), "done");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("clamped to 100"), "{stderr}");
+}
+
+#[test]
+// On the `run` path there is no question notifier, so the scripted `ask` tool
+// settles `Skipped` immediately and the run finishes promptly with its final
+// response — never hanging on an unanswered question.
+fn run_with_question_settles_skipped() {
+    let dir = run_temp_dir("question-skipped");
+    let cfg = dir.join("run_config.toml");
+    std::fs::write(
+        &cfg,
+        format!(
+            "[model]\nprovider = \"mock-ask\"\n\n\
+             [[model.providers]]\nname = \"mock-ask\"\nkind = \"mock-ask\"\n\
+             base_url = \"mock://local\"\napi_key_env = \"\"\n\n\
+             [session]\ndir = \"{}\"\n",
+            dir.join("sessions").display()
+        ),
+    )
+    .unwrap();
+    let out = run_cli(&cfg, &dir, &["hi"]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        last_line(&String::from_utf8_lossy(&out.stdout)),
+        "ask answered"
+    );
+}
+
 // ---- T2: `--attach` carries the run overrides and surfaces JSON-RPC errors ----
 
 /// Reaps the spawned kernel on every exit path, panics included (pattern from tests/e2e_serve.rs).
@@ -491,9 +637,11 @@ fn read_listening_addr<R: BufRead>(reader: &mut R) -> String {
 fn e2e_run_attach_surfaces_unknown_provider() {
     let dir = run_temp_dir("attach-unknown-provider");
     let cfg = write_run_config(&dir);
+    let env = common::TempEnv::new();
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_agentj"));
+    env.apply(&mut cmd);
     let mut kernel = AutoReap(
-        Command::new(env!("CARGO_BIN_EXE_agentj"))
-            .args(["--config", cfg.to_str().unwrap(), "serve", "--port", "0"])
+        cmd.args(["--config", cfg.to_str().unwrap(), "serve", "--port", "0"])
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -506,7 +654,10 @@ fn e2e_run_attach_surfaces_unknown_provider() {
     let addr = read_listening_addr(&mut reader);
 
     let errfile = dir.join("attach-stderr.txt");
-    let mut attach = Command::new(env!("CARGO_BIN_EXE_agentj"))
+    let env = common::TempEnv::new();
+    let mut attach_cmd = Command::new(env!("CARGO_BIN_EXE_agentj"));
+    env.apply(&mut attach_cmd);
+    let mut attach = attach_cmd
         .args([
             "--config",
             cfg.to_str().unwrap(),

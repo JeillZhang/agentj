@@ -114,6 +114,13 @@ pub enum AgentEvent {
         call_id: String,
         result: String,
     },
+    /// A tool result exceeded `max_tool_result_chars` and was capped at the single
+    /// tool-result conversion point. The [`AgentEvent::ToolResult`] that follows carries
+    /// the already-truncated text; every sink sees the same string.
+    ToolResultTruncated {
+        tool_call_id: String,
+        dropped_chars: usize,
+    },
     Todo {
         run_id: Option<String>,
         revision: u64,
@@ -125,6 +132,8 @@ pub enum AgentEvent {
         final_response: String,
         tool_calls: Vec<ToolCall>,
         usage: Option<TokenUsage>,
+        provider: Option<String>,
+        model: Option<String>,
     },
     Error(String),
 }
@@ -286,6 +295,8 @@ mod tests {
             final_response: "ok".into(),
             tool_calls: vec![],
             usage: None,
+            provider: None,
+            model: None,
         };
         assert!(matches!(
             done,

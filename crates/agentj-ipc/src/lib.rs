@@ -28,7 +28,8 @@ use agentj_protocol::provider::{
 };
 use agentj_protocol::question::{AskQuestionParams, QuestionRespondParams, QuestionRespondResult};
 use agentj_protocol::session::{
-    SessionIdParams, SessionNewParams, SessionStatusResult, SessionSubscribeParams,
+    SessionIdParams, SessionNewParams, SessionRunResult, SessionStatusResult,
+    SessionSubscribeParams, UsageInfo,
 };
 use agentj_protocol::streaming::CancelParams;
 use agentj_question::{
@@ -923,8 +924,10 @@ impl IpcServer {
         let mut rx = self.run_turn_stream_with(sid, content, overrides);
         let mut text = String::new();
         let mut tc_list = vec![];
-        let mut usage_opt: Option<serde_json::Value> = None;
+        let mut usage_opt: Option<UsageInfo> = None;
         let mut current_run_id: Option<String> = None;
+        let mut result_provider: Option<String> = None;
+        let mut result_model: Option<String> = None;
         let mut pending_thinking = String::new();
         while let Some(event) = rx.recv().await {
             match event {
@@ -985,10 +988,13 @@ impl IpcServer {
                         },
                     );
                 }
+                AgentEvent::ToolResultTruncated { .. } => {}
                 AgentEvent::Done {
                     run_id,
                     tool_calls,
                     usage,
+                    provider,
+                    model,
                     ..
                 } => {
                     let done_run_id = sanitize_run_id(run_id);
@@ -1014,12 +1020,23 @@ impl IpcServer {
                         );
                     }
                     tc_list = tool_calls;
-                    usage_opt = usage.map(|u| {
-                        serde_json::json!({
-                            "prompt_tokens": u.prompt_tokens,
-                            "completion_tokens": u.completion_tokens
-                        })
+                    usage_opt = usage.map(|u| UsageInfo {
+                        prompt_tokens: u.prompt_tokens,
+                        completion_tokens: u.completion_tokens,
                     });
+                    // Record the effective provider/model once per run, only when
+                    // the turn carried at least one identity field.
+                    if provider.is_some() || model.is_some() {
+                        self.record_trajectory(
+                            sid,
+                            agentj_protocol::trajectory::TrajectoryValue::RunModel {
+                                provider: provider.clone(),
+                                model: model.clone(),
+                            },
+                        );
+                    }
+                    result_provider = provider;
+                    result_model = model;
                     break;
                 }
                 AgentEvent::Error(e) => {
@@ -1101,16 +1118,23 @@ impl IpcServer {
                 }
             }
         }
-        let mut result = serde_json::json!({ "content": text, "tool_calls": tc_list });
-        if let Some(u) = usage_opt {
-            result["usage"] = u;
-        }
-        if let Some(rid) = current_run_id
-            && let Some(sanitized) = sanitize_run_id(Some(rid))
-        {
-            result["run_id"] = Value::String(sanitized);
-        }
-        Ok(result)
+        let tool_calls = tc_list
+            .into_iter()
+            .map(|tc| agentj_protocol::types::ToolCall {
+                id: tc.id,
+                name: tc.name,
+                arguments: tc.arguments,
+            })
+            .collect();
+        let result = SessionRunResult {
+            content: text,
+            tool_calls: Some(tool_calls),
+            usage: usage_opt,
+            run_id: current_run_id,
+            provider: result_provider,
+            model: result_model,
+        };
+        Ok(build_run_reply(&result))
     }
 
     fn dispatch_shutdown(&self) -> Result<Value, DispatchError> {
@@ -1976,6 +2000,35 @@ fn sanitize_run_id(opt: Option<String>) -> Option<String> {
     }
 }
 
+/// Build the hand-shaped `session/run` reply. `tool_calls` is always emitted (an
+/// empty array when `None`); `usage`, `run_id`, `provider` and `model` are inserted
+/// conditionally so an unknown value is absent from the JSON rather than `null`.
+fn build_run_reply(result: &SessionRunResult) -> serde_json::Value {
+    let tool_calls = result.tool_calls.as_deref().unwrap_or(&[]);
+    let mut obj = serde_json::json!({
+        "content": result.content.clone(),
+        "tool_calls": tool_calls,
+    });
+    if let Some(usage) = &result.usage {
+        obj["usage"] = serde_json::json!({
+            "prompt_tokens": usage.prompt_tokens,
+            "completion_tokens": usage.completion_tokens,
+        });
+    }
+    if let Some(run_id) = &result.run_id
+        && let Some(sanitized) = sanitize_run_id(Some(run_id.clone()))
+    {
+        obj["run_id"] = Value::String(sanitized);
+    }
+    if let Some(provider) = &result.provider {
+        obj["provider"] = serde_json::json!(provider);
+    }
+    if let Some(model) = &result.model {
+        obj["model"] = serde_json::json!(model);
+    }
+    obj
+}
+
 /// Map a core file-change artifact to the wire shape (design contract item 3).
 /// `diff_truncated` is `Some(true)` only when truncated; `false` stays omitted
 /// per the field's `skip_serializing_if`.
@@ -2419,6 +2472,7 @@ mod tests {
     use agentj_core::turn_runner::TurnRunner;
     use agentj_core::types::*;
     use agentj_model::mock::MockModelProvider;
+    use agentj_protocol::session::SessionRunResult;
     use agentj_session::InMemoryStore;
     use std::sync::Arc;
 
@@ -4087,6 +4141,39 @@ mod tests {
         assert!(v["result"].get("response").is_none());
     }
 
+    #[test]
+    fn run_reply_omits_identity_when_unknown() {
+        let result = SessionRunResult {
+            content: "ok".into(),
+            tool_calls: None,
+            usage: None,
+            run_id: None,
+            provider: None,
+            model: None,
+        };
+        let value = build_run_reply(&result);
+        assert!(
+            value.get("provider").is_none(),
+            "must be absent, not null: {value}"
+        );
+        assert!(value.get("model").is_none());
+    }
+
+    #[test]
+    fn run_reply_carries_identity_when_known() {
+        let result = SessionRunResult {
+            content: "ok".into(),
+            tool_calls: None,
+            usage: None,
+            run_id: None,
+            provider: Some("a".into()),
+            model: Some("m".into()),
+        };
+        let value = build_run_reply(&result);
+        assert_eq!(value["provider"], "a");
+        assert_eq!(value["model"], "m");
+    }
+
     #[tokio::test]
     async fn session_run_result_includes_usage_when_reported() {
         let server = stub_bus_server_with_usage();
@@ -5226,7 +5313,8 @@ mod tests {
                 "todo",
                 "tool_call",
                 "tool_result",
-                "file_change"
+                "file_change",
+                "run_model"
             ],
             "each artifact is recorded exactly once, in stream order"
         );
@@ -6129,7 +6217,10 @@ mod tests {
         assert_eq!(v["result"]["usage"]["prompt_tokens"], 100);
         assert_eq!(v["result"]["usage"]["completion_tokens"], 20);
         let events = read_traj_events(&dir, "s1");
-        assert_eq!(traj_kinds(&events), vec!["user", "thinking", "usage"]);
+        assert_eq!(
+            traj_kinds(&events),
+            vec!["user", "thinking", "usage", "run_model"]
+        );
         assert_eq!(events[0].seq, 1);
         assert_eq!(events[1].seq, 2);
         assert_eq!(events[2].seq, 3);
@@ -6164,7 +6255,7 @@ mod tests {
         let events = read_traj_events(&dir, "s1");
         assert_eq!(
             traj_kinds(&events),
-            vec!["user", "thinking"],
+            vec!["user", "thinking", "run_model"],
             "exactly two nodes"
         );
         let agentj_protocol::trajectory::TrajectoryValue::Thinking { content } = &events[1].value
@@ -6191,7 +6282,11 @@ mod tests {
             .unwrap();
         assert!(resp.contains("\"result\""), "{resp}");
         let events = read_traj_events(&dir, "s1");
-        assert_eq!(traj_kinds(&events), vec!["user"], "no blank thinking node");
+        assert_eq!(
+            traj_kinds(&events),
+            vec!["user", "run_model"],
+            "no blank thinking node"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -6209,7 +6304,7 @@ mod tests {
             .await
             .unwrap();
         let events = read_traj_events(&dir, "s1");
-        assert_eq!(traj_kinds(&events), vec!["user", "thinking"]);
+        assert_eq!(traj_kinds(&events), vec!["user", "thinking", "run_model"]);
         let agentj_protocol::trajectory::TrajectoryValue::Thinking { content } = &events[1].value
         else {
             panic!("expected a thinking node, got {events:?}")
@@ -6257,7 +6352,7 @@ mod tests {
         let events = read_traj_events(&dir, "s1");
         assert_eq!(
             traj_kinds(&events),
-            vec!["user", "tool_call", "tool_result"]
+            vec!["user", "tool_call", "tool_result", "run_model"]
         );
         let agentj_protocol::trajectory::TrajectoryValue::ToolCall { tool_call } = &events[1].value
         else {
@@ -6434,7 +6529,13 @@ mod tests {
         let events = read_traj_events(&dir, "s1");
         assert_eq!(
             traj_kinds(&events),
-            vec!["user", "tool_call", "permission", "tool_result"]
+            vec![
+                "user",
+                "tool_call",
+                "permission",
+                "tool_result",
+                "run_model"
+            ]
         );
         let agentj_protocol::trajectory::TrajectoryValue::Permission {
             request_id,
@@ -6504,7 +6605,13 @@ mod tests {
         let events = read_traj_events(&dir, "s1");
         assert_eq!(
             traj_kinds(&events),
-            vec!["user", "tool_call", "permission", "tool_result"]
+            vec![
+                "user",
+                "tool_call",
+                "permission",
+                "tool_result",
+                "run_model"
+            ]
         );
         let agentj_protocol::trajectory::TrajectoryValue::Permission { decision, .. } =
             &events[2].value
@@ -6769,10 +6876,11 @@ mod tests {
         assert_eq!(page1["events"][0]["value"]["kind"], "user");
         assert_eq!(page1["events"][1]["value"]["kind"], "thinking");
         assert_eq!(page1["next_cursor"], 3);
-        let raw2 = r#"{"jsonrpc":"2.0","id":7,"method":"session/history","params":{"session_id":"s1","cursor":3,"limit":2}}"#;
+        let raw2 = r#"{"jsonrpc":"2.0","id":7,"method":"session/history","params":{"session_id":"s1","cursor":3,"limit":3}}"#;
         let resp2 = server.handle_request(raw2).await.unwrap();
         let v2: serde_json::Value = serde_json::from_str(&resp2).unwrap();
         assert_eq!(v2["result"]["events"][0]["value"]["kind"], "usage");
+        assert_eq!(v2["result"]["events"][1]["value"]["kind"], "run_model");
         assert!(v2["result"].get("next_cursor").is_none(), "no next page");
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -7022,7 +7130,7 @@ mod tests {
             .await
             .unwrap();
         let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
-        assert_eq!(v["result"]["events"].as_array().unwrap().len(), 3);
+        assert_eq!(v["result"]["events"].as_array().unwrap().len(), 4);
         assert!(
             v["result"].get("next_cursor").is_none(),
             "nothing left behind"

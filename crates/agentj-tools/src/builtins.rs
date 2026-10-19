@@ -167,7 +167,7 @@ impl GrepTool {
     /// Directories the in-process walker never descends into. The `rg` path
     /// honours `.gitignore`; the fallback has no ignore engine, so this list
     /// keeps it from crawling build output and dependency trees.
-    const SKIP_DIRS: [&'static str; 9] = [
+    pub(crate) const SKIP_DIRS: [&'static str; 9] = [
         ".git",
         "target",
         "node_modules",
@@ -368,36 +368,42 @@ impl Tool for GrepTool {
 pub struct GlobTool;
 
 impl GlobTool {
-    fn run(
+    /// Render the in-process walk result into the frozen `./<rel path>` shape:
+    /// hits sorted, one per line, capped at 2 000 with a `# ` truncation line,
+    /// a timeout line (a tool `Err` would abort the turn), and a `no matches`
+    /// line for an empty result.
+    fn run_in_process(
         pattern: &str,
-        cwd: Option<&std::path::Path>,
+        root: &std::path::Path,
         timeout: std::time::Duration,
     ) -> Result<serde_json::Value, ToolError> {
-        Self::run_with_bin("find", pattern, cwd, timeout)
-    }
-
-    /// Run `find` through the guarded executor. The binary name is a parameter so
-    /// the timeout path can be exercised with a stand-in in tests. Arguments and
-    /// their order are unchanged, so the output keeps its `./src/main.rs` shape.
-    fn run_with_bin(
-        bin: &str,
-        pattern: &str,
-        cwd: Option<&std::path::Path>,
-        timeout: std::time::Duration,
-    ) -> Result<serde_json::Value, ToolError> {
-        let spec = CommandSpec {
-            program: bin.to_string(),
-            args: vec![
-                ".".into(),
-                "-name".into(),
-                pattern.into(),
-                "-type".into(),
-                "f".into(),
-            ],
-            cwd: cwd.map(std::path::Path::to_path_buf),
-        };
-        let out = ToolExecutor::new(timeout, true).run_blocking(spec)?;
-        Ok(serde_json::Value::String(out.stdout))
+        match crate::glob::GlobMatcher::new(pattern)
+            .and_then(|m| crate::glob::walk_with(root, &m, timeout))
+        {
+            Ok((hits, _)) if hits.is_empty() => Ok(serde_json::Value::String(format!(
+                "no matches for {pattern}"
+            ))),
+            Ok((hits, matched)) => {
+                let mut text = hits
+                    .iter()
+                    .map(|p| format!("./{p}"))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                if matched > hits.len() {
+                    text.push_str(&format!(
+                        "\n# 已截断 {} 条命中（上限 {}），请缩小 pattern",
+                        matched - hits.len(),
+                        crate::glob::MAX_GLOB_ENTRIES
+                    ));
+                }
+                Ok(serde_json::Value::String(text))
+            }
+            Err(ToolError::Timeout(t)) => Ok(serde_json::Value::String(format!(
+                "glob timed out after {}s",
+                t.as_secs().max(1)
+            ))),
+            Err(e) => Err(e),
+        }
     }
 }
 
@@ -406,7 +412,7 @@ impl Tool for GlobTool {
         "glob"
     }
     fn description(&self) -> &str {
-        "Find files matching a glob pattern"
+        "Find files matching a glob pattern in-process, skipping the same directories as grep"
     }
     fn input_schema(&self) -> serde_json::Value {
         serde_json::json!({
@@ -423,7 +429,11 @@ impl Tool for GlobTool {
     }
     fn execute(&self, input: serde_json::Value) -> Result<serde_json::Value, ToolError> {
         let timeout = clamp_timeout_ms(input["timeout_ms"].as_i64(), SEARCH_DEFAULT_TIMEOUT_MS);
-        Self::run(input["pattern"].as_str().unwrap_or("*"), None, timeout)
+        let cwd = std::env::current_dir().map_err(|e| ToolError::ExecutionFailed {
+            name: "glob".into(),
+            reason: e.to_string(),
+        })?;
+        Self::run_in_process(input["pattern"].as_str().unwrap_or("*"), &cwd, timeout)
     }
     fn execute_with_context(
         &self,
@@ -431,9 +441,9 @@ impl Tool for GlobTool {
         ctx: &ToolCallContext,
     ) -> Result<serde_json::Value, ToolError> {
         let timeout = clamp_timeout_ms(input["timeout_ms"].as_i64(), SEARCH_DEFAULT_TIMEOUT_MS);
-        Self::run(
+        Self::run_in_process(
             input["pattern"].as_str().unwrap_or("*"),
-            Some(&ctx.workspace_root),
+            &ctx.workspace_root,
             timeout,
         )
     }
@@ -807,23 +817,6 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
-    #[test]
-    fn glob_tool_times_out_and_reclaims_its_process_group() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let fake_find = slow_executable(dir.path(), "slow-find");
-        let started = std::time::Instant::now();
-        let err = GlobTool::run_with_bin(
-            fake_find.to_str().unwrap(),
-            "*.rs",
-            Some(dir.path()),
-            std::time::Duration::from_millis(1_000),
-        )
-        .unwrap_err();
-        assert!(matches!(&err, ToolError::Timeout(_)), "unexpected: {err}");
-        assert!(started.elapsed() < std::time::Duration::from_secs(5));
-    }
-
     #[test]
     fn glob_schema_declares_an_optional_timeout_ms() {
         let schema = GlobTool.input_schema();
@@ -914,6 +907,107 @@ mod tests {
             .execute_with_context(args, &ctx_for(root.path()))
             .unwrap();
         assert!(out.as_str().unwrap().contains("./src/main.rs"));
+    }
+
+    #[test]
+    fn glob_basename_pattern_still_matches_at_any_depth() {
+        let root = tempfile::TempDir::new().unwrap();
+        for p in ["a/x.rs", "b/c/x.rs", "a/y.txt"] {
+            let path = root.path().join(p);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, "").unwrap();
+        }
+        let out = GlobTool
+            .execute_with_context(
+                serde_json::json!({"pattern": "x.rs"}),
+                &ctx_for(root.path()),
+            )
+            .unwrap();
+        assert_eq!(out.as_str().unwrap(), "./a/x.rs\n./b/c/x.rs");
+    }
+
+    #[test]
+    fn glob_reports_no_matches_and_invalid_patterns() {
+        let root = tempfile::TempDir::new().unwrap();
+        let empty = GlobTool
+            .execute_with_context(
+                serde_json::json!({"pattern": "*.nope"}),
+                &ctx_for(root.path()),
+            )
+            .unwrap();
+        assert_eq!(empty.as_str().unwrap(), "no matches for *.nope");
+
+        let bad = GlobTool
+            .execute_with_context(serde_json::json!({"pattern": "a[b"}), &ctx_for(root.path()));
+        assert!(
+            matches!(bad, Err(ToolError::ExecutionFailed { .. })),
+            "got {bad:?}"
+        );
+    }
+
+    #[test]
+    fn glob_output_is_sorted_and_prefixed_with_dot_slash() {
+        let root = tempfile::TempDir::new().unwrap();
+        // Created in a deliberately scrambled order: the walk is not guaranteed to visit
+        // these in sorted order, so the exact-output assertion only holds because the
+        // tool sorts before rendering.
+        for p in ["z.txt", "m/b.txt", "a.txt", "m/a.txt", "a/b.txt"] {
+            let path = root.path().join(p);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, "").unwrap();
+        }
+        let out = GlobTool
+            .execute_with_context(
+                serde_json::json!({"pattern": "*.txt"}),
+                &ctx_for(root.path()),
+            )
+            .unwrap();
+        let text = out.as_str().unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert!(
+            lines.iter().all(|l| l.starts_with("./")),
+            "every line must be ./ prefixed: {text}"
+        );
+        // Pin the exact sorted order rather than only "lines == lines.sort()": dropping
+        // the sort would stay green only if the walk happened to visit in sorted order.
+        assert_eq!(text, "./a.txt\n./a/b.txt\n./m/a.txt\n./m/b.txt\n./z.txt");
+    }
+
+    #[test]
+    fn glob_matches_path_shaped_patterns() {
+        let root = tempfile::TempDir::new().unwrap();
+        for p in ["dir/a.rs", "dir/sub/b.rs", "other/c.rs"] {
+            let path = root.path().join(p);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, "").unwrap();
+        }
+        let out = GlobTool
+            .execute_with_context(
+                serde_json::json!({"pattern": "dir/*.rs"}),
+                &ctx_for(root.path()),
+            )
+            .unwrap();
+        assert_eq!(out.as_str().unwrap(), "./dir/a.rs");
+    }
+
+    #[test]
+    fn glob_caps_entries_and_announces_truncation() {
+        let root = tempfile::TempDir::new().unwrap();
+        for i in 0..2_001 {
+            std::fs::write(root.path().join(format!("f{i:04}.txt")), "").unwrap();
+        }
+        let out = GlobTool
+            .execute_with_context(
+                serde_json::json!({"pattern": "*.txt"}),
+                &ctx_for(root.path()),
+            )
+            .unwrap();
+        let text = out.as_str().unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.iter().filter(|l| l.starts_with("./")).count(), 2_000);
+        let last = lines.last().copied().unwrap();
+        assert_eq!(last, "# 已截断 1 条命中（上限 2000），请缩小 pattern");
+        assert!(!last.starts_with("./"));
     }
 
     #[test]

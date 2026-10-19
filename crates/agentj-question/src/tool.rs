@@ -136,7 +136,7 @@ impl Tool for AskTool {
                 "timeout_s": {
                     "type": "integer",
                     "minimum": 1,
-                    "description": "Timeout in seconds; omitted waits forever"
+                    "description": "Timeout in seconds; omitted waits for the module default ([agent] question_timeout_s, 600s; 1..=86400)"
                 }
             },
             "required": ["question", "options"],

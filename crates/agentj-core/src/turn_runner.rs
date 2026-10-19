@@ -50,6 +50,7 @@ pub struct TurnRunner {
     pipeline: Arc<dyn ContextPipeline>,
     default_system_prompt: String,
     max_tool_iterations: usize,
+    max_tool_result_chars: usize,
     on_turn_complete: Option<Arc<dyn Fn(&SessionId, Option<TokenUsage>) + Send + Sync>>,
     sender: KernelSender,
     tool_executor_id: ModuleId,
@@ -75,11 +76,17 @@ impl TurnRunner {
                     .and_then(|v| if v > 0 { Some(v as usize) } else { None })
             })
             .unwrap_or(50);
+        let max_tool_result_chars = ctx
+            .config
+            .get_int("agent.max_tool_result_chars")
+            .and_then(|v| usize::try_from(v).ok())
+            .unwrap_or(100_000);
         Self {
             ctx,
             pipeline,
             default_system_prompt,
             max_tool_iterations,
+            max_tool_result_chars,
             on_turn_complete: None,
             sender,
             tool_executor_id,
@@ -137,6 +144,7 @@ impl TurnRunner {
         let pipeline = Arc::clone(&self.pipeline);
         let system_prompt = system_prompt.unwrap_or_else(|| self.default_system_prompt.clone());
         let max_iter = self.max_tool_iterations;
+        let max_tool_result_chars = self.max_tool_result_chars;
         let on_done = self.on_turn_complete.clone();
         let sender = self.sender.clone();
         let tool_executor_id = self.tool_executor_id.clone();
@@ -166,6 +174,7 @@ impl TurnRunner {
                 system_prompt,
                 overrides,
                 max_iter,
+                max_tool_result_chars,
                 reply.clone(),
                 sender,
                 tool_executor_id,
@@ -195,6 +204,7 @@ impl TurnRunner {
         system_prompt: String,
         overrides: RunOverrides,
         max_iter: usize,
+        max_tool_result_chars: usize,
         reply: mpsc::Sender<AgentEvent>,
         sender: KernelSender,
         tool_executor_id: ModuleId,
@@ -211,21 +221,24 @@ impl TurnRunner {
             .session
             .get(&session_id)
             .map_err(|e| route(e.to_string()))?;
-        let provider = match overrides
+        let (provider_name, provider) = match overrides
             .provider
             .as_deref()
             .map(str::trim)
             .filter(|name| !name.is_empty())
         {
-            Some(name) => ctx.providers.get(name).ok_or_else(|| {
-                route(format!(
-                    "unknown provider: {name} (registered: {})",
-                    ctx.providers.list().join(", ")
-                ))
-            })?,
+            Some(name) => (
+                name.to_string(),
+                ctx.providers.get(name).ok_or_else(|| {
+                    route(format!(
+                        "unknown provider: {name} (registered: {})",
+                        ctx.providers.list().join(", ")
+                    ))
+                })?,
+            ),
             None => ctx
                 .providers
-                .get_default()
+                .get_default_with_name()
                 .ok_or_else(|| route("no default provider".into()))?,
         };
         let tool_defs = ctx.tools.definitions();
@@ -379,6 +392,8 @@ impl TurnRunner {
                         final_response: content,
                         tool_calls: all_tool_calls,
                         usage,
+                        provider: Some(provider_name.clone()),
+                        model: Some(default_options.model.clone()),
                     })
                     .await
                     .is_err()
@@ -445,6 +460,22 @@ impl TurnRunner {
                 };
                 if cancelled {
                     break;
+                }
+                // Cap oversized tool results exactly once, at the single tool-result
+                // conversion point. The truncated string is what every downstream sink
+                // (event, reflux, persisted history) sees.
+                let (tool_result, dropped) =
+                    crate::budget::truncate_chars(&tool_result, max_tool_result_chars);
+                if dropped > 0
+                    && reply
+                        .send(AgentEvent::ToolResultTruncated {
+                            tool_call_id: tc.id.clone(),
+                            dropped_chars: dropped,
+                        })
+                        .await
+                        .is_err()
+                {
+                    return Ok(());
                 }
                 if reply
                     .send(AgentEvent::ToolResult {
@@ -537,6 +568,8 @@ impl TurnRunner {
                 final_response: conclusion,
                 tool_calls: all_tool_calls,
                 usage,
+                provider: Some(provider_name.clone()),
+                model: Some(default_options.model.clone()),
             })
             .await
             .is_err()
@@ -1024,6 +1057,7 @@ mod tests {
                 }
                 AgentEvent::ToolCall(_) => kinds.push("tool_call".to_string()),
                 AgentEvent::ToolResult { .. } => kinds.push("tool_result".to_string()),
+                AgentEvent::ToolResultTruncated { .. } => {}
                 AgentEvent::Todo { .. } => kinds.push("todo".to_string()),
                 AgentEvent::FileChange(_) => kinds.push("file_change".to_string()),
                 AgentEvent::Done { .. } => {
@@ -1783,6 +1817,7 @@ mod tests {
                 AgentEvent::Delta(_) => kinds.push("delta".into()),
                 AgentEvent::ToolCall(_) => kinds.push("tool_call".into()),
                 AgentEvent::ToolResult { .. } => kinds.push("tool_result".into()),
+                AgentEvent::ToolResultTruncated { .. } => {}
                 AgentEvent::Todo {
                     revision, snapshot, ..
                 } => {
@@ -1847,6 +1882,7 @@ mod tests {
                 AgentEvent::Delta(_) => kinds.push("delta".into()),
                 AgentEvent::ToolCall(_) => kinds.push("tool_call".into()),
                 AgentEvent::ToolResult { .. } => kinds.push("tool_result".into()),
+                AgentEvent::ToolResultTruncated { .. } => {}
                 AgentEvent::Todo { .. } => kinds.push("todo".into()),
                 AgentEvent::FileChange(artifact) => {
                     kinds.push("file_change".into());
@@ -2415,5 +2451,358 @@ mod tests {
         .await;
         assert!(err.is_none(), "{err:?}");
         assert_eq!(seen, vec!["mock:cfg-model".to_string()]);
+    }
+
+    /// One turn against a single registered default provider with an optional model override;
+    /// returns the full event stream plus the persisted session history.
+    async fn run_turn_with(model: Option<&'static str>) -> (Vec<AgentEvent>, Vec<ChatMessage>) {
+        let (kernel, sender) = spy_kernel_with(ToolSpy);
+        let ctx = loop_test_ctx();
+        ctx.providers.register(
+            "default-provider".into(),
+            Arc::new(NamedRecordingProvider {
+                name: "default-provider",
+                seen: Arc::new(Mutex::new(Vec::new())),
+            }),
+        );
+        let session = ctx.session.clone();
+        let runner = TurnRunner::new(
+            ctx.clone(),
+            Arc::new(MockPipeline),
+            "sys".into(),
+            sender,
+            "tool_spy".into(),
+        );
+        let sid = runner.create_session().unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+        runner
+            .spawn_turn(
+                sid.clone(),
+                "hi".into(),
+                None,
+                RunOverrides {
+                    provider: None,
+                    model: model.map(str::to_string),
+                },
+                tx,
+            )
+            .unwrap();
+        let mut events = vec![];
+        while let Some(ev) = rx.recv().await {
+            let terminal = matches!(ev, AgentEvent::Done { .. } | AgentEvent::Error(_));
+            events.push(ev);
+            if terminal {
+                break;
+            }
+        }
+        let stored = session.get(&sid).unwrap_or_default();
+        kernel.sender().send(KernelMessage::Shutdown).unwrap();
+        (events, stored)
+    }
+
+    #[tokio::test]
+    async fn done_reports_the_effective_model() {
+        let (events, _) = run_turn_with(Some("m-b")).await;
+        let (provider, model) = events
+            .iter()
+            .find_map(|e| match e {
+                AgentEvent::Done {
+                    provider, model, ..
+                } => Some((provider.clone(), model.clone())),
+                _ => None,
+            })
+            .expect("Done");
+        assert_eq!(provider.as_deref(), Some("default-provider"));
+        assert_eq!(model.as_deref(), Some("m-b"));
+    }
+
+    /// Tool whose result is a fixed-size string — the T6 truncation fixture.
+    struct SizedOutputTool(usize);
+    impl crate::module::Tool for SizedOutputTool {
+        fn name(&self) -> &str {
+            "big"
+        }
+        fn description(&self) -> &str {
+            "returns a fixed-size output"
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({ "type": "object", "properties": {} })
+        }
+        fn execute(
+            &self,
+            _input: serde_json::Value,
+        ) -> Result<serde_json::Value, crate::error::ToolError> {
+            Ok(serde_json::Value::String("x".repeat(self.0)))
+        }
+    }
+
+    /// Executes tools registered in a shared [`ToolRegistry`] — the in-test stand-in for
+    /// the real tool-executor module.
+    struct BigToolExecutor(Arc<ToolRegistry>);
+    impl Module for BigToolExecutor {
+        fn id(&self) -> ModuleId {
+            "tool_exec".into()
+        }
+        fn metadata(&self) -> ModuleMetadata {
+            ModuleMetadata {
+                id: "tool_exec".into(),
+                name: "exec".into(),
+                version: "0.1".into(),
+                description: "".into(),
+                author: "".into(),
+            }
+        }
+        fn init(&mut self, _c: &KernelContext, _r: &mut ModuleRegister) -> Result<(), ModuleError> {
+            Ok(())
+        }
+        fn shutdown(&mut self) -> Result<(), ModuleError> {
+            Ok(())
+        }
+    }
+    impl KernelModule for BigToolExecutor {
+        fn handle(
+            &mut self,
+            msg: &KernelMessage,
+        ) -> Result<crate::module::KernelResponse, ModuleError> {
+            if let KernelMessage::ToolCallRequest {
+                tool_call, reply, ..
+            } = msg
+            {
+                let reply = reply.clone();
+                let result = match self.0.get(&tool_call.name) {
+                    Some(tool) => tool
+                        .execute(tool_call.arguments.clone())
+                        .unwrap_or(serde_json::Value::Null),
+                    None => serde_json::Value::Null,
+                };
+                let mut guard = reply.lock().unwrap();
+                if let Some(tx) = guard.take() {
+                    let _ = tx.send(Ok(ToolExecutionOutcome {
+                        result,
+                        artifacts: vec![],
+                    }));
+                }
+            }
+            Ok(crate::module::KernelResponse::Handled)
+        }
+    }
+
+    /// Config that answers only the tool-result cap key.
+    struct ToolResultCapConfig(i64);
+    impl ConfigProvider for ToolResultCapConfig {
+        fn get_str(&self, _k: &str) -> Option<String> {
+            None
+        }
+        fn get_int(&self, k: &str) -> Option<i64> {
+            (k == "agent.max_tool_result_chars").then_some(self.0)
+        }
+        fn providers(&self) -> Vec<(String, String)> {
+            vec![]
+        }
+    }
+
+    /// Pipeline that records every string handed to `reflux`, so the test can pin that the
+    /// refluxed tool result is the SAME truncated string the event and store carry.
+    struct RecordingPipeline(StdMutex<Vec<String>>);
+    impl ContextPipeline for RecordingPipeline {
+        fn assemble(
+            &self,
+            system: &str,
+            history: &[ChatMessage],
+            _tool_results: &[(ToolCall, String)],
+        ) -> Vec<ChatMessage> {
+            let mut msgs = vec![ChatMessage::system(system)];
+            msgs.extend_from_slice(history);
+            msgs
+        }
+        fn reflux(&self, history: &mut Vec<ChatMessage>, tool_call: &ToolCall, result: String) {
+            self.0.lock().unwrap().push(result.clone());
+            history.push(ChatMessage {
+                role: Role::Assistant,
+                content: String::new(),
+                tool_call_id: None,
+                tool_calls: vec![tool_call.clone()],
+            });
+            history.push(ChatMessage::tool_result(&tool_call.id, result));
+        }
+    }
+
+    /// One tool round against a 200 000-char output, driven to completion. Returns every
+    /// emitted event and the persisted session history.
+    async fn run_one_tool_turn(cap: i64) -> (Vec<AgentEvent>, Vec<ChatMessage>) {
+        run_one_tool_turn_with(cap, 200_000, Arc::new(MockPipeline)).await
+    }
+
+    /// As [`run_one_tool_turn`], with a caller-chosen output length and pipeline, so the
+    /// exactly-at-cap boundary and the reflux identity can be pinned against a recording
+    /// pipeline instead of relied on structurally.
+    async fn run_one_tool_turn_with(
+        cap: i64,
+        output_len: usize,
+        pipeline: Arc<dyn ContextPipeline>,
+    ) -> (Vec<AgentEvent>, Vec<ChatMessage>) {
+        let tools = Arc::new(ToolRegistry::new());
+        tools.register(Arc::new(SizedOutputTool(output_len)));
+        let mut kernel = crate::kernel::Kernel::new();
+        let mut register = ModuleRegister::new(tools.clone(), Arc::new(ProviderRegistry::new()));
+        kernel
+            .register_module(
+                Box::new(BigToolExecutor(tools.clone())),
+                &loop_test_ctx(),
+                &mut register,
+            )
+            .unwrap();
+        let sender = kernel.sender();
+        let _handle = kernel.start();
+        let session = Arc::new(MockSession {
+            history: StdMutex::new(vec![]),
+        });
+        let ctx = KernelContext {
+            session: session.clone(),
+            tools,
+            providers: Arc::new(ProviderRegistry::new()),
+            config: Arc::new(ToolResultCapConfig(cap)),
+        };
+        ctx.providers.register(
+            "mock".into(),
+            Arc::new(ScriptedProvider {
+                calls: Arc::new(AtomicUsize::new(0)),
+                tool: ToolCall {
+                    id: "c1".into(),
+                    name: "big".into(),
+                    arguments: serde_json::json!({}),
+                },
+            }),
+        );
+        let runner = TurnRunner::new(
+            ctx.clone(),
+            pipeline,
+            "sys".into(),
+            sender,
+            "tool_exec".into(),
+        );
+        let sid = runner.create_session().unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+        runner
+            .spawn_turn(sid, "hi".into(), None, RunOverrides::default(), tx)
+            .unwrap();
+        let mut events = vec![];
+        while let Some(ev) = rx.recv().await {
+            let terminal = matches!(ev, AgentEvent::Done { .. } | AgentEvent::Error(_));
+            events.push(ev);
+            if terminal {
+                break;
+            }
+        }
+        let stored = session.history.lock().unwrap().clone();
+        kernel.sender().send(KernelMessage::Shutdown).unwrap();
+        (events, stored)
+    }
+
+    #[tokio::test]
+    async fn big_tool_output_is_truncated_once() {
+        let (events, stored) = run_one_tool_turn(100_000).await;
+        let tool_msg = stored
+            .iter()
+            .find(|m| m.role == Role::Tool)
+            .expect("tool message");
+        assert!(tool_msg.content.chars().count() <= 100_000 + 160);
+        assert!(tool_msg.content.ends_with("请缩小查询范围]…\n"));
+        let dropped: Vec<usize> = events
+            .iter()
+            .filter_map(|e| match e {
+                AgentEvent::ToolResultTruncated { dropped_chars, .. } => Some(*dropped_chars),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(dropped, vec![100_000], "one truncation with exact drop");
+        // The ToolResult frame and the stored message must carry the SAME truncated string
+        // (single conversion point, no re-truncation downstream).
+        let frame = events
+            .iter()
+            .find_map(|e| match e {
+                AgentEvent::ToolResult { result, .. } => Some(result),
+                _ => None,
+            })
+            .expect("tool result frame");
+        assert_eq!(frame, &tool_msg.content, "event frame == stored message");
+        // Ordering: the truncation notice must precede the ToolResult frame and the
+        // terminal Done, so every downstream sink sees the already-capped string.
+        let truncated_at = events
+            .iter()
+            .position(|e| matches!(e, AgentEvent::ToolResultTruncated { .. }))
+            .expect("truncation event");
+        let result_at = events
+            .iter()
+            .position(|e| matches!(e, AgentEvent::ToolResult { .. }))
+            .expect("tool result frame");
+        let done_at = events
+            .iter()
+            .position(|e| matches!(e, AgentEvent::Done { .. }))
+            .expect("done event");
+        assert!(
+            truncated_at < result_at && result_at < done_at,
+            "truncation notice must precede the ToolResult frame and Done"
+        );
+    }
+
+    #[tokio::test]
+    async fn small_tool_output_is_untouched() {
+        let (events, stored) = run_one_tool_turn(10_000_000).await;
+        let tool_msg = stored
+            .iter()
+            .find(|m| m.role == Role::Tool)
+            .expect("tool message");
+        assert_eq!(
+            tool_msg.content,
+            "x".repeat(200_000),
+            "below-limit result must be byte-identical"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, AgentEvent::ToolResultTruncated { .. }))
+        );
+    }
+
+    #[tokio::test]
+    async fn exactly_at_cap_tool_output_is_untouched() {
+        let (events, stored) =
+            run_one_tool_turn_with(100_000, 100_000, Arc::new(MockPipeline)).await;
+        let tool_msg = stored
+            .iter()
+            .find(|m| m.role == Role::Tool)
+            .expect("tool message");
+        assert_eq!(
+            tool_msg.content,
+            "x".repeat(100_000),
+            "an exactly-at-cap result must be byte-identical"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, AgentEvent::ToolResultTruncated { .. })),
+            "no truncation event at the exact cap"
+        );
+    }
+
+    #[tokio::test]
+    async fn reflux_receives_the_same_truncated_string() {
+        let recording = Arc::new(RecordingPipeline(StdMutex::new(vec![])));
+        let (events, _stored) = run_one_tool_turn_with(100_000, 200_000, recording.clone()).await;
+        let frame = events
+            .iter()
+            .find_map(|e| match e {
+                AgentEvent::ToolResult { result, .. } => Some(result),
+                _ => None,
+            })
+            .expect("tool result frame");
+        let refluxed = recording.0.lock().unwrap().clone();
+        assert_eq!(refluxed.len(), 1, "exactly one refluxed result");
+        assert_eq!(
+            refluxed[0].as_str(),
+            frame.as_str(),
+            "reflux must see the same truncated string the event carries"
+        );
     }
 }

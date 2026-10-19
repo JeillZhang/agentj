@@ -1038,6 +1038,12 @@ export type TrajectoryValue =
       question_id: string;
       skipped: boolean;
       [k: string]: unknown;
+    }
+  | {
+      kind: "run_model";
+      model?: string | null;
+      provider?: string | null;
+      [k: string]: unknown;
     };
 /**
  * Decision value in `PermissionRespondParams`. `Unknown` tolerates forward
@@ -1160,6 +1166,14 @@ export interface SessionRunParams {
 
 export interface SessionRunResult {
   content: string;
+  /**
+   * Effective model of the turn. @since 0.19.0
+   */
+  model?: string | null;
+  /**
+   * Effective provider of the turn. @since 0.19.0
+   */
+  provider?: string | null;
   /**
    * Run id that scopes this turn's todo/file_change events. @since 0.15.0
    */
