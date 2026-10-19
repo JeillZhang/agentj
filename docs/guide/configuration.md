@@ -18,6 +18,8 @@ kind = "openai-compat"   # openai-compat | responses | anthropic | opencode-go
 
 [agent]
 max_tool_iterations = 50
+max_tool_result_chars = 100000
+question_timeout_s = 600
 
 [permission]
 [permission.tools.bash]
@@ -58,6 +60,13 @@ env = { FOO = "bar" }
   用尽后内核**不再把工具交给模型**，而是再要一趟「收尾」：要求它基于已经查到的东西直接
   给出结论，并把结论作为本轮答复。所以长任务不会在轮数用完时丢掉中间成果、只留下一句
   「让我再看看…」或一条内部错误；若收尾那一趟也拿不回来内容，才会如实报错。
+- `max_tool_result_chars`：单个工具结果的字符上限（默认 `100000`，钳制到 `1000..=1000000`）。
+  超过时内核在工具结果的**唯一转换点**只截断一次——保留开头 `max_tool_result_chars` 个字符
+  （按 UTF-8 边界切分）并追加一条提示（丢弃字符数 + 原文长度，请模型缩小查询范围）；事件、
+  回注与持久化历史看到的都是这份截断后的文本。
+- `question_timeout_s`：`ask` 提问的默认超时秒数（默认 `600`，钳制到 `1..=86400`）。提问未
+  显式给 `timeout_s` 时用它；超时无人回答则该提问按「已跳过」结算，不再无限等待（显式
+  `timeout_s` 优先；客户端未接入提问通道时问题立即结算为跳过）。
 
 ## `[permission]`
 
