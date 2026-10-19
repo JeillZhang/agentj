@@ -771,6 +771,10 @@ export default function RunPanel({
     busy.current = true;
     setIsBusy(true);
     setElapsedMs(undefined);
+    // A fresh run resets the effective-model chip to the picker/default until the
+    // response reports the model the kernel actually used; a failed turn must not keep
+    // advertising the previous turn's model.
+    setEffectiveModel(null);
     const startedAt = performance.now();
     setEntries((prev) => [...prev, { kind: "user", text }]);
     let usage: {

@@ -185,3 +185,22 @@ fn registry_directions_are_valid() {
         );
     }
 }
+
+#[test]
+fn protocol_version_is_additive_minor() {
+    // Pin the const against a literal: reverting `PROTOCOL_VERSION` must fail the suite,
+    // not stay green because every other assertion compares against the const itself.
+    assert_eq!(agentj_protocol::PROTOCOL_VERSION, "0.19.0");
+}
+
+#[test]
+fn registry_version_matches_the_constant() {
+    let reg: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(repo_root().join("protocol/methods.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        reg["protocol_version"].as_str().unwrap(),
+        agentj_protocol::PROTOCOL_VERSION
+    );
+}

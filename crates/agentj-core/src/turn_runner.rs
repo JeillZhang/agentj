@@ -2516,14 +2516,14 @@ mod tests {
         assert_eq!(model.as_deref(), Some("m-b"));
     }
 
-    /// Tool whose result is a fixed 200 000-char string — the T6 truncation fixture.
-    struct BigOutputTool;
-    impl crate::module::Tool for BigOutputTool {
+    /// Tool whose result is a fixed-size string — the T6 truncation fixture.
+    struct SizedOutputTool(usize);
+    impl crate::module::Tool for SizedOutputTool {
         fn name(&self) -> &str {
             "big"
         }
         fn description(&self) -> &str {
-            "returns a fixed oversized output"
+            "returns a fixed-size output"
         }
         fn input_schema(&self) -> serde_json::Value {
             serde_json::json!({ "type": "object", "properties": {} })
@@ -2532,7 +2532,7 @@ mod tests {
             &self,
             _input: serde_json::Value,
         ) -> Result<serde_json::Value, crate::error::ToolError> {
-            Ok(serde_json::Value::String("x".repeat(200_000)))
+            Ok(serde_json::Value::String("x".repeat(self.0)))
         }
     }
 
@@ -2601,11 +2601,48 @@ mod tests {
         }
     }
 
-    /// One tool round against `BigOutputTool`, driven to completion. Returns every emitted
-    /// event and the persisted session history.
+    /// Pipeline that records every string handed to `reflux`, so the test can pin that the
+    /// refluxed tool result is the SAME truncated string the event and store carry.
+    struct RecordingPipeline(StdMutex<Vec<String>>);
+    impl ContextPipeline for RecordingPipeline {
+        fn assemble(
+            &self,
+            system: &str,
+            history: &[ChatMessage],
+            _tool_results: &[(ToolCall, String)],
+        ) -> Vec<ChatMessage> {
+            let mut msgs = vec![ChatMessage::system(system)];
+            msgs.extend_from_slice(history);
+            msgs
+        }
+        fn reflux(&self, history: &mut Vec<ChatMessage>, tool_call: &ToolCall, result: String) {
+            self.0.lock().unwrap().push(result.clone());
+            history.push(ChatMessage {
+                role: Role::Assistant,
+                content: String::new(),
+                tool_call_id: None,
+                tool_calls: vec![tool_call.clone()],
+            });
+            history.push(ChatMessage::tool_result(&tool_call.id, result));
+        }
+    }
+
+    /// One tool round against a 200 000-char output, driven to completion. Returns every
+    /// emitted event and the persisted session history.
     async fn run_one_tool_turn(cap: i64) -> (Vec<AgentEvent>, Vec<ChatMessage>) {
+        run_one_tool_turn_with(cap, 200_000, Arc::new(MockPipeline)).await
+    }
+
+    /// As [`run_one_tool_turn`], with a caller-chosen output length and pipeline, so the
+    /// exactly-at-cap boundary and the reflux identity can be pinned against a recording
+    /// pipeline instead of relied on structurally.
+    async fn run_one_tool_turn_with(
+        cap: i64,
+        output_len: usize,
+        pipeline: Arc<dyn ContextPipeline>,
+    ) -> (Vec<AgentEvent>, Vec<ChatMessage>) {
         let tools = Arc::new(ToolRegistry::new());
-        tools.register(Arc::new(BigOutputTool));
+        tools.register(Arc::new(SizedOutputTool(output_len)));
         let mut kernel = crate::kernel::Kernel::new();
         let mut register = ModuleRegister::new(tools.clone(), Arc::new(ProviderRegistry::new()));
         kernel
@@ -2639,7 +2676,7 @@ mod tests {
         );
         let runner = TurnRunner::new(
             ctx.clone(),
-            Arc::new(MockPipeline),
+            pipeline,
             "sys".into(),
             sender,
             "tool_exec".into(),
@@ -2689,6 +2726,24 @@ mod tests {
             })
             .expect("tool result frame");
         assert_eq!(frame, &tool_msg.content, "event frame == stored message");
+        // Ordering: the truncation notice must precede the ToolResult frame and the
+        // terminal Done, so every downstream sink sees the already-capped string.
+        let truncated_at = events
+            .iter()
+            .position(|e| matches!(e, AgentEvent::ToolResultTruncated { .. }))
+            .expect("truncation event");
+        let result_at = events
+            .iter()
+            .position(|e| matches!(e, AgentEvent::ToolResult { .. }))
+            .expect("tool result frame");
+        let done_at = events
+            .iter()
+            .position(|e| matches!(e, AgentEvent::Done { .. }))
+            .expect("done event");
+        assert!(
+            truncated_at < result_at && result_at < done_at,
+            "truncation notice must precede the ToolResult frame and Done"
+        );
     }
 
     #[tokio::test]
@@ -2707,6 +2762,47 @@ mod tests {
             !events
                 .iter()
                 .any(|e| matches!(e, AgentEvent::ToolResultTruncated { .. }))
+        );
+    }
+
+    #[tokio::test]
+    async fn exactly_at_cap_tool_output_is_untouched() {
+        let (events, stored) =
+            run_one_tool_turn_with(100_000, 100_000, Arc::new(MockPipeline)).await;
+        let tool_msg = stored
+            .iter()
+            .find(|m| m.role == Role::Tool)
+            .expect("tool message");
+        assert_eq!(
+            tool_msg.content,
+            "x".repeat(100_000),
+            "an exactly-at-cap result must be byte-identical"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, AgentEvent::ToolResultTruncated { .. })),
+            "no truncation event at the exact cap"
+        );
+    }
+
+    #[tokio::test]
+    async fn reflux_receives_the_same_truncated_string() {
+        let recording = Arc::new(RecordingPipeline(StdMutex::new(vec![])));
+        let (events, _stored) = run_one_tool_turn_with(100_000, 200_000, recording.clone()).await;
+        let frame = events
+            .iter()
+            .find_map(|e| match e {
+                AgentEvent::ToolResult { result, .. } => Some(result),
+                _ => None,
+            })
+            .expect("tool result frame");
+        let refluxed = recording.0.lock().unwrap().clone();
+        assert_eq!(refluxed.len(), 1, "exactly one refluxed result");
+        assert_eq!(
+            refluxed[0].as_str(),
+            frame.as_str(),
+            "reflux must see the same truncated string the event carries"
         );
     }
 }

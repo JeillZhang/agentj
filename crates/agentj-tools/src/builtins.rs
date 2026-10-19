@@ -948,7 +948,10 @@ mod tests {
     #[test]
     fn glob_output_is_sorted_and_prefixed_with_dot_slash() {
         let root = tempfile::TempDir::new().unwrap();
-        for p in ["z.txt", "a.txt", "m/b.txt", "a/b.txt", "m/a.txt"] {
+        // Created in a deliberately scrambled order: the walk is not guaranteed to visit
+        // these in sorted order, so the exact-output assertion only holds because the
+        // tool sorts before rendering.
+        for p in ["z.txt", "m/b.txt", "a.txt", "m/a.txt", "a/b.txt"] {
             let path = root.path().join(p);
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(&path, "").unwrap();
@@ -965,9 +968,9 @@ mod tests {
             lines.iter().all(|l| l.starts_with("./")),
             "every line must be ./ prefixed: {text}"
         );
-        let mut sorted = lines.clone();
-        sorted.sort();
-        assert_eq!(lines, sorted);
+        // Pin the exact sorted order rather than only "lines == lines.sort()": dropping
+        // the sort would stay green only if the walk happened to visit in sorted order.
+        assert_eq!(text, "./a.txt\n./a/b.txt\n./m/a.txt\n./m/b.txt\n./z.txt");
     }
 
     #[test]

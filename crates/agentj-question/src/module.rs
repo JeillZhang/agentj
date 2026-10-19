@@ -2,7 +2,8 @@
 //! owner-delivery notifier and exactly-once settle hook (design 决策 #6).
 //!
 //! Mirrors `agentj-permission`'s pending/notifier mechanism, but the semantics
-//! are question-specific: `timeout_s` is optional (absent = wait forever),
+//! are question-specific: `timeout_s` is optional (absent falls back to the
+//! configured default; `0`/`None` = unbounded),
 //! duplicate/unknown responses are idempotent `accepted=false` (not errors),
 //! and every terminal path funnels through [`QuestionModule::settle_once`].
 //!
@@ -175,9 +176,10 @@ impl QuestionModule {
 
     /// Register a question and block until it settles. Generates the
     /// `question_id` (overwriting `params.question_id`), delivers `params` to
-    /// the owner notifier, then waits on an mpsc channel — bounded by
-    /// `params.timeout_s` when present, unbounded otherwise. An undelivered
-    /// question (no notifier / no owner) settles as skipped immediately.
+    /// the owner notifier, then waits on an mpsc channel — bounded by the
+    /// effective timeout (an explicit `params.timeout_s`, else the configured
+    /// default; `0`/`None` = unbounded). An undelivered question (no notifier
+    /// / no owner) settles as skipped immediately.
     pub fn ask_blocking(
         &self,
         session_id: &str,

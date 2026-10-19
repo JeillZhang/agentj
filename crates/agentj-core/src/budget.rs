@@ -19,8 +19,8 @@ pub const MAX_CONTEXT_TOKENS: usize = 10_000_000;
 pub const MAX_OVERFLOW_RETRIES: usize = 2;
 
 /// Notice appended to a truncated **tool result**. Deliberately distinct from the
-/// token-budget marker in `truncate` (`budget.rs:117`): the token path must stay
-/// byte-identical, and a model-facing tool result needs an actionable hint.
+/// token-budget marker in `truncate` (`budget.rs:123`): the token path must stay
+/// byte-identical, and a model-facing tool result needs an actionable hint. @since 0.29.7
 pub const TOOL_RESULT_TRUNCATION_NOTICE: &str =
     "\n…[已截断 {dropped} 字符，原文 {total} 字符；请缩小查询范围]…\n";
 
@@ -143,7 +143,7 @@ fn byte_offset(text: &str, n: usize) -> usize {
 }
 
 /// Truncates on a `char` boundary and returns the head plus a notice.
-/// `max_chars` counts **characters of the kept head**, not bytes.
+/// `max_chars` counts **characters of the kept head**, not bytes. @since 0.29.7
 pub fn truncate_chars(text: &str, max_chars: usize) -> (String, usize) {
     let total = text.chars().count();
     if total <= max_chars {
@@ -263,11 +263,33 @@ mod tests {
         let text = "a".repeat(10_000);
         let (out, dropped) = truncate_chars(&text, 4_000);
         assert_eq!(dropped, 6_000);
-        let expected_notice = TOOL_RESULT_TRUNCATION_NOTICE
-            .replace("{dropped}", "6000")
-            .replace("{total}", "10000");
-        assert_eq!(out.chars().count(), 4_000 + expected_notice.chars().count());
-        assert!(out.starts_with("aaaa"));
+        // The notice is pinned literally, not rebuilt from the constant under test,
+        // so a corrupted notice text cannot stay green on the length assertion alone.
+        let expected = format!(
+            "{}\n…[已截断 6000 字符，原文 10000 字符；请缩小查询范围]…\n",
+            "a".repeat(4_000)
+        );
+        assert_eq!(out, expected);
+    }
+
+    #[test]
+    fn truncate_chars_at_zero_cap_drops_everything() {
+        let (out, dropped) = truncate_chars("hello", 0);
+        assert_eq!(dropped, 5);
+        assert_eq!(out, "\n…[已截断 5 字符，原文 5 字符；请缩小查询范围]…\n");
+    }
+
+    #[test]
+    fn truncate_chars_on_empty_input_is_a_no_op() {
+        let (out, dropped) = truncate_chars("", 100);
+        assert_eq!((out.as_str(), dropped), ("", 0));
+    }
+
+    #[test]
+    fn truncate_chars_at_exactly_the_cap_is_a_no_op() {
+        let text = "x".repeat(4_000);
+        let (out, dropped) = truncate_chars(&text, 4_000);
+        assert_eq!((out.as_str(), dropped), (text.as_str(), 0));
     }
 
     #[test]

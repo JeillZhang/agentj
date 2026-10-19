@@ -1024,8 +1024,8 @@ impl IpcServer {
                         prompt_tokens: u.prompt_tokens,
                         completion_tokens: u.completion_tokens,
                     });
-                    // T12: record the effective provider/model once per run, only
-                    // when the turn carried at least one identity field.
+                    // Record the effective provider/model once per run, only when
+                    // the turn carried at least one identity field.
                     if provider.is_some() || model.is_some() {
                         self.record_trajectory(
                             sid,

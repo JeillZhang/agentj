@@ -4,7 +4,7 @@ import { PROTOCOL_VERSION, VERSION, resolveWsUrl } from "../config.js";
 import { METHODS } from "../methods.js";
 
 describe("config", () => {
-  it("VERSION tracks the workspace Cargo.toml version", () => {
+  it("VERSION tracks the workspace Cargo.toml; PROTOCOL_VERSION pins the additive minor", () => {
     const cargo = readFileSync(new URL("../../../../../Cargo.toml", import.meta.url), "utf8");
     const workspace = /^version = "([^"]+)"/m.exec(cargo)?.[1];
     expect(workspace).toBeTruthy();

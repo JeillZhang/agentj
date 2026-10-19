@@ -151,13 +151,19 @@ mod tests {
     #[test]
     fn walk_skips_the_grep_skip_list() {
         let dir = tempfile::TempDir::new().unwrap();
-        for p in ["keep.js", "node_modules/pkg/index.js", ".next/x.js"] {
+        let mut paths = vec!["keep.js".to_string()];
+        for skip in GrepTool::SKIP_DIRS {
+            paths.push(format!("{skip}/pkg/index.js"));
+        }
+        for p in &paths {
             let path = dir.path().join(p);
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(&path, "").unwrap();
         }
         let m = GlobMatcher::new("*.js").unwrap();
         let (got, matched) = walk_with(dir.path(), &m, Duration::from_secs(5)).unwrap();
+        // Every skip entry stays silent, so only the top-level file survives: dropping
+        // any single entry would let that directory's `index.js` match and fail this.
         assert_eq!((got, matched), (vec!["keep.js".to_string()], 1));
     }
 

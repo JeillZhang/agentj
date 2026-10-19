@@ -727,7 +727,10 @@ fn assert_link_list_clear_never_touch_config(console: &wiremock::MockServer) {
     let config_path = kernel.home().join("config.toml");
     let auth_path = kernel.auth_path();
     let config_before = sha256_hex(&std::fs::read(&config_path).unwrap());
-    assert!(!auth_path.exists(), "the temp home starts unlinked");
+    assert!(
+        !auth_path.exists(),
+        "no credential file under the temp data dir yet"
+    );
     initialize(&mut client);
 
     let linked = client.call(
@@ -914,9 +917,10 @@ impl SocketClient {
     }
 }
 
-/// A served kernel plus the handles that keep it and its temp home alive: the child is
+/// A served kernel plus the handles that keep it and its temp dirs alive: the child is
 /// reaped on drop, the stdout pipe stays open (a closed pipe would fail the server's
-/// later prints), and the tempdir (config + sessions + `auth.json`) is removed last.
+/// later prints), and the temp home (config + sessions) plus the temp env (whose data
+/// root holds `auth.json`) are removed last.
 struct ServedKernel {
     _child: AutoReap,
     _server_stdout: BufReader<std::process::ChildStdout>,
@@ -926,7 +930,8 @@ struct ServedKernel {
 }
 
 impl ServedKernel {
-    /// The temp home holding `config.toml`, the session store and `auth.json`.
+    /// The temp home holding `config.toml` and the session store (the credential file
+    /// lives under the temp env's data root, not here).
     fn home(&self) -> &Path {
         self._home.path()
     }

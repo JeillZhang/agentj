@@ -199,3 +199,24 @@ fn permission_request_notified_and_timeout_denies() {
         "final session/run response did not arrive after the denial"
     );
 }
+
+/// The permission e2e must never touch the developer's real HOME / XDG roots: the
+/// `TempEnv` fences all three env vars to dirs under the system temp dir, so a stray
+/// credential or config write lands in the test's scratch space, not the ambient store.
+#[test]
+fn permission_e2e_never_touches_the_ambient_home() {
+    let env = common::TempEnv::new();
+    let mut cmd = Command::new("true");
+    env.apply(&mut cmd);
+    let temp = std::env::temp_dir();
+    for (key, val) in cmd.get_envs() {
+        let key = key.to_string_lossy();
+        if key == "XDG_DATA_HOME" || key == "XDG_CONFIG_HOME" || key == "HOME" {
+            let p = std::path::PathBuf::from(val.expect("value set"));
+            assert!(
+                p.starts_with(&temp),
+                "{key} must stay under the system temp dir, got {p:?}"
+            );
+        }
+    }
+}
