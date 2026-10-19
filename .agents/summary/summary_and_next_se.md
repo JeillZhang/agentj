@@ -56,11 +56,14 @@
 
 | 门禁 | 结果 |
 |------|------|
-| `cargo test --workspace` | 全绿（新增 `glob` / 截断 / `session/run` 回显 / 提问超时 / CLI 审批 / e2e 隔离 测试） |
+| `cargo test --workspace` | 全绿（`failed = 0`；新增 `glob` / 截断 / `session/run` 回显 / 提问超时 / CLI 审批 / e2e 隔离 测试） |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 0 warning |
 | `cargo fmt --all --check` | 干净 |
 | `cargo test -p agentj-protocol -- drift` | 全绿（78 schemas 无漂移） |
-| `./scripts/check-version.sh` | **保持红**（0.19.0 协议基线待 T19 同步 `AGENTS.md` / `README.md` / SDK / desktop；本任务不修） |
+| `npm --prefix agentj-ui test --workspace=@agentj/sdk` | 55 passed（6 files） |
+| `npm --prefix agentj-ui test --workspace=@agentj/web` | 681 passed（55 files） |
+| `bun --cwd agentj-ui/apps/tui test` | 192 pass / 0 fail（22 files） |
+| `./scripts/check-version.sh` | `version-ok`（T19 已把 `AGENTS.md` 与脚本断言同步到 0.19.0） |
 
 ### 真实提交（`e924473..HEAD`，最旧 → 最新）
 
@@ -76,13 +79,19 @@
 - `bc603e7` feat(question): make the default ask timeout configurable
 - `15d5cd4` feat(core): report the effective provider and model on run completion
 - `082b07d` chore(protocol): bump PROTOCOL_VERSION to 0.19.0
-- `0da5465` chore(sdk): sync PROTOCOL_VERSION with the 0.19.0 wire bump
 - `4bca0a9` chore(protocol): regenerate schemas and sync generated client types
-- `69074f2` feat(web): show the effective model reported by the kernel
-- `f508471` feat(ipc): surface the effective provider and model on run replies
+- `0da5465` chore(sdk): sync PROTOCOL_VERSION with the 0.19.0 wire bump
 - `effd538` feat(cli): add --yes and a stdin approver for interactive runs
 - `a1f8125` test(ipc): restore partial-window paging coverage
+- `f508471` feat(ipc): surface the effective provider and model on run replies
+- `69074f2` feat(web): show the effective model reported by the kernel
 - `f0b510e` docs: cover the run-reliability behaviour in specs, changelog and guides
+- `306922c` docs: update the CLI guide and the (se/fe) summaries after the batch
+- `f604697` docs: sync the AGENTS.md baseline and the version gate to protocol 0.19.0
+- `b661b80` polish: address the accumulated review minors from the run-reliability batch
+- `03dcc9e` fix: BUG-001 inject the question timeout default on every assembly path
+- `bb52cd7` fix: BUG-002 clamp a negative permission timeout instead of failing the parse
+- 本提交 docs: sync the config guide and the se summary after the acceptance fixes
 
 ### 遗留问题（非阻塞）
 
@@ -93,6 +102,14 @@
   普通 `Deny`，最终拒绝理由是权限引擎的 `denied by user`（`crates/agentj-permission/src/module.rs:150`）。
 - **`glob` 超时以文本结果回报**：`glob timed out after Ns` 是 Ok 文本而非 Err，模型看不到「工具超时」
   错误语义（与 grep/bash 的超时 Err 不一致）；属既有取舍，可选跟进。
+- **`[permission] timeout_ms` 上界收窄为 `i64`**：验收 BUG-002 为让负值不被 serde 拒绝而把字段改为
+  `Option<i64>`（`crates/agentj-permission/src/policy.rs:82`），因此 `> i64::MAX` 的 TOML 整数字面量在
+  解析阶段报 `number too large to fit in target type`（修复前 `Option<u64>` 可接受再钳制）。量级约
+  3.2 亿年，验收判 low 并**接受现状**；`docs/guide/configuration.md` 已写明取值须在 64 位有符号整数范围内。
+- **`e2e_mcp` 会写真实数据目录**：偶发在真实 `~/.local/share/agentj` 留下 `metrics-state-<port>.json`，
+  不在本次 ⑭ 改造的 4 个 e2e 文件范围（范围外观察项，未处理）。
+- **TUI 测试改写真实配置**：`bun --cwd agentj-ui/apps/tui test` 会改写真实 `~/.config/agentj/theme.json`，
+  属前端既有问题（本批次明确不触碰 TUI），未处理。
 
 ## 已完成（0.29.0 – 0.29.12 + BUG-017/018 + 抽检扩展 + search-rank 单一真源化 + run 可靠性批次，详见 `docs/changelog/v0.1.md`）
 

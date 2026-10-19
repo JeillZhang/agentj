@@ -71,7 +71,11 @@ env = { FOO = "bar" }
 ## `[permission]`
 
 - 全局与逐工具 `mode`（如 `ask`）。
-- `timeout_ms`：`ask` 审批的自动拒绝等待预算（毫秒；省略 = 60s 默认）。
+- `timeout_ms`：`ask` 审批的自动拒绝等待预算（毫秒；默认 `60000`）。越界值钳制到
+  `100..=600000` 并在 stderr 打印一行
+  `warning: permission.timeout_ms <原始值> clamped to <钳制值>`——负值与 `0` 同样按钳制处理
+  （警告里回显的是**原始值**，不会被归零），不视为配置错误。取值须落在 64 位有符号整数范围内；
+  超出该范围的 TOML 整数字面量在解析阶段即报错（与其它整数键一致）。
 - `[[permission.tools.<tool>.command_rules]]`：按命令前缀设置 `effect`
   （`deny` / `allow` 等）。权限决策引擎含超时自动 Deny 与 `allow_always`
   会话级记忆；取消即拒绝。
