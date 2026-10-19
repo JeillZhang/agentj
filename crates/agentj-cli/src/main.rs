@@ -118,14 +118,25 @@ fn permission_policies_from_config(
 }
 
 /// Approval wait budget from `[permission] timeout_ms`, clamped to 100..=600_000
-/// (0 or anything below the minimum clamps up to 100 with a warning, not an error).
+/// (0, a negative value or anything else below the minimum clamps up to 100 with a
+/// warning, not an error). The field is a signed `Option<i64>` so a negative raw
+/// value survives deserialization and can be reported as written.
 fn permission_timeout(cfg: &agentj_permission::PermissionConfig) -> std::time::Duration {
-    let raw = cfg.timeout_ms.unwrap_or(60_000);
-    let clamped = raw.clamp(100, 600_000);
-    if clamped != raw {
-        eprintln!("warning: permission.timeout_ms {raw} clamped to {clamped}");
+    let (budget, warning) = clamp_permission_timeout(cfg.timeout_ms);
+    if let Some(line) = warning {
+        eprintln!("{line}");
     }
-    std::time::Duration::from_millis(clamped)
+    budget
+}
+
+/// Pure clamp + warning text for a raw `[permission] timeout_ms`, so the warning
+/// line (it echoes the RAW value the user wrote) is unit-testable exactly.
+fn clamp_permission_timeout(raw: Option<i64>) -> (std::time::Duration, Option<String>) {
+    let raw = raw.unwrap_or(60_000);
+    let clamped = raw.clamp(100, 600_000);
+    let warning = (clamped != raw)
+        .then(|| format!("warning: permission.timeout_ms {raw} clamped to {clamped}"));
+    (std::time::Duration::from_millis(clamped as u64), warning)
 }
 
 /// Inject the configured question budget onto the `QuestionModule`, read through
@@ -1170,6 +1181,47 @@ mod tests {
         assert_eq!(
             permission_timeout(&cfg),
             std::time::Duration::from_millis(600_000)
+        );
+        // A negative value is out of range, not a parse error: it clamps up to the
+        // minimum, and the warning echoes the raw value the user wrote (not `0`).
+        cfg.timeout_ms = Some(-7);
+        assert_eq!(
+            permission_timeout(&cfg),
+            std::time::Duration::from_millis(100)
+        );
+        assert_eq!(
+            clamp_permission_timeout(Some(-7)).1.as_deref(),
+            Some("warning: permission.timeout_ms -7 clamped to 100")
+        );
+    }
+
+    #[test]
+    fn only_out_of_range_permission_timeouts_warn() {
+        // In-range and absent values must stay silent — the warning must not become
+        // unconditional while fixing the negative case.
+        assert_eq!(clamp_permission_timeout(None).1, None);
+        assert_eq!(clamp_permission_timeout(Some(800)).1, None);
+        assert_eq!(clamp_permission_timeout(Some(100)).1, None);
+        assert_eq!(clamp_permission_timeout(Some(600_000)).1, None);
+        assert_eq!(
+            clamp_permission_timeout(Some(0)).1.as_deref(),
+            Some("warning: permission.timeout_ms 0 clamped to 100")
+        );
+        assert_eq!(
+            clamp_permission_timeout(Some(700_000)).1.as_deref(),
+            Some("warning: permission.timeout_ms 700000 clamped to 600000")
+        );
+    }
+
+    /// A negative `[permission] timeout_ms` is an out-of-range value, so it must be
+    /// clamped up to the 100 ms minimum like `0` is — never rejected as a parse error.
+    #[test]
+    fn a_negative_permission_timeout_loads_and_clamps_to_the_minimum() {
+        let cfg = load_test_config("[permission]\ntimeout_ms = -7\n");
+        let policy = cfg.inner().permission.clone().unwrap_or_default();
+        assert_eq!(
+            permission_timeout(&policy),
+            std::time::Duration::from_millis(100)
         );
     }
 
