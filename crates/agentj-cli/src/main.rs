@@ -128,6 +128,17 @@ fn permission_timeout(cfg: &agentj_permission::PermissionConfig) -> std::time::D
     std::time::Duration::from_millis(clamped)
 }
 
+/// Inject the configured question budget onto the `QuestionModule`, read through
+/// the CLAMPING accessor (`[agent] question_timeout_s` is an unclamped raw i64,
+/// so `0`/`-5`/`999999` must clamp before the u64 cast). Called ONCE at the
+/// construction site before command dispatch so every assembly path — `run`, the
+/// three serve modes, dashboard and the `None` arm — inherits the same default
+/// (design D4): on the serve paths a notifier exists, so without this default an
+/// `ask` omitting `timeout_s` would block forever.
+fn apply_question_timeout(module: &QuestionModule, config: &agentj_config::Config) {
+    module.set_default_timeout_s(Some(config.question_timeout_s()));
+}
+
 /// Map one stdin approval line to a decision. `y`/`yes` allow; anything else —
 /// including EOF (closed pipe / Ctrl-D), represented here as `None` — denies.
 /// Pure so the TTY approver's mapping is unit-tested without a TTY.
@@ -700,6 +711,7 @@ async fn main() -> anyhow::Result<()> {
         )?;
     }
     let question_module = Arc::new(QuestionModule::new());
+    apply_question_timeout(&question_module, &config);
     let tools = Arc::new(ToolRegistry::new());
     register_builtins(&tools);
     tools.register(Arc::new(AskTool::new(question_module.clone())));
@@ -801,10 +813,6 @@ async fn main() -> anyhow::Result<()> {
         .validate()
         .expect("invalid [permission] config");
     let permission_policies = permission_policies_from_config(&config);
-    // `question_timeout_s` must go through the CLAMPING accessor — the raw
-    // `[agent]` fields are unclamped i64, so a TOML 0/-5/999999 would slip
-    // through. Captured before `config` moves into the KernelContext.
-    let question_timeout_s = config.question_timeout_s();
     let mcp_servers = config.inner().mcp.clone();
     // `[web]` settings feed the serve paths: resolve them before the config is
     // moved into the kernel context, because `TcpServeOptions` is built later.
@@ -939,10 +947,6 @@ async fn main() -> anyhow::Result<()> {
                     std::process::exit(1);
                 }
             } else {
-                // Inject the configured question budget. `run` attaches no question
-                // notifier, so `ask_blocking` settles `Skipped` immediately — this
-                // default only matters once a notifier exists (serve, T14).
-                question_module.set_default_timeout_s(Some(question_timeout_s));
                 // Approval path: `--yes` auto-approves; a TTY spawns a thread that
                 // owns stdin and answers y/n; a non-TTY without `--yes` attaches
                 // nothing and the pending request auto-denies at the timeout
@@ -1856,6 +1860,55 @@ mod tests {
             5,
             Arc::new(agentj_core::hooks::EventBus::new()),
         )
+    }
+
+    /// Serve-path regression guard: a notifier is attached (never answers), and
+    /// the configured `[agent] question_timeout_s` default must be applied so an
+    /// `ask` that omits `timeout_s` settles as `Skipped` instead of hanging.
+    #[test]
+    fn served_path_question_omitting_timeout_settles_skipped() {
+        // 1s default keeps the wait short and proves the injection, not the
+        // value; the serve path attaches a notifier that ACKNOWLEDGES delivery
+        // but never answers, so only the configured default can settle it.
+        let cfg = load_test_config("[agent]\nquestion_timeout_s = 1\n");
+        let module = QuestionModule::new();
+        // THE SAME injection helper the construction site calls (design D4) —
+        // the test cannot drift from production's single injection point.
+        apply_question_timeout(&module, &cfg);
+        module.set_notifier(Arc::new(|_params, _session| true));
+
+        let module = Arc::new(module);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let asker = {
+            let module = Arc::clone(&module);
+            std::thread::spawn(move || {
+                let params = agentj_protocol::question::AskQuestionParams {
+                    question_id: String::new(),
+                    session_id: "s1".into(),
+                    question: "Pick a color".into(),
+                    header: None,
+                    options: vec![agentj_protocol::question::AskOption {
+                        id: "red".into(),
+                        label: "Red".into(),
+                        hint: None,
+                    }],
+                    allow_multiple: false,
+                    allow_other: true,
+                    timeout_s: None, // omitted -> must fall back to the configured default
+                };
+                let (_, outcome) = module.ask_blocking("s1", &params);
+                let _ = tx.send(outcome);
+            })
+        };
+
+        let outcome = rx.recv_timeout(Duration::from_secs(5)).unwrap_or_else(|_| {
+            panic!(
+                "question did not settle within 5s: the module default timeout was not applied, \
+                 so an `ask` omitting `timeout_s` hangs forever on the serve path"
+            )
+        });
+        assert_eq!(outcome, agentj_question::QuestionOutcome::Skipped);
+        asker.join().unwrap();
     }
 
     /// `shutdown_tcp_server` must run the full teardown (persist metrics, abort
