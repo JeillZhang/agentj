@@ -7,72 +7,101 @@
 > 待实施），不得随内容替换而删除；仅当该特性实际实施完成后才能移除（移入功能记录）。
 > 前端总结独立存放于 `summary_and_next_fe.md`；两文件内容隔离，互不写入对方文件。
 
-> 当前功能：**rank 规则单一真源化（Rust 权威 + 跨语言契约夹具）** —— 分支
-> `feature/search-rank-single-source`。把文件搜索排名从三份手抄实现（Rust `file_list::search_rank` /
-> TUI `files.ts::searchRank` / mock kernel 镜像）收敛到**唯一可执行真源**（Rust），新增仓库级契约
-> 夹具 `protocol/search-rank-cases.json` 钉住语义，两个 TS 镜像退役。协议 wire 面**不变**
-> （`PROTOCOL_VERSION` 仍 0.18.0 / 28 方法 / 78 schemas；工作区仍 **0.1.0**）。
-> 下方 0.29.x / BUG-017 等前序章节为归档记录。
+> 当前功能：**run 可靠性批次** —— 分支 `feature/run-reliability-batch`。工具结果落库上限 +
+> `session/run` 回显生效 provider/model + `glob` 路径语义（进程内执行）+ `ask` 默认超时 +
+> CLI 审批 / 配置健壮性 + e2e 测试环境隔离。协议 wire 面**加性变更**：`PROTOCOL_VERSION` 升为
+> **0.19.0**（仍 28 方法 / 78 schemas；工作区仍 **0.1.0**）。下方 search-rank 单一真源化等前序章节为归档记录。
 
-## rank 规则单一真源化 ✅
+## run 可靠性批次 ✅
 
-分支 `feature/search-rank-single-source`（自 `c3756c0` 起）。无 wire 变更：无新 JSON-RPC 方法、
-无 schema 改动、`protocol/methods.json` 未动；`PROTOCOL_VERSION` 仍 0.18.0、工作区仍 0.1.0
-（AGENTS.md：版本号不随特性递增）。此即待实施 ④ 的实施落地。
+分支 `feature/run-reliability-batch`（自 `e924473` merge 后起）。六项特性 + 协议加性变更一次收尾，
+对应待实施 ⑦⑧⑨⑭⑱⑲ 的实施落地；`PROTOCOL_VERSION` 升 **0.19.0**、工作区仍 0.1.0。
 
 ### 交付
 
-- **唯一真源 + 契约注释**（`crates/agentj-ipc/src/file_list.rs`）：`search_rank` 补「唯一排名真源 +
-  契约路径」文档注释（语义未改）。规则：三档次序（名字前缀 `0` < 名字子串 `1` < 路径子串 `2`）、
-  大小写不敏感（`search` 侧统一小写 needle，`search_rank` 自小写 `name`）、并列按 `path` 字节升序、
-  `total` 在 Top-100 截断**前**统计、`truncated` 仅扫描预算耗尽、目录不参与排名。
-- **跨语言契约夹具** `protocol/search-rank-cases.json`（`version: 1`）：`rule` 说明 + `ranks[]`
-  （覆盖 `0` / `1` / `2` / `null` 四种结果，含大小写与 trim 用例）+ `searches[]`（乱序 `entries` +
-  `expected_ranked_paths` + `expected_total`，含一个匹配目录且不入排名）。两侧 fail-closed 校验
-  `version`；读路径分别锚定 `env!("CARGO_MANIFEST_DIR")` 与 `import.meta.url`（绝不依赖 cwd）。
-- **Rust 契约测试 2 条**（`crates/agentj-ipc/src/file_list.rs` 内联 `#[cfg(test)] mod tests`）：
-  `search_rank_matches_the_shared_conformance_fixture`（:889）与
-  `search_ordering_matches_the_shared_conformance_fixture`（:975）——断言真实 `search_rank` /
-  `search` 输出与夹具一致；既有 `search_caps_entries_at_the_limit_and_keeps_total`（:827）保留，
-  继续独占 Top-100 上限语义。
-- **TUI 侧镜像退役**（详见 `summary_and_next_fe.md`）：`files.ts` 删本地排名、mock kernel 改为
-  夹具回放、新增唯一夹具加载器 `agentj-ui/apps/tui/src/searchRankCases.ts`；旧内核回复无 `total`
-  时如实提示「不支持服务端搜索」并返回空行，不再本地降级。
-- **文档**：`docs/changelog/v0.1.md`、`docs/guide/tui.md`。
+- **工具结果落库上限**（待实施 ⑦）：`crates/agentj-core/src/budget.rs:147 fn truncate_chars` 按字符
+  预算保留头部并追加 `…[已截断 {dropped} 字符，原文 {total} 字符；请缩小查询范围]…`
+  （`budget.rs:24-25 TOOL_RESULT_TRUNCATION_NOTICE`）；唯一截断点 `turn_runner.rs:468`（构造
+  `ToolResult` 处）；`[agent] max_tool_result_chars` 默认 `100_000`、钳制 `1_000..=1_000_000`
+  （`crates/agentj-config/src/lib.rs`）；截断时发内核内事件
+  `AgentEvent::ToolResultTruncated { tool_call_id, dropped_chars }`（`crates/agentj-core/src/types.rs:120`，不上 wire）。
+- **`session/run` 回显生效 provider / model**（待实施 ⑧）：`AgentEvent::Done` 携带 `provider` /
+  `model`（`crates/agentj-core/src/types.rs:135-136`）；wire `SessionRunResult` 加性新增
+  `provider` / `model`（`crates/agentj-protocol/src/session.rs:60-65`，
+  `#[serde(default, skip_serializing_if = "Option::is_none")]` → 未知时整键省略、绝不为 `null`）；
+  轨迹新增 `TrajectoryValue::RunModel`（每轮至多一条）（`crates/agentj-protocol/src/trajectory.rs`，
+  `crates/agentj-ipc/src/lib.rs` 记录）；`ProviderRegistry` 补 `set_default` / `default_name` /
+  `get_default_with_name`（`crates/agentj-core/src/module.rs:487-507`）。
+- **`glob` 路径语义（进程内执行）**（待实施 ⑨）：删 `find` 子进程，`crates/agentj-tools/src/glob.rs`
+  进程内 `globset` + `walkdir`；pattern 不含 `/` 按路径分量 basename、含 `/` 按根相对全路径
+  （`literal_separator(true)`：`*` 不跨 `/`、`**` 跨）；跳过目录沿用 `GrepTool::SKIP_DIRS`；输出
+  `./<相对路径>` 逐行排序、上限 `2000`（超出追加 `# 已截断 N 条命中（上限 2000），请缩小 pattern`）；
+  默认超时 60s、`timeout_ms` 可覆盖（钳制 1s–600s）；超时以 `glob timed out after Ns` 文本结果回报而非错误。
+- **`ask` 默认超时**（待实施 ⑱）：`[agent] question_timeout_s` 默认 `600`、钳制 `1..=86_400`
+  （`crates/agentj-config/src/lib.rs`）；CLI 注入 `QuestionModule::set_default_timeout_s`，未显式给
+  `timeout_s` 的提问超时后按 **skipped** 结算（`crates/agentj-question/src/module.rs`），不再永久挂起。
+- **CLI 审批与配置健壮性**（待实施 ⑲）：`run --yes` 自动批准并在 stderr 打印
+  `auto-approved <tool> (--yes)`；TTY 下 `approve <tool>? <精简参数>` / `  reason: <原因>` /
+  `[y/N] ` 打到 stderr、另起线程读 stdin（`y`/`yes` 批准，其余含 EOF 拒绝 → 拒绝理由
+  `denied by user`）；非 TTY 且未加 `--yes` 不读 stdin、不挂审批器，待决请求按
+  `[permission] timeout_ms` 预算自动拒绝；`timeout_ms` 钳制 `100..=600_000`（越界 stderr 警告、
+  省略 = `60_000`）。
+- **e2e 测试环境隔离**（待实施 ⑭）：共享 `TempEnv`（`crates/agentj-cli/tests/common/mod.rs`）把
+  `HOME` / `XDG_DATA_HOME` / `XDG_CONFIG_HOME` 指向临时目录并移除凭据类环境变量，
+  `e2e_cli` / `e2e_permission` / `e2e_auth` / `e2e_serve` 全部改用——测试不再读写真实 `~`。
+- **协议版本**：`PROTOCOL_VERSION` **0.19.0**（仍 28 方法 / 78 schemas）；schemas 重新生成、
+  `@agentj/sdk` `PROTOCOL_VERSION` 同步 0.19.0（`VERSION` 仍 0.1.0）。
 
-### 验证（最终门禁，全绿）
+### 验证（最终门禁）
 
 | 门禁 | 结果 |
 |------|------|
-| `cargo test --workspace` | **1024 passed** / 0 failed（基线 1022） |
+| `cargo test --workspace` | 全绿（新增 `glob` / 截断 / `session/run` 回显 / 提问超时 / CLI 审批 / e2e 隔离 测试） |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 0 warning |
 | `cargo fmt --all --check` | 干净 |
-| `cargo test -p agentj-protocol -- drift` | 2 passed（78 schemas 无漂移） |
-| `./scripts/check-version.sh` | `version-ok`（0.1.0 / 0.18.0，本阶段不 bump） |
-| 测试验收（Round 1） | **0 Bug** — 8 个突变全部被测试抓到；独立复算 9/9 `ranks` + 2/2 `searches` 一致 |
+| `cargo test -p agentj-protocol -- drift` | 全绿（78 schemas 无漂移） |
+| `./scripts/check-version.sh` | **保持红**（0.19.0 协议基线待 T19 同步 `AGENTS.md` / `README.md` / SDK / desktop；本任务不修） |
 
-### 真实提交（`df9a965..HEAD`，最旧 → 最新）
+### 真实提交（`e924473..HEAD`，最旧 → 最新）
 
-- `df9a965` test(ipc): pin search_rank against a shared conformance fixture
-- `e8cc2ea` feat(tui): make file search server-only with an explicit unsupported state
-- `dcb83e7` fix(tui): drop a stale local-filtering comment in the search test
-- `dddce12` test(ipc): pin search ordering and total against the shared fixture
-- `6678458` refactor(tui): retire the local search ranking mirror
-- `e6d3d55` test(tui): add the conformance fixture loader
-- `9cfa286` chore(tui): drop the plan marker comment from the fixture loader
-- `ba089a4` test(tui): make the mock kernel replay the conformance fixture
-- `8d67c05` test(tui): retarget the search suites to the server contract
-- `3a65a18` docs: record the search-rank single source in the changelog and TUI guide
+- `fdf5421` test(e2e): add shared TempEnv helper and adopt it in e2e_cli
+- `6e2685d` refactor(e2e): adopt shared TempEnv helper in permission, auth and serve suites
+- `2817385` feat(tools): add in-process glob matcher and walker
+- `51594ab` refactor(tools): run glob in-process and drop the find subprocess
+- `f293f8e` feat(core): add char-budget truncation helper
+- `06f0c4a` feat(config): add [agent] max_tool_result_chars
+- `6d10033` feat(core): truncate oversized tool results once
+- `9f0ae54` feat(config): add [agent] question_timeout_s
+- `c8ef0cd` feat(protocol): add provider and model to SessionRunResult and a RunModel trajectory value
+- `bc603e7` feat(question): make the default ask timeout configurable
+- `15d5cd4` feat(core): report the effective provider and model on run completion
+- `082b07d` chore(protocol): bump PROTOCOL_VERSION to 0.19.0
+- `0da5465` chore(sdk): sync PROTOCOL_VERSION with the 0.19.0 wire bump
+- `4bca0a9` chore(protocol): regenerate schemas and sync generated client types
+- `69074f2` feat(web): show the effective model reported by the kernel
+- `f508471` feat(ipc): surface the effective provider and model on run replies
+- `effd538` feat(cli): add --yes and a stdin approver for interactive runs
+- `a1f8125` test(ipc): restore partial-window paging coverage
+- `f0b510e` docs: cover the run-reliability behaviour in specs, changelog and guides
 
 ### 遗留问题（非阻塞）
 
-- **Web 侧仍无搜索 UI**：本阶段只收敛后端权威 + TUI 消费；Web Files 搜索态是前端待实施 ③
-  （见 `summary_and_next_fe.md`），单独跟进。
-- **夹具是「两侧都要过」的第三方裁判**：将来改排名语义必须同时改夹具 + Rust 断言 + mock 回放；
-  `version` 只做 fail-closed 校验，不做自动迁移。
+- **非 TTY 未加 `--yes` 仍等到 `timeout_ms` 才拒绝**：本次只消除「永久挂起」，未做「立即拒绝」——
+  计划 AC 措辞「auto-denied instead of waiting」与实装「等 `[permission] timeout_ms` 预算耗尽再拒」
+  不符，已按实装记录（guide 与 changelog 均为「按预算自动拒绝」）。
+- **EOF 无独立「no input」文案**：计划/AC 写作 `Deny { reason: "no input" }`，实装里 EOF 只是映射为
+  普通 `Deny`，最终拒绝理由是权限引擎的 `denied by user`（`crates/agentj-permission/src/module.rs:150`）。
+- **`glob` 超时以文本结果回报**：`glob timed out after Ns` 是 Ok 文本而非 Err，模型看不到「工具超时」
+  错误语义（与 grep/bash 的超时 Err 不一致）；属既有取舍，可选跟进。
 
-## 已完成（0.29.0 – 0.29.12 + BUG-017/018 + 抽检扩展，详见 `docs/changelog/v0.1.md`）
+## 已完成（0.29.0 – 0.29.12 + BUG-017/018 + 抽检扩展 + search-rank 单一真源化 + run 可靠性批次，详见 `docs/changelog/v0.1.md`）
 
+- ✅ run 可靠性批次（本阶段，见上「run 可靠性批次 ✅」）：工具结果落库上限 + `session/run` 回显
+  生效 provider/model + `glob` 路径语义（进程内）+ `ask` 默认超时 + CLI 审批/配置健壮性 + e2e
+  隔离；`PROTOCOL_VERSION` 0.19.0。
+- ✅ search-rank 单一真源化（已合并 PR #89）：文件搜索排名收敛到 Rust `file_list::search_rank`
+  唯一真源 + 跨语言契约夹具 `protocol/search-rank-cases.json`（Rust 契约测试 2 条 + TUI 镜像退役 +
+  mock kernel 夹具回放）；TUI 192 passed、Web 679 passed（未触碰）、check-version ok。
 - ✅ 抽检扩展（逐请求校验 + 手动全量端点）：`[web]` 4 键（`spot_interval_secs` / `spot_sample` /
   `verify_on_request` / `verify_cache_ttl_secs`）+ `IntegrityOptions` + 逐请求资产校验中间件
   （memoize + 绝对 TTL + 上限 1024、fail-open 计数 / 去重告警、未鉴权零哈希）+ `POST /integrity/verify`
@@ -160,23 +189,6 @@
   write 的 path+content）与未知参数名仍走「纠偏重发 → 如实报错」。
 - **grep 回退不读 `.gitignore`**（0.29.12）：无 `rg` 时的进程内检索只跳过固定目录
   （`.git`/`target`/`node_modules` 等），不解析 `.gitignore`；命中结果仍受 2000 条上限约束。
-- **`glob` 只按 basename 匹配**（0.29.12 实测发现）：`find . -name "crates/agentj-core/src/*.rs"`
-  这类**路径型 pattern 恒空**（`-name` 只匹配文件名），模型因此拿到空的 `glob` 结果后改用
-  `bash` 绕路；属真实缺陷，未在本轮修改（见待实施 ⑨）。
-- **`ask` 问题无超时上限**（0.29.9 实测发现）：长任务里模型反问方向时挂起
-  `question/respond`；探测客户端未应答就一直等到被手动杀掉（服务端无默认 `timeout_s`）。
-  UI 有 `AskQuestionCard` 所以正常路径可见，但「没人回答 = 本轮永久挂起」值得跟进
-  （默认超时或 idle 提示）。
-- **快照体积随工具往返增长**（0.29.8 起）：工具结果现在会落库，实测一次只读探测里的 `glob`
-  结果就有 **7,963,644 字符**并原样进快照；发送侧虽有 `fit_messages` 预算，**存储侧没有上限**。
-  跟进项：落库前按工具结果设上限（或压缩为摘要 + 提示「已截断」）。
-- **生效模型未回显**：`session/run` 结果不返回实际使用的 `provider`/`model`，trajectory 里也
-  不记录，因此排障时无法从快照/轨迹反查「这句残句到底是哪个模型吐的」。已靠前端在
-  `session/run` 里下发 `provider`/`model` 覆盖 + 标签跟随选择缓解，后端回显仍是加性 wire 候选。
-- **`agentj run` 非 TTY 下遇需审批工具会一直等待**：无自动拒绝、无 `--yes` 开关，也没有上限
-  （0.29.4 以只读工具绕过，未改该行为；0.29.8 真实 key 验证时仍观察到
-  `permission approval timed out … timeout_ms=60000`）。跟进项：加 `run --yes` 或非 TTY 自动拒绝。
-- **`[permission] timeout_ms` 未做下界校验**：`0` 语义为「立即自动拒绝」，当前不视为非法配置。
 - ~~`e2e_ws` 端口竞态~~：0.29.7 已修复（`serve --port 0` + 读回绑定地址；并行复现 1/3 → 3/3）。
 - **2 条 legacy 路由**：`qwen3.6-plus` / `qwen3.7-max` 按 models.dev 判为 `openai-compat`
   （旧手写表标 `anthropic`），二者均不在官方在售列表内；如实测不符，加回一条种子即可。
@@ -186,13 +198,11 @@
   可能仍使用旧凭据，新凭据从下一轮生效。
 - **写入目标**：凭据写入**当前连接内核所在机器**的 `auth.json`（`--attach` / 远程 `serve` 即远端主机）；
   非回环 `serve --host` 必须配 `--token`。
-- **`e2e_cli` / `e2e_permission` 未隔离 `XDG_DATA_HOME`**（仅 `e2e_auth.rs` / `e2e_serve.rs` 隔离）：
-  实测在「注入假凭据 + `AGENTJ_OPENCODE_GO_API_KEY`」的环境下仍全绿，非必须但可硬化。
-- **进程型工具报错里的 `name` 变成程序名**（本轮引入）：`NotFound` / spawn 失败时 executor 把
+- **进程型工具报错里的 `name` 变成程序名**：`NotFound` / spawn 失败时 executor 把
   `ProgramMissing.name` 填成**程序**（`crates/agentj-tools/src/executor.rs:27-30`：bash → `sh`、
-  glob → `find`、grep → `rg`），而改动前填的是工具名（`bash` / `glob` / `grep`）；管道读失败则
-  是 `"child"`（`executor.rs:71,78`）。错误码与变体未变（无 wire 影响），但与设计 G4「错误面
-  不变」有偏差，属可选跟进。
+  grep → `rg`），而改动前填的是工具名（`bash` / `grep`）；管道读失败则是 `"child"`
+  （`executor.rs:71,78`）。错误码与变体未变（无 wire 影响），但与设计 G4「错误面不变」有偏差，
+  属可选跟进。（`glob` 已进程内化，不再 spawn `find`，故不再有 `glob → find` 映射。）
 - **`ToolExecutor::run_blocking` 只能在阻塞线程里调**：它自建 runtime 后 `block_on`
   （`crates/agentj-tools/src/executor.rs:220-237`），当前唯一生产调用方是 `spawn_blocking`
   （`crates/agentj-core/src/module.rs:451`，线程未设 `EnterRuntime::Entered` 故安全）；若将来在
@@ -212,19 +222,13 @@
 | # | 特性 | 内容 | 依赖 | 状态 |
 |---|------|------|------|------|
 | ⑥ | 用量历史（服务端持久化 + 趋势） | `provider/usage` 由按需 TTL 300s 扩为服务端持久化采样 + 历史/趋势查询（协议加性）、Web/TUI 趋势视图与保留策略 | 无（基于 v0.27.0 用量面板；设计需先定采样归属/保留/加性 wire） | 待实施 |
-| ⑦ | 工具结果落库上限 | 落库前对单个工具结果设上限（或摘要 + 「已截断」标记），避免 7.9MB 级 `glob` 结果撑爆快照 | 0.29.8 已落库工具往返（存储侧尚无上限） | 待实施 |
-| ⑧ | `session/run` 回显生效模型 | 结果/trajectory 记录实际使用的 `provider`/`model`（加性 wire），便于排障与前端一致性校验 | 0.29.8 前端已按选择下发并显示 | 待实施 |
-| ⑨ | `glob` 路径语义 | 让 `glob` 支持路径型 pattern（`crates/*/src/*.rs`）与 `**`，而不是只按 basename 匹配（当前路径型 pattern 恒空） | 0.29.12 已引入 `globset`（grep 回退依赖） | 待实施 |
 | ⑩ | 【债】IPC 协议层拆分 | `crates/agentj-ipc/src/lib.rs`（实测 **7,339 行 / 295,749 B**）按 dispatch 域拆为 `dispatch_session` / `dispatch_permission` / `dispatch_question` / `dispatch_file` / `dispatch_provider` 等子模块；`impl IpcServer`（行 486–1931，约 **1,445 行**、30+ 方法）切分为多个 impl 块或独立 handler | 无（纯重构，wire 面不变） | 待实施 |
 | ⑪ | 【债】超长函数治理 | 实测 lib 代码 831 个函数中 **26 个 >50 行**（违反 `AGENTS.md` 「function ≤50 lines」）：`crates/agentj-cli/src/main.rs:466 fn main`（**379 行**）、`crates/agentj-core/src/turn_runner.rs:189 fn run_turn`（**362 行**）、`crates/agentj-ipc/src/lib.rs:861 fn dispatch_session_run`（**252 行**）、`crates/agentj-ipc/src/lib.rs:1420 fn dispatch_permission_respond`（80 行）——按域抽子函数 | 与 ⑩ 同批执行 | 待实施 |
 | ⑫ | 【债】锁中毒与 panic 隔离 | 非测试代码 **170 处 `.lock().unwrap()`**：内核是常驻多客户端守护进程，任一线程持锁 panic → mutex 中毒 → 后续每次取锁全部 panic（单会话 bug 可升级为整内核不可用）。改 `unwrap_or_else(|e| e.into_inner())` 或统一封装；请求入口（`agentj-ipc` dispatch / `turn_runner`）补 `catch_unwind` + 错误响应（现全仓仅 `agentj-core/src/hooks.rs:117`、`agentj-question/src/module.rs:356` 两处隔离；另 `crates/agentj-ipc/src/web.rs:257` 的 `std::sync::RwLock` 用 `web.rs:453/457/460` 的 `.read()/.write().expect("sessions")`，是同类中毒路径） | 无 | 待实施 |
 | ⑬ | 【债】permission / question 待决机制收敛 | `crates/agentj-permission/src/module.rs` 与 `crates/agentj-question/src/module.rs` 是同一套 pending / owner / settle 的双份镜像（`new` / `set_notifier` / `respond` / `session_of` / `cancel_session` / `clear_all` + `PENDING_TTL` 一一对应）；抽出共用 `PendingRegistry`，消除「修一处漏一处」（BUG-017 已证明代价） | 无 | 待实施 |
-| ⑭ | 【修复】e2e 测试环境隔离 | `e2e_cli` / `e2e_permission` **未设** `XDG_DATA_HOME` / `XDG_CONFIG_HOME`（实测仅 `e2e_auth.rs` / `e2e_serve.rs` 设了）→ 本地跑 `cargo test --workspace` 会读写真实 `~/.local/share/agentj/`（会话快照 + `auth.json`），与 0600/0700 凭据纪律相悖 | 无 | 待实施 |
 | ⑮ | 【债】Rust 门禁硬化 | ① `[workspace.lints]` 落仓（现 lint 策略只存在于 `ci.yml` 命令行，本地 `cargo build` 不继承；仓内 13 处 `#[allow]`，其中 5 处 `type_complexity` 说明长签名已开始堆积）；② 覆盖率棘轮（`ci.yml:15` `COVERAGE_THRESHOLD: 50` 只有下界、无基线，覆盖率可一路退化到 50% 仍绿） | 无 | 待实施 |
 | ⑯ | 【债】crate 粒度收敛 | `agentj-context` 87 行 / `agentj-stats` 133 / `agentj-skills` 132 / `agentj-license` 149 均为 <150 行的独立 crate，而 `agentj-ipc` 单 crate 12,514 行；评估合并或降级为模块（触及 `agentj-cli` 装配与 CI） | 无 | 待实施 |
 | ⑰ | 模型元数据与 token 预算 | `schemas/ModelEntry.json` 补 `context_window`（加性 wire），把 `estimate_tokens` 的「ASCII/4 + 非 ASCII×1」字符启发式换成真 tokenizer，或至少按模型真实窗口裁剪（现默认 128k 是保守假设） | 取决于上游目录是否提供窗口字段 | 待实施 |
-| ⑱ | `ask` 问题默认超时 | `question` 通道无默认 `timeout_s`：无人应答时本轮**永久挂起**（实测探测客户端须手动杀）；加默认超时 + idle 提示（可镜像 permission 的 60s） | 无 | 待实施 |
-| ⑲ | CLI / 配置健壮性 | ① `run --yes` 或非 TTY 自动拒绝（现非 TTY 遇需审批工具一直等到超时）；② `[permission] timeout_ms` 下界校验（`0` 现静默 = 立即拒绝，非法值不报错） | 无 | 待实施 |
 | ⑳ | 【修复】远端命名与 `AGENTS.md` 对齐 | 实测 `git remote -v`：`origin` = `git@gitcode.com:jeill/agentj.git`（镜像）、`github` = `git@github.com:JeillZhang/agentj.git`（权威），与 `AGENTS.md`「Remote & Merge Policy」**完全相反**——照文档执行 `git pull --ff-only origin main` / `git push -u origin <branch>` 会打到镜像。二者必须一致（改文档或改 remote 名，重命名方向需用户定夺） | 无（需用户决策） | 待实施 |
 | ㉗ | 【债】错误处理约定与生产 `expect` | lib 代码 `let _ =` **58 处**（已剔除 `#[cfg(test)]`；报告所称 222 含测试），多数是合理「尽力而为」却无统一约定与注释，审计成本高；生产路径 `crates/agentj-ipc/src/web.rs:595/642 .expect("valid cookie header")`、`web.rs:627 .expect("retry-after")` 本可 `if let` 处理 | 无 | 待实施 |
 | ㉘ | 【修复】Web 登录门与 cookie 安全细节 | ① `crates/agentj-ipc/src/web.rs:587 if !expected.is_empty() && form.token == expected` 非常量时间比较（低成本可换 `subtle::ConstantTimeEq`，限流已缓解但非等价）；② `web.rs:593/640` 会话 cookie 仅 `HttpOnly; SameSite=Lax; Path=/`，**缺 `Secure`**（https 部署下明文回放） | 无 | 待实施 |
@@ -239,12 +243,12 @@
 
 ## 下一步
 
-- rank 规则单一真源化代码 / 测试 / 文档 / summary(se/fe) 全部收尾，最终门禁全绿；剩余：推送
+- run 可靠性批次代码 / 测试 / 文档 / summary(se/fe) 已全部收尾；剩余文档任务：**T19**（同步
+  `AGENTS.md` / `README.md` 的协议版本基线 + `scripts/check-version.sh`，当前该脚本保持红）+ 推送
   **两个远端**（本工作副本 `github` = GitHub 权威、`origin` = GitCode 镜像；与 `AGENTS.md` 远端
   命名相反）→ 开 GitHub PR（用户负责合并）→ 进入测试验收。
-- 下一特性候选：待实施 ⑥「用量历史服务端持久化」、⑦「工具结果落库上限」、⑧「`session/run`
-  回显生效模型」、⑨「`glob` 路径语义」。
-- 后端候选：上表 ⑥⑦⑧⑨（特性）+ ⑩–⑳、㉗–㉜（工程债 / 修复 / 合规）；或前端跟进见
-  `summary_and_next_fe.md`（含 ③ Web 接入服务端搜索 + ㉑–㉕ 前端债 / 修复）。
-- 可选跟进：为 `run` 增加 `--yes`（或非 TTY 自动拒绝）；`ask` 问题默认超时；把「会话已裁剪
-  N 条消息」作为可观测事件；`ModelEvent` 增加 `reasoning_content` 承载。
+- 下一特性候选：待实施 ⑥「用量历史服务端持久化」（特性）；或上表 ⑩–⑯、⑳、㉗–㉜（工程债 /
+  修复 / 合规）；或前端跟进见 `summary_and_next_fe.md`（含 ③ Web 接入服务端搜索 + ㉑–㉕、㉝–㉞）。
+- 可选跟进（本批次遗留，非阻塞）：非 TTY 未加 `--yes` 改为**立即**拒绝（现等 `timeout_ms` 预算）；
+  `glob` 超时由文本结果改为结构化 Err；把「工具结果已截断」作为可观测事件透出（当前仅内核内
+  `AgentEvent::ToolResultTruncated`）。
