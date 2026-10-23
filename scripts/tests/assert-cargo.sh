@@ -144,7 +144,7 @@ check_licenses() {
 
 check_deny_config() {
   local name=deny-config
-  local out
+  local out deny_out unmatched
   if ! out=$(python3 - "$ROOT" <<'PY'
 import pathlib
 import sys
@@ -196,6 +196,23 @@ print("ok")
 PY
   ); then
     bad "$name" "$out"
+    return 1
+  fi
+  # A skip entry that matches no duplicate is a silent blind spot: the duplicate
+  # it claimed to explain is gone (or the rationale is stale). Require every
+  # entry in bans.skip to still hit, i.e. no `unmatched-skip` warning.
+  if ! command -v cargo-deny >/dev/null 2>&1 && ! cargo deny --version >/dev/null 2>&1; then
+    printf 'SKIP %s: cargo-deny unavailable, cannot verify bans.skip entries still hit\n' "$name"
+    return 3
+  fi
+  if ! deny_out=$(cd "$ROOT" && cargo deny --color never check bans 2>&1); then
+    bad "$name" "cargo deny check bans failed: $(printf '%s' "$deny_out" | tr '\n' ' ' | cut -c1-400)"
+    return 1
+  fi
+  unmatched=$(printf '%s\n' "$deny_out" | grep -F 'unmatched-skip' || true)
+  if [ -n "$unmatched" ]; then
+    printf '%s\n' "$unmatched"
+    bad "$name" "bans.skip has entries matching no duplicate (unmatched-skip); every skip must still hit"
     return 1
   fi
   ok "$name"

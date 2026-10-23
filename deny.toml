@@ -37,13 +37,20 @@ wildcards = "deny"
 # Duplicates that cannot be removed without upstream work. Keep this list
 # short and explain each entry — an unexplained skip is a silent blind spot.
 skip = [
-  # ed25519-dalek 2.2 still rides the rand 0.8 / getrandom 0.2 chain while
-  # uuid 1.26 pulls getrandom 0.4. Drop these once ed25519-dalek moves up.
-  { name = "getrandom", version = "=0.2.17" },
+  # getrandom 0.3.4 rides rand 0.9.5 -> rand_core 0.9.5 (via tokio-tungstenite
+  # 0.26/0.29); getrandom 0.4.3 comes from uuid 1.26 and fastrand 2.5 (tempfile
+  # 3.27). getrandom 0.2 is lockfile-only: rand_core 0.6.4's `getrandom` feature
+  # stays off here, so nothing pulls 0.2 into the built graph.
   { name = "getrandom", version = "=0.3.4" },
+  # getrandom 0.3.4's UEFI backend (visible only under `cargo tree --target
+  # all`); getrandom 0.4.3 ships r-efi 6.0.0 instead, hence the duplicate.
   { name = "r-efi", version = "=5.3.0" },
+  # ed25519-dalek 2.2.0 is the last consumer of rand_core 0.6 (agentj-license /
+  # agentj-cli); rand 0.9.5 already uses rand_core 0.9.5.
   { name = "rand_core", version = "=0.6.4" },
-  # Tower/hyper stack still targets the system-config 0.9 API.
+  # macOS/iOS TLS stack: hyper-util 0.1.20 -> system-configuration 0.7.0 ->
+  # core-foundation 0.9.4, while native-tls 0.2.18 -> security-framework 3.7.0
+  # -> core-foundation 0.10.1.
   { name = "core-foundation", version = "=0.9.4" },
   # async-trait 0.1.92 is the only proc-macro crate on syn 3 so far.
   { name = "syn", version = "=3.0.4" },
