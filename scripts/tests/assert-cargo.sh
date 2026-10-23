@@ -22,6 +22,7 @@ check_cargo_root() {
   if ! out=$(python3 - "$ROOT" <<'PY'
 import pathlib
 import re
+import subprocess
 import sys
 import tomllib
 
@@ -81,6 +82,7 @@ check_crate_inheritance() {
   if ! out=$(python3 - "$ROOT" <<'PY'
 import pathlib
 import re
+import subprocess
 import sys
 import tomllib
 
@@ -150,6 +152,7 @@ check_deny_config() {
   if ! out=$(python3 - "$ROOT" <<'PY'
 import pathlib
 import re
+import subprocess
 import sys
 import tomllib
 
@@ -177,11 +180,25 @@ if "docs/superpowers" in comments:
 pointers = sorted(set(re.findall(r"[\w./-]+\.md", comments)))
 if not pointers:
     err("deny.toml must point at the documentation that explains the policy")
+work_tree = subprocess.run(
+    ["git", "-C", str(root), "rev-parse", "--is-inside-work-tree"],
+    capture_output=True,
+    text=True,
+)
+tracked = work_tree.returncode == 0 and work_tree.stdout.strip() == "true"
 documented = ""
 for pointer in pointers:
     target = root / pointer
     if not target.is_file():
         err(f"deny.toml points at a missing file: {pointer}")
+    if tracked:
+        listed = subprocess.run(
+            ["git", "-C", str(root), "ls-files", "--error-unmatch", "--", pointer],
+            capture_output=True,
+            text=True,
+        )
+        if listed.returncode != 0:
+            err(f"deny.toml points at {pointer}, which git does not track")
     documented += target.read_text().lower()
 for topic in ("allowlist", "licence", "duplicate"):
     if topic not in documented:
