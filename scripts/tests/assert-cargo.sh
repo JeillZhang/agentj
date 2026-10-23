@@ -73,8 +73,53 @@ PY
 
 check_crate_inheritance() {
   local name=crate-inheritance
-  bad "$name" "not implemented yet"
-  return 1
+  local out
+  if ! out=$(python3 - "$ROOT" <<'PY'
+import pathlib
+import sys
+import tomllib
+
+root = pathlib.Path(sys.argv[1])
+managed = {
+    "serde", "serde_json", "tokio", "thiserror", "tracing", "uuid",
+    "async-trait", "futures", "tempfile", "base64", "wiremock", "libloading",
+}
+sections = ("dependencies", "dev-dependencies", "build-dependencies")
+
+manifests = sorted((root / "crates").glob("*/Cargo.toml"))
+if len(manifests) != 18:
+    print(f"expected 18 crate manifests, found {len(manifests)}")
+    sys.exit(1)
+
+for path in manifests:
+    rel = path.relative_to(root)
+    with open(path, "rb") as fh:
+        doc = tomllib.load(fh)
+    pkg = doc.get("package", {})
+    for key in ("version", "edition", "rust-version", "license"):
+        if pkg.get(key) != {"workspace": True}:
+            print(f"{rel}: [package] {key}.workspace = true is required")
+            sys.exit(1)
+    if doc.get("lints") != {"workspace": True}:
+        print(f"{rel}: [lints] workspace = true is required")
+        sys.exit(1)
+    for section in sections:
+        for dep, spec in (doc.get(section) or {}).items():
+            if dep not in managed:
+                continue
+            if not isinstance(spec, dict) or spec.get("workspace") is not True:
+                print(f"{rel}: [{section}] {dep} must use {{ workspace = true }}")
+                sys.exit(1)
+            if "version" in spec:
+                print(f"{rel}: [{section}] {dep} must not pin a version")
+                sys.exit(1)
+print("ok")
+PY
+  ); then
+    bad "$name" "$out"
+    return 1
+  fi
+  ok "$name"
 }
 
 check_licenses() {
@@ -96,8 +141,54 @@ check_licenses() {
 
 check_deny_config() {
   local name=deny-config
-  bad "$name" "not implemented yet"
-  return 1
+  local out
+  if ! out=$(python3 - "$ROOT" <<'PY'
+import pathlib
+import sys
+import tomllib
+
+root = pathlib.Path(sys.argv[1])
+
+
+def err(msg):
+    print(msg)
+    sys.exit(1)
+
+
+path = root / "deny.toml"
+if not path.is_file():
+    err("deny.toml missing")
+with open(path, "rb") as fh:
+    cfg = tomllib.load(fh)
+for section in ("advisories", "licenses", "bans", "sources"):
+    if section not in cfg:
+        err(f"deny.toml must configure [{section}]")
+licenses = cfg["licenses"]
+if "default" in licenses:
+    err("licenses.default was removed in cargo-deny 0.20 (unlisted licences are denied)")
+allow = licenses.get("allow") or []
+for needed in ("MIT", "Apache-2.0"):
+    if needed not in allow:
+        err(f"licenses.allow must include {needed}")
+bans = cfg["bans"]
+if bans.get("multiple-versions") != "deny":
+    err(f"bans.multiple-versions must be 'deny' (got {bans.get('multiple-versions')!r})")
+if bans.get("wildcards") != "deny":
+    err(f"bans.wildcards must be 'deny' (got {bans.get('wildcards')!r})")
+sources = cfg["sources"]
+crates_io = ["https://github.com/rust-lang/crates.io-index"]
+if sources.get("allow-registry") != crates_io:
+    err(f"sources.allow-registry must be {crates_io} (got {sources.get('allow-registry')!r})")
+for key in ("unknown-registry", "unknown-git"):
+    if sources.get(key) != "deny":
+        err(f"sources.{key} must be 'deny' (got {sources.get(key)!r})")
+print("ok")
+PY
+  ); then
+    bad "$name" "$out"
+    return 1
+  fi
+  ok "$name"
 }
 
 check_lockfile_locked() {
