@@ -8,12 +8,72 @@
 > 待实施），不得随内容替换而删除；仅当该特性实际实施完成后才能移除（移入功能记录）。
 > 后端总结独立存放于 `summary_and_next_se.md`；两文件内容隔离，互不写入对方文件。
 
-> 当前功能：**run 可靠性批次（前端）** —— 分支 `feature/run-reliability-batch`。Web 新增生效
-> 模型 chip（`data-testid="run-model-chip"`，内核缺省时回退选择器），`@agentj/protocol` 类型
-> 重新生成、`@agentj/sdk` `PROTOCOL_VERSION` 同步 **0.19.0**（`VERSION` 仍 0.1.0）。下方
-> search-rank 单一真源化（TUI 侧）等前序章节为归档记录。
+本文件当前记录**工程治理批次（前端侧）**（包管理 / lockfile / CI 门禁 / 卫生，无 UI 逻辑重写）。
 
-## run 可靠性批次（前端）✅
+> 当前功能：**工程治理批次（前端侧）** —— 分支 `chore/engineering-governance-batch`（自 `5062736` 起）。
+> npm 单一 lockfile + `packageManager` / `engines` 元数据 + 版本对齐 + registry 固定；新增
+> `frontend` CI 作业（16 步覆盖全部 UI 门禁）+ 跨平台构建作业；工作区卫生清理。
+> wire 面零变更（`PROTOCOL_VERSION` 仍 0.19.0，`VERSION` 仍 0.1.0）。
+
+## 工程治理批次（前端）✅
+
+分支 `chore/engineering-governance-batch`。对应 `_se.md` 同批次；本侧落地待实施 ㉑ ㉒ ㉕ ㉝ ㉞
+（㉒ 仅到「跨平台可编译」，打包链路遗留为 `_se.md` ㉟）。
+
+### 交付
+
+- **npm 单一 lockfile**：删除 `agentj-ui/bun.lock`（117,604 B）与 `agentj-ui/apps/web/
+  package-lock.json`（58,110 B）、`agentj-ui/packages/protocol/package-lock.json`，只保留
+  `agentj-ui/package-lock.json`；`agentj-ui/package.json` 补 `name: agentj-ui`、
+  `version: 0.1.0`、`private: true`、`packageManager: npm@11.11.0`、`engines.node: >=24`；
+  `apps/web` 与 `apps/tui` 的 `version` 由 `0.0.0` 对齐到 `0.1.0`；`apps/desktop` 由 `0.29.1`
+  对齐到 `0.1.0`（lockfile 根条目同步）。
+- **registry 固定**：新增 `agentj-ui/.npmrc` → `registry=https://mirrors.huaweicloud.com/repository/npm/`
+  （lockfile 的 integrity 与 registry 无关，可随时改回官方源；`npm ci` 实测 `added 337 packages in 9s`，
+  lockfile 内零 `registry.npmjs.org` URL）。
+- **前端 CI 门禁**（`.github/workflows/ci.yml` 新增 `frontend` 作业，ubuntu-latest、timeout 20）：
+  16 步 —— `npm --prefix agentj-ui ci` → protocol `generate` + `git diff --exit-code --`
+  `agentj-ui/packages/protocol/types.d.ts`（漂移门禁）→ protocol `build` → sdk `generate` +
+  `git diff --exit-code --` `agentj-ui/packages/sdk/src/methods.ts` → sdk test → tokens test →
+  web test → web build → `dist/version.json` 与 `protocol/methods.json` 的 `protocol_version`
+  一致性（node -e）→ `npm run lint --workspace=@agentj/web`（oxlint，warnings 只显示）→
+  `bun --cwd agentj-ui/apps/tui test` → `node agentj-ui/apps/desktop/check-desktop-ui.mjs` →
+  `./scripts/check-version.sh` → `node scripts/check-relocate.mjs`；`actions/setup-node@v4`
+  （node 24 + `cache-dependency-path: agentj-ui/package-lock.json`）与 `oven-sh/setup-bun@v2`
+  （bun 1.4.0）各一步。`packages/protocol/package.json` 补 `"test": "vitest run"`（4 个测试）。
+- **跨平台构建**：新增 `cross-platform` 作业（matrix ubuntu / macos / windows +
+  `cargo build --workspace --locked`），仅验证可编译，不含打包。
+- **版本一致性**：`scripts/check-version.sh` 现覆盖 `agentj-ui/package.json`、`apps/web`、
+  `apps/tui`、`apps/desktop` 与 lockfile 根条目（原 ㉕ ① 的缺口），失败时打印文件名与期望值。
+- **卫生**：删除 `agentj-ui/node_modules/.old_modules-245c1e1a995d5f43/`、仓库根空
+  `node_modules/`、`.playwright-mcp/`（107 文件）；`.gitignore` 补 `.opencode/`。
+- **`check-relocate.mjs` 修复**：原先硬断言已改名的 `apps/web/src/jsonrpc.test.ts` → 必红；
+  改为断言 `agentj-ui/apps/web/src` 下至少存在一个 `*.test.ts(x)`，并接入 CI。
+- **远端命名**：`origin` = GitHub 唯一权威、`gitcode` = 只读镜像（与 `AGENTS.md` 一致）。
+
+### 验证
+
+| 命令 | 结果 |
+|------|------|
+| `npm --prefix agentj-ui ci` | `added 337 packages in 9s`（锁文件无 npmjs.org URL） |
+| `npm --prefix agentj-ui test --workspace=@agentj/sdk` | 55 passed（6 文件） |
+| `npm --prefix agentj-ui test --workspace=@agentj/protocol` | 4 passed（1 文件） |
+| `npm --prefix agentj-ui test --workspace=@agentj/tokens` | 通过 |
+| `npm --prefix agentj-ui test --workspace=@agentj/web` | 681 passed |
+| `npm --prefix agentj-ui run lint --workspace=@agentj/web` | exit 0（仅 warnings） |
+| `npm --prefix agentj-ui run build --workspace=@agentj/web` | 构建成功 |
+| `bun --cwd agentj-ui/apps/tui test` | 192 pass / 0 fail |
+| `node agentj-ui/apps/desktop/check-desktop-ui.mjs` / `node scripts/check-relocate.mjs` | `desktop-ui-ok` / `relocate-ok` |
+
+### 遗留问题 / 已知限制（本批次）
+
+- CI 上的 `frontend` 作业尚未实跑（本地逐步跑通同一序列）；首次绿灯后需观察 oxlint warnings 噪声。
+- `cross-platform` 只做 `cargo build`，desktop 打包（deb/AppImage/dmg/msi）仍未在 CI 验证
+  → 记录为 `_se.md` 待实施 ㉟。
+- `agentj-ui/node_modules` 仍约 470MB（迁移残留已清，体积属正常依赖）；`npm ci` 需要网络。
+- `.npmrc` 指向华为云镜像；换源只需改该文件（integrity 不变）。
+
+## 归档：run 可靠性批次（前端）✅
 
 分支 `feature/run-reliability-batch`。前端只做生效模型回显 + 协议/版本同步，无独立逻辑重写。
 对应 `_se.md` 待实施 ⑧（`session/run` 回显生效模型）的前端消费落地。
@@ -84,13 +144,8 @@
 | # | 特性 | 内容 | 依赖 | 状态 |
 |---|------|------|------|------|
 | ③ | Web 接入服务端搜索 | Web Files 搜索态打通（消费服务端 `query`/`total`；提示行搜索态可达） | 无（基于服务端搜索） | 待实施 |
-| ㉑ | 【债】前端 CI 门禁 | `.github/workflows/` 三个 workflow（`ci.yml` / `smoke.yml` / `e2e.yml`）**全部只跑 Rust、只跑 ubuntu-latest**（实测 `grep -rn "npm\|bun" .github/` 为空）→ 679 web 测试 / 55 文件、21 个 TUI 测试文件、`tsc -b`、`oxlint`、`check-desktop-ui.mjs` **均无门禁**，前端 30,722 行（占总代码 38%）靠本地自觉。新增 frontend job：`npm ci` → protocol `generate` → `tsc --noEmit` → web vitest → `bun --cwd agentj-ui/apps/tui test` → desktop UI 校验；并在 CI 中重建 `dist/version.json`（现产物需人工重建，否则触发 UI/内核版本不一致告警） | 无 | 待实施 |
-| ㉒ | 【债】跨平台 CI 矩阵 | desktop 声称产 deb / AppImage / **dmg / msi**（`docs/guide/desktop.md`），但 CI 无 macOS / Windows 矩阵，跨平台从未被验证（Rust 侧亦只在 Linux 编译） | 依赖 ㉑ 的 workflow 结构 | 待实施 |
 | ㉓ | 【修复】`isBlankText` 上提 SDK + TUI 盲区 | BUG-017 的视觉空白过滤现散落两处（内核 `flush_thinking` + Web `blankText.ts`），而 `agentj-ui/apps/tui/src/runview.tsx:126` 的 `case "text"` 仍无条件 `next.push(...)` → 零宽帧多一个空行（同源盲区未修）。把 `isBlankText` 上提 `@agentj/sdk`，三端共享（需同改 Web import 与 SDK 测试） | 无 | 待实施 |
 | ㉔ | 【债】三端共享逻辑收敛 | Web 19,930 行 / TUI 7,939 行各自重写会话、运行视图、文件树、搜索（`toolSummary`、files 懒加载、空文本过滤等均为双份实现）；评估把无 UI 依赖的纯函数上提 `@agentj/sdk`，避免同一缺陷修两次 | 与 ㉓ 同向 | 待实施 |
-| ㉕ | 【修复】版本元数据与依赖残留 | ① `scripts/check-version.sh` 未覆盖 `agentj-ui/package-lock.json`（根条目仍记陈旧的 `0.29.1`）与 `agentj-ui/apps/web/package.json`（`"version": "0.0.0"`）；② 清理 `agentj-ui/node_modules/.old_modules-245c1e1a995d5f43/` 等迁移残留 | 无 | 待实施 |
-| ㉝ | 【债】包管理器与 lockfile 三份并存 | 实测 `agentj-ui/bun.lock` 117,604 B、`agentj-ui/package-lock.json` 184,696 B、`agentj-ui/apps/web/package-lock.json` 58,110 B **三份并存**，且所有 `package.json` **无 `packageManager` 字段** → npm 与 bun 解析结果可能漂移（`AGENTS.md` 现同时要求 npm 与 bun 命令，需一并收敛） | 无 | 待实施 |
-| ㉞ | 【债】工作区与工具链卫生 | 仓库根残留空 `node_modules/`（0 项）与 `.playwright-mcp/`（**107 个文件**，已 gitignore）；AI 工具目录六个并存（`.agents` / `.claude` / `.omo` / `.opencode` / `.superpowers`）→ 清理 + 收敛，减少工具链碎片化 | 无 | 待实施 |
 
 > 类型标记：`【债】` = 工程债 / 质量门禁，`【修复】` = 已确认缺陷或元数据不一致；无标记 = 特性。
 > 规则：本表条目在未实施时必须**跨阶段保留**（不得随内容替换删除）；实施完成后从本表移除，
@@ -98,11 +153,12 @@
 
 ## 下一步
 
-- run 可靠性批次（前端）已提交到 `feature/run-reliability-batch`（提交见 `_se.md` 真实提交表）→
-  推送**两个远端**（本机 `github` = GitHub 权威、`origin` = GitCode 镜像；与 AGENTS.md 的远端命名
-  相反）→ 开 GitHub PR（用户负责合并）→ 进入测试验收。
-- 前端候选：③ Web 接入服务端搜索，以及 ㉑–㉕、㉝–㉞ 工程债 / 修复（前端 CI、跨平台矩阵、SDK 共享、
-  版本覆盖、lockfile 收敛、工作区卫生）；或订阅状态常驻指示（需先定义新鲜度语义）；
-  或清理 `TopbarMenu` / `SettingsDialog` 测试里的重复 stub helper；
-  或 TUI `/models` 与 Web 选择语义对齐（TUI 仍是内存态、不跨进程持久化）。
+- 工程治理批次（前端侧）已收尾；剩余收尾动作：T21（同步 `AGENTS.md` / `README.md` 门禁清单）→
+  T22（远端重命名：`origin` = GitHub 唯一权威、`gitcode` = 只读镜像，并把镜像快进到
+  `origin/main` 同一 tree）→ 分支推送两个远端 → 测试验收（`jskill-test-acceptance`）通过后在
+  `origin` 开 PR（用户负责合并）。
+- 前端候选：③ Web 接入服务端搜索（消费服务端 `query` / `total`）；㉓ `isBlankText` 上提 SDK 修
+  TUI 盲区；㉔ 三端共享逻辑收敛；或订阅状态常驻指示（需先定义新鲜度语义）；或清理
+  `TopbarMenu` / `SettingsDialog` 测试里的重复 stub helper；或 TUI `/models` 与 Web 选择语义对齐
+  （TUI 仍是内存态、不跨进程持久化）。
 - 后端候选见 `summary_and_next_se.md`。
