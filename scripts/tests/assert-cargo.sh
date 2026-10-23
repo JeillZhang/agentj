@@ -173,6 +173,15 @@ if "docs/superpowers" in comments:
 for section in ("advisories", "licenses", "bans", "sources"):
     if section not in cfg:
         err(f"deny.toml must configure [{section}]")
+# cargo-deny denies yanked releases by default; writing the key at all is only
+# worth it to relax it, which would downgrade a hard block to a warning.
+advisories = cfg["advisories"]
+yanked = advisories.get("yanked", "deny")
+if yanked != "deny":
+    err(
+        "advisories.yanked must be 'deny' (cargo-deny's default); got "
+        f"{yanked!r} — yanked releases must block, not warn"
+    )
 licenses = cfg["licenses"]
 if "default" in licenses:
     err("licenses.default was removed in cargo-deny 0.20 (unlisted licences are denied)")

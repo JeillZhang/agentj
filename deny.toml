@@ -4,7 +4,8 @@
 # file is the enforcement, not the discussion.
 
 [advisories]
-yanked = "warn"
+# `yanked` is left at cargo-deny's default (deny): a yanked release must block,
+# never be silently downgraded to a warning.
 ignore = []
 
 [licenses]
