@@ -79,8 +79,19 @@ check_crate_inheritance() {
 
 check_licenses() {
   local name=licenses
-  bad "$name" "not implemented yet"
-  return 1
+  local f
+  for f in LICENSE LICENSE-MIT LICENSE-APACHE; do
+    [ -s "$ROOT/$f" ] || { bad "$name" "missing or empty $f"; return 1; }
+  done
+  grep -q 'MIT License' "$ROOT/LICENSE-MIT" \
+    || { bad "$name" "LICENSE-MIT must contain the MIT licence text"; return 1; }
+  grep -q 'Apache License' "$ROOT/LICENSE-APACHE" \
+    || { bad "$name" "LICENSE-APACHE must contain the Apache licence text"; return 1; }
+  grep -q 'Version 2.0' "$ROOT/LICENSE-APACHE" \
+    || { bad "$name" "LICENSE-APACHE must be version 2.0"; return 1; }
+  grep -q 'MIT' "$ROOT/LICENSE" && grep -q 'Apache' "$ROOT/LICENSE" \
+    || { bad "$name" "LICENSE must state the dual MIT/Apache-2.0 licence"; return 1; }
+  ok "$name"
 }
 
 check_deny_config() {
