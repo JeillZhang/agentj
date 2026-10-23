@@ -38,8 +38,16 @@ check_ui_manifests() {
 
 check_lockfile_root() {
   local name=lockfile-root
-  bad "$name" "not implemented yet"
-  return 1
+  local lock="$ROOT/agentj-ui/package-lock.json"
+  local want
+  [ -f "$lock" ] || { bad "$name" "missing agentj-ui/package-lock.json"; return 1; }
+  want=$(jq -r '.packages[""].name // ""' "$lock")
+  [ "$want" = agentj-ui ] || { bad "$name" "root entry name must be agentj-ui (got '$want')"; return 1; }
+  want=$(jq -r '.packages[""].version // ""' "$lock")
+  [ "$want" = 0.1.0 ] || { bad "$name" "root entry version must be 0.1.0 (got '$want')"; return 1; }
+  want=$(jq -r '.packages["apps/desktop"].version // ""' "$lock")
+  [ "$want" = 0.1.0 ] || { bad "$name" "apps/desktop version must be 0.1.0 (got '$want')"; return 1; }
+  ok "$name"
 }
 
 check_single_lockfile() {
