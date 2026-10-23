@@ -161,8 +161,15 @@ def err(msg):
 path = root / "deny.toml"
 if not path.is_file():
     err("deny.toml missing")
+raw = path.read_text()
 with open(path, "rb") as fh:
     cfg = tomllib.load(fh)
+# A pointer to a gitignored document is a dead link for every fresh clone.
+comments = " ".join(
+    line for line in raw.splitlines() if line.lstrip().startswith("#")
+)
+if "docs/superpowers" in comments:
+    err("deny.toml rationale must not point at the gitignored docs/superpowers/ tree")
 for section in ("advisories", "licenses", "bans", "sources"):
     if section not in cfg:
         err(f"deny.toml must configure [{section}]")

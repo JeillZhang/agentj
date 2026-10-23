@@ -1,6 +1,7 @@
-# cargo-deny policy. Run with `cargo deny check` from the repository root.
-# Rationale lives in docs/superpowers/specs/2026-10-23-engineering-governance-batch-design.md
-# (decisions D4/D5) — this file is the enforcement, not the discussion.
+# cargo-deny policy. Run with `cargo deny check advisories licenses bans sources`
+# from the repository root. The allowlist, the annotated duplicate skips and the
+# workspace licence policy are documented in CONTRIBUTING.md / AGENTS.md — this
+# file is the enforcement, not the discussion.
 
 [advisories]
 yanked = "warn"
