@@ -153,10 +153,10 @@
 
 ## 下一步
 
-- 工程治理批次（前端侧）已收尾；剩余收尾动作：T21（同步 `AGENTS.md` / `README.md` 门禁清单）→
-  T22（远端重命名：`origin` = GitHub 唯一权威、`gitcode` = 只读镜像，并把镜像快进到
-  `origin/main` 同一 tree）→ 分支推送两个远端 → 测试验收（`jskill-test-acceptance`）通过后在
-  `origin` 开 PR（用户负责合并）。
+- 工程治理批次（前端侧）已收尾，`AGENTS.md` / `README.md` 已同步门禁清单，远端已重命名
+  （`origin` = GitHub 唯一权威、`gitcode` = 只读镜像），分支已推送两个远端；当前处于**测试验收**
+  循环（缺陷清单在 `.superpowers/acceptance/bugs.md`，本地产物不入库），验收 PASS 后在 `origin`
+  开 PR（用户负责合并）。
 - 前端候选：③ Web 接入服务端搜索（消费服务端 `query` / `total`）；㉓ `isBlankText` 上提 SDK 修
   TUI 盲区；㉔ 三端共享逻辑收敛；或订阅状态常驻指示（需先定义新鲜度语义）；或清理
   `TopbarMenu` / `SettingsDialog` 测试里的重复 stub helper；或 TUI `/models` 与 Web 选择语义对齐

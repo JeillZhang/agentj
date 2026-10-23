@@ -333,10 +333,13 @@
 
 ## 下一步
 
-- 工程治理批次代码 / 门禁 / 文档 / summary(se/fe) 已收尾；剩余收尾动作：T21（同步 `AGENTS.md` /
-  `README.md` 的门禁清单与本文件基线）→ T22（远端重命名：`origin` = GitHub 唯一权威、
-  `gitcode` = 只读镜像，并把镜像快进到与 `origin/main` 相同的 tree）→ 分支推送两个远端 →
-  进入测试验收（`jskill-test-acceptance`），通过后在 `origin` 开 PR（用户负责合并）。
+- 工程治理批次代码 / 门禁 / 文档 / summary(se/fe) 已收尾，`AGENTS.md` / `README.md` 已同步门禁清单，
+  远端已重命名（`origin` = GitHub 唯一权威、`gitcode` = 只读镜像），分支已推送两个远端；
+  当前处于**测试验收**循环（缺陷清单在 `.superpowers/acceptance/bugs.md`，本地产物不入库）。
+- **待用户决策（唯一阻塞项）**：`origin/main`（GitHub，`d883a79`）与本地 `main`（`5062736`）是
+  同一份内容的两个 merge commit，`git push origin main` 非快进 → 二选一：① 在 `main` 上
+  `git merge origin/main` 生成零内容变化的合并提交后再 `git push origin main`（不改写历史）；
+  ② 重置镜像 / 权威端的 `main`。验收 PASS 后在 `origin` 开 PR（用户负责合并）。
 - 下一特性候选：待实施 ⑥「用量历史服务端持久化」（特性）；或上表 ⑩–⑬、⑯、⑰、㉗–㉚、㉟
   （工程债 / 修复）；或前端跟进见 `summary_and_next_fe.md`（含 ③ Web 接入服务端搜索 + ㉓ ㉔）。
 - 可选跟进（run 可靠性批次遗留，非阻塞）：非 TTY 未加 `--yes` 改为**立即**拒绝（现等

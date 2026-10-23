@@ -527,6 +527,23 @@ for label, text in (("se summary", se_all), ("fe summary", fe_all)):
     if "origin" not in text:
         fail(f"{label}: must document that `origin` is the authoritative remote")
 
+def next_step_section(path):
+    text = path.read_text()
+    match = re.search(r"^## 下一步.*$", text, re.M)
+    if match is None:
+        fail(f"{path.name}: no `## 下一步` section")
+        return ""
+    return text[match.end():]
+
+
+# Finished work must not still be advertised as pending in 下一步.
+FORBIDDEN_NEXT = ["剩余收尾动作", "→ T22（", "T21（同步"]
+for name, path in (("se", SE), ("fe", FE)):
+    section = next_step_section(path)
+    for stale in FORBIDDEN_NEXT:
+        if stale in section:
+            fail(f"{name} 下一步 still lists finished work as pending: {stale}")
+
 se_keep = ["⑥", "⑩", "⑪", "⑫", "⑬", "⑯", "⑰", "㉗", "㉘", "㉙", "㉚"]
 se_drop = ["⑮", "⑳", "㉛", "㉜"]
 for symbol in se_keep:
