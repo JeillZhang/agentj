@@ -177,7 +177,9 @@ comments = " ".join(
 if "docs/superpowers" in comments:
     err("deny.toml rationale must not point at the gitignored docs/superpowers/ tree")
 # A pointer at a tracked-but-silent document is just as dead as a gitignored one.
-pointers = sorted(set(re.findall(r"[\w./-]+\.md", comments)))
+# Repo-relative paths only: `docs/...` or a capitalised root document.
+# URLs and bare lowercase filenames (`v0.1.md`) are mentions, not pointers.
+pointers = sorted(set(re.findall(r"(?<![\w./:-])(docs/[\w./-]+|[A-Z][A-Z0-9_-]*\.md)", comments)))
 if not pointers:
     err("deny.toml must point at the documentation that explains the policy")
 work_tree = subprocess.run(
