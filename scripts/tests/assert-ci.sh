@@ -303,12 +303,185 @@ PY
 
 check_docs_summaries() {
   local name=docs-summaries
-  pending "$name"
+  local out
+  if ! out=$(python3 - "$ROOT" <<'PY'
+import pathlib
+import re
+import sys
+
+root = pathlib.Path(sys.argv[1])
+SE = root / ".agents" / "summary" / "summary_and_next_se.md"
+FE = root / ".agents" / "summary" / "summary_and_next_fe.md"
+LOG = root / "docs" / "changelog" / "v0.1.md"
+
+ERRORS = []
+
+
+def fail(msg):
+    ERRORS.append(msg)
+
+
+def pending_section(path, label):
+    if not path.is_file():
+        fail(f"missing {path.relative_to(root)}")
+        return ""
+    text = path.read_text()
+    match = re.search(r"^## 待实施.*$", text, re.M)
+    if match is None:
+        fail(f"{label}: no `## 待实施` section")
+        return ""
+    rest = text[match.end():]
+    nxt = re.search(r"^## ", rest, re.M)
+    return rest[: nxt.start()] if nxt else rest
+
+
+se_all = SE.read_text() if SE.is_file() else ""
+fe_all = FE.read_text() if FE.is_file() else ""
+se = pending_section(SE, "se summary")
+fe = pending_section(FE, "fe summary")
+
+FORBIDDEN_COMMON = [
+    "check-version.sh 保持红",
+    "GitHub 权威",
+    "与 AGENTS.md 的远端命名相反",
+]
+for label, text in (("se summary", se_all), ("fe summary", fe_all)):
+    for stale in FORBIDDEN_COMMON:
+        if stale in text:
+            fail(f"{label}: stale statement still present: {stale}")
+    if "gitcode" not in text:
+        fail(f"{label}: must document that `gitcode` is the read-only mirror")
+    if "origin" not in text:
+        fail(f"{label}: must document that `origin` is the authoritative remote")
+
+se_keep = ["⑥", "⑩", "⑪", "⑫", "⑬", "⑯", "⑰", "㉗", "㉘", "㉙", "㉚"]
+se_drop = ["⑮", "⑳", "㉛", "㉜"]
+for symbol in se_keep:
+    if symbol not in se:
+        fail(f"se 待实施 must keep row {symbol}")
+for symbol in se_drop:
+    if symbol in se:
+        fail(f"se 待实施 must drop implemented row {symbol}")
+for token in ("dmg", "msi"):
+    if token not in se.lower():
+        fail(f"se 待实施 must carry the desktop packaging row ({token})")
+
+fe_keep = ["③", "㉓", "㉔"]
+fe_drop = ["㉑", "㉒", "㉕", "㉝", "㉞"]
+for symbol in fe_keep:
+    if symbol not in fe:
+        fail(f"fe 待实施 must keep row {symbol}")
+for symbol in fe_drop:
+    if symbol in fe:
+        fail(f"fe 待实施 must drop implemented row {symbol}")
+
+if not LOG.is_file():
+    fail("missing docs/changelog/v0.1.md")
+else:
+    log = LOG.read_text()
+    for section in ("### Added", "### Changed", "### Fixed"):
+        if section not in log:
+            fail(f"changlog v0.1.md is missing {section}")
+    for topic, needle in (
+        ("npm lockfile consolidation", "lockfile"),
+        ("workspace cargo policy", "workspace.dependencies"),
+        ("workspace lint policy", "workspace.lints"),
+        ("licensing", "LICENSE-MIT"),
+        ("contribution guide", "CONTRIBUTING.md"),
+        ("security policy", "SECURITY.md"),
+        ("dependabot", "dependabot.yml"),
+        ("cargo-deny policy", "deny.toml"),
+        ("assertion harness", "scripts/tests/assert-"),
+        ("hygiene", ".opencode"),
+        ("remote naming", "gitcode"),
+    ):
+        if needle not in log:
+            fail(f"changlog v0.1.md is missing the {topic} entry ({needle})")
+    if "0.2.0" in log:
+        fail("changlog v0.1.md must not claim a version bump (0.2.0)")
+    if re.search(r"版本号升至|bump(ped)? (the )?version", log):
+        fail("changlog v0.1.md must not claim a version bump")
+
+if ERRORS:
+    print("; ".join(ERRORS))
+    sys.exit(1)
+print("ok")
+PY
+  ); then
+    bad "$name" "$out"
+    return 1
+  fi
+  ok "$name"
 }
 
 check_docs_agents() {
   local name=docs-agents
-  pending "$name"
+  local agents="$ROOT/AGENTS.md" readme="$ROOT/README.md"
+  local failed=0
+
+  for f in "$agents" "$readme"; do
+    if [ ! -f "$f" ]; then
+      bad "$name" "missing ${f#"$ROOT"/}"
+      return 1
+    fi
+  done
+
+  require() {
+    local file=$1 needle=$2 why=$3
+    if ! grep -qF -- "$needle" "$file"; then
+      bad "$name" "$(basename "$file"): missing $why ($needle)"
+      failed=1
+    fi
+  }
+  forbid() {
+    local file=$1 needle=$2 why=$3
+    if grep -qF -- "$needle" "$file"; then
+      bad "$name" "$(basename "$file"): $why ($needle)"
+      failed=1
+    fi
+  }
+
+  require "$agents" 'cargo deny check advisories licenses bans sources' 'the cargo-deny gate command'
+  require "$agents" 'npm --prefix agentj-ui run lint --workspace=@agentj/web' 'the oxlint gate command'
+  require "$agents" 'scripts/tests/assert-' 'the repository assertion harness'
+  require "$agents" 'AGENTJ_ROOT' 'the check-version.sh override'
+  require "$agents" '93.67%' 'the measured coverage baseline'
+  require "$agents" '2026-10-23' 'the coverage measurement date'
+  require "$agents" 'PROTOCOL_VERSION' 'the protocol baseline'
+
+  local job_out
+  if ! job_out=$(python3 - "$agents" <<'PY2'
+import pathlib
+import sys
+
+text = pathlib.Path(sys.argv[1]).read_text()
+marker = "### CI Pipelines"
+if marker not in text:
+    print("AGENTS.md has no CI Pipelines section")
+    sys.exit(1)
+section = text[text.index(marker):]
+section = section.split("\n## ")[0]
+missing = [job for job in ("frontend", "deny", "cross-platform") if job not in section]
+if missing:
+    print("CI Pipelines does not list: " + ", ".join(missing))
+    sys.exit(1)
+PY2
+  ); then
+    bad "$name" "$job_out"
+    failed=1
+  fi
+
+  require "$readme" 'CONTRIBUTING.md' 'the contributing guide pointer'
+  if ! grep -qE 'MIT OR Apache-2\.0|Apache-2\.0' "$readme"; then
+    bad "$name" "README.md: missing the MIT OR Apache-2.0 licence statement"
+    failed=1
+  fi
+
+  forbid "$agents" '0.2.0' 'a version bump claim is not allowed here'
+  forbid "$readme" '0.2.0' 'a version bump claim is not allowed here'
+
+  [ "$failed" -eq 0 ] || return 1
+  ok "$name"
 }
 
 run_check() {
