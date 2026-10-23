@@ -3,42 +3,46 @@ name = "agentj-cli"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 
 [[bin]]
 name = "agentj"
 path = "src/main.rs"
 
 [dependencies]
-agentj-auth = { path = "../agentj-auth" }
-agentj-core = { path = "../agentj-core" }
-agentj-config = { path = "../agentj-config" }
-agentj-context = { path = "../agentj-context" }
-agentj-ipc = { path = "../agentj-ipc" }
-agentj-model = { path = "../agentj-model" }
-agentj-permission = { path = "../agentj-permission" }
-agentj-protocol = { path = "../agentj-protocol" }
-agentj-question = { path = "../agentj-question" }
-agentj-session = { path = "../agentj-session" }
-agentj-stats = { path = "../agentj-stats" }
-agentj-tools = { path = "../agentj-tools" }
+agentj-auth = { path = "../agentj-auth", version = "0.1.0" }
+agentj-core = { path = "../agentj-core", version = "0.1.0" }
+agentj-config = { path = "../agentj-config", version = "0.1.0" }
+agentj-context = { path = "../agentj-context", version = "0.1.0" }
+agentj-ipc = { path = "../agentj-ipc", version = "0.1.0" }
+agentj-model = { path = "../agentj-model", version = "0.1.0" }
+agentj-permission = { path = "../agentj-permission", version = "0.1.0" }
+agentj-protocol = { path = "../agentj-protocol", version = "0.1.0" }
+agentj-question = { path = "../agentj-question", version = "0.1.0" }
+agentj-session = { path = "../agentj-session", version = "0.1.0" }
+agentj-stats = { path = "../agentj-stats", version = "0.1.0" }
+agentj-tools = { path = "../agentj-tools", version = "0.1.0" }
 anyhow = "1"
-async-trait = "0.1"
+async-trait.workspace = true
 clap = { version = "4", features = ["derive"] }
-futures = "0.3"
-serde_json = "1"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "net"] }
-tracing = "0.1"
+futures.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "net"] }
+tracing.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-agentj-skills = { path = "../agentj-skills" }
-agentj-mcp = { path = "../agentj-mcp" }
-agentj-license = { path = "../agentj-license" }
-base64 = "0.22"
+agentj-skills = { path = "../agentj-skills", version = "0.1.0" }
+agentj-mcp = { path = "../agentj-mcp", version = "0.1.0" }
+agentj-license = { path = "../agentj-license", version = "0.1.0" }
+base64.workspace = true
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 
 [dev-dependencies]
 libc = "0.2"
 sha2 = "0.10"
-tempfile = "3"
-wiremock = "0.6"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util"] }
+tempfile.workspace = true
+wiremock.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util"] }
 tokio-tungstenite = "0.26"
+
+[lints]
+workspace = true
