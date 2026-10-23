@@ -175,17 +175,37 @@ expected = max(50, math.floor(measured) - 1)
 if threshold != expected:
     err(f"COVERAGE_THRESHOLD must be max(50, floor({measured}) - 1) = {expected} (got {threshold})")
 
-cov_runs = " ".join(
-    str(step.get("run", "")) for step in (jobs["coverage"].get("steps") or [])
-)
+
+def coverage_step_runs():
+    """Yield each coverage step's `run` on its own, newlines folded to spaces.
+
+    Joining the steps first turns the list into a single string, which makes any
+    ``startswith`` test over ``splitlines()`` vacuous (BUG-002).
+    """
+    for step in jobs["coverage"].get("steps") or []:
+        run = str(step.get("run", ""))
+        yield " ".join(line.strip() for line in run.splitlines() if line.strip())
+
+
+cov_runs = " ".join(coverage_step_runs())
 if "--fail-under-lines" not in cov_runs or "${{ env.COVERAGE_THRESHOLD }}" not in cov_runs:
     err("coverage job must gate on ${{ env.COVERAGE_THRESHOLD }}")
-for line in cov_runs.splitlines():
-    stripped = line.strip()
-    if stripped.startswith("cargo llvm-cov") and "--locked" not in stripped:
-        err("cargo llvm-cov must run with --locked")
-    if stripped.startswith("cargo build -p agentj-plugin-fixture") and "--locked" not in stripped:
-        err("the plugin-fixture build must run with --locked")
+
+saw_llvm_cov = False
+saw_fixture_build = False
+for run in coverage_step_runs():
+    if run.startswith("cargo llvm-cov"):
+        saw_llvm_cov = True
+        if "--locked" not in run:
+            err(f"cargo llvm-cov must run with --locked (got: {run})")
+    elif run.startswith("cargo build") and "agentj-plugin-fixture" in run:
+        saw_fixture_build = True
+        if "--locked" not in run:
+            err(f"the plugin-fixture build must run with --locked (got: {run})")
+if not saw_llvm_cov:
+    err("coverage job must run `cargo llvm-cov`")
+if not saw_fixture_build:
+    err("coverage job must build the plugin fixture (`cargo build ... -p agentj-plugin-fixture`)")
 print("ok")
 PY
   ); then
