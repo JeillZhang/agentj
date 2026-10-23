@@ -444,6 +444,95 @@ PY
     bad "$name" "$out"
     return 1
   fi
+  # The local gate list must cover every test/gate command CI actually runs,
+  # derived from ci.yml so the doc cannot silently drift behind a new CI step.
+  local gate_out
+  if ! gate_out=$(python3 - "$ROOT" <<'PY'
+import pathlib
+import re
+import sys
+
+import yaml
+
+root = pathlib.Path(sys.argv[1])
+ci = yaml.safe_load((root / ".github" / "workflows" / "ci.yml").read_text())
+contrib = (root / "CONTRIBUTING.md").read_text()
+
+GATE_PREFIXES = (
+    "npm ",
+    "bun ",
+    "cargo test ",
+    "cargo deny check",
+    "cargo llvm-cov",
+    "bash scripts/tests/assert-",
+    "node agentj-ui/apps/desktop/check-desktop-ui.mjs",
+    "node scripts/check-relocate.mjs",
+    "./scripts/check-version.sh",
+    "scripts/check-version.sh",
+)
+
+
+def run_lines():
+    """Every command line CI executes, in workflow file order."""
+    for job in (ci.get("jobs") or {}).values():
+        for step in job.get("steps") or []:
+            for line in str(step.get("run") or "").splitlines():
+                line = line.strip()
+                if line:
+                    yield line
+
+
+def is_gate(cmd):
+    """Test/gate commands only; `npm ci` / `run build` / `run generate` are setup."""
+    if not cmd.startswith(GATE_PREFIXES):
+        return False
+    if cmd.startswith(("npm ", "bun ")):
+        return re.search(r"\btest\b", cmd) is not None
+    return True
+
+
+def gate_fragment(cmd):
+    """The part of a CI command CONTRIBUTING.md has to contain.
+
+    Prefixes are dropped where a contributor legitimately runs the same gate from
+    another directory (`npm --prefix agentj-ui`), and `${{ ... }}` interpolations
+    are cut so the doc keeps a literal number instead of a template.
+    """
+    if cmd.startswith("npm "):
+        return re.search(r"\btest\b.*$", cmd).group(0)
+    if cmd.startswith("bash scripts/tests/assert-"):
+        return re.search(r"scripts/tests/assert-[a-z-]+\.sh", cmd).group(0)
+    if cmd.startswith("node "):
+        if "check-desktop-ui.mjs" in cmd:
+            return "check-desktop-ui.mjs"
+        return "scripts/check-relocate.mjs"
+    if cmd.startswith("cargo llvm-cov"):
+        return cmd.split("${{")[0].strip()
+    if cmd.endswith("check-version.sh"):
+        return "scripts/check-version.sh"
+    return cmd
+
+
+gates = {}
+for line in run_lines():
+    if is_gate(line):
+        gates.setdefault(gate_fragment(line), line)
+
+if not gates:
+    print("derived no CI test/gate commands from .github/workflows/ci.yml")
+    sys.exit(1)
+
+missing = sorted(label for needle, label in gates.items() if needle not in contrib)
+if missing:
+    for label in missing:
+        print(f"CONTRIBUTING.md is missing a CI gate: {label}")
+    sys.exit(1)
+print("ok")
+PY
+  ); then
+    bad "$name" "$gate_out"
+    return 1
+  fi
   ok "$name"
 }
 

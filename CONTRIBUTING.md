@@ -13,21 +13,33 @@ never be committed.
 
 ## Local gates
 
-Run these before opening a pull request; CI runs the same commands.
+Run these before opening a pull request; CI runs the same commands. Every
+`run:` step in `.github/workflows/ci.yml` that is a test or a gate appears here —
+`scripts/tests/assert-ci.sh governance-files` derives them from the workflow and
+fails when this list falls behind.
 
 ```bash
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
+bash scripts/tests/assert-ui.sh all
+bash scripts/tests/assert-cargo.sh all
+bash scripts/tests/assert-ci.sh all
 cargo test --workspace --locked
 npm --prefix agentj-ui ci
-npm --prefix agentj-ui test --workspace=@agentj/sdk
-npm --prefix agentj-ui test --workspace=@agentj/web
 npm --prefix agentj-ui test --workspace=@agentj/protocol
+npm --prefix agentj-ui test --workspace=@agentj/sdk
+npm --prefix agentj-ui test --workspace=@agentj/tokens
+npm --prefix agentj-ui test --workspace=@agentj/web
 bun --cwd agentj-ui/apps/tui test
 cargo deny check advisories licenses bans sources
 cargo llvm-cov --workspace --fail-under-lines 92
+node agentj-ui/apps/desktop/check-desktop-ui.mjs
 ./scripts/check-version.sh
+node scripts/check-relocate.mjs
 ```
+
+The `scripts/tests/assert-*.sh` checks need `python3` with PyYAML (the CI `lint`
+job installs it before running them).
 
 The coverage number is the CI ratchet (`.github/workflows/ci.yml` → `COVERAGE_THRESHOLD`),
 not a suggestion: measured baseline `93.67%` on 2026-10-23, and the threshold only moves up.
