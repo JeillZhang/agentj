@@ -23,6 +23,8 @@ Desktop.ini
 # ── OhMyOpenCode (omo) ───────────────────────────────────────
 # Runtime state (session continuation, plans, boulder state) — machine-local.
 .omo/
+# OpenCode / plugin runtime state (plugins, agents, caches) — machine-local.
+.opencode/
 # CodeGraph index — a symlink to a machine-local cache. Never commit.
 .codegraph
 

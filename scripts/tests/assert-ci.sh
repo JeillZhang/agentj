@@ -77,8 +77,26 @@ check_governance_files() {
 
 check_hygiene() {
   local name=hygiene
-  bad "$name" "not implemented yet"
-  return 1
+  local stale
+  for stale in "$ROOT"/agentj-ui/node_modules/.old_modules-*; do
+    if [ -d "$stale" ]; then
+      bad "$name" "stale install residue present: ${stale#$ROOT/}"
+      return 1
+    fi
+  done
+  if [ -d "$ROOT/node_modules" ]; then
+    bad "$name" "root node_modules/ should be gone"
+    return 1
+  fi
+  if [ -d "$ROOT/.playwright-mcp" ]; then
+    bad "$name" ".playwright-mcp/ should be gone"
+    return 1
+  fi
+  if ! grep -qxF '.opencode/' "$ROOT/.gitignore"; then
+    bad "$name" ".gitignore must carry a tracked .opencode/ rule"
+    return 1
+  fi
+  ok "$name"
 }
 
 check_docs_summaries() {
