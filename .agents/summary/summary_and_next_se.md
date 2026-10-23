@@ -240,10 +240,10 @@
 - **fixture 基线重复**：`web_verify_off.toml` / `web_fast_spot.toml` 各自复制了
   `permission_deny.toml` 的完整基线（含 `timeout_ms = 800`），基线变更时需同步三处。
 - **计划文本笔误（抽检扩展 T2）**：计划 AC4 写 `mismatched is 2`，正确值为 1（代码与测试是对的）。
-- **远端命名修正（本工作副本实测）**：`github` = `git@github.com:JeillZhang/agentj.git`（**权威**）、
-  `origin` = `git@gitcode.com:jeill/agentj.git`（GitCode **镜像**）——与 `AGENTS.md`「Remote & Merge
-  Policy」的命名**相反**；feature 分支须推 `github` + `origin` 两个远端，PR 开在 `github`（待实施 ⑳
-  的主题，本阶段不改文档，仅记录实测事实）。
+- **远端命名（已由工程治理批次解决）**：当时实测 `origin` 指向 GitCode、`github` 指向 GitHub，
+  与 `AGENTS.md`「Remote & Merge Policy」相反；现 `origin` = `git@github.com:JeillZhang/agentj.git`
+  （唯一权威）、`gitcode` = `git@gitcode.com:jeill/agentj.git`（只读镜像）。feature 分支仍推
+  两个远端，PR 开在 `origin`。
 - **文档滞后（本阶段有意未动 `AGENTS.md`）**：`AGENTS.md` 的 `agentj-config` 条目尚未列新增 `[web]`
   配置节，`agentj-ipc` 条目尚未提 `client_ip` / `metrics_state` 两个新模块（本阶段文档落在
   `docs/specs/ipc-protocol.md` + `docs/guide/http-and-auth.md` + `docs/changelog/v0.1.md`）；下次

@@ -514,6 +514,9 @@ FORBIDDEN_COMMON = [
     "check-version.sh 保持红",
     "GitHub 权威",
     "与 AGENTS.md 的远端命名相反",
+    # T22 renamed the remotes; a summary claiming origin=GitCode is stale on sight.
+    "命名**相反**",
+    "`origin` = `git@gitcode.com",
 ]
 for label, text in (("se summary", se_all), ("fe summary", fe_all)):
     for stale in FORBIDDEN_COMMON:
