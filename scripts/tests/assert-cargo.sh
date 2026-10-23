@@ -21,6 +21,7 @@ check_cargo_root() {
   local out
   if ! out=$(python3 - "$ROOT" <<'PY'
 import pathlib
+import re
 import sys
 import tomllib
 
@@ -79,6 +80,7 @@ check_crate_inheritance() {
   local out
   if ! out=$(python3 - "$ROOT" <<'PY'
 import pathlib
+import re
 import sys
 import tomllib
 
@@ -147,6 +149,7 @@ check_deny_config() {
   local out deny_out unmatched
   if ! out=$(python3 - "$ROOT" <<'PY'
 import pathlib
+import re
 import sys
 import tomllib
 
@@ -170,6 +173,19 @@ comments = " ".join(
 )
 if "docs/superpowers" in comments:
     err("deny.toml rationale must not point at the gitignored docs/superpowers/ tree")
+# A pointer at a tracked-but-silent document is just as dead as a gitignored one.
+pointers = sorted(set(re.findall(r"[\w./-]+\.md", comments)))
+if not pointers:
+    err("deny.toml must point at the documentation that explains the policy")
+documented = ""
+for pointer in pointers:
+    target = root / pointer
+    if not target.is_file():
+        err(f"deny.toml points at a missing file: {pointer}")
+    documented += target.read_text().lower()
+for topic in ("allowlist", "licence", "duplicate"):
+    if topic not in documented:
+        err(f"deny.toml points at {', '.join(pointers)}, which never mentions {topic}")
 for section in ("advisories", "licenses", "bans", "sources"):
     if section not in cfg:
         err(f"deny.toml must configure [{section}]")

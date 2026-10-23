@@ -53,6 +53,30 @@ cargo test -p agentj-protocol -- drift
 npm --prefix agentj-ui run generate --workspace=@agentj/protocol
 ```
 
+## Dependency and licence policy
+
+`deny.toml` is the enforcement; this section is the rationale it points at.
+
+- **Licence allowlist** — only these reach the dependency graph: `MIT`, `MIT-0`,
+  `Apache-2.0`, `Apache-2.0 WITH LLVM-exception`, `BSD-2-Clause`, `BSD-3-Clause`,
+  `ISC`, `Zlib`, `BSL-1.0`, `CC0-1.0`, `Unicode-3.0`, `Unlicense`, `MPL-2.0`.
+  Anything else fails `cargo deny check licenses`; add a licence only after a
+  deliberate compatibility review, never to unblock a build.
+- **Yanked releases** — `advisories.yanked` stays at the cargo-deny default
+  (`deny`): a yanked version must break the build, not warn about it.
+- **Duplicate versions** — `bans.multiple-versions = "deny"` with an explicit
+  skip list. Every skip must name a real duplicate in the graph and carry a
+  comment saying why the duplication is cheaper than unifying it; an unmatched
+  skip is a failure (`cargo deny check bans` warns, and
+  `scripts/tests/assert-cargo.sh deny-config` fails), so the list cannot rot.
+- **Wildcard requirements** — `bans.wildcards = "deny"`; path dependencies
+  still carry an explicit `version`, so `cargo publish` semantics stay honest.
+- **Sources** — `sources.allow-registry` lists crates.io only; git and unknown
+  registries are denied.
+- **Dependabot** — `.github/dependabot.yml` groups minor and patch updates per
+  ecosystem (cargo, npm, github-actions) and opens at most five PRs per
+  ecosystem per week.
+
 ## Branches and commits
 
 - Branch from `main`: `feat/<topic>`, `fix/<topic>`, `chore/<topic>`, `docs/<topic>`.
