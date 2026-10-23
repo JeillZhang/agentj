@@ -10,7 +10,8 @@
   },
   "scripts": {
     "generate": "node generate.mjs",
-    "build": "tsc --noEmit"
+    "build": "tsc --noEmit",
+    "test": "vitest run"
   },
   "devDependencies": {
     "json-schema-to-typescript": "^14.0.0",

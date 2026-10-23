@@ -88,3 +88,35 @@ jobs:
         with:
           name: coverage-lcov
           path: lcov.info
+  frontend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: agentj-ui/package-lock.json
+      - run: npm --prefix agentj-ui ci
+      - run: npm --prefix agentj-ui run generate --workspace=@agentj/protocol
+      - run: git diff --exit-code -- agentj-ui/packages/protocol/types.d.ts
+      - run: npm --prefix agentj-ui run build --workspace=@agentj/protocol
+      - run: npm --prefix agentj-ui run generate --workspace=@agentj/sdk
+      - run: git diff --exit-code -- agentj-ui/packages/sdk/src/methods.ts
+      - run: npm --prefix agentj-ui test --workspace=@agentj/sdk
+      - run: npm --prefix agentj-ui test --workspace=@agentj/tokens
+      - run: npm --prefix agentj-ui test --workspace=@agentj/web
+      - run: npm --prefix agentj-ui run build --workspace=@agentj/web
+      - name: dist <-> protocol version
+        run: |
+          node -e "const fs=require('fs');const v=JSON.parse(fs.readFileSync('agentj-ui/apps/web/dist/version.json'));const m=JSON.parse(fs.readFileSync('protocol/methods.json'));if(v.protocol_version!==m.protocol_version){console.error('dist',v.protocol_version,'!= methods',m.protocol_version);process.exit(1)}"
+      # oxlint: errors gate the build, warnings stay visible in the log.
+      - run: npm --prefix agentj-ui run lint --workspace=@agentj/web
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - run: bun --cwd agentj-ui/apps/tui test
+      - run: node agentj-ui/apps/desktop/check-desktop-ui.mjs
+      - run: ./scripts/check-version.sh
+      - run: node scripts/check-relocate.mjs

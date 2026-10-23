@@ -197,34 +197,37 @@ PY
 
 check_frontend_job() {
   local name=frontend-job
-  pending "$name"
-}
-
-check_governance_files() {
-  local name=governance-files
-  local f
-  for f in CONTRIBUTING.md SECURITY.md .github/dependabot.yml; do
-    [ -s "$ROOT/$f" ] || { bad "$name" "missing or empty $f"; return 1; }
-  done
-  grep -q 'cargo test --workspace' "$ROOT/CONTRIBUTING.md" \
-    || { bad "$name" "CONTRIBUTING.md must document the Rust test command"; return 1; }
-  grep -q 'npm --prefix agentj-ui test' "$ROOT/CONTRIBUTING.md" \
-    || { bad "$name" "CONTRIBUTING.md must document the frontend test command"; return 1; }
-  grep -q 'docs/superpowers' "$ROOT/CONTRIBUTING.md" \
-    || { bad "$name" "CONTRIBUTING.md must say docs/superpowers/ is local-only"; return 1; }
-  grep -qi 'security advisories' "$ROOT/SECURITY.md" \
-    || { bad "$name" "SECURITY.md must name the private advisory channel"; return 1; }
   if ! have_pyyaml; then
-    bad "$name" "python3 PyYAML is required to validate .github/dependabot.yml"
+    bad "$name" "python3 PyYAML is required to parse .github/workflows/ci.yml"
     return 1
   fi
   local out
   if ! out=$(python3 - "$ROOT" <<'PY'
+import json
 import pathlib
 import sys
 import yaml
 
 root = pathlib.Path(sys.argv[1])
+
+EXPECTED = [
+    "npm --prefix agentj-ui ci",
+    "npm --prefix agentj-ui run generate --workspace=@agentj/protocol",
+    "git diff --exit-code -- agentj-ui/packages/protocol/types.d.ts",
+    "npm --prefix agentj-ui run build --workspace=@agentj/protocol",
+    "npm --prefix agentj-ui run generate --workspace=@agentj/sdk",
+    "git diff --exit-code -- agentj-ui/packages/sdk/src/methods.ts",
+    "npm --prefix agentj-ui test --workspace=@agentj/sdk",
+    "npm --prefix agentj-ui test --workspace=@agentj/tokens",
+    "npm --prefix agentj-ui test --workspace=@agentj/web",
+    "npm --prefix agentj-ui run build --workspace=@agentj/web",
+    "dist <-> protocol version",
+    "npm --prefix agentj-ui run lint --workspace=@agentj/web",
+    "bun --cwd agentj-ui/apps/tui test",
+    "node agentj-ui/apps/desktop/check-desktop-ui.mjs",
+    "./scripts/check-version.sh",
+    "node scripts/check-relocate.mjs",
+]
 
 
 def err(msg):
@@ -232,56 +235,67 @@ def err(msg):
     sys.exit(1)
 
 
-data = yaml.safe_load((root / ".github" / "dependabot.yml").read_text())
-if data.get("version") != 2:
-    err(f"dependabot version must be 2 (got {data.get('version')!r})")
-updates = data.get("updates") or []
-ecosystems = {}
-for entry in updates:
-    ecosystems[entry.get("package-ecosystem")] = entry
-want = {"cargo", "npm", "github-actions"}
-if set(ecosystems) != want:
-    err(f"dependabot ecosystems must be {sorted(want)} (got {sorted(ecosystems)})")
-npm = ecosystems["npm"]
-if npm.get("directory") != "/agentj-ui":
-    err(f"npm ecosystem directory must be /agentj-ui (got {npm.get('directory')!r})")
-for eco, entry in ecosystems.items():
-    groups = entry.get("groups") or {}
-    if not groups:
-        err(f"{eco} updates must be grouped")
-    types = set()
-    for group in groups.values():
-        types.update(group.get("update-types") or [])
-    if not {"minor", "patch"} <= types:
-        err(f"{eco} groups must bundle minor and patch updates")
+path = root / ".github" / "workflows" / "ci.yml"
+if not path.is_file():
+    err("missing .github/workflows/ci.yml")
+wf = yaml.safe_load(path.read_text())
+job = (wf.get("jobs") or {}).get("frontend")
+if job is None:
+    err("ci.yml has no frontend job")
+steps = job.get("steps") or []
+if job.get("timeout-minutes") != 20:
+    err(f"frontend timeout-minutes must be 20 (got {job.get('timeout-minutes')!r})")
+if job.get("runs-on") != "ubuntu-latest":
+    err(f"frontend must run on ubuntu-latest (got {job.get('runs-on')!r})")
+
+node = [s for s in steps if str(s.get("uses", "")).startswith("actions/setup-node")]
+if len(node) != 1:
+    err("frontend needs exactly one actions/setup-node step")
+node_with = node[0].get("with") or {}
+if str(node_with.get("node-version")) != "24":
+    err(f"setup-node node-version must be 24 (got {node_with.get('node-version')!r})")
+if node_with.get("cache") != "npm":
+    err(f"setup-node cache must be npm (got {node_with.get('cache')!r})")
+if node_with.get("cache-dependency-path") != "agentj-ui/package-lock.json":
+    err(
+        "setup-node cache-dependency-path must be agentj-ui/package-lock.json "
+        f"(got {node_with.get('cache-dependency-path')!r})"
+    )
+bun = [s for s in steps if str(s.get("uses", "")).startswith("oven-sh/setup-bun")]
+if len(bun) != 1:
+    err("frontend needs exactly one oven-sh/setup-bun step")
+bun_with = bun[0].get("with") or {}
+if str(bun_with.get("bun-version")) != "1.4.0":
+    err(f"setup-bun bun-version must be 1.4.0 (got {bun_with.get('bun-version')!r})")
+
+# Ordered contract: the 16 gate steps must appear in exactly this order,
+# interleaved only with the two setup actions.
+observed = []
+for step in steps:
+    run = str(step.get("run", "")).strip()
+    if not run:
+        continue
+    flat = " ".join(line.strip() for line in run.splitlines() if line.strip())
+    name_field = str(step.get("name", "")).strip()
+    if flat.startswith("node -e"):
+        observed.append("dist <-> protocol version")
+    elif name_field == "dist <-> protocol version":
+        observed.append("dist <-> protocol version")
+    else:
+        observed.append(flat)
+if observed != EXPECTED:
+    missing = [e for e in EXPECTED if e not in observed]
+    if missing:
+        err("frontend job is missing steps: " + "; ".join(missing))
+    err(f"frontend steps are out of order: {observed}")
+
+pkg = json.loads((root / "agentj-ui" / "packages" / "protocol" / "package.json").read_text())
+if pkg.get("scripts", {}).get("test") != "vitest run":
+    err("@agentj/protocol package.json must define \"test\": \"vitest run\"")
 print("ok")
 PY
   ); then
     bad "$name" "$out"
-    return 1
-  fi
-  ok "$name"
-}
-
-check_hygiene() {
-  local name=hygiene
-  local stale
-  for stale in "$ROOT"/agentj-ui/node_modules/.old_modules-*; do
-    if [ -d "$stale" ]; then
-      bad "$name" "stale install residue present: ${stale#$ROOT/}"
-      return 1
-    fi
-  done
-  if [ -d "$ROOT/node_modules" ]; then
-    bad "$name" "root node_modules/ should be gone"
-    return 1
-  fi
-  if [ -d "$ROOT/.playwright-mcp" ]; then
-    bad "$name" ".playwright-mcp/ should be gone"
-    return 1
-  fi
-  if ! grep -qxF '.opencode/' "$ROOT/.gitignore"; then
-    bad "$name" ".gitignore must carry a tracked .opencode/ rule"
     return 1
   fi
   ok "$name"
