@@ -79,6 +79,13 @@
 - `frontend` 作业的 CI 首次运行尚未观测；本地已逐步跑通同一 16 步序列。
 - 覆盖率基线 93.67% 为单次实测——后续若测试减少，棘轮会立即转红（预期行为，需重新基线化）。
 - `cross-platform` 只做 `cargo build`，不做打包（dmg/msi 见待实施 ㉟）。
+- **T22 远端收敛 BLOCKED**：`git push origin main` 被 GitHub 拒绝（非快进）——远端 `main` @
+  `d883a79`（PR #90 合并）与本地 `main` @ `5062736`（!67 合并）是同一份内容的**两个 merge
+  commit**，三端 tree 完全相同（`4e72b5a6b47df679d70489244abe70a3c59b5ed1`）。按纪律**未使用
+  `--force`**、未改写任何远端历史。重命名已生效：`origin` = GitHub（权威）、`gitcode` = GitCode
+  （只读镜像），`main` 已 `--set-upstream-to=origin/main`，`gitcode/main` 与本地 `main` 一致。
+  收敛方式待用户决定：① 在 `main` 上 `git merge origin/main`（生成一个内容零变化的合并提交，
+  之后 `git push origin main` 即为快进，不改写历史）；② 重置镜像或权威端的 `main`。
 
 ## 归档：run 可靠性批次 ✅
 
