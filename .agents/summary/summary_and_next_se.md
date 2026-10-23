@@ -28,7 +28,8 @@
   覆盖率棘轮、frontend 作业、治理文件、工作区卫生、两份 summary 与文档基线。
 - **CI 作业补全**（`.github/workflows/ci.yml`）：新增 `deny`（cargo-deny 四类检查）、
   `cross-platform`（ubuntu / macOS / Windows，仅 `cargo build --workspace --locked`）、
-  `frontend`（16 步：`npm ci` → protocol/sdk 生成漂移 → sdk/tokens/web 测试 → web 构建 →
+  `frontend`（17 步：`npm ci` → protocol/sdk 生成漂移 → protocol 构建/测试 →
+  sdk/tokens/web 测试 → web 构建 →
   `dist/version.json` ↔ `protocol/methods.json` 协议版本一致性 → oxlint → TUI 测试 →
   desktop UI 校验 → `check-version.sh` → `check-relocate.mjs`）；`lint` 追加「Repo invariants」
   （`python3 -m pip install --user pyyaml` + 三份断言脚本 `all`）。
@@ -76,7 +77,7 @@
 
 - `cargo-deny` 不在开发机默认工具链（需 `cargo install cargo-deny --locked`，实测 0.20.2）；
   CI 走 `taiki-e/install-action@cargo-deny`。
-- `frontend` 作业的 CI 首次运行尚未观测；本地已逐步跑通同一 16 步序列。
+- `frontend` 作业的 CI 首次运行尚未观测；本地已逐步跑通同一 17 步序列。
 - 覆盖率基线 93.67% 为单次实测——后续若测试减少，棘轮会立即转红（预期行为，需重新基线化）。
 - `cross-platform` 只做 `cargo build`，不做打包（dmg/msi 见待实施 ㉟）。
 - **T22 远端收敛 BLOCKED**：`git push origin main` 被 GitHub 拒绝（非快进）——远端 `main` @

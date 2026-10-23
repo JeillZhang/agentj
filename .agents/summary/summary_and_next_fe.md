@@ -12,7 +12,7 @@
 
 > 当前功能：**工程治理批次（前端侧）** —— 分支 `chore/engineering-governance-batch`（自 `5062736` 起）。
 > npm 单一 lockfile + `packageManager` / `engines` 元数据 + 版本对齐 + registry 固定；新增
-> `frontend` CI 作业（16 步覆盖全部 UI 门禁）+ 跨平台构建作业；工作区卫生清理。
+> `frontend` CI 作业（17 步覆盖全部 UI 门禁）+ 跨平台构建作业；工作区卫生清理。
 > wire 面零变更（`PROTOCOL_VERSION` 仍 0.19.0，`VERSION` 仍 0.1.0）。
 
 ## 工程治理批次（前端）✅
@@ -32,9 +32,9 @@
   （lockfile 的 integrity 与 registry 无关，可随时改回官方源；`npm ci` 实测 `added 337 packages in 9s`，
   lockfile 内零 `registry.npmjs.org` URL）。
 - **前端 CI 门禁**（`.github/workflows/ci.yml` 新增 `frontend` 作业，ubuntu-latest、timeout 20）：
-  16 步 —— `npm --prefix agentj-ui ci` → protocol `generate` + `git diff --exit-code --`
-  `agentj-ui/packages/protocol/types.d.ts`（漂移门禁）→ protocol `build` → sdk `generate` +
-  `git diff --exit-code --` `agentj-ui/packages/sdk/src/methods.ts` → sdk test → tokens test →
+  17 步 —— `npm --prefix agentj-ui ci` → protocol `generate` + `git diff --exit-code --`
+  `agentj-ui/packages/protocol/types.d.ts`（漂移门禁）→ protocol `build` → protocol test →
+  sdk `generate` + `git diff --exit-code --` `agentj-ui/packages/sdk/src/methods.ts` → sdk test → tokens test →
   web test → web build → `dist/version.json` 与 `protocol/methods.json` 的 `protocol_version`
   一致性（node -e）→ `npm run lint --workspace=@agentj/web`（oxlint，warnings 只显示）→
   `bun --cwd agentj-ui/apps/tui test` → `node agentj-ui/apps/desktop/check-desktop-ui.mjs` →

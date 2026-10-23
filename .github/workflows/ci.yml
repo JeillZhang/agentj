@@ -102,6 +102,7 @@ jobs:
       - run: npm --prefix agentj-ui run generate --workspace=@agentj/protocol
       - run: git diff --exit-code -- agentj-ui/packages/protocol/types.d.ts
       - run: npm --prefix agentj-ui run build --workspace=@agentj/protocol
+      - run: npm --prefix agentj-ui test --workspace=@agentj/protocol
       - run: npm --prefix agentj-ui run generate --workspace=@agentj/sdk
       - run: git diff --exit-code -- agentj-ui/packages/sdk/src/methods.ts
       - run: npm --prefix agentj-ui test --workspace=@agentj/sdk

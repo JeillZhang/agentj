@@ -259,6 +259,7 @@ EXPECTED = [
     "npm --prefix agentj-ui run generate --workspace=@agentj/protocol",
     "git diff --exit-code -- agentj-ui/packages/protocol/types.d.ts",
     "npm --prefix agentj-ui run build --workspace=@agentj/protocol",
+    "npm --prefix agentj-ui test --workspace=@agentj/protocol",
     "npm --prefix agentj-ui run generate --workspace=@agentj/sdk",
     "git diff --exit-code -- agentj-ui/packages/sdk/src/methods.ts",
     "npm --prefix agentj-ui test --workspace=@agentj/sdk",
@@ -312,7 +313,7 @@ bun_with = bun[0].get("with") or {}
 if str(bun_with.get("bun-version")) != "1.4.0":
     err(f"setup-bun bun-version must be 1.4.0 (got {bun_with.get('bun-version')!r})")
 
-# Ordered contract: the 16 gate steps must appear in exactly this order,
+# Ordered contract: the 17 gate steps must appear in exactly this order,
 # interleaved only with the two setup actions.
 observed = []
 for step in steps:

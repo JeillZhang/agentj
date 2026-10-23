@@ -75,9 +75,9 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
   - `deny`：`cargo deny check advisories licenses bans sources`（`deny.toml`）
   - `cross-platform`：matrix `ubuntu-latest` / `macos-latest` / `windows-latest`，仅
     `cargo build --workspace --locked`（验证可编译；**不含**打包）
-  - `frontend`：16 步 —— `npm ci` → protocol 生成 + 漂移门禁 → protocol 构建 → SDK 生成 +
-    漂移门禁 → sdk / tokens / web 测试 → web 构建 → `dist/version.json` 与
-    `protocol/methods.json` 协议版本一致 → oxlint → TUI（bun）测试 →
+  - `frontend`：17 步 —— `npm ci` → protocol 生成 + 漂移门禁 → protocol 构建 →
+    protocol 测试 → SDK 生成 + 漂移门禁 → sdk / tokens / web 测试 → web 构建 →
+    `dist/version.json` 与 `protocol/methods.json` 协议版本一致 → oxlint → TUI（bun）测试 →
     `check-desktop-ui.mjs` → `check-version.sh` → `check-relocate.mjs`
 - `.github/workflows/smoke.yml` — 冒烟（PR + push main + 手动）：
   `cargo build --release` + `agentj --version/--help` 断言 + `cargo test -p agentj-core -- smoke`
