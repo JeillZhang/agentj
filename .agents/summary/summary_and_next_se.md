@@ -32,7 +32,9 @@
   sdk/tokens/web 测试 → web 构建 →
   `dist/version.json` ↔ `protocol/methods.json` 协议版本一致性 → oxlint → TUI 测试 →
   desktop UI 校验 → `check-version.sh` → `check-relocate.mjs`）；`lint` 追加「Repo invariants」
-  （`python3 -m pip install --user pyyaml` + 三份断言脚本 `all`）。
+  （`python3 -m pip install --user pyyaml` + `taiki-e/install-action@cargo-deny`
+  + 三份断言脚本 `--strict`，`SKIP` 即失败）；`deny` 作业命令带 `-D unmatched-skip`
+  （cargo-deny 默认只对陈旧 `bans.skip` 告警且 `exit 0`）。
 - **覆盖率棘轮**：实测行覆盖 **93.67%**（`cargo llvm-cov report`，2026-10-23：lines 36671/2321、
   regions 93.45%、functions 86.95%），`COVERAGE_THRESHOLD` 由 `50` → **92**
   （`max(50, floor(X) - 1)`，注释记录日期与基线）；`cargo llvm-cov` 与
@@ -67,11 +69,34 @@
 | `cargo fmt --all --check` | FMT_OK |
 | `cargo clippy --workspace --all-targets --locked -- -D warnings` | 0 警告 |
 | `cargo test --workspace --locked` | 48 组 `test result: ok`，无失败 |
-| `cargo deny check advisories licenses bans sources` | advisories / bans / licenses / sources 全 ok |
+| `cargo deny check advisories licenses bans sources -D unmatched-skip` | advisories / bans / licenses / sources 全 ok，无 `unmatched-skip` |
 | `cargo metadata --locked --format-version 1` | 通过（307 packages，`Cargo.lock` 无漂移） |
 | `bash scripts/tests/assert-{ui,cargo,ci}.sh --strict` | 全部 PASS，0 SKIP |
 | `sh scripts/test-check-version.sh` / `./scripts/check-version.sh` | `check-version-tests-ok` / `version-ok` |
 | 前端：sdk 55、protocol 4、tokens、web 681、TUI 192 + oxlint + `check-desktop-ui.mjs` + `check-relocate.mjs` | 全绿 |
+
+### 测试验收（两轮 + 修复轮）
+
+`jskill-test-acceptance`：第 1 轮测试 8 个缺陷（2 high / 4 medium / 2 low）、第 1 轮回归再报
+5 个 low/nit、第 2 轮回归报 1 个 medium（阻塞）+ 6 个 low/nit，合计 **20 条，19 修复 + 1 有理由
+不修**（`allowlist` 里 4 个许可为预审批名额，`license-not-encountered` 仅 warning），每缺陷一个提交。
+
+- **安全**：`tokio` 1.53.1 命中 `RUSTSEC-2026-0386`（unsound，`AsyncFd::new` I/O safety）→ 升
+  `1.53.3`（仅 `Cargo.lock`）；否则 `deny` 作业首跑即红。
+- **失效门禁**（本轮主要收获，均为「断言恒真 / 检查没跑」类）：
+  - `check_coverage_gate` 先 `join` 再 `splitlines()`，两条 `--locked` 断言恒真；
+  - `assert-ci.sh` 的 check 清单无自检——删一个 check 仍 `7 passed` exit 0；
+  - `unmatched-skip` 守卫在 CI 恒 `SKIP`（`lint` 未装 cargo-deny，且脚本用 `all` 不失败）→
+    `lint` 装 cargo-deny + `--strict`、`deny` 作业加 `-D unmatched-skip`；
+  - `CONTRIBUTING.md` 的「CI runs the same commands」不成立（漏 tokens 测试 / oxlint / 三份断言
+    脚本 / `check-desktop-ui.mjs` / `check-relocate.mjs`）→ 清单改为从 `ci.yml` 派生并强制全覆盖。
+- **死指针 / 漂移**：`deny.toml` 曾指向 gitignore 的 `docs/superpowers/`；改用
+  `CONTRIBUTING.md` 新增的「Dependency and licence policy」章节（白名单、`yanked` 默认 deny、
+  skip 必须命中真实重复、wildcard、sources、dependabot），断言校验指针被 git 跟踪、文档含关键词、
+  文档白名单与 `deny.toml` 集合相等；失效的 `getrandom =0.2.17` skip 删除；`yanked = "warn"`
+  撤销（回到工具默认 deny）。
+- **文档失真**：两份 summary 归档段残留「origin=GitCode / 命名相反」、`## 下一步` 仍把 T21/T22
+  当待办——已改写并加禁用短语断言；`@agentj/protocol` 测试此前从未在 CI 执行（现在会）。
 
 ### 遗留问题 / 已知限制（本批次）
 

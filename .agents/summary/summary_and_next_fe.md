@@ -65,7 +65,19 @@
 | `bun --cwd agentj-ui/apps/tui test` | 192 pass / 0 fail |
 | `node agentj-ui/apps/desktop/check-desktop-ui.mjs` / `node scripts/check-relocate.mjs` | `desktop-ui-ok` / `relocate-ok` |
 
-### 遗留问题 / 已知限制（本批次）
+### 测试验收（前端相关部分）
+
+两轮回归轮在前端侧的产出（逐条已修，详见 `_se.md` 同小节）：
+
+- `@agentj/protocol` 的 4 个类型断言此前**从未在 CI 执行**（`frontend` 作业只跑 sdk/tokens/web，
+  而断言脚本又要求其 `test` 脚本存在）→ 作业现为 17 步，protocol 测试在 protocol 构建后执行。
+- oxlint 门禁（`npm run lint --workspace=@agentj/web`）未进 `CONTRIBUTING.md` 的本地清单，
+  且不被「文档 ↔ CI 命令」派生断言识别 → `is_gate` 现认 `run lint`，清单补齐。
+- 覆盖率 / 断言类「恒真断言」「检查未执行却算绿」缺陷（含 `--strict` 化）见 `_se.md`；
+  `assert-*.sh --strict` 现为本侧本地自查入口（3 + 5 + 8 = 16 项）。
+- 前端测试基线（验收轮实测）：protocol 4、sdk 55、tokens 11、web 681、TUI 192（22 文件）。
+
+### 遗留问题 / 已知限制（前端）（本批次）
 
 - CI 上的 `frontend` 作业尚未实跑（本地逐步跑通同一序列）；首次绿灯后需观察 oxlint warnings 噪声。
 - `cross-platform` 只做 `cargo build`，desktop 打包（deb/AppImage/dmg/msi）仍未在 CI 验证

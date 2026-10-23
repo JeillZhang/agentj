@@ -67,7 +67,9 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
 
 - `.github/workflows/ci.yml` — 单元测试与全部门禁（PR + push main + 手动），作业：
   - `lint`：`cargo fmt --all --check`、`cargo clippy --workspace --all-targets --locked -- -D warnings`，
-    再跑「Repo invariants」（`python3 -m pip install --user pyyaml` + 三份 `scripts/tests/assert-*.sh all`）
+    再跑「Repo invariants」（`python3 -m pip install --user pyyaml` + `taiki-e/install-action@cargo-deny`
+    + 三份 `scripts/tests/assert-*.sh --strict`；`--strict` 让 `SKIP` 直接失败，未实现的检查
+    不能伪装成绿）
   - `test`：先 `cargo build -p agentj-plugin-fixture`，再 `cargo test --workspace --locked`
   - `coverage`：`cargo llvm-cov --workspace --fail-under-lines <COVERAGE_THRESHOLD> --locked`
     （**棘轮**：实测 2026-10-23 行覆盖 `93.67%` → 门限 `max(50, floor(X) - 1)` = **92**，
