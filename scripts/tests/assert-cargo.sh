@@ -224,6 +224,23 @@ allow = licenses.get("allow") or []
 for needed in ("MIT", "Apache-2.0"):
     if needed not in allow:
         err(f"licenses.allow must include {needed}")
+# The documented allowlist and the enforced one must not drift apart.
+contributing = root / "CONTRIBUTING.md"
+if contributing.is_file():
+    doc = contributing.read_text()
+    bullet = re.search(
+        r"\*\*Licence allowlist\*\*(.*?)(?=\n- \*\*|\Z)", doc, re.S
+    )
+    if bullet is None:
+        err("CONTRIBUTING.md must document the licence allowlist bullet")
+    # The list itself stops at the trailing prose ("Anything else fails ...").
+    listed = bullet.group(1).split("Anything else")[0]
+    documented_allow = sorted(re.findall(r"`([^`]+)`", listed))
+    if documented_allow != sorted(allow):
+        err(
+            "CONTRIBUTING.md allowlist "
+            f"{documented_allow} != deny.toml allow {sorted(allow)}"
+        )
 bans = cfg["bans"]
 if bans.get("multiple-versions") != "deny":
     err(f"bans.multiple-versions must be 'deny' (got {bans.get('multiple-versions')!r})")
