@@ -196,7 +196,11 @@ PY
 
 check_lockfile_locked() {
   local name=lockfile-locked
-  pending "$name"
+  if ! out=$(cargo metadata --manifest-path "$ROOT/Cargo.toml" --locked --format-version 1 2>&1 >/dev/null); then
+    bad "$name" "Cargo.lock is out of date with the manifests: $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-200)"
+    return 1
+  fi
+  ok "$name"
 }
 
 run_check() {
