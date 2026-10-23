@@ -52,8 +52,15 @@ check_lockfile_root() {
 
 check_single_lockfile() {
   local name=single-lockfile
-  bad "$name" "not implemented yet"
-  return 1
+  local locks count
+  locks=$(git -C "$ROOT" ls-files \
+    | grep -E '^agentj-ui/.*(package-lock\.json|bun\.lock|yarn\.lock|pnpm-lock\.yaml)$' || true)
+  count=$(printf '%s' "$locks" | grep -c . || true)
+  if [ "$count" -ne 1 ] || [ "$locks" != agentj-ui/package-lock.json ]; then
+    bad "$name" "expected exactly agentj-ui/package-lock.json, got: $(printf '%s' "$locks" | tr '\n' ' ')"
+    return 1
+  fi
+  ok "$name"
 }
 
 run_check() {
