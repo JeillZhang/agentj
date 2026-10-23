@@ -301,6 +301,93 @@ PY
   ok "$name"
 }
 
+check_governance_files() {
+  local name=governance-files
+  local f
+  for f in CONTRIBUTING.md SECURITY.md .github/dependabot.yml; do
+    [ -s "$ROOT/$f" ] || { bad "$name" "missing or empty $f"; return 1; }
+  done
+  grep -q 'cargo test --workspace' "$ROOT/CONTRIBUTING.md" \
+    || { bad "$name" "CONTRIBUTING.md must document the Rust test command"; return 1; }
+  grep -q 'npm --prefix agentj-ui test' "$ROOT/CONTRIBUTING.md" \
+    || { bad "$name" "CONTRIBUTING.md must document the frontend test command"; return 1; }
+  grep -q 'docs/superpowers' "$ROOT/CONTRIBUTING.md" \
+    || { bad "$name" "CONTRIBUTING.md must say docs/superpowers/ is local-only"; return 1; }
+  grep -qi 'security advisories' "$ROOT/SECURITY.md" \
+    || { bad "$name" "SECURITY.md must name the private advisory channel"; return 1; }
+  if ! have_pyyaml; then
+    bad "$name" "python3 PyYAML is required to validate .github/dependabot.yml"
+    return 1
+  fi
+  local out
+  if ! out=$(python3 - "$ROOT" <<'PY'
+import pathlib
+import sys
+import yaml
+
+root = pathlib.Path(sys.argv[1])
+
+
+def err(msg):
+    print(msg)
+    sys.exit(1)
+
+
+data = yaml.safe_load((root / ".github" / "dependabot.yml").read_text())
+if data.get("version") != 2:
+    err(f"dependabot version must be 2 (got {data.get('version')!r})")
+updates = data.get("updates") or []
+ecosystems = {}
+for entry in updates:
+    ecosystems[entry.get("package-ecosystem")] = entry
+want = {"cargo", "npm", "github-actions"}
+if set(ecosystems) != want:
+    err(f"dependabot ecosystems must be {sorted(want)} (got {sorted(ecosystems)})")
+npm = ecosystems["npm"]
+if npm.get("directory") != "/agentj-ui":
+    err(f"npm ecosystem directory must be /agentj-ui (got {npm.get('directory')!r})")
+for eco, entry in ecosystems.items():
+    groups = entry.get("groups") or {}
+    if not groups:
+        err(f"{eco} updates must be grouped")
+    types = set()
+    for group in groups.values():
+        types.update(group.get("update-types") or [])
+    if not {"minor", "patch"} <= types:
+        err(f"{eco} groups must bundle minor and patch updates")
+print("ok")
+PY
+  ); then
+    bad "$name" "$out"
+    return 1
+  fi
+  ok "$name"
+}
+
+check_hygiene() {
+  local name=hygiene
+  local stale
+  for stale in "$ROOT"/agentj-ui/node_modules/.old_modules-*; do
+    if [ -d "$stale" ]; then
+      bad "$name" "stale install residue present: ${stale#$ROOT/}"
+      return 1
+    fi
+  done
+  if [ -d "$ROOT/node_modules" ]; then
+    bad "$name" "root node_modules/ should be gone"
+    return 1
+  fi
+  if [ -d "$ROOT/.playwright-mcp" ]; then
+    bad "$name" ".playwright-mcp/ should be gone"
+    return 1
+  fi
+  if ! grep -qxF '.opencode/' "$ROOT/.gitignore"; then
+    bad "$name" ".gitignore must carry a tracked .opencode/ rule"
+    return 1
+  fi
+  ok "$name"
+}
+
 check_docs_summaries() {
   local name=docs-summaries
   local out
