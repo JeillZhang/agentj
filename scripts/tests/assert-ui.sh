@@ -14,8 +14,26 @@ ok() { printf 'PASS %s\n' "$1"; }
 
 check_ui_manifests() {
   local name=ui-manifests
-  bad "$name" "not implemented yet"
-  return 1
+  local root="$ROOT/agentj-ui/package.json"
+  local want
+  [ -f "$root" ] || { bad "$name" "missing agentj-ui/package.json"; return 1; }
+  want=$(jq -r '.name // ""' "$root")
+  [ "$want" = agentj-ui ] || { bad "$name" "name must be agentj-ui (got '$want')"; return 1; }
+  want=$(jq -r '.version // ""' "$root")
+  [ "$want" = 0.1.0 ] || { bad "$name" "version must be 0.1.0 (got '$want')"; return 1; }
+  want=$(jq -r '.packageManager // ""' "$root")
+  [ "$want" = npm@11.11.0 ] || { bad "$name" "packageManager must be npm@11.11.0 (got '$want')"; return 1; }
+  want=$(jq -r '.engines.node // ""' "$root")
+  [ "$want" = '>=24' ] || { bad "$name" "engines.node must be >=24 (got '$want')"; return 1; }
+  want=$(jq -r '.private // false' "$root")
+  [ "$want" = true ] || { bad "$name" "private must be true (got '$want')"; return 1; }
+  local pkg
+  for pkg in apps/web apps/tui; do
+    [ -f "$ROOT/agentj-ui/$pkg/package.json" ] || { bad "$name" "missing agentj-ui/$pkg/package.json"; return 1; }
+    want=$(jq -r '.version // ""' "$ROOT/agentj-ui/$pkg/package.json")
+    [ "$want" = 0.1.0 ] || { bad "$name" "$pkg version must be 0.1.0 (got '$want')"; return 1; }
+  done
+  ok "$name"
 }
 
 check_lockfile_root() {
