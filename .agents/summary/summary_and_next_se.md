@@ -23,7 +23,7 @@
 
 - **仓库断言 harness**（`scripts/tests/assert-ui.sh` / `assert-cargo.sh` / `assert-ci.sh`）：
   `--list` / `<check>` / `all` / `--strict` 四种入口，未实现项以 `SKIP`（exit 3）显式暴露、
-  `--strict` 视为失败。15 个检查覆盖 UI 清单与单一 lockfile、workspace Cargo 策略与 18 crate
+  `--strict` 视为失败。16 个检查覆盖 UI 清单与单一 lockfile、workspace Cargo 策略与 18 crate
   继承、LICENSE 三件套、`deny.toml`、lockfile 一致性（`cargo metadata --locked`）、CI 作业契约、
   覆盖率棘轮、frontend 作业、治理文件、工作区卫生、两份 summary 与文档基线。
 - **CI 作业补全**（`.github/workflows/ci.yml`）：新增 `deny`（cargo-deny 四类检查）、
