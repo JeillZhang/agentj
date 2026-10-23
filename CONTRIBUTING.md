@@ -24,10 +24,14 @@ npm --prefix agentj-ui test --workspace=@agentj/sdk
 npm --prefix agentj-ui test --workspace=@agentj/web
 npm --prefix agentj-ui test --workspace=@agentj/protocol
 bun --cwd agentj-ui/apps/tui test
-cargo deny check
-cargo llvm-cov --workspace --fail-under-lines 50
+cargo deny check advisories licenses bans sources
+cargo llvm-cov --workspace --fail-under-lines 92
 ./scripts/check-version.sh
 ```
+
+The coverage number is the CI ratchet (`.github/workflows/ci.yml` → `COVERAGE_THRESHOLD`),
+not a suggestion: measured baseline `93.67%` on 2026-10-23, and the threshold only moves up.
+Never lower it locally to make a run pass.
 
 Protocol changes have two extra gates — regenerate and re-check for drift:
 

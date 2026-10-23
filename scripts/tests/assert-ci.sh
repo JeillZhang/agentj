@@ -357,6 +357,44 @@ check_governance_files() {
     || { bad "$name" "CONTRIBUTING.md must document the frontend test command"; return 1; }
   grep -q 'docs/superpowers' "$ROOT/CONTRIBUTING.md" \
     || { bad "$name" "CONTRIBUTING.md must say docs/superpowers/ is local-only"; return 1; }
+  # The local gates must be the CI gates, verbatim, or "CI runs the same commands"
+  # is a lie and contributors get a green local run followed by a red CI run.
+  grep -qF 'cargo deny check advisories licenses bans sources' "$ROOT/CONTRIBUTING.md" \
+    || { bad "$name" "CONTRIBUTING.md must run 'cargo deny check advisories licenses bans sources' (the CI deny gate)"; return 1; }
+  local cov_out
+  if ! cov_out=$(python3 - "$ROOT" <<'PY'
+import pathlib
+import re
+import sys
+
+root = pathlib.Path(sys.argv[1])
+ci = (root / ".github" / "workflows" / "ci.yml").read_text()
+contrib = (root / "CONTRIBUTING.md").read_text()
+
+ci_match = re.search(r"COVERAGE_THRESHOLD:\s*(\d+)", ci)
+if not ci_match:
+    print("ci.yml defines no COVERAGE_THRESHOLD for the coverage ratchet")
+    sys.exit(1)
+ci_value = ci_match.group(1)
+
+doc_values = re.findall(r"--fail-under-lines\s+(\d+)", contrib)
+if not doc_values:
+    print("CONTRIBUTING.md documents no --fail-under-lines coverage gate")
+    sys.exit(1)
+for value in doc_values:
+    if value != ci_value:
+        print(
+            "CONTRIBUTING.md --fail-under-lines "
+            f"{value} != CI COVERAGE_THRESHOLD {ci_value}"
+            " (the local coverage gate must match the CI ratchet)"
+        )
+        sys.exit(1)
+print("ok")
+PY
+  ); then
+    bad "$name" "$cov_out"
+    return 1
+  fi
   grep -qi 'security advisories' "$ROOT/SECURITY.md" \
     || { bad "$name" "SECURITY.md must name the private advisory channel"; return 1; }
   if ! have_pyyaml; then
