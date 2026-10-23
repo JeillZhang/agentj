@@ -30,6 +30,7 @@ npm --prefix agentj-ui test --workspace=@agentj/protocol
 npm --prefix agentj-ui test --workspace=@agentj/sdk
 npm --prefix agentj-ui test --workspace=@agentj/tokens
 npm --prefix agentj-ui test --workspace=@agentj/web
+npm --prefix agentj-ui run lint --workspace=@agentj/web   # oxlint: errors fail CI
 bun --cwd agentj-ui/apps/tui test
 cargo deny check advisories licenses bans sources -D unmatched-skip
 cargo llvm-cov --workspace --fail-under-lines 92

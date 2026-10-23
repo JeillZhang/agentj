@@ -503,7 +503,8 @@ def is_gate(cmd):
     if not cmd.startswith(GATE_PREFIXES):
         return False
     if cmd.startswith(("npm ", "bun ")):
-        return re.search(r"\btest\b", cmd) is not None
+        # `run lint` is a gate too: oxlint errors fail the build.
+        return re.search(r"\btest\b|\brun lint\b", cmd) is not None
     return True
 
 
@@ -515,7 +516,7 @@ def gate_fragment(cmd):
     are cut so the doc keeps a literal number instead of a template.
     """
     if cmd.startswith("npm "):
-        return re.search(r"\btest\b.*$", cmd).group(0)
+        return re.search(r"\b(?:test|run lint)\b.*$", cmd).group(0)
     if cmd.startswith("bash scripts/tests/assert-"):
         return re.search(r"scripts/tests/assert-[a-z-]+\.sh", cmd).group(0)
     if cmd.startswith("node "):
