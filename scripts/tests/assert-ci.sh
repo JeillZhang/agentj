@@ -7,6 +7,17 @@ set -euo pipefail
 ROOT="${AGENTJ_ROOT:-$(cd -- "$(dirname "$0")/../.." && pwd)}"
 CHECKS=(harness ci-jobs coverage-gate frontend-job governance-files hygiene docs-summaries docs-agents)
 
+# --- Check inventory contract (maintained by hand, NOT a cache) ---------------
+# EXPECTED_* lists the check inventory each harness is required to expose. It is a
+# contract, not a cache: adding or removing a check in ANY of the three scripts
+# (assert-ui.sh / assert-cargo.sh / assert-ci.sh) MUST update the matching list
+# below in the same commit. check_harness fails when the `--list` output, the
+# `check_<name>()` implementations and these lists disagree in either direction,
+# so "one check silently dropped" can no longer look like "everything green".
+EXPECTED_UI_CHECKS="ui-manifests lockfile-root single-lockfile"
+EXPECTED_CARGO_CHECKS="cargo-root crate-inheritance licenses deny-config lockfile-locked"
+EXPECTED_CI_CHECKS="harness ci-jobs coverage-gate frontend-job governance-files hygiene docs-summaries docs-agents"
+
 bad() { printf 'FAIL %s: %s\n' "$1" "$2"; return 1; }
 ok() { printf 'PASS %s\n' "$1"; }
 # Exit code 3 means "not implemented yet"; `all` reports it as SKIP so the
@@ -17,36 +28,49 @@ have_pyyaml() {
   python3 -c 'import yaml' >/dev/null 2>&1
 }
 
-check_harness() {
-  local name=harness
-  local f
-  for f in assert-ui.sh assert-cargo.sh; do
-    if [ ! -f "$ROOT/scripts/tests/$f" ]; then
-      bad "$name" "missing scripts/tests/$f"
-      return 1
-    fi
-    if ! bash -n "$ROOT/scripts/tests/$f" >/dev/null 2>&1; then
-      bad "$name" "syntax error in scripts/tests/$f"
+# verify_inventory <script> <expected-space-separated> <reporting-check-name>
+# Silent on success. Fails when scripts/tests/<script> is missing, does not parse,
+# disagrees with its pinned inventory, or lists a check it never implements.
+verify_inventory() {
+  local script=$1 expected=$2 name=$3
+  local listing sorted_expected sorted_listing missing extra item fn
+  if [ ! -f "$ROOT/scripts/tests/$script" ]; then
+    bad "$name" "missing scripts/tests/$script"
+    return 1
+  fi
+  if ! bash -n "$ROOT/scripts/tests/$script" >/dev/null 2>&1; then
+    bad "$name" "syntax error in scripts/tests/$script"
+    return 1
+  fi
+  if ! listing=$(bash "$ROOT/scripts/tests/$script" --list); then
+    bad "$name" "scripts/tests/$script --list exited non-zero"
+    return 1
+  fi
+  sorted_expected=$(printf '%s\n' $expected | sort -u)
+  sorted_listing=$(printf '%s\n' $listing | sort -u)
+  missing=$(comm -23 <(printf '%s\n' "$sorted_expected") <(printf '%s\n' "$sorted_listing") \
+    | tr '\n' ' ' | sed 's/ *$//')
+  extra=$(comm -13 <(printf '%s\n' "$sorted_expected") <(printf '%s\n' "$sorted_listing") \
+    | tr '\n' ' ' | sed 's/ *$//')
+  if [ -n "$missing" ] || [ -n "$extra" ]; then
+    printf 'FAIL %s: %s --list disagrees with the pinned inventory (missing: %s; unexpected: %s)\n' \
+      "$name" "$script" "${missing:-none}" "${extra:-none}"
+    return 1
+  fi
+  for item in $expected; do
+    fn="check_${item//-/_}"
+    if ! grep -q "^${fn}() {" "$ROOT/scripts/tests/$script"; then
+      bad "$name" "$script lists '$item' but defines no ${fn}()"
       return 1
     fi
   done
-  if ! bash -n "$ROOT/scripts/tests/assert-ci.sh" >/dev/null 2>&1; then
-    bad "$name" "syntax error in scripts/tests/assert-ci.sh"
-    return 1
-  fi
-  local expected_ui="ui-manifests lockfile-root single-lockfile "
-  local expected_cargo="cargo-root crate-inheritance licenses deny-config lockfile-locked "
-  local got
-  got=$(bash "$ROOT/scripts/tests/assert-ui.sh" --list | tr '\n' ' ')
-  if [ "$got" != "$expected_ui" ]; then
-    bad "$name" "assert-ui.sh --list mismatch: $got"
-    return 1
-  fi
-  got=$(bash "$ROOT/scripts/tests/assert-cargo.sh" --list | tr '\n' ' ')
-  if [ "$got" != "$expected_cargo" ]; then
-    bad "$name" "assert-cargo.sh --list mismatch: $got"
-    return 1
-  fi
+}
+
+check_harness() {
+  local name=harness
+  verify_inventory assert-ui.sh "$EXPECTED_UI_CHECKS" "$name" || return 1
+  verify_inventory assert-cargo.sh "$EXPECTED_CARGO_CHECKS" "$name" || return 1
+  verify_inventory assert-ci.sh "$EXPECTED_CI_CHECKS" "$name" || return 1
   if bash "$ROOT/scripts/tests/assert-ui.sh" nope >/dev/null 2>&1; then
     bad "$name" "unknown check must exit 2"
     return 1
