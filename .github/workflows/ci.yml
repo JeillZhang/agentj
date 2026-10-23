@@ -11,7 +11,10 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 env:
-  COVERAGE_THRESHOLD: 50
+  # Coverage ratchet: measured 2026-10-23 at 93.67% line coverage, so the gate
+  # is max(50, floor(93.67) - 1) = 92. Only ever raise this value (in the PR
+  # that lifts coverage); never lower it to make a red build green.
+  COVERAGE_THRESHOLD: 92
 jobs:
   lint:
     runs-on: ubuntu-latest
@@ -78,8 +81,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: cargo build -p agentj-plugin-fixture
-      - run: cargo llvm-cov --workspace --fail-under-lines ${{ env.COVERAGE_THRESHOLD }} --lcov --output-path lcov.info
+      - run: cargo build --locked -p agentj-plugin-fixture
+      - run: cargo llvm-cov --workspace --fail-under-lines ${{ env.COVERAGE_THRESHOLD }} --lcov --output-path lcov.info --locked
       - uses: actions/upload-artifact@v4
         if: always()
         with:

@@ -126,7 +126,73 @@ PY
 
 check_coverage_gate() {
   local name=coverage-gate
-  pending "$name"
+  if ! have_pyyaml; then
+    bad "$name" "python3 PyYAML is required to parse .github/workflows/ci.yml"
+    return 1
+  fi
+  local out
+  if ! out=$(python3 - "$ROOT" <<'PY'
+import math
+import pathlib
+import re
+import sys
+import yaml
+
+root = pathlib.Path(sys.argv[1])
+
+
+def err(msg):
+    print(msg)
+    sys.exit(1)
+
+
+path = root / ".github" / "workflows" / "ci.yml"
+text = path.read_text()
+wf = yaml.safe_load(text)
+jobs = wf.get("jobs") or {}
+if "coverage" not in jobs:
+    err("ci.yml has no coverage job")
+threshold = (wf.get("env") or {}).get("COVERAGE_THRESHOLD")
+if not isinstance(threshold, int):
+    err(f"env.COVERAGE_THRESHOLD must be an integer (got {threshold!r})")
+if threshold < 50:
+    err(f"COVERAGE_THRESHOLD must never drop below 50 (got {threshold})")
+
+# The ratchet baseline must be recorded next to the value: date + measured X%.
+lines = text.splitlines()
+comment = ""
+for idx, line in enumerate(lines):
+    if re.match(r"\s*COVERAGE_THRESHOLD\s*:", line):
+        comment = "\n".join(lines[max(0, idx - 4):idx])
+        break
+if "ratchet" not in comment.lower():
+    err("COVERAGE_THRESHOLD needs a ratchet comment above it")
+match = re.search(r"(\d{4}-\d{2}-\d{2}).*?(\d+(?:\.\d+)?)%", comment)
+if match is None:
+    err("the ratchet comment must record the measurement date and the measured coverage X%")
+measured = float(match.group(2))
+expected = max(50, math.floor(measured) - 1)
+if threshold != expected:
+    err(f"COVERAGE_THRESHOLD must be max(50, floor({measured}) - 1) = {expected} (got {threshold})")
+
+cov_runs = " ".join(
+    str(step.get("run", "")) for step in (jobs["coverage"].get("steps") or [])
+)
+if "--fail-under-lines" not in cov_runs or "${{ env.COVERAGE_THRESHOLD }}" not in cov_runs:
+    err("coverage job must gate on ${{ env.COVERAGE_THRESHOLD }}")
+for line in cov_runs.splitlines():
+    stripped = line.strip()
+    if stripped.startswith("cargo llvm-cov") and "--locked" not in stripped:
+        err("cargo llvm-cov must run with --locked")
+    if stripped.startswith("cargo build -p agentj-plugin-fixture") and "--locked" not in stripped:
+        err("the plugin-fixture build must run with --locked")
+print("ok")
+PY
+  ); then
+    bad "$name" "$out"
+    return 1
+  fi
+  ok "$name"
 }
 
 check_frontend_job() {
