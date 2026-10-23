@@ -571,7 +571,7 @@ else:
     log = LOG.read_text()
     for section in ("### Added", "### Changed", "### Fixed"):
         if section not in log:
-            fail(f"changlog v0.1.md is missing {section}")
+            fail(f"changelog v0.1.md is missing {section}")
     for topic, needle in (
         ("npm lockfile consolidation", "lockfile"),
         ("workspace cargo policy", "workspace.dependencies"),
@@ -586,11 +586,11 @@ else:
         ("remote naming", "gitcode"),
     ):
         if needle not in log:
-            fail(f"changlog v0.1.md is missing the {topic} entry ({needle})")
+            fail(f"changelog v0.1.md is missing the {topic} entry ({needle})")
     if "0.2.0" in log:
-        fail("changlog v0.1.md must not claim a version bump (0.2.0)")
+        fail("changelog v0.1.md must not claim a version bump (0.2.0)")
     if re.search(r"版本号升至|bump(ped)? (the )?version", log):
-        fail("changlog v0.1.md must not claim a version bump")
+        fail("changelog v0.1.md must not claim a version bump")
 
 if ERRORS:
     print("; ".join(ERRORS))
