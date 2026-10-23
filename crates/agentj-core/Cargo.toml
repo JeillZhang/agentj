@@ -3,22 +3,26 @@ name = "agentj-core"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 
 [dependencies]
-agentj-protocol = { path = "../agentj-protocol" }
+agentj-protocol = { path = "../agentj-protocol", version = "0.1.0" }
 anyhow = "1.0.104"
-async-trait = "0.1"
-futures = "0.3"
+async-trait.workspace = true
+futures.workspace = true
 parking_lot = "0.12"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-thiserror = "2"
-tokio = { version = "1", features = ["sync", "rt", "macros", "time", "io-util", "fs", "process"] }
-tracing = "0.1"
-uuid = { version = "1", features = ["v4"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["sync", "rt", "macros", "time", "io-util", "fs", "process"] }
+tracing.workspace = true
+uuid = { workspace = true, features = ["v4"] }
 
 [dev-dependencies]
-agentj-session = { path = "../agentj-session" }
-agentj-model = { path = "../agentj-model" }
-agentj-tools = { path = "../agentj-tools" }
-agentj-context = { path = "../agentj-context" }
+agentj-session = { path = "../agentj-session", version = "0.1.0" }
+agentj-model = { path = "../agentj-model", version = "0.1.0" }
+agentj-tools = { path = "../agentj-tools", version = "0.1.0" }
+agentj-context = { path = "../agentj-context", version = "0.1.0" }
+
+[lints]
+workspace = true
