@@ -487,6 +487,31 @@
             "answers",
             "skipped"
           ]
+        },
+        {
+          "description": "The provider/model that actually served this run. @since 0.19.0",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "run_model"
+            },
+            "model": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "provider": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "kind"
+          ]
         }
       ]
     },

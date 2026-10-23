@@ -372,6 +372,39 @@ describe("RunPanel run overrides", () => {
   });
 });
 
+// The kernel now echoes the *effective* model on session/run replies (0.19.0).
+// The chip must prefer it over the picker selection, and fall back to the
+// selected model when an older kernel omits it.
+describe("RunPanel effective model chip", () => {
+  function submitWithReply(reply: Record<string, unknown>) {
+    const client = {
+      setNotificationHandler: () => {},
+      removeNotificationHandler: () => {},
+      request: async () => reply,
+    } as unknown as Parameters<typeof RunPanel>[0]["client"];
+    render(
+      <RunPanel
+        client={client}
+        activeSessionId="s1"
+        model="base-model"
+        selected={{ name: "m-a", provider: "pa" }}
+      />,
+    );
+    fireEvent.change(screen.getByLabelText(/prompt/i), { target: { value: "hi" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+  }
+
+  it("shows the effective model reported by the kernel", async () => {
+    submitWithReply({ content: "ok", provider: "pa", model: "m-b" });
+    await waitFor(() => expect(screen.getByTestId("run-model-chip")).toHaveTextContent("m-b"));
+  });
+
+  it("falls back to the selected model when the kernel omits it", async () => {
+    submitWithReply({ content: "ok" });
+    await waitFor(() => expect(screen.getByTestId("run-model-chip")).toHaveTextContent("m-a"));
+  });
+});
+
 // BUG-018: the sidebar keeps its own session list, so it has to be told when a
 // turn settles (preview text / updated_at changed server-side).
 describe("RunPanel run completion announcement", () => {

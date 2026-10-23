@@ -57,6 +57,12 @@ pub struct SessionRunResult {
     /// Run id that scopes this turn's todo/file_change events. @since 0.15.0
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_id: Option<String>,
+    /// Effective provider of the turn. @since 0.19.0
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    /// Effective model of the turn. @since 0.19.0
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -400,6 +406,8 @@ mod tests {
             tool_calls: None,
             usage: None,
             run_id: None,
+            provider: None,
+            model: None,
         };
         let json = serde_json::to_value(&none).unwrap();
         assert!(json.get("run_id").is_none(), "None run_id must be omitted");
@@ -409,6 +417,8 @@ mod tests {
             tool_calls: None,
             usage: None,
             run_id: Some("550e8400-e29b-41d4-a716-446655440000".into()),
+            provider: None,
+            model: None,
         };
         let json = serde_json::to_value(&some).unwrap();
         assert_eq!(json["run_id"], "550e8400-e29b-41d4-a716-446655440000");

@@ -8,55 +8,34 @@
 > 待实施），不得随内容替换而删除；仅当该特性实际实施完成后才能移除（移入功能记录）。
 > 后端总结独立存放于 `summary_and_next_se.md`；两文件内容隔离，互不写入对方文件。
 
-> 当前功能：**rank 规则单一真源化（TUI 侧）** —— 分支 `feature/search-rank-single-source`。
-> TUI 文件搜索改为只消费内核服务端排名（Rust `file_list::search_rank` 为唯一真源），删除本地
-> 排名镜像（`files.ts` 的 `searchRank` / `filterEntries` / `comparePaths`）与 mock kernel 镜像；
-> 旧内核回复无 `total` 时如实提示「不支持服务端搜索」并返回空行，不再本地降级。版本按约定保持
-> **0.1.0** 不递增；`PROTOCOL_VERSION` 仍 **0.18.0** / 28 方法 / 78 schemas（**无协议变更**）。
-> 下方工具卡片章节（含 BUG-017 / BUG-018）为归档记录。
+> 当前功能：**run 可靠性批次（前端）** —— 分支 `feature/run-reliability-batch`。Web 新增生效
+> 模型 chip（`data-testid="run-model-chip"`，内核缺省时回退选择器），`@agentj/protocol` 类型
+> 重新生成、`@agentj/sdk` `PROTOCOL_VERSION` 同步 **0.19.0**（`VERSION` 仍 0.1.0）。下方
+> search-rank 单一真源化（TUI 侧）等前序章节为归档记录。
 
-## rank 规则单一真源化（TUI 侧）✅
+## run 可靠性批次（前端）✅
 
-分支 `feature/search-rank-single-source`。TUI 不再自行排名：排名真源是内核
-`crates/agentj-ipc/src/file_list.rs::search_rank`，两侧共用一个跨语言契约夹具
-`protocol/search-rank-cases.json`（后端侧见 `summary_and_next_se.md`）。无协议变更。
+分支 `feature/run-reliability-batch`。前端只做生效模型回显 + 协议/版本同步，无独立逻辑重写。
+对应 `_se.md` 待实施 ⑧（`session/run` 回显生效模型）的前端消费落地。
 
 ### 变更
 
-- **删除本地排名镜像**（`agentj-ui/apps/tui/src/files.ts`）：移除 `searchRank` / `filterEntries` /
-  `comparePaths`；保留 `buildSearchIndex` / `SearchEntry` / `formatSearchRowParts`。
-- **新增唯一夹具加载器** `agentj-ui/apps/tui/src/searchRankCases.ts`：按 `import.meta.url` 锚定读取
-  `protocol/search-rank-cases.json`，fail-closed 校验 `version`（缺失 / 无法解析直接失败，绝不跳过）；
-  夹具路径只在模块内计算一处。
-- **mock kernel 改为夹具回放**（`agentj-ui/apps/tui/src/e2e/mock-kernel.ts`）：删 `rankFixtureEntry`
-  与本地排序算法，`searchFixture(query)` 改为在夹具 `searches[]` 里查表回放
-  （`expected_ranked_paths` + `expected_total`）；保留 `legacySearch`（legacy 模式仍**不**带 `total`）
-  与 `SEARCH_FIXTURE` 树。夹具的 `auth` 查询不在 mock 硬编码树内，证明 mock 服务的是契约而非自身树。
-- **app 状态收敛**（`agentj-ui/apps/tui/src/app.tsx`）：删 `withSearchQuery` / `loadSearchIndex` /
-  `MAX_SEARCH_INDEX` / `SEARCH_INDEX_DEPTH` / `SearchState.index` 与本地短路；搜索态由
-  `unknown` / `server` / `unsupported` 分流（`applySearchReply`）——仅当回复带 `total` 才可进入
-  `server`；新增导出常量 `SEARCH_UNSUPPORTED_HINT` 与 `notice: string | null` 字段（与请求失败通道
-  `error` 分离）。
-- **旧内核降级为如实提示**：回复缺 `total` → 显示 `SEARCH_UNSUPPORTED_HINT`（「内核不支持服务端
-  搜索」）且返回**空行**，不再本地过滤排序（原 `depth-8` 本地兜底 / `MAX_SEARCH_INDEX` 已删）。
-- **退役路径**：目录搜索结果的「回车进入」路径移除（内核从不排名目录，目录只入 BFS 队列）。
-
-### 测试
-
-- 新增导出面守卫 `the TUI ships no local ranking implementation`（`files.test.ts`）：断言模块导出
-  `buildSearchIndex`，且**不含** `filterEntries` / `searchRank` / `comparePaths`。
-- 新增 `searchRankCases.test.ts`（夹具加载器：解析、`version` fail-closed、`searches.length > 0`）。
-- 新增 mock 契约回放测试；旧本地排名 3 条测试与 `rankEntry` 助手删除；legacy-mode 套件改 server-mode
-  fake kernel；`app.test.tsx` 的本地兜底断言改写为「无 `total` → `SEARCH_UNSUPPORTED_HINT` + 空行」。
+- **Web 生效模型 chip**（`agentj-ui/apps/web/src/RunPanel.tsx`）：新增
+  `data-testid="run-model-chip"` 的 chip，取值
+  `chipModel = effectiveModel?.model ?? selected?.name ?? model`（`RunPanel.tsx:840`）——内核 run
+  回复带上 `model` 时显示**生效**模型，缺省时回退模型选择器。
+- **`@agentj/protocol` 类型重新生成**：`schemas/*.json`（含 `SessionRunResult` 新增可选
+  `provider` / `model`）→ `types.d.ts` 再生成，`tsc --noEmit` 通过。
+- **`@agentj/sdk` 协议版本同步**：`config.ts` `PROTOCOL_VERSION` → `0.19.0`（`VERSION` 仍 `0.1.0`）。
 
 ### 验证结果
 
 | 门禁 | 结果 |
 |------|------|
-| `bun --cwd agentj-ui/apps/tui test` | **192 passed** / 0 failed（基线 177，+15） |
-| `npm --prefix agentj-ui test --workspace=@agentj/web` | **679 passed**（未触碰；Web 仍无 Files 搜索 UI） |
-| `./scripts/check-version.sh` | `version-ok`（0.1.0 / 0.18.0） |
-| 测试验收（Round 1） | **0 Bug** — 8 个突变全部被测试抓到（含导出面守卫的 `searchRank` 重引入、mock 丢 `total`、夹具顺序/total/version 篡改） |
+| `npm --prefix agentj-ui run generate --workspace=@agentj/protocol` | 通过（types.d.ts 与 schemas 无漂移） |
+| `npm --prefix agentj-ui run build --workspace=@agentj/protocol` | `tsc --noEmit` 通过 |
+| `npm --prefix agentj-ui test --workspace=@agentj/web` | 通过（RunPanel 生效模型 chip 相关断言） |
+| `./scripts/check-version.sh` | **保持红**（0.19.0 协议基线待 T19 同步 SDK / desktop；本任务不修） |
 
 ## 已完成（前端：工具卡片可读性 + BUG-017 / BUG-018，详见 `docs/changelog/v0.1.md`）
 
@@ -80,9 +59,9 @@
   释放）；当前不做前端侧退订。
 - **Web 连接为手动重连**：「设置 · 连接」点 `Connect` 才重建 transport/client（`connectSeq`），
   没有自动重连/退避；只保证「重连后重新订阅」。
-- **标签只能显示「我们请求的」模型**：内核 `session/run` 不回显生效模型（见 `_se.md` 待实施 ⑧），
-  上游把请求静默改路由时 UI 无从得知；当前把标签与 request 参数绑在同一处取值，只能保证
-  「显示 == 我们发出的」。
+- **标签回退仍是「我们请求的」模型**：内核 `session/run` 现可回显生效模型（`_se.md` 待实施 ⑧ 已
+  落地），Web run-model-chip 优先显示 `effectiveModel?.model`；仅当内核省略 `model` 时才回退
+  选择器取值（`selected?.name ?? model`），此时仍只能保证「显示 == 我们发出的」。
 - **工具摘要只覆盖已知工具**：`toolSummary` 对未识别的 `name` 返回空串（不显示摘要），
   MCP / 插件工具若不带已知字段则不显示目标；如需通用回退（如 `path`/`pattern`/`command`
   任意键）可后续再议。
@@ -119,11 +98,9 @@
 
 ## 下一步
 
-- rank 规则单一真源化（TUI 侧）已提交到 `feature/search-rank-single-source`（10 个提交，见
-  `_se.md` 真实提交表）→ 推送**两个远端**（本机 `github` = GitHub 权威、`origin` = GitCode 镜像；
-  与 AGENTS.md 的远端命名相反）→ 开 GitHub PR（用户负责合并）→ 进入测试验收。
-- 本阶段删除了 TUI 的本地排名镜像：待实施 ③（Web 接入服务端搜索）仍待办；㉔（三端共享逻辑收敛）
-  因少了一处 TS 重写而**前进了一步、但仍未实施**（Web 与 TUI 的文件树 / 会话 / 运行视图仍是双份）。
+- run 可靠性批次（前端）已提交到 `feature/run-reliability-batch`（提交见 `_se.md` 真实提交表）→
+  推送**两个远端**（本机 `github` = GitHub 权威、`origin` = GitCode 镜像；与 AGENTS.md 的远端命名
+  相反）→ 开 GitHub PR（用户负责合并）→ 进入测试验收。
 - 前端候选：③ Web 接入服务端搜索，以及 ㉑–㉕、㉝–㉞ 工程债 / 修复（前端 CI、跨平台矩阵、SDK 共享、
   版本覆盖、lockfile 收敛、工作区卫生）；或订阅状态常驻指示（需先定义新鲜度语义）；
   或清理 `TopbarMenu` / `SettingsDialog` 测试里的重复 stub helper；

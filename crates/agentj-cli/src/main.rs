@@ -3,6 +3,7 @@
 //! init/shutdown run in the real process; stdin EOF and signals share the same
 //! graceful-shutdown chain (design #13).
 
+use std::io::IsTerminal;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -64,6 +65,9 @@ enum Commands {
         /// Model id to use for this run only, e.g. "opencode-go/kimi-k3" (default: model.default_model).
         #[arg(long)]
         model: Option<String>,
+        /// Approve every permission request without asking (scripts, CI).
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
     /// Serve the JSON-RPC API over stdio, or over TCP with --port (resident kernel).
     Serve {
@@ -113,12 +117,99 @@ fn permission_policies_from_config(
     cfg.inner().permission.clone().unwrap_or_default().tools
 }
 
-/// Approval wait budget from `[permission] timeout_ms`, defaulting to the
-/// design's 60s. Tests lower it so the auto-deny path stays fast.
+/// Approval wait budget from `[permission] timeout_ms`, clamped to 100..=600_000
+/// (0, a negative value or anything else below the minimum clamps up to 100 with a
+/// warning, not an error). The field is a signed `Option<i64>` so a negative raw
+/// value survives deserialization and can be reported as written.
 fn permission_timeout(cfg: &agentj_permission::PermissionConfig) -> std::time::Duration {
-    cfg.timeout_ms
-        .map(std::time::Duration::from_millis)
-        .unwrap_or_else(|| std::time::Duration::from_secs(60))
+    let (budget, warning) = clamp_permission_timeout(cfg.timeout_ms);
+    if let Some(line) = warning {
+        eprintln!("{line}");
+    }
+    budget
+}
+
+/// Pure clamp + warning text for a raw `[permission] timeout_ms`, so the warning
+/// line (it echoes the RAW value the user wrote) is unit-testable exactly.
+fn clamp_permission_timeout(raw: Option<i64>) -> (std::time::Duration, Option<String>) {
+    let raw = raw.unwrap_or(60_000);
+    let clamped = raw.clamp(100, 600_000);
+    let warning = (clamped != raw)
+        .then(|| format!("warning: permission.timeout_ms {raw} clamped to {clamped}"));
+    (std::time::Duration::from_millis(clamped as u64), warning)
+}
+
+/// Inject the configured question budget onto the `QuestionModule`, read through
+/// the CLAMPING accessor (`[agent] question_timeout_s` is an unclamped raw i64,
+/// so `0`/`-5`/`999999` must clamp before the u64 cast). Called ONCE at the
+/// construction site before command dispatch so every assembly path — `run`, the
+/// three serve modes, dashboard and the `None` arm — inherits the same default
+/// (design D4): on the serve paths a notifier exists, so without this default an
+/// `ask` omitting `timeout_s` would block forever.
+fn apply_question_timeout(module: &QuestionModule, config: &agentj_config::Config) {
+    module.set_default_timeout_s(Some(config.question_timeout_s()));
+}
+
+/// Map one stdin approval line to a decision. `y`/`yes` allow; anything else —
+/// including EOF (closed pipe / Ctrl-D), represented here as `None` — denies.
+/// Pure so the TTY approver's mapping is unit-tested without a TTY.
+fn decision_from_input(input: Option<String>) -> agentj_permission::ApprovalDecision {
+    let allow = input
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|s| matches!(s.to_ascii_lowercase().as_str(), "y" | "yes"));
+    if allow {
+        agentj_permission::ApprovalDecision::Allow
+    } else {
+        agentj_permission::ApprovalDecision::Deny
+    }
+}
+
+/// Argument fields a compact approval prompt shows verbatim, most actionable
+/// first (a raw JSON dump buries the string the operator has to judge).
+const APPROVAL_ARG_KEYS: [&str; 3] = ["command", "pattern", "path"];
+
+/// Cap on the argument summary so a huge command cannot flood the terminal.
+const APPROVAL_ARG_MAX_CHARS: usize = 200;
+
+/// One-line, length-bounded summary of a permission request's arguments: the
+/// first recognised high-signal field as a bare string (`command` for bash,
+/// `pattern` for glob/grep, `path` for the file tools), else the compact JSON
+/// object. Whitespace collapses to single spaces so the prompt stays on one line.
+fn compact_args(args: &serde_json::Value) -> String {
+    let raw = APPROVAL_ARG_KEYS
+        .iter()
+        .find_map(|key| args.get(key).and_then(serde_json::Value::as_str))
+        .map_or_else(|| args.to_string(), str::to_string);
+    let flat = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    match flat.char_indices().nth(APPROVAL_ARG_MAX_CHARS) {
+        Some((cut, _)) => format!("{}…", &flat[..cut]),
+        None => flat,
+    }
+}
+
+/// The interactive approval prompt printed to stderr before the decision is read:
+/// the tool name, a compact one-line argument summary and the engine's reason.
+/// Pure so the exact prompt is unit-tested without a TTY.
+fn approval_prompt(tool: &str, args: &serde_json::Value, reason: &str) -> String {
+    format!(
+        "approve {tool}? {}\n  reason: {reason}\n[y/N] ",
+        compact_args(args)
+    )
+}
+
+/// Read one approval line from stdin (the interactive TTY approver). Runs on its
+/// own thread — never on the permission request path — so a pending human answer
+/// cannot block the approval timeout. EOF (closed pipe) denies without hanging.
+fn read_decision_from_stdin() -> agentj_permission::ApprovalDecision {
+    use std::io::BufRead;
+    let stdin = std::io::stdin();
+    let mut line = String::new();
+    match stdin.lock().read_line(&mut line) {
+        Ok(0) => agentj_permission::ApprovalDecision::Deny,
+        Ok(_) => decision_from_input(Some(line)),
+        Err(_) => agentj_permission::ApprovalDecision::Deny,
+    }
 }
 
 fn resolve_session_dir(cfg: &agentj_config::Config) -> std::path::PathBuf {
@@ -631,6 +722,7 @@ async fn main() -> anyhow::Result<()> {
         )?;
     }
     let question_module = Arc::new(QuestionModule::new());
+    apply_question_timeout(&question_module, &config);
     let tools = Arc::new(ToolRegistry::new());
     register_builtins(&tools);
     tools.register(Arc::new(AskTool::new(question_module.clone())));
@@ -855,6 +947,7 @@ async fn main() -> anyhow::Result<()> {
             attach,
             provider,
             model,
+            yes,
         }) => {
             if let Some(url) = attach {
                 let failure =
@@ -865,6 +958,36 @@ async fn main() -> anyhow::Result<()> {
                     std::process::exit(1);
                 }
             } else {
+                // Approval path: `--yes` auto-approves; a TTY spawns a thread that
+                // owns stdin and answers y/n; a non-TTY without `--yes` attaches
+                // nothing and the pending request auto-denies at the timeout
+                // (today's behaviour — no stdin read on the request path).
+                if yes {
+                    let module = permission_module.clone();
+                    permission_module.set_notifier(Arc::new(move |req, _session| {
+                        eprintln!("auto-approved {} (--yes)", req.tool);
+                        let _ = module.respond(
+                            &agentj_core::permission::PermissionRequestId(req.request_id.clone()),
+                            agentj_permission::ApprovalDecision::Allow,
+                        );
+                    }));
+                } else if std::io::stdin().is_terminal() {
+                    let module = permission_module.clone();
+                    permission_module.set_notifier(Arc::new(move |req, _session| {
+                        // Print the prompt synchronously (the notifier is the only
+                        // place holding the request details) before the detached
+                        // reader blocks; reading stdin on this thread would interlock
+                        // with the approval await.
+                        eprintln!("{}", approval_prompt(&req.tool, &req.args, &req.reason));
+                        let module = module.clone();
+                        let request_id =
+                            agentj_core::permission::PermissionRequestId(req.request_id.clone());
+                        std::thread::spawn(move || {
+                            let decision = read_decision_from_stdin();
+                            let _ = module.respond(&request_id, decision);
+                        });
+                    }));
+                }
                 let ipc_server = build_ipc_server(
                     kernel,
                     session_for_ipc.clone(),
@@ -1041,19 +1164,154 @@ mod tests {
     }
 
     #[test]
-    fn permission_timeout_defaults_to_60s_and_honors_config() {
-        let bare = load_test_config("");
-        let bare = bare.inner().permission.clone().unwrap_or_default();
+    fn permission_timeout_is_bounded() {
+        let mut cfg = agentj_permission::PermissionConfig::default();
+        assert_eq!(permission_timeout(&cfg), std::time::Duration::from_secs(60));
+        cfg.timeout_ms = Some(800);
         assert_eq!(
-            permission_timeout(&bare),
-            std::time::Duration::from_secs(60)
-        );
-
-        let tuned = load_test_config("[permission]\ntimeout_ms = 800");
-        let tuned = tuned.inner().permission.clone().unwrap_or_default();
-        assert_eq!(
-            permission_timeout(&tuned),
+            permission_timeout(&cfg),
             std::time::Duration::from_millis(800)
+        );
+        cfg.timeout_ms = Some(0);
+        assert_eq!(
+            permission_timeout(&cfg),
+            std::time::Duration::from_millis(100)
+        );
+        cfg.timeout_ms = Some(700_000);
+        assert_eq!(
+            permission_timeout(&cfg),
+            std::time::Duration::from_millis(600_000)
+        );
+        // A negative value is out of range, not a parse error: it clamps up to the
+        // minimum, and the warning echoes the raw value the user wrote (not `0`).
+        cfg.timeout_ms = Some(-7);
+        assert_eq!(
+            permission_timeout(&cfg),
+            std::time::Duration::from_millis(100)
+        );
+        assert_eq!(
+            clamp_permission_timeout(Some(-7)).1.as_deref(),
+            Some("warning: permission.timeout_ms -7 clamped to 100")
+        );
+    }
+
+    #[test]
+    fn only_out_of_range_permission_timeouts_warn() {
+        // In-range and absent values must stay silent — the warning must not become
+        // unconditional while fixing the negative case.
+        assert_eq!(clamp_permission_timeout(None).1, None);
+        assert_eq!(clamp_permission_timeout(Some(800)).1, None);
+        assert_eq!(clamp_permission_timeout(Some(100)).1, None);
+        assert_eq!(clamp_permission_timeout(Some(600_000)).1, None);
+        assert_eq!(
+            clamp_permission_timeout(Some(0)).1.as_deref(),
+            Some("warning: permission.timeout_ms 0 clamped to 100")
+        );
+        assert_eq!(
+            clamp_permission_timeout(Some(700_000)).1.as_deref(),
+            Some("warning: permission.timeout_ms 700000 clamped to 600000")
+        );
+    }
+
+    /// A negative `[permission] timeout_ms` is an out-of-range value, so it must be
+    /// clamped up to the 100 ms minimum like `0` is — never rejected as a parse error.
+    #[test]
+    fn a_negative_permission_timeout_loads_and_clamps_to_the_minimum() {
+        let cfg = load_test_config("[permission]\ntimeout_ms = -7\n");
+        let policy = cfg.inner().permission.clone().unwrap_or_default();
+        assert_eq!(
+            permission_timeout(&policy),
+            std::time::Duration::from_millis(100)
+        );
+    }
+
+    #[test]
+    fn stdin_decision_maps_yn_and_eof() {
+        assert_eq!(
+            decision_from_input(Some("y\n".into())),
+            agentj_permission::ApprovalDecision::Allow
+        );
+        assert_eq!(
+            decision_from_input(Some("yes\n".into())),
+            agentj_permission::ApprovalDecision::Allow
+        );
+        assert_eq!(
+            decision_from_input(Some("n\n".into())),
+            agentj_permission::ApprovalDecision::Deny
+        );
+        assert_eq!(
+            decision_from_input(Some("  \n".into())),
+            agentj_permission::ApprovalDecision::Deny
+        );
+        assert_eq!(
+            decision_from_input(None),
+            agentj_permission::ApprovalDecision::Deny
+        );
+    }
+
+    #[test]
+    fn approval_prompt_renders_tool_args_and_reason() {
+        let prompt = approval_prompt(
+            "bash",
+            &serde_json::json!({"command": "curl http://example.com"}),
+            "tool default mode",
+        );
+        assert_eq!(
+            prompt,
+            "approve bash? curl http://example.com\n  reason: tool default mode\n[y/N] "
+        );
+    }
+
+    #[test]
+    fn approval_prompt_shows_the_pattern_for_a_search_tool() {
+        let prompt = approval_prompt(
+            "glob",
+            &serde_json::json!({"pattern": "**/*.rs", "include": "*.toml"}),
+            "matched rule: ask",
+        );
+        // The high-signal `pattern` is shown as a bare string, not a JSON dump.
+        assert_eq!(
+            prompt,
+            "approve glob? **/*.rs\n  reason: matched rule: ask\n[y/N] "
+        );
+    }
+
+    #[test]
+    fn approval_prompt_compacts_long_and_multiline_arguments() {
+        let long = format!("echo {} && rm -rf /tmp/x", "a ".repeat(300));
+        let prompt = approval_prompt(
+            "bash",
+            &serde_json::json!({"command": long}),
+            "tool default mode",
+        );
+        let first = prompt.lines().next().unwrap();
+        assert!(first.starts_with("approve bash? echo a a a"), "{first}");
+        assert!(
+            first.ends_with('…'),
+            "the long command must be cut: {first}"
+        );
+        // Whitespace collapses so the prompt stays on one line; no raw JSON braces.
+        assert!(!first.contains('{') && !first.contains('\n'), "{first}");
+        assert!(
+            first.chars().count() <= "approve bash? ".chars().count() + 201,
+            "{first}"
+        );
+        let multi = approval_prompt(
+            "bash",
+            &serde_json::json!({"command": "printf 'a  b\nc'"}),
+            "tool default mode",
+        );
+        assert_eq!(
+            multi,
+            "approve bash? printf 'a b c'\n  reason: tool default mode\n[y/N] "
+        );
+    }
+
+    #[test]
+    fn compact_args_falls_back_to_json_for_an_unrecognised_shape() {
+        assert_eq!(
+            compact_args(&serde_json::json!({"weird": 1})),
+            "{\"weird\":1}"
         );
     }
 
@@ -1202,11 +1460,13 @@ mod tests {
                 attach,
                 provider,
                 model,
+                yes,
             }) => {
                 assert_eq!(prompt, "hi");
                 assert!(attach.is_none());
                 assert_eq!(provider.as_deref(), Some("opencode-go"));
                 assert_eq!(model.as_deref(), Some("m1"));
+                assert!(!yes);
             }
             _ => panic!("expected run subcommand"),
         }
@@ -1652,6 +1912,55 @@ mod tests {
             5,
             Arc::new(agentj_core::hooks::EventBus::new()),
         )
+    }
+
+    /// Serve-path regression guard: a notifier is attached (never answers), and
+    /// the configured `[agent] question_timeout_s` default must be applied so an
+    /// `ask` that omits `timeout_s` settles as `Skipped` instead of hanging.
+    #[test]
+    fn served_path_question_omitting_timeout_settles_skipped() {
+        // 1s default keeps the wait short and proves the injection, not the
+        // value; the serve path attaches a notifier that ACKNOWLEDGES delivery
+        // but never answers, so only the configured default can settle it.
+        let cfg = load_test_config("[agent]\nquestion_timeout_s = 1\n");
+        let module = QuestionModule::new();
+        // THE SAME injection helper the construction site calls (design D4) —
+        // the test cannot drift from production's single injection point.
+        apply_question_timeout(&module, &cfg);
+        module.set_notifier(Arc::new(|_params, _session| true));
+
+        let module = Arc::new(module);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let asker = {
+            let module = Arc::clone(&module);
+            std::thread::spawn(move || {
+                let params = agentj_protocol::question::AskQuestionParams {
+                    question_id: String::new(),
+                    session_id: "s1".into(),
+                    question: "Pick a color".into(),
+                    header: None,
+                    options: vec![agentj_protocol::question::AskOption {
+                        id: "red".into(),
+                        label: "Red".into(),
+                        hint: None,
+                    }],
+                    allow_multiple: false,
+                    allow_other: true,
+                    timeout_s: None, // omitted -> must fall back to the configured default
+                };
+                let (_, outcome) = module.ask_blocking("s1", &params);
+                let _ = tx.send(outcome);
+            })
+        };
+
+        let outcome = rx.recv_timeout(Duration::from_secs(5)).unwrap_or_else(|_| {
+            panic!(
+                "question did not settle within 5s: the module default timeout was not applied, \
+                 so an `ask` omitting `timeout_s` hangs forever on the serve path"
+            )
+        });
+        assert_eq!(outcome, agentj_question::QuestionOutcome::Skipped);
+        asker.join().unwrap();
     }
 
     /// `shutdown_tcp_server` must run the full teardown (persist metrics, abort

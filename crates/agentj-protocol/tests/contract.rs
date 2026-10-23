@@ -153,6 +153,8 @@ fn session_run_result_roundtrip() {
         tool_calls: None,
         usage: None,
         run_id: None,
+        provider: None,
+        model: None,
     };
     let back: SessionRunResult = serde_json::from_str(&serde_json::to_string(&r).unwrap()).unwrap();
     assert_eq!(back.content, "done");
@@ -187,6 +189,8 @@ fn session_run_result_usage_serializes_when_present() {
             completion_tokens: 20,
         }),
         run_id: None,
+        provider: None,
+        model: None,
     };
     let json = serde_json::to_value(&r).unwrap();
     assert_eq!(json["usage"]["prompt_tokens"], 100);
@@ -200,6 +204,8 @@ fn session_run_result_usage_absent_when_none() {
         tool_calls: None,
         usage: None,
         run_id: None,
+        provider: None,
+        model: None,
     };
     let json = serde_json::to_value(&r).unwrap();
     assert!(json.get("usage").is_none());
@@ -375,4 +381,44 @@ fn auth_set_api_key_wire_shape() {
     assert_eq!(json["result"]["outcome"], "rejected");
     assert_eq!(json["result"]["saved"], false);
     assert_eq!(json["result"]["effective_source"], "env");
+}
+
+#[test]
+fn run_result_omits_identity_when_unknown() {
+    let r = SessionRunResult {
+        content: "ok".into(),
+        tool_calls: None,
+        usage: None,
+        run_id: Some("r".into()),
+        provider: None,
+        model: None,
+    };
+    let v = serde_json::to_value(&r).unwrap();
+    assert!(
+        v.get("provider").is_none(),
+        "provider must be omitted, got {v}"
+    );
+    assert!(v.get("model").is_none());
+}
+
+#[test]
+fn run_result_carries_identity_when_known() {
+    let r = SessionRunResult {
+        content: "ok".into(),
+        tool_calls: None,
+        usage: None,
+        run_id: None,
+        provider: Some("a".into()),
+        model: Some("m".into()),
+    };
+    let v = serde_json::to_value(&r).unwrap();
+    assert_eq!(v["provider"], "a");
+    assert_eq!(v["model"], "m");
+}
+
+#[test]
+fn old_payloads_still_deserialize() {
+    let json = r#"{"content":"ok","tool_calls":[],"usage":null,"run_id":null}"#;
+    let r: SessionRunResult = serde_json::from_str(json).unwrap();
+    assert!(r.provider.is_none() && r.model.is_none());
 }
