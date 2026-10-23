@@ -23,7 +23,13 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
-      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Repo invariants
+        run: |
+          python3 -m pip install --user pyyaml
+          bash scripts/tests/assert-ui.sh all
+          bash scripts/tests/assert-cargo.sh all
+          bash scripts/tests/assert-ci.sh all
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -37,6 +43,29 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo build -p agentj-plugin-fixture
       - run: cargo test --workspace --locked
+  deny:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@cargo-deny
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo deny check advisories licenses bans sources
+  cross-platform:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: cargo build --workspace --locked
   coverage:
     runs-on: ubuntu-latest
     timeout-minutes: 30

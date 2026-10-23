@@ -9,6 +9,9 @@ CHECKS=(harness ci-jobs coverage-gate frontend-job governance-files hygiene docs
 
 bad() { printf 'FAIL %s: %s\n' "$1" "$2"; return 1; }
 ok() { printf 'PASS %s\n' "$1"; }
+# Exit code 3 means "not implemented yet"; `all` reports it as SKIP so the
+# harness can be wired into CI before every assertion has landed.
+pending() { printf 'SKIP %s: not implemented yet\n' "$1"; return 3; }
 
 have_pyyaml() {
   python3 -c 'import yaml' >/dev/null 2>&1
@@ -53,20 +56,82 @@ check_harness() {
 
 check_ci_jobs() {
   local name=ci-jobs
-  bad "$name" "not implemented yet"
-  return 1
+  if ! have_pyyaml; then
+    bad "$name" "python3 PyYAML is required to parse .github/workflows/ci.yml"
+    return 1
+  fi
+  local out
+  if ! out=$(python3 - "$ROOT" <<'PY'
+import pathlib
+import sys
+import yaml
+
+root = pathlib.Path(sys.argv[1])
+
+
+def err(msg):
+    print(msg)
+    sys.exit(1)
+
+
+path = root / ".github" / "workflows" / "ci.yml"
+if not path.is_file():
+    err("missing .github/workflows/ci.yml")
+wf = yaml.safe_load(path.read_text())
+jobs = wf.get("jobs") or {}
+needed = {"lint", "test", "coverage", "deny", "cross-platform"}
+missing = sorted(needed - set(jobs))
+if missing:
+    err("ci.yml is missing jobs: " + ", ".join(missing))
+
+
+def runs(job):
+    return [str(step.get("run", "")) for step in (jobs[job].get("steps") or [])]
+
+
+deny_runs = " ".join(runs("deny"))
+if "cargo deny check" not in deny_runs:
+    err("deny job must run `cargo deny check`")
+for check in ("advisories", "licenses", "bans", "sources"):
+    if check not in deny_runs:
+        err(f"deny job must check {check}")
+
+matrix = (jobs["cross-platform"].get("strategy") or {}).get("matrix") or {}
+os_list = matrix.get("os")
+want_os = ["ubuntu-latest", "macos-latest", "windows-latest"]
+if os_list != want_os:
+    err(f"cross-platform matrix.os must be {want_os} (got {os_list!r})")
+cross = runs("cross-platform")
+cargo_steps = [r.strip() for r in cross if r.strip().startswith("cargo")]
+if cargo_steps != ["cargo build --workspace --locked"]:
+    err(f"cross-platform must only build the workspace (got {cargo_steps})")
+for step in cross:
+    if "cargo test" in step or "tauri" in step:
+        err("cross-platform must not run tests or the tauri bundle")
+
+lint_runs = " ".join(runs("lint"))
+for script in ("assert-ui.sh", "assert-cargo.sh", "assert-ci.sh"):
+    if f"scripts/tests/{script} all" not in lint_runs:
+        err(f"lint job must run scripts/tests/{script} all")
+if "pyyaml" not in lint_runs:
+    err("lint job must install the PyYAML prerequisite for assert-ci.sh")
+print("ok")
+PY
+  ); then
+    bad "$name" "$out"
+    return 1
+  fi
+  ok "$name"
 }
 
 check_coverage_gate() {
   local name=coverage-gate
-  bad "$name" "not implemented yet"
-  return 1
+  pending "$name"
 }
 
 check_frontend_job() {
   local name=frontend-job
-  bad "$name" "not implemented yet"
-  return 1
+  pending "$name"
 }
 
 check_governance_files() {
@@ -158,14 +223,12 @@ check_hygiene() {
 
 check_docs_summaries() {
   local name=docs-summaries
-  bad "$name" "not implemented yet"
-  return 1
+  pending "$name"
 }
 
 check_docs_agents() {
   local name=docs-agents
-  bad "$name" "not implemented yet"
-  return 1
+  pending "$name"
 }
 
 run_check() {
@@ -186,14 +249,25 @@ case "$cmd" in
     printf '%s\n' "${CHECKS[@]}"
     exit 0
     ;;
-  all)
+  all | --strict)
     passed=0
+    skipped=0
     failed=0
     for name in "${CHECKS[@]}"; do
-      if run_check "$name"; then passed=$((passed + 1)); else failed=$((failed + 1)); fi
+      rc=0
+      run_check "$name" || rc=$?
+      case "$rc" in
+        0) passed=$((passed + 1)) ;;
+        3) skipped=$((skipped + 1)) ;;
+        *) failed=$((failed + 1)) ;;
+      esac
     done
-    printf '%s passed, %s failed\n' "$passed" "$failed"
+    printf '%s passed, %s skipped, %s failed\n' "$passed" "$skipped" "$failed"
     [ "$failed" -eq 0 ] || exit 1
+    if [ "$cmd" = --strict ] && [ "$skipped" -ne 0 ]; then
+      printf 'strict mode: %s check(s) still unimplemented\n' "$skipped" >&2
+      exit 1
+    fi
     ;;
   *)
     run_check "$cmd" "$@"

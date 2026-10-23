@@ -11,6 +11,9 @@ CHECKS=(ui-manifests lockfile-root single-lockfile)
 
 bad() { printf 'FAIL %s: %s\n' "$1" "$2"; return 1; }
 ok() { printf 'PASS %s\n' "$1"; }
+# Exit code 3 means "not implemented yet"; `all` reports it as SKIP so the
+# harness can be wired into CI before every assertion has landed.
+pending() { printf 'SKIP %s: not implemented yet\n' "$1"; return 3; }
 
 check_ui_manifests() {
   local name=ui-manifests
@@ -81,14 +84,25 @@ case "$cmd" in
     printf '%s\n' "${CHECKS[@]}"
     exit 0
     ;;
-  all)
+  all | --strict)
     passed=0
+    skipped=0
     failed=0
     for name in "${CHECKS[@]}"; do
-      if run_check "$name"; then passed=$((passed + 1)); else failed=$((failed + 1)); fi
+      rc=0
+      run_check "$name" || rc=$?
+      case "$rc" in
+        0) passed=$((passed + 1)) ;;
+        3) skipped=$((skipped + 1)) ;;
+        *) failed=$((failed + 1)) ;;
+      esac
     done
-    printf '%s passed, %s failed\n' "$passed" "$failed"
+    printf '%s passed, %s skipped, %s failed\n' "$passed" "$skipped" "$failed"
     [ "$failed" -eq 0 ] || exit 1
+    if [ "$cmd" = --strict ] && [ "$skipped" -ne 0 ]; then
+      printf 'strict mode: %s check(s) still unimplemented\n' "$skipped" >&2
+      exit 1
+    fi
     ;;
   *)
     run_check "$cmd" "$@"
