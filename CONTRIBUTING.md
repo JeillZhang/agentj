@@ -21,9 +21,9 @@ fails when this list falls behind.
 ```bash
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
-bash scripts/tests/assert-ui.sh all
-bash scripts/tests/assert-cargo.sh all
-bash scripts/tests/assert-ci.sh all
+bash scripts/tests/assert-ui.sh --strict
+bash scripts/tests/assert-cargo.sh --strict
+bash scripts/tests/assert-ci.sh --strict
 cargo test --workspace --locked
 npm --prefix agentj-ui ci
 npm --prefix agentj-ui test --workspace=@agentj/protocol
@@ -31,15 +31,17 @@ npm --prefix agentj-ui test --workspace=@agentj/sdk
 npm --prefix agentj-ui test --workspace=@agentj/tokens
 npm --prefix agentj-ui test --workspace=@agentj/web
 bun --cwd agentj-ui/apps/tui test
-cargo deny check advisories licenses bans sources
+cargo deny check advisories licenses bans sources -D unmatched-skip
 cargo llvm-cov --workspace --fail-under-lines 92
 node agentj-ui/apps/desktop/check-desktop-ui.mjs
 ./scripts/check-version.sh
 node scripts/check-relocate.mjs
 ```
 
-The `scripts/tests/assert-*.sh` checks need `python3` with PyYAML (the CI `lint`
-job installs it before running them).
+The `scripts/tests/assert-*.sh` checks need `python3` with PyYAML and `cargo-deny`
+(the CI `lint` job installs both before running them). Run them with `--strict`:
+without it a check that cannot run reports SKIP and the run still exits 0, which is
+how a missing `cargo-deny` used to hide the `deny-config` guard.
 
 The coverage number is the CI ratchet (`.github/workflows/ci.yml` → `COVERAGE_THRESHOLD`),
 not a suggestion: measured baseline `93.67%` on 2026-10-23, and the threshold only moves up.
@@ -67,8 +69,8 @@ npm --prefix agentj-ui run generate --workspace=@agentj/protocol
 - **Duplicate versions** — `bans.multiple-versions = "deny"` with an explicit
   skip list. Every skip must name a real duplicate in the graph and carry a
   comment saying why the duplication is cheaper than unifying it; an unmatched
-  skip is a failure (`cargo deny check bans` warns, and
-  `scripts/tests/assert-cargo.sh deny-config` fails), so the list cannot rot.
+  skip is a failure (`cargo deny check bans -D unmatched-skip` promotes the warning,
+  and `scripts/tests/assert-cargo.sh deny-config` fails), so the list cannot rot.
 - **Wildcard requirements** — `bans.wildcards = "deny"`; path dependencies
   still carry an explicit `version`, so `cargo publish` semantics stay honest.
 - **Sources** — `sources.allow-registry` lists crates.io only; git and unknown

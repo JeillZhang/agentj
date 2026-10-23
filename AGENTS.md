@@ -47,7 +47,7 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
 - `bun --cwd agentj-ui/apps/tui test` — TUI 单测（含 mock WS e2e）
 - `./agentj-ui/apps/desktop/check-artifacts.sh linux` — Desktop 产物校验
 - `node agentj-ui/apps/desktop/check-desktop-ui.mjs` — Desktop 前端产物/配置一致性校验
-- `cargo deny check advisories licenses bans sources` — 依赖漏洞 / 许可 / 重复版本 / 源门禁
+- `cargo deny check advisories licenses bans sources -D unmatched-skip` — 依赖漏洞 / 许可 / 重复版本 / 源门禁
   （策略见 `deny.toml`；本机未装时先 `cargo install cargo-deny --locked`）
 - `npm --prefix agentj-ui run lint --workspace=@agentj/web` — Web oxlint（errors 阻断，
   warnings 仅打印）
@@ -72,7 +72,7 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
   - `coverage`：`cargo llvm-cov --workspace --fail-under-lines <COVERAGE_THRESHOLD> --locked`
     （**棘轮**：实测 2026-10-23 行覆盖 `93.67%` → 门限 `max(50, floor(X) - 1)` = **92**，
     只升不降，改基线须同时改注释里的日期与实测值）
-  - `deny`：`cargo deny check advisories licenses bans sources`（`deny.toml`）
+  - `deny`：`cargo deny check advisories licenses bans sources -D unmatched-skip`（`deny.toml`）
   - `cross-platform`：matrix `ubuntu-latest` / `macos-latest` / `windows-latest`，仅
     `cargo build --workspace --locked`（验证可编译；**不含**打包）
   - `frontend`：17 步 —— `npm ci` → protocol 生成 + 漂移门禁 → protocol 构建 →

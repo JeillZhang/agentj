@@ -25,14 +25,18 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      # The assert scripts need cargo-deny themselves (deny-config would otherwise
+      # report SKIP), and every invocation below runs with --strict so a SKIP is
+      # a failure instead of a silent green.
+      - uses: taiki-e/install-action@cargo-deny
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Repo invariants
         run: |
           python3 -m pip install --user pyyaml
-          bash scripts/tests/assert-ui.sh all
-          bash scripts/tests/assert-cargo.sh all
-          bash scripts/tests/assert-ci.sh all
+          bash scripts/tests/assert-ui.sh --strict
+          bash scripts/tests/assert-cargo.sh --strict
+          bash scripts/tests/assert-ci.sh --strict
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -54,7 +58,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@cargo-deny
       - uses: Swatinem/rust-cache@v2
-      - run: cargo deny check advisories licenses bans sources
+      # `-D unmatched-skip`: a stale bans.skip entry is only a warning by default,
+      # so the guard would silently rot instead of failing the build.
+      - run: cargo deny check advisories licenses bans sources -D unmatched-skip
   cross-platform:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30

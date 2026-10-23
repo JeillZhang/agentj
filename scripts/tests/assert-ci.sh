@@ -113,12 +113,20 @@ def runs(job):
     return [str(step.get("run", "")) for step in (jobs[job].get("steps") or [])]
 
 
+def uses_actions(job):
+    return [str(step.get("uses", "")) for step in (jobs[job].get("steps") or [])]
+
+
 deny_runs = " ".join(runs("deny"))
 if "cargo deny check" not in deny_runs:
     err("deny job must run `cargo deny check`")
 for check in ("advisories", "licenses", "bans", "sources"):
     if check not in deny_runs:
         err(f"deny job must check {check}")
+# `unmatched-skip` is a warning by default, so a stale bans.skip entry would keep
+# exiting 0 and the guard would rot silently. The deny job must promote it to an error.
+if "-D unmatched-skip" not in deny_runs:
+    err("deny job must pass `-D unmatched-skip` so a stale bans.skip entry fails the build")
 
 matrix = (jobs["cross-platform"].get("strategy") or {}).get("matrix") or {}
 os_list = matrix.get("os")
@@ -134,9 +142,17 @@ for step in cross:
         err("cross-platform must not run tests or the tauri bundle")
 
 lint_runs = " ".join(runs("lint"))
+# The lint job runs the assert scripts, so it must install their own prerequisite:
+# without cargo-deny `deny-config` reports SKIP, which is exactly the silent hole
+# this job used to have.
+if not any(u.startswith("taiki-e/install-action@cargo-deny") for u in uses_actions("lint")):
+    err("lint job must install cargo-deny (taiki-e/install-action@cargo-deny) before the assert scripts")
+# `all` tolerates SKIP; `--strict` turns any SKIP into a failed job.
 for script in ("assert-ui.sh", "assert-cargo.sh", "assert-ci.sh"):
-    if f"scripts/tests/{script} all" not in lint_runs:
-        err(f"lint job must run scripts/tests/{script} all")
+    if f"scripts/tests/{script} --strict" not in lint_runs:
+        err(f"lint job must run scripts/tests/{script} --strict (a SKIP must fail the job)")
+    if f"scripts/tests/{script} all" in lint_runs:
+        err(f"lint job must not run scripts/tests/{script} all (SKIP is silently tolerated)")
 if "pyyaml" not in lint_runs:
     err("lint job must install the PyYAML prerequisite for assert-ci.sh")
 print("ok")
