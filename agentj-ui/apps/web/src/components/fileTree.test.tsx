@@ -447,6 +447,9 @@ test("debounces into one server-side search request", async () => {
   render(<FileTree client={client} sessionId="s1" demo={false} />);
   await flush();
 
+  // Three keystrokes inside the debounce window: only the last one may reach the kernel.
+  await typeSearch("ma");
+  await typeSearch("mai");
   await typeSearch("main");
   expect(searchCalls(calls)).toHaveLength(0);
   await advanceDebounce();
