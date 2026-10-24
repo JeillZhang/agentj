@@ -172,7 +172,8 @@ fn resolve_target(root: &Path, requested: &str) -> Result<PathBuf, FileListError
 /// io reason, not `-32807 outside_root`. Disambiguate on the error path only —
 /// never on the happy path — and only when the descent tripped over a regular
 /// file that really lives inside the root, so genuine escapes and unstatable
-/// ancestors (EACCES) keep failing closed.
+/// ancestors (EACCES) keep failing closed. A spelling with any `..` also keeps
+/// failing closed: once symlinks are followed it can leave the root (BUG-006).
 fn outside_or_enotdir(root: &Path, requested: &str) -> FileListError {
     if let Some(reason) = enotdir_in_root(root, requested) {
         return FileListError::Io {
@@ -186,7 +187,7 @@ fn outside_or_enotdir(root: &Path, requested: &str) -> FileListError {
 /// Real `ENOTDIR` reason when `requested` descends past a regular file **inside**
 /// the root; `None` keeps the fail-closed `OutsideRoot` verdict.
 fn enotdir_in_root(root: &Path, requested: &str) -> Option<String> {
-    let inside = lexical_scope(root, requested)?;
+    let inside = spelled_in_root(root, requested)?;
     let error = std::fs::metadata(&inside).err()?;
     if error.kind() != std::io::ErrorKind::NotADirectory {
         return None;
@@ -209,31 +210,27 @@ fn deepest_stat(path: &Path) -> Option<PathBuf> {
     }
 }
 
-/// Lexically normalize `requested` against `root`, refusing anything that climbs
-/// above it. `Some` means "inside the root as spelled" — not "safe": symlinks
-/// are resolved by the caller.
-fn lexical_scope(root: &Path, requested: &str) -> Option<PathBuf> {
+/// Root-anchored form of `requested` when its spelling cannot climb above the
+/// root (`None` keeps the caller fail-closed).
+///
+/// Anything carrying a `..` component is refused outright: the OS resolves `..`
+/// *after* following symlinks, so `link/../a.txt` can land outside the root
+/// (BUG-006) and no lexical flattening may pretend otherwise. A genuine
+/// `ENOTDIR` spelling (`a.txt/sub`) never needs a `..`.
+fn spelled_in_root(root: &Path, requested: &str) -> Option<PathBuf> {
     let path = Path::new(requested);
-    let mut stack: Vec<Component> = if path.is_absolute() {
-        Vec::new()
-    } else {
-        root.components().collect()
-    };
-    for component in path.components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => match stack.last() {
-                Some(Component::RootDir | Component::Prefix(_)) => {}
-                Some(_) => {
-                    stack.pop();
-                }
-                None => return None,
-            },
-            other => stack.push(other),
-        }
+    if path
+        .components()
+        .any(|component| component == Component::ParentDir)
+    {
+        return None;
     }
-    let normalized: PathBuf = stack.iter().collect();
-    normalized.starts_with(root).then_some(normalized)
+    let inside = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        root.join(path)
+    };
+    inside.starts_with(root).then_some(inside)
 }
 
 /// Map a metadata/canonicalization failure: missing → `NotFound`, else `Io`.
@@ -910,6 +907,45 @@ mod tests {
             list(&root, Some("link/secret.txt/sub"), None),
             Err(FileListError::OutsideRoot { .. })
         ));
+    }
+
+    /// BUG-006: `link/../a.txt/sub` resolves to `<outside>/a.txt/sub`, i.e. the
+    /// request leaves the root, so the verdict must be `OutsideRoot` — the same
+    /// verdict `link/..` already gets. Lexically flattening the `..` inside the
+    /// root made the ENOTDIR mapping fire and report `Io` instead.
+    #[cfg(unix)]
+    #[test]
+    fn dotdot_through_a_symlink_stays_outside_root() {
+        let base = temp_dir("dotdot-symlink");
+        let root = base.join("ws");
+        let outside = base.join("outside");
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        let root = root.canonicalize().unwrap();
+        fs::write(root.join("a.txt"), "inside").unwrap();
+        fs::write(outside.join("a.txt"), "outside").unwrap();
+        std::os::unix::fs::symlink("../outside", root.join("link")).unwrap();
+
+        for escaping in ["link/..", "link/../a.txt/sub", "sub/../a.txt/sub"] {
+            assert!(
+                matches!(
+                    list(&root, Some(escaping), None),
+                    Err(FileListError::OutsideRoot { .. })
+                ),
+                "{escaping} escapes the root and must stay OutsideRoot, got {:?}",
+                list(&root, Some(escaping), None).unwrap_err()
+            );
+        }
+
+        // Genuine ENOTDIR keeps the io mapping (BUG-003 must not regress).
+        match list(&root, Some("a.txt/sub"), None).unwrap_err() {
+            FileListError::Io { reason, .. } => assert!(
+                reason.contains("Not a directory"),
+                "reason must report ENOTDIR, got {reason:?}"
+            ),
+            other => panic!("a.txt/sub must stay Io, got {other:?}"),
+        }
+        fs::remove_dir_all(&base).ok();
     }
 
     /// An ancestor that cannot be stat'ed (EACCES) is *not* an `ENOTDIR` io
