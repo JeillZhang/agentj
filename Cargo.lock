@@ -22,7 +22,6 @@ version = "0.1.0"
 dependencies = [
  "agentj-auth",
  "agentj-config",
- "agentj-context",
  "agentj-core",
  "agentj-ipc",
  "agentj-license",
@@ -32,8 +31,6 @@ dependencies = [
  "agentj-protocol",
  "agentj-question",
  "agentj-session",
- "agentj-skills",
- "agentj-stats",
  "agentj-tools",
  "anyhow",
  "async-trait",
@@ -76,7 +73,6 @@ dependencies = [
 name = "agentj-core"
 version = "0.1.0"
 dependencies = [
- "agentj-context",
  "agentj-model",
  "agentj-protocol",
  "agentj-session",
@@ -98,7 +94,6 @@ dependencies = [
 name = "agentj-ipc"
 version = "0.1.0"
 dependencies = [
- "agentj-context",
  "agentj-core",
  "agentj-model",
  "agentj-permission",
