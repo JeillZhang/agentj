@@ -305,6 +305,10 @@ check_lockfile_locked() {
 check_fn_length() {
   local name=fn-length
   local out
+  if ! out=$(sh "$ROOT/scripts/test-fn-length.sh" 2>&1); then
+    bad "$name" "self-check failed: $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-400)"
+    return 1
+  fi
   if ! out=$(python3 "$ROOT/scripts/tests/fn-length.py" "$ROOT/crates" 2>&1); then
     bad "$name" "$(printf '%s' "$out" | tr '\n' ' ' | cut -c1-400)"
     return 1
