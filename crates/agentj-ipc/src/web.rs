@@ -444,6 +444,10 @@ impl WebConfig {
         self
     }
     #[cfg(test)]
+    pub(crate) fn secure_cookies_enabled(&self) -> bool {
+        self.secure_cookies
+    }
+    #[cfg(test)]
     pub(crate) fn with_login_limiter(mut self, limiter: LoginLimiter) -> Self {
         self.login_limiter = limiter;
         self

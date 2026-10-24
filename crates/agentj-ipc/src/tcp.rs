@@ -113,6 +113,8 @@ pub struct TcpBindOptions {
     pub web_dist: Option<std::path::PathBuf>,
     /// Trust `X-Forwarded-For` / `X-Real-IP` when the direct peer is loopback.
     pub trust_proxy_headers: bool,
+    /// Mark issued session cookies `Secure` (TLS terminates in front of the kernel).
+    pub secure_cookies: bool,
     /// Directory for the persisted login-limiter state; `None` keeps it in memory.
     pub metrics_state_dir: Option<std::path::PathBuf>,
     /// Optional ProviderService handle (`design D4`), copied onto the shared server at bind.
@@ -130,6 +132,7 @@ impl Default for TcpBindOptions {
             trajectory_store: None,
             web_dist: None,
             trust_proxy_headers: false,
+            secure_cookies: false,
             metrics_state_dir: None,
             provider_service: None,
             integrity: crate::web::IntegrityOptions::default(),
@@ -179,6 +182,7 @@ impl TcpIpcServer {
         let web = Arc::new(
             crate::web::WebConfig::new(options.web_dist.clone(), options.token.clone())
                 .with_trust_proxy_headers(options.trust_proxy_headers)
+                .with_secure_cookies(options.secure_cookies)
                 .with_metrics_state(state_path)
                 .with_integrity_options(options.integrity),
         );
@@ -743,5 +747,23 @@ mod tests {
         assert_eq!(web.spot_interval(), std::time::Duration::from_secs(7));
         assert!(!web.verify_on_request_enabled());
         web.stop_spot_check();
+    }
+
+    #[tokio::test]
+    async fn bind_applies_secure_cookies_to_the_web_config() {
+        let server = TcpIpcServer::bind(
+            "127.0.0.1:0",
+            agentj_core::kernel::Kernel::new(),
+            std::sync::Arc::new(agentj_session::InMemoryStore::new()),
+            None,
+            None,
+            TcpBindOptions {
+                secure_cookies: true,
+                ..TcpBindOptions::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert!(server.web_config().secure_cookies_enabled());
     }
 }

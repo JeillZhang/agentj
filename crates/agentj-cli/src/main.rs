@@ -429,6 +429,8 @@ struct TcpServeOptions {
     trajectory_store: Option<Arc<agentj_ipc::trajectory::TrajectoryStore>>,
     /// `[web] trust_proxy_headers`: trust forwarded headers from a loopback peer.
     trust_proxy_headers: bool,
+    /// `[web] secure_cookies`: mark issued session cookies `Secure` (TLS in front).
+    secure_cookies: bool,
     /// `[web] state_dir` (or the XDG/HOME fallback) for the persisted limiter state.
     metrics_state_dir: Option<std::path::PathBuf>,
     /// Optional subscription handle (design D4); `run` passes none.
@@ -530,6 +532,7 @@ async fn serve_tcp(
             trajectory_store: options.trajectory_store,
             web_dist: web_dist.clone(),
             trust_proxy_headers: options.trust_proxy_headers,
+            secure_cookies: options.secure_cookies,
             metrics_state_dir: options.metrics_state_dir.clone(),
             provider_service: options.provider_service,
             integrity: options.integrity,
@@ -832,6 +835,11 @@ async fn main() -> anyhow::Result<()> {
         .web
         .as_ref()
         .is_some_and(|web| web.trust_proxy_headers);
+    let web_secure_cookies = config
+        .inner()
+        .web
+        .as_ref()
+        .is_some_and(|web| web.secure_cookies);
     let web_metrics_state_dir = resolve_metrics_state_dir(&config);
     let web_integrity = resolve_integrity_options(&config);
 
@@ -1065,6 +1073,7 @@ async fn main() -> anyhow::Result<()> {
                     web_dist,
                     trajectory_store: Some(Arc::clone(&trajectory_store)),
                     trust_proxy_headers: web_trust_proxy_headers,
+                    secure_cookies: web_secure_cookies,
                     metrics_state_dir: web_metrics_state_dir.clone(),
                     provider_service: provider_service.clone(),
                     integrity: web_integrity,
@@ -1092,6 +1101,7 @@ async fn main() -> anyhow::Result<()> {
                     web_dist,
                     trajectory_store: Some(Arc::clone(&trajectory_store)),
                     trust_proxy_headers: web_trust_proxy_headers,
+                    secure_cookies: web_secure_cookies,
                     metrics_state_dir: web_metrics_state_dir.clone(),
                     provider_service: provider_service.clone(),
                     integrity: web_integrity,
