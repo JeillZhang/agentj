@@ -1,13 +1,13 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, ReactNode } from "react";
 import { ChevronRight, Folder, FolderOpen } from "lucide-react";
-import { METHODS } from "@agentj/sdk";
-import type { RpcClient } from "@agentj/sdk";
+import { METHODS, parentPath, toGitLetter } from "@agentj/sdk";
+import type { GitLetter, RpcClient } from "@agentj/sdk";
 import { DEMO_FILE_TREE } from "../demoData";
 import type { FileNode } from "../demoData";
 import { fileIconFor } from "../fileIcons";
 import { moveSelection, tabIndexFor } from "../hooks/useRovingFocus";
-import { parentDir, visiblePaths } from "./fileTreeNav";
+import { visiblePaths } from "./fileTreeNav";
 import "./filetree.css";
 
 export type FileTreeProps = {
@@ -27,10 +27,7 @@ export type FileTreeHandle = {
 
 const ROOT = "";
 
-const GIT_LETTERS = ["M", "A", "U", "D"] as const;
-type GitLetter = (typeof GIT_LETTERS)[number];
-
-/** One rendered row; `git` normalizes the wire `git_status` to M/A/U/D or null. */
+/** One rendered row; `git` is the shared `toGitLetter` normalization of `git_status`. */
 type ViewEntry = {
   name: string;
   path: string;
@@ -52,18 +49,13 @@ type FileTreeStats = {
   changes: number;
 };
 
-function toGit(raw: unknown): GitLetter | null {
-  return typeof raw === "string" && (GIT_LETTERS as readonly string[]).includes(raw)
-    ? (raw as GitLetter)
-    : null;
-}
-
 function toView(entry: RawFileEntry): ViewEntry {
   return {
     name: String(entry.name ?? ""),
     path: String(entry.path ?? ""),
     kind: entry.kind === "dir" ? "dir" : "file",
-    git: toGit(entry.git_status),
+    // Wire `git_status` is untyped JSON: narrow to string before the shared letter map.
+    git: toGitLetter(typeof entry.git_status === "string" ? entry.git_status : null),
   };
 }
 
@@ -412,7 +404,7 @@ const FileTree = forwardRef<FileTreeHandle, FileTreeProps>(function FileTree(
           toggle(selectedPath);
           return;
         }
-        const parent = parentDir(selectedPath);
+        const parent = parentPath(selectedPath);
         if (parent !== null && indexByPath.has(parent)) selectPath(parent);
       }
     },

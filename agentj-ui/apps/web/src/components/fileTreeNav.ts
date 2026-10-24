@@ -27,8 +27,6 @@ export function visiblePaths(
   return paths;
 }
 
-/** Parent directory row path for a nested row, or null for a root-level row. */
-export function parentDir(path: string): string | null {
-  const idx = path.lastIndexOf("/");
-  return idx > 0 ? path.slice(0, idx) : null;
-}
+/** Parent directory row path for a nested row, or null for a root-level row.
+ *  Re-exported from the shared SDK module so this file stays the Web tree's nav entry. */
+export { parentPath } from "@agentj/sdk";

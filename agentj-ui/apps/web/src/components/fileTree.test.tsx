@@ -3,6 +3,7 @@ import { expect, test, vi } from "vitest";
 import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
 import { createRef } from "react";
 import type { RpcClient } from "@agentj/sdk";
+import { parentPath } from "@agentj/sdk";
 import FileTree from "./FileTree";
 import type { FileTreeHandle } from "./FileTree";
 import { visiblePaths } from "./fileTreeNav";
@@ -377,4 +378,24 @@ test("imperative handle moves the selection and refreshes root plus expanded dir
     expect(rootCalls).toHaveLength(2);
     expect(srcCalls).toHaveLength(2);
   });
+});
+
+// --- T45: shared helpers from @agentj/sdk ------------------------------------
+
+test("renders git letters from the shared helper and drops unknown ones", async () => {
+  const entries: RawEntry[] = [
+    { name: "mod.ts", path: "mod.ts", kind: "file", git_status: "M" },
+    { name: "odd.ts", path: "odd.ts", kind: "file", git_status: "X" },
+  ];
+  const client = mockClient(() => ({ entries, truncated: false }));
+  const { container } = render(<FileTree client={client} sessionId="s1" demo={false} />);
+  await screen.findByText("mod.ts");
+  expect(container.querySelector(".status-M")?.textContent).toBe("M");
+  expect(container.querySelector(".status-X")).toBeNull();
+  expect(screen.getByRole("treeitem", { name: /odd\.ts/ }).textContent).toBe("odd.ts");
+});
+
+test("navigates to the parent directory via the shared parentPath", () => {
+  expect(parentPath("src/components/FileTree.tsx")).toBe("src/components");
+  expect(parentPath("README.md")).toBeNull();
 });
