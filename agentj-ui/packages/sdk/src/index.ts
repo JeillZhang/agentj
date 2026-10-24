@@ -38,4 +38,5 @@ export type {
   VisibleRow,
   VisibleRowNote,
 } from "./files.js";
+export { toolSummary } from "./toolSummary.js";
 // TcpTransport is Node-only (node:net) — import via "@agentj/sdk/src/transports/tcp.js" for Node consumers.
