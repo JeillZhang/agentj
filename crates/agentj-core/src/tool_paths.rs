@@ -2,8 +2,16 @@
 //! file-tool arguments are rebased onto the per-session workspace root unless
 //! already absolute. Centralised here so `ToolRegistry::execute_async` can
 //! apply it uniformly before dispatching to `Tool::execute_with_context`.
+//!
+//! Rebase only when the path really lands inside the root (`paths::resolve_within_root`).
+//! An escaping argument is handed to the permission layer exactly as the model
+//! spelled it, so the escape is still visible there; baking
+//! `<root>/../../etc/passwd` into the args would turn a Deny into a plausible
+//! looking absolute path.
 
 use std::path::Path;
+
+use crate::paths::{Resolved, resolve_within_root};
 
 /// Rebase a tool's path-like argument onto `root` when it is a relative string.
 ///
@@ -24,10 +32,15 @@ pub fn rebase_tool_args(name: &str, args: serde_json::Value, root: &Path) -> ser
     if Path::new(rel).is_absolute() {
         return args;
     }
-    let joined = root.join(rel).to_string_lossy().into_owned();
+    let Resolved::Inside(target) = resolve_within_root(root, rel) else {
+        return args;
+    };
     let mut rebased = args;
     if let Some(obj) = rebased.as_object_mut() {
-        obj.insert(key.to_string(), serde_json::Value::String(joined));
+        obj.insert(
+            key.to_string(),
+            serde_json::Value::String(target.to_string_lossy().into_owned()),
+        );
     }
     rebased
 }
@@ -38,9 +51,16 @@ mod tests {
 
     #[test]
     fn rebase_relative_paths_under_root() {
+        // The root must be a real, readable directory: rebasing now asks
+        // `resolve_within_root`, which fails closed for unverifiable roots.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
         let args = serde_json::json!({"path": "src/main.rs"});
-        let out = rebase_tool_args("read", args, Path::new("/root"));
-        assert_eq!(out["path"], "/root/src/main.rs");
+        let out = rebase_tool_args("read", args, &root);
+        assert_eq!(
+            out["path"],
+            serde_json::Value::String(root.join("src/main.rs").to_string_lossy().into_owned())
+        );
 
         // Absolute paths are left untouched.
         let args = serde_json::json!({"path": "/other/x"});
@@ -59,6 +79,27 @@ mod tests {
         let args = serde_json::json!({"pattern": "**/*.rs"});
         let out = rebase_tool_args("glob", args.clone(), Path::new("/root"));
         assert_eq!(out, args);
+    }
+
+    /// An escaping relative path is left exactly as the caller spelled it: the
+    /// permission layer produces the Deny. Rewriting it into
+    /// `<root>/../../etc/passwd` hid the escape from every later check.
+    #[test]
+    fn escaping_paths_are_not_rewritten() {
+        let args = serde_json::json!({"path": "../../etc/passwd"});
+        let out = rebase_tool_args("write", args.clone(), Path::new("/tmp/ws"));
+        assert_eq!(out, args);
+    }
+
+    #[test]
+    fn inside_paths_become_absolute() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let out = rebase_tool_args("read", serde_json::json!({"path": "src/main.rs"}), &root);
+        assert_eq!(
+            out["path"],
+            serde_json::Value::String(root.join("src/main.rs").to_string_lossy().into_owned())
+        );
     }
 
     #[test]
