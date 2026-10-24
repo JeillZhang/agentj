@@ -10,6 +10,7 @@ use tokio::task::JoinHandle;
 
 use crate::client_ip::IpSource;
 use crate::login_limiter::{Counters, IpSnapshot, LoginLimiter, Throttle};
+use agentj_core::sync::{lock_or_recover, read_or_recover, write_or_recover};
 
 /// Cookie carrying the opaque session id issued after a successful login.
 pub const SESSION_COOKIE: &str = "agentj_session";
@@ -489,7 +490,7 @@ impl WebConfig {
     pub(crate) fn verify_cached_asset(&self, key: &str) {
         let now = Instant::now();
         {
-            let cache = self.verify_cache.lock().unwrap_or_else(|e| e.into_inner());
+            let cache = lock_or_recover(&self.verify_cache);
             if let Some(entry) = cache.get(key) {
                 // Absolute TTL: a hit never refreshes `checked_at`.
                 if now.duration_since(entry.checked_at) < self.verify_cache_ttl {
@@ -529,7 +530,7 @@ impl WebConfig {
     /// Insert one verdict, keeping the memo bounded: expired entries are dropped
     /// first, and a still-full cache is cleared rather than grown without limit.
     fn store_verify_entry(&self, key: String, verdict: AssetCheck, at: Instant) {
-        let mut cache = self.verify_cache.lock().unwrap_or_else(|e| e.into_inner());
+        let mut cache = lock_or_recover(&self.verify_cache);
         if cache.len() >= VERIFY_CACHE_MAX && !cache.contains_key(&key) {
             let ttl = self.verify_cache_ttl;
             cache.retain(|_, entry| at.duration_since(entry.checked_at) < ttl);
@@ -547,7 +548,7 @@ impl WebConfig {
     }
     /// One `warn!` per path for the whole process; shared by every integrity path.
     pub(crate) fn warn_offense_once(&self, path: &str) {
-        let mut warned = self.warned.lock().unwrap_or_else(|e| e.into_inner());
+        let mut warned = lock_or_recover(&self.warned);
         if warned.insert(path.to_string()) {
             tracing::warn!(path = %path, "web asset integrity check failed");
         }
@@ -588,7 +589,7 @@ impl WebConfig {
     /// Tally one resolved client IP (design D6). `invalid` is set by the caller
     /// only when trust applied, a header was present and nothing usable came out.
     pub(crate) fn record_ip_source(&self, source: crate::client_ip::IpSource, invalid: bool) {
-        let mut totals = self.ip_sources.write().unwrap_or_else(|e| e.into_inner());
+        let mut totals = write_or_recover(&self.ip_sources);
         match source {
             crate::client_ip::IpSource::Peer => totals.peer += 1,
             crate::client_ip::IpSource::XForwardedFor => totals.forwarded += 1,
@@ -622,7 +623,7 @@ impl WebConfig {
                     Instant::now(),
                     crate::metrics_state::unix_now(),
                 );
-                let mut report = self.state_report.write().unwrap_or_else(|e| e.into_inner());
+                let mut report = write_or_recover(&self.state_report);
                 report.restored = true;
                 report.restored_entries = entries as u64;
                 true
@@ -655,12 +656,12 @@ impl WebConfig {
         match crate::metrics_state::write(path, &state) {
             Ok(()) => {
                 self.login_limiter.mark_clean();
-                let mut report = self.state_report.write().unwrap_or_else(|e| e.into_inner());
+                let mut report = write_or_recover(&self.state_report);
                 report.last_flush_unix = now_unix;
             }
             Err(error) => {
                 {
-                    let mut report = self.state_report.write().unwrap_or_else(|e| e.into_inner());
+                    let mut report = write_or_recover(&self.state_report);
                     report.write_failures += 1;
                 }
                 self.warn_once(
@@ -687,7 +688,7 @@ impl WebConfig {
                 }
             }
         });
-        *self.flush_task.lock().unwrap_or_else(|e| e.into_inner()) = Some(handle.abort_handle());
+        *lock_or_recover(&self.flush_task) = Some(handle.abort_handle());
         Some(handle)
     }
     /// Graceful-shutdown API: abort the debounced flush task. Callers flush
@@ -738,14 +739,14 @@ impl WebConfig {
             }
         }
         {
-            let mut report = self.spot_report.write().unwrap_or_else(|e| e.into_inner());
+            let mut report = write_or_recover(&self.spot_report);
             report.rounds += 1;
             report.checked += round.checked;
             report.mismatched += round.mismatched;
             report.missing += round.missing;
             report.last_run = Some(Instant::now());
         }
-        let warned = self.warned.lock().unwrap_or_else(|e| e.into_inner());
+        let warned = lock_or_recover(&self.warned);
         round.offenses.retain(|path| !warned.contains(path));
         round
     }
@@ -807,7 +808,7 @@ impl WebConfig {
         let started = Instant::now();
         let report = verify_assets(dist, manifest);
         {
-            let mut on_demand = self.on_demand.write().unwrap_or_else(|e| e.into_inner());
+            let mut on_demand = write_or_recover(&self.on_demand);
             on_demand.sweeps += 1;
             on_demand.checked += report.checked;
             on_demand.mismatched += report.mismatched;
@@ -859,7 +860,7 @@ impl WebConfig {
             }
         });
         let abort = handle.abort_handle();
-        *self.spot_task.lock().unwrap_or_else(|e| e.into_inner()) = Some(abort);
+        *lock_or_recover(&self.spot_task) = Some(abort);
         Some(handle)
     }
     /// Abort the periodic spot-check task, if one is running (server shutdown,
@@ -928,14 +929,14 @@ impl WebConfig {
     }
     pub fn issue_session(&self) -> String {
         let id = uuid::Uuid::new_v4().to_string();
-        self.sessions.write().expect("sessions").insert(id.clone());
+        write_or_recover(&self.sessions).insert(id.clone());
         id
     }
     pub fn is_valid_session(&self, id: &str) -> bool {
-        self.sessions.read().expect("sessions").contains(id)
+        read_or_recover(&self.sessions).contains(id)
     }
     pub fn revoke_session(&self, id: &str) {
-        self.sessions.write().expect("sessions").remove(id);
+        write_or_recover(&self.sessions).remove(id);
     }
 }
 
@@ -1669,7 +1670,7 @@ fn push_metric(out: &mut String, name: &str, kind: &str, help: &str, value: u64)
 /// Resolved client-IP source tallies plus the unusable-forwarded-header count
 /// (design D6/G2). Labelled family: one header, then one sample per source.
 fn push_client_ip_summary(web: &WebConfig, out: &mut String) {
-    let totals = *web.ip_sources.read().unwrap_or_else(|e| e.into_inner());
+    let totals = *read_or_recover(&web.ip_sources);
     out.push_str(
         "# HELP agentj_web_client_ip_source_total Resolved client-IP sources.\n\
          # TYPE agentj_web_client_ip_source_total counter\n",
@@ -1695,7 +1696,7 @@ fn push_client_ip_summary(web: &WebConfig, out: &mut String) {
 
 /// Persisted login-limiter state lifecycle (design D3/G2).
 fn push_state_summary(web: &WebConfig, out: &mut String) {
-    let report = *web.state_report.read().unwrap_or_else(|e| e.into_inner());
+    let report = *read_or_recover(&web.state_report);
     push_metric(
         out,
         "agentj_web_metrics_state_restored",
@@ -2374,7 +2375,7 @@ mod tests {
             round.offenses.is_empty(),
             "no second warning for a known path"
         );
-        let out = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap_or_default();
+        let out = String::from_utf8(lock_or_recover(&buf.0).clone()).unwrap_or_default();
         assert_eq!(out.matches("/assets/app.js").count(), 1, "{out}");
         std::fs::remove_dir_all(&dist).ok();
     }
@@ -2484,7 +2485,7 @@ mod tests {
             web.verify_cached_asset("/assets/app.js");
             std::thread::sleep(Duration::from_millis(3));
         }
-        let out = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap_or_default();
+        let out = String::from_utf8(lock_or_recover(&buf.0).clone()).unwrap_or_default();
         assert_eq!(
             out.matches("web asset integrity check failed").count(),
             1,
@@ -2507,8 +2508,8 @@ mod tests {
         let web = std::sync::Arc::new(WebConfig::new(Some(dist.clone()), None));
         let poisoned = std::sync::Arc::clone(&web);
         let _ = std::thread::spawn(move || {
-            let _cache = poisoned.verify_cache.lock().unwrap();
-            let _warned = poisoned.warned.lock().unwrap();
+            let _cache = lock_or_recover(&poisoned.verify_cache);
+            let _warned = lock_or_recover(&poisoned.warned);
             panic!("poison both locks");
         })
         .join();
@@ -2843,7 +2844,7 @@ mod tests {
 
     impl std::io::Write for WarnCapture {
         fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            self.0.lock().unwrap().extend_from_slice(buf);
+            lock_or_recover(&self.0).extend_from_slice(buf);
             Ok(buf.len())
         }
         fn flush(&mut self) -> std::io::Result<()> {
@@ -2879,7 +2880,7 @@ mod tests {
         assert!(web.spawn_spot_check().is_some());
         wait_for_spot_rounds(&web, 3).await; // the same key is sampled again
         web.stop_spot_check();
-        let out = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap_or_default();
+        let out = String::from_utf8(lock_or_recover(&buf.0).clone()).unwrap_or_default();
         assert!(out.contains("web asset spot check failed"), "{out}");
         assert_eq!(
             out.matches("/assets/app.js").count(),
@@ -3868,7 +3869,7 @@ mod tests {
         web.login_limiter
             .check("203.0.113.9".parse().unwrap(), std::time::Instant::now());
         web.flush_metrics_state();
-        let report = *web.state_report.read().unwrap();
+        let report = *read_or_recover(&web.state_report);
         assert_eq!(report.write_failures, 1);
         assert!(web.login_limiter.dirty(), "a failed write must stay dirty");
         let out = prometheus_text(&web);
@@ -3892,7 +3893,7 @@ mod tests {
         web.flush_metrics_state();
         assert!(!web.login_limiter.dirty());
         assert!(path.is_file());
-        let report = *web.state_report.read().unwrap();
+        let report = *read_or_recover(&web.state_report);
         assert!(report.last_flush_unix > 0);
         assert_eq!(report.write_failures, 0);
     }

@@ -14,6 +14,8 @@ use agentj_core::artifacts::{
 use agentj_core::error::{IpcError, KernelError, ModuleError};
 use agentj_core::kernel::Kernel;
 use agentj_core::module::{KernelMessage, SessionStore};
+#[cfg(test)]
+use agentj_core::sync::{lock_or_recover, read_or_recover};
 use agentj_core::types::{AgentEvent, RunOverrides, SessionId};
 use agentj_permission::{ApprovalDecision, PermissionModule};
 use agentj_protocol::base::error_codes;
@@ -2551,7 +2553,7 @@ mod tests {
     #[async_trait]
     impl ProviderService for Recording {
         async fn model_list(&self, _p: ModelListParams) -> Result<ModelListResult, DispatchError> {
-            self.calls.lock().unwrap().push("model_list".into());
+            lock_or_recover(&self.calls).push("model_list".into());
             Ok(ModelListResult {
                 provider: "opencode-go".into(),
                 default_model: "m".into(),
@@ -2564,7 +2566,7 @@ mod tests {
             &self,
             p: AuthStatusParams,
         ) -> Result<AuthStatusResult, DispatchError> {
-            self.calls.lock().unwrap().push("auth_status".into());
+            lock_or_recover(&self.calls).push("auth_status".into());
             Ok(AuthStatusResult {
                 provider: p.provider.unwrap_or_else(|| "opencode-go".into()),
                 authenticated: true,
@@ -2576,7 +2578,7 @@ mod tests {
             &self,
             _p: ProviderUsageParams,
         ) -> Result<ProviderUsageResult, DispatchError> {
-            self.calls.lock().unwrap().push("usage".into());
+            lock_or_recover(&self.calls).push("usage".into());
             Ok(ProviderUsageResult {
                 provider: "opencode-go".into(),
                 fetched_at: 1,
@@ -2590,7 +2592,7 @@ mod tests {
             &self,
             _p: AuthDeviceStartParams,
         ) -> Result<AuthDeviceStartResult, DispatchError> {
-            self.calls.lock().unwrap().push("device_start".into());
+            lock_or_recover(&self.calls).push("device_start".into());
             Ok(AuthDeviceStartResult {
                 provider: "opencode-go".into(),
                 device_code: "dc".into(),
@@ -2604,7 +2606,7 @@ mod tests {
             &self,
             _p: AuthDevicePollParams,
         ) -> Result<AuthDevicePollResult, DispatchError> {
-            self.calls.lock().unwrap().push("device_poll".into());
+            lock_or_recover(&self.calls).push("device_poll".into());
             Ok(AuthDevicePollResult {
                 state: agentj_protocol::provider::DeviceAuthState::Pending,
                 interval: None,
@@ -2616,8 +2618,8 @@ mod tests {
             &self,
             p: AuthSetApiKeyParams,
         ) -> Result<AuthSetApiKeyResult, DispatchError> {
-            self.calls.lock().unwrap().push("set_api_key".into());
-            self.set_api_key_params.lock().unwrap().push((
+            lock_or_recover(&self.calls).push("set_api_key".into());
+            lock_or_recover(&self.set_api_key_params).push((
                 p.provider.clone(),
                 p.api_key.clone(),
                 p.label.clone(),
@@ -2638,7 +2640,7 @@ mod tests {
             &self,
             p: AuthClearCredentialParams,
         ) -> Result<AuthClearCredentialResult, DispatchError> {
-            self.calls.lock().unwrap().push("clear_credential".into());
+            lock_or_recover(&self.calls).push("clear_credential".into());
             self.clear_credential_params
                 .lock()
                 .unwrap()
@@ -2666,7 +2668,7 @@ mod tests {
             .provider,
             "opencode-go"
         );
-        assert_eq!(rec.calls.lock().unwrap().as_slice(), ["model_list"]);
+        assert_eq!(lock_or_recover(&rec.calls).as_slice(), ["model_list"]);
     }
 
     #[test]
@@ -2709,7 +2711,7 @@ mod tests {
         .await;
         assert_eq!(v["result"]["provider"], "opencode-go");
         assert!(v.get("error").is_none());
-        assert_eq!(rec.calls.lock().unwrap().len(), 1);
+        assert_eq!(lock_or_recover(&rec.calls).len(), 1);
 
         for (method, params, name) in [
             ("model/list", serde_json::json!({}), "model_list"),
@@ -2734,7 +2736,7 @@ mod tests {
             let v = call(&server, method, params).await;
             assert!(v.get("error").is_none(), "{method} must succeed: {v}");
             assert!(v["result"].is_object(), "{method} result must be an object");
-            assert!(rec.calls.lock().unwrap().iter().any(|c| c == name));
+            assert!(lock_or_recover(&rec.calls).iter().any(|c| c == name));
         }
     }
 
@@ -2756,7 +2758,7 @@ mod tests {
         assert_eq!(v["result"]["outcome"], "verified");
         assert!(v["result"].get("api_key").is_none());
         assert_eq!(
-            rec.set_api_key_params.lock().unwrap().as_slice(),
+            lock_or_recover(&rec.set_api_key_params).as_slice(),
             [(Some("opencode-go".into()), "sk-x".to_string(), None)]
         );
 
@@ -2772,11 +2774,11 @@ mod tests {
         );
         assert_eq!(v["result"]["cleared"], true);
         assert_eq!(
-            rec.clear_credential_params.lock().unwrap().as_slice(),
+            lock_or_recover(&rec.clear_credential_params).as_slice(),
             [Some("opencode-go".to_string())]
         );
         assert_eq!(
-            rec.calls.lock().unwrap().as_slice(),
+            lock_or_recover(&rec.calls).as_slice(),
             ["set_api_key", "clear_credential"]
         );
     }
@@ -2813,7 +2815,7 @@ mod tests {
         .await;
         assert_eq!(v["error"]["code"], -32602);
         assert!(
-            rec.calls.lock().unwrap().is_empty(),
+            lock_or_recover(&rec.calls).is_empty(),
             "service must not be called on bad params"
         );
 
@@ -2826,7 +2828,7 @@ mod tests {
         assert_eq!(v["error"]["code"], -32602);
         assert_eq!(v["error"]["data"]["reason"], "invalid_params");
         assert!(
-            rec.calls.lock().unwrap().is_empty(),
+            lock_or_recover(&rec.calls).is_empty(),
             "service must not be called on bad params"
         );
 
@@ -3403,7 +3405,7 @@ mod tests {
     ) -> Result<(), tokio::time::error::Elapsed> {
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
-                if server.registry.read().unwrap().pending_runs.contains(sid) {
+                if read_or_recover(&server.registry).pending_runs.contains(sid) {
                     return;
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(2)).await;
@@ -3471,7 +3473,9 @@ mod tests {
             "cancel should either complete or return RequestCancelled: {run_resp}"
         );
         assert!(
-            !server.registry.read().unwrap().pending_runs.contains(&sid),
+            !read_or_recover(&server.registry)
+                .pending_runs
+                .contains(&sid),
             "pending run cleared when the run finished"
         );
     }
@@ -3626,7 +3630,7 @@ mod tests {
             futures::stream::BoxStream<'static, Result<ModelEvent, agentj_core::error::ModelError>>,
             agentj_core::error::ModelError,
         > {
-            self.0.lock().unwrap().push(options);
+            lock_or_recover(&self.0).push(options);
             let ev = vec![Ok(ModelEvent::Delta("ok".into())), Ok(ModelEvent::Done)];
             Ok(Box::pin(futures::stream::iter(ev)))
         }
@@ -3730,9 +3734,9 @@ mod tests {
                 break;
             }
         }
-        assert_eq!(caps.other.lock().unwrap().last().unwrap().model, "m1");
+        assert_eq!(lock_or_recover(&caps.other).last().unwrap().model, "m1");
         assert!(
-            caps.mock.lock().unwrap().is_empty(),
+            lock_or_recover(&caps.mock).is_empty(),
             "the default provider must not serve a turn named for another provider"
         );
     }
@@ -3749,10 +3753,10 @@ mod tests {
             }
         }
         assert_eq!(
-            caps.mock.lock().unwrap().last().unwrap().model,
+            lock_or_recover(&caps.mock).last().unwrap().model,
             "deepseek-chat"
         );
-        assert!(caps.other.lock().unwrap().is_empty());
+        assert!(lock_or_recover(&caps.other).is_empty());
     }
 
     #[tokio::test]
@@ -3773,10 +3777,10 @@ mod tests {
             }
         }
         assert_eq!(
-            caps.mock.lock().unwrap().last().unwrap().model,
+            lock_or_recover(&caps.mock).last().unwrap().model,
             "deepseek-chat"
         );
-        assert!(caps.other.lock().unwrap().is_empty());
+        assert!(lock_or_recover(&caps.other).is_empty());
     }
 
     #[tokio::test]
@@ -3787,7 +3791,7 @@ mod tests {
         .await;
         assert!(resp.get("error").is_none(), "{resp}");
         assert_eq!(
-            caps.mock.lock().unwrap().last().unwrap().model,
+            lock_or_recover(&caps.mock).last().unwrap().model,
             "custom-model"
         );
     }
@@ -3802,12 +3806,12 @@ mod tests {
         .await;
         assert!(resp.get("error").is_none(), "{resp}");
         assert_eq!(
-            caps.other.lock().unwrap().last().unwrap().model,
+            lock_or_recover(&caps.other).last().unwrap().model,
             "other-model",
             "the named provider must serve the turn"
         );
         assert!(
-            caps.mock.lock().unwrap().is_empty(),
+            lock_or_recover(&caps.mock).is_empty(),
             "the default provider must not serve a turn named for another provider"
         );
     }
@@ -3829,11 +3833,11 @@ mod tests {
         assert!(msg.contains("mock"), "{msg}");
         assert!(msg.contains("other"), "{msg}");
         assert!(
-            caps.mock.lock().unwrap().is_empty(),
+            lock_or_recover(&caps.mock).is_empty(),
             "no provider may serve a turn with an unknown provider name"
         );
         assert!(
-            caps.other.lock().unwrap().is_empty(),
+            lock_or_recover(&caps.other).is_empty(),
             "no provider may serve a turn with an unknown provider name"
         );
     }
@@ -3846,7 +3850,7 @@ mod tests {
         .await;
         assert!(resp.get("error").is_none(), "{resp}");
         assert_eq!(
-            caps.mock.lock().unwrap().last().unwrap().model,
+            lock_or_recover(&caps.mock).last().unwrap().model,
             "deepseek-chat"
         );
     }
@@ -3859,7 +3863,7 @@ mod tests {
         .await;
         assert!(resp.get("error").is_none(), "{resp}");
         assert_eq!(
-            caps.mock.lock().unwrap().last().unwrap().model,
+            lock_or_recover(&caps.mock).last().unwrap().model,
             "deepseek-chat"
         );
     }
@@ -3872,7 +3876,7 @@ mod tests {
         .await;
         assert!(resp.get("error").is_none(), "{resp}");
         assert!(
-            !caps.mock.lock().unwrap().is_empty(),
+            !lock_or_recover(&caps.mock).is_empty(),
             "default provider must still serve the turn"
         );
     }
@@ -3940,7 +3944,9 @@ mod tests {
             "cancelled must get -32800: {resp2}"
         );
         assert!(
-            server.registry.read().unwrap().pending_runs.contains("s1"),
+            read_or_recover(&server.registry)
+                .pending_runs
+                .contains("s1"),
             "s1 stays"
         );
         let rid1 = rid_s1.clone().expect("s1 rid");
@@ -4349,7 +4355,7 @@ mod tests {
                 msg: &KernelMessage,
             ) -> Result<agentj_core::module::KernelResponse, ModuleError> {
                 if let KernelMessage::ToolCallRequest { reply, .. } = msg
-                    && let Some(tx) = reply.lock().unwrap().take()
+                    && let Some(tx) = lock_or_recover(reply).take()
                 {
                     std::mem::forget(tx);
                 }
@@ -4695,12 +4701,12 @@ mod tests {
         reg.subscribe(&"s1".to_string(), &a);
         reg.broadcast_to_session(&"s1".to_string(), "hello");
         assert_eq!(
-            log_a.lock().unwrap().len(),
+            lock_or_recover(&log_a).len(),
             1,
             "subscriber a must receive the broadcast"
         );
         assert_eq!(
-            log_b.lock().unwrap().len(),
+            lock_or_recover(&log_b).len(),
             0,
             "non-subscriber b must NOT receive it"
         );
@@ -4720,7 +4726,7 @@ mod tests {
         );
         // broadcast after unregister is a no-op (no panic, no delivery)
         reg.broadcast_to_session(&"s1".to_string(), "hello");
-        assert_eq!(log_a.lock().unwrap().len(), 0);
+        assert_eq!(lock_or_recover(&log_a).len(), 0);
     }
 
     #[test]
@@ -4762,7 +4768,7 @@ mod tests {
             .lock()
             .ok()
             .and_then(|logs| logs.get(id).cloned())
-            .map(|log| log.lock().unwrap_or_else(|p| p.into_inner()).clone())
+            .map(|log| lock_or_recover(&log).clone())
             .unwrap_or_default()
     }
 
@@ -5661,7 +5667,10 @@ mod tests {
         );
         // 2) and the orphaned run is released, so a reconnect can run again
         let released = tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            while server.registry.read().unwrap().pending_runs.contains(&sid) {
+            while read_or_recover(&server.registry)
+                .pending_runs
+                .contains(&sid)
+            {
                 tokio::time::sleep(std::time::Duration::from_millis(5)).await;
             }
         })
@@ -5676,7 +5685,7 @@ mod tests {
             "serve_connection must return once the orphaned run is released"
         );
         finished.unwrap().unwrap().unwrap();
-        let log_dump = log.lock().unwrap().clone();
+        let log_dump = lock_or_recover(&log).clone();
         assert!(
             log_dump.iter().any(|l| l.contains("\"id\":2")),
             "the released run must still answer its caller: {log_dump:?}"
@@ -5790,8 +5799,8 @@ mod tests {
         drop(tx_b);
         task_a.await.unwrap().unwrap();
         task_b.await.unwrap().unwrap();
-        let va: serde_json::Value = serde_json::from_str(&log_a.lock().unwrap()[0]).unwrap();
-        let vb: serde_json::Value = serde_json::from_str(&log_b.lock().unwrap()[0]).unwrap();
+        let va: serde_json::Value = serde_json::from_str(&lock_or_recover(&log_a)[0]).unwrap();
+        let vb: serde_json::Value = serde_json::from_str(&lock_or_recover(&log_b)[0]).unwrap();
         assert_eq!(va["result"]["connection_id"], "tcp-A");
         assert_eq!(vb["result"]["connection_id"], "tcp-B");
         assert_ne!(
@@ -5812,7 +5821,7 @@ mod tests {
         // Wait for the session/new response so the run dispatches against a real sid.
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
-                if !log_a.lock().unwrap().is_empty() {
+                if !lock_or_recover(&log_a).is_empty() {
                     break;
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(5)).await;
@@ -5820,7 +5829,7 @@ mod tests {
         })
         .await
         .expect("session/new response never arrived");
-        let sid = extract_sid(&log_a.lock().unwrap()[0]);
+        let sid = extract_sid(&lock_or_recover(&log_a)[0]);
         tx_a
             .send(format!(
                 r#"{{"jsonrpc":"2.0","id":2,"method":"session/run","params":{{"session_id":"{sid}","content":"hi"}}}}"#
@@ -5829,7 +5838,7 @@ mod tests {
             .unwrap();
         drop(tx_a); // EOF after the run so the serve loop returns
         task_a.await.unwrap().unwrap();
-        let a_sent = log_a.lock().unwrap().clone();
+        let a_sent = lock_or_recover(&log_a).clone();
         assert!(
             a_sent
                 .iter()
@@ -5837,11 +5846,11 @@ mod tests {
             "run initiator must receive $/progress through the registry: {a_sent:?}"
         );
         assert!(
-            server.registry.read().unwrap().conns.is_empty(),
+            read_or_recover(&server.registry).conns.is_empty(),
             "disconnected connection must be unregistered"
         );
         assert!(
-            server.registry.read().unwrap().writers.is_empty(),
+            read_or_recover(&server.registry).writers.is_empty(),
             "disconnected connection's writer handle must be unregistered"
         );
     }
@@ -5863,7 +5872,7 @@ mod tests {
             .unwrap();
         let sid = extract_sid(&new_resp);
         let owner = |conn: &str| {
-            let reg = server.registry.read().unwrap();
+            let reg = read_or_recover(&server.registry);
             reg.session_owner(&sid).cloned().as_deref() == Some(conn)
         };
         assert!(owner(&a), "session/new records the initiating connection");
@@ -5945,7 +5954,7 @@ mod tests {
         drop(tx_b); // EOF so B's serve loop returns after the run completes
         task_b.await.unwrap().unwrap();
 
-        let a_sent = log_a.lock().unwrap().clone();
+        let a_sent = lock_or_recover(&log_a).clone();
         assert!(
             a_sent
                 .iter()

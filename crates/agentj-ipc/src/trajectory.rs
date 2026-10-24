@@ -9,6 +9,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+use agentj_core::sync::lock_or_recover;
 use agentj_protocol::trajectory::{TrajectoryEvent, TrajectoryValue};
 use agentj_protocol::types::SessionId;
 
@@ -62,7 +63,7 @@ impl TrajectoryStore {
         ts: u64,
         value: TrajectoryValue,
     ) -> std::io::Result<u64> {
-        let mut logs = self.logs.lock().unwrap();
+        let mut logs = lock_or_recover(&self.logs);
         let path = self.path(sid);
         let state = logs.entry(sid.clone()).or_insert_with(|| load_state(&path));
         let event = TrajectoryEvent {
