@@ -37,6 +37,7 @@ use agentj_question::{
     RespondOutcome, SettleHook,
 };
 use async_trait::async_trait;
+use futures::FutureExt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::io::Write;
@@ -400,6 +401,29 @@ impl DispatchError {
     }
 }
 
+/// Run a dispatch future behind a panic guard.
+///
+/// A panic in a dispatch method is a kernel bug, not a client error, but the
+/// client must still get a well-formed response for its request id (JSON-RPC
+/// 2.0 §5) and the serve loop must survive. The panic text is truncated and
+/// carried in `error.data` so the bug can be reported without reproducing it.
+async fn isolate_panic<F>(method: &str, fut: F) -> Result<Value, DispatchError>
+where
+    F: std::future::Future<Output = Result<Value, DispatchError>>,
+{
+    match std::panic::AssertUnwindSafe(fut).catch_unwind().await {
+        Ok(result) => result,
+        Err(payload) => {
+            let reason = agentj_core::sync::panic_payload_message(payload.as_ref());
+            tracing::error!(%reason, %method, "request dispatch panicked");
+            Err(DispatchError::internal_with_data(
+                "InternalPanic",
+                serde_json::json!({ "method": method, "reason": reason }),
+            ))
+        }
+    }
+}
+
 /// Subscription/service handle injected by the CLI assembly (`design D4`).
 ///
 /// Defined here (returning `agentj-protocol` types) so `agentj-ipc` gains no dependency on
@@ -598,32 +622,7 @@ impl IpcServer {
         let result = if let Some(err) = self.auth_gate(&req, conn_id) {
             Err(err)
         } else {
-            match req.method.as_str() {
-                "initialize" => self.dispatch_initialize(&req, conn_id),
-                "session/new" => self.dispatch_session_new(&req, conn_id),
-                "session/run" => self.dispatch_session_run(&req, conn_id).await,
-                "session/subscribe" => self.dispatch_subscribe(&req, conn_id),
-                "session/unsubscribe" => self.dispatch_unsubscribe(&req, conn_id),
-                "kernel/status" => self.dispatch_kernel_status(),
-                "session/list" => self.dispatch_session_list(),
-                "session/history" => self.dispatch_session_history(&req),
-                "session/status" => self.dispatch_session_status(&req),
-                "session/archive" => self.dispatch_session_archive(&req),
-                "session/delete" => self.dispatch_session_delete(&req),
-                "file/list" => self.dispatch_file_list(&req).await,
-                "model/list" => self.dispatch_model_list(&req).await,
-                "auth/status" => self.dispatch_auth_status(&req).await,
-                "provider/usage" => self.dispatch_provider_usage(&req).await,
-                "auth/deviceStart" => self.dispatch_device_start(&req).await,
-                "auth/devicePoll" => self.dispatch_device_poll(&req).await,
-                "auth/setApiKey" => self.dispatch_set_api_key(&req).await,
-                "auth/clearCredential" => self.dispatch_clear_credential(&req).await,
-                "shutdown" => self.dispatch_shutdown(),
-                "permission/respond" => self.dispatch_permission_respond(&req, conn_id).await,
-                "question/respond" => self.dispatch_question_respond(&req, conn_id),
-                "$/cancelRequest" => self.dispatch_cancel_request(&req).await,
-                other => Err(DispatchError::method_not_found(other)),
-            }
+            isolate_panic(&req.method, self.dispatch_request(&req, conn_id)).await
         };
 
         let resp = match result {
@@ -650,6 +649,44 @@ impl IpcServer {
             return Ok(String::new());
         }
         Ok(serde_json::to_string(&resp)?)
+    }
+
+    /// Route one already-authorized request to its dispatch method.
+    ///
+    /// Split out of [`Self::handle_request_from`] so the whole route table can
+    /// sit behind a single panic guard (and so the table can later be split by
+    /// domain without touching the response framing).
+    async fn dispatch_request(
+        &self,
+        req: &JsonRpcRequest,
+        conn_id: &str,
+    ) -> Result<Value, DispatchError> {
+        match req.method.as_str() {
+            "initialize" => self.dispatch_initialize(req, conn_id),
+            "session/new" => self.dispatch_session_new(req, conn_id),
+            "session/run" => self.dispatch_session_run(req, conn_id).await,
+            "session/subscribe" => self.dispatch_subscribe(req, conn_id),
+            "session/unsubscribe" => self.dispatch_unsubscribe(req, conn_id),
+            "kernel/status" => self.dispatch_kernel_status(),
+            "session/list" => self.dispatch_session_list(),
+            "session/history" => self.dispatch_session_history(req),
+            "session/status" => self.dispatch_session_status(req),
+            "session/archive" => self.dispatch_session_archive(req),
+            "session/delete" => self.dispatch_session_delete(req),
+            "file/list" => self.dispatch_file_list(req).await,
+            "model/list" => self.dispatch_model_list(req).await,
+            "auth/status" => self.dispatch_auth_status(req).await,
+            "provider/usage" => self.dispatch_provider_usage(req).await,
+            "auth/deviceStart" => self.dispatch_device_start(req).await,
+            "auth/devicePoll" => self.dispatch_device_poll(req).await,
+            "auth/setApiKey" => self.dispatch_set_api_key(req).await,
+            "auth/clearCredential" => self.dispatch_clear_credential(req).await,
+            "shutdown" => self.dispatch_shutdown(),
+            "permission/respond" => self.dispatch_permission_respond(req, conn_id).await,
+            "question/respond" => self.dispatch_question_respond(req, conn_id),
+            "$/cancelRequest" => self.dispatch_cancel_request(req).await,
+            other => Err(DispatchError::method_not_found(other)),
+        }
     }
 
     /// Token-mode auth gate: when a token is configured, only connections
@@ -7445,5 +7482,25 @@ mod tests {
         );
         std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[tokio::test]
+    async fn a_panicking_dispatch_becomes_an_internal_panic_error() {
+        let err = isolate_panic("kernel/status", async { panic!("boom") })
+            .await
+            .expect_err("a panicking dispatch must not propagate");
+        assert_eq!(err.code, -32603);
+        assert_eq!(err.message, "InternalPanic");
+        let data = err.data.expect("error.data carries the panic details");
+        assert_eq!(data["method"], "kernel/status");
+        assert_eq!(data["reason"], "boom");
+    }
+
+    #[tokio::test]
+    async fn a_normal_dispatch_passes_through_the_panic_guard() {
+        let ok = isolate_panic("kernel/status", async { Ok(serde_json::json!({ "a": 1 })) })
+            .await
+            .expect("a successful dispatch keeps its result");
+        assert_eq!(ok["a"], 1);
     }
 }
