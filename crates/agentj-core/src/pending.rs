@@ -127,6 +127,17 @@ impl<K: Eq + Hash + Clone, P: Clone> PendingRegistry<K, P> {
         before - entries.len()
     }
 
+    /// Every pending entry paired with its owning session, without consuming
+    /// anything. Used by all-session sweeps (shutdown) that must report the
+    /// session alongside the id.
+    pub fn snapshot(&self) -> Vec<(K, String, P)> {
+        let entries = lock_or_recover(&self.entries);
+        entries
+            .iter()
+            .map(|(key, entry)| (key.clone(), entry.session_id.clone(), entry.payload.clone()))
+            .collect()
+    }
+
     /// Remove and return every pending entry (used on shutdown).
     pub fn drain(&self) -> Vec<(K, P)> {
         let mut entries = lock_or_recover(&self.entries);
@@ -162,6 +173,14 @@ mod tests {
         assert_eq!(reg.prune_where(|_, v| *v), 1);
         assert_eq!(reg.len(), 1);
         assert_eq!(reg.session_of(&"b".into()), Some("s2".to_string()));
+    }
+
+    #[test]
+    fn snapshot_reports_session_without_consuming() {
+        let reg: PendingRegistry<String, u8> = PendingRegistry::new(None);
+        reg.insert("a".into(), "s1", 7);
+        assert_eq!(reg.snapshot(), vec![("a".to_string(), "s1".to_string(), 7)]);
+        assert_eq!(reg.len(), 1, "a snapshot must not consume");
     }
 
     #[test]

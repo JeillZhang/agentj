@@ -25,6 +25,7 @@ use agentj_core::module::{
     KernelContext, KernelMessage, KernelModule, KernelResponse, Module, ModuleMetadata,
     ModuleRegister,
 };
+use agentj_core::pending::PendingRegistry;
 use agentj_core::sync::{lock_or_recover, read_or_recover, write_or_recover};
 use agentj_core::types::ModuleId;
 use agentj_protocol::question::{AskOption, AskQuestionParams};
@@ -104,11 +105,11 @@ pub type QuestionNotifier = Arc<dyn Fn(&AskQuestionParams, &str) -> bool + Send 
 /// settlement carries both ids as well. Panics are isolated.
 pub type SettleHook = Arc<dyn Fn(&str, &str, &QuestionSettlement) + Send + Sync>;
 
-/// Pending entry: the blocking asker waits on `sender`.
+/// Pending entry: the blocking asker waits on `sender`. The owning session
+/// lives in the registry entry, not here.
 #[derive(Clone)]
 struct PendingQuestion {
     sender: mpsc::Sender<QuestionOutcome>,
-    session_id: String,
     options: Vec<AskOption>,
     allow_multiple: bool,
 }
@@ -120,7 +121,9 @@ struct SettledQuestion {
 }
 
 pub struct QuestionModule {
-    pending: Mutex<HashMap<String, PendingQuestion>>,
+    /// Questions awaiting an answer. No TTL: an unanswered question is bounded
+    /// by its own wait timeout, not by table age.
+    pending: PendingRegistry<String, PendingQuestion>,
     settled: Mutex<HashMap<String, SettledQuestion>>,
     notifier: RwLock<Option<QuestionNotifier>>,
     settle_hook: RwLock<Option<SettleHook>>,
@@ -138,7 +141,7 @@ impl Default for QuestionModule {
 impl QuestionModule {
     pub fn new() -> Self {
         Self {
-            pending: Mutex::new(HashMap::new()),
+            pending: PendingRegistry::new(None),
             settled: Mutex::new(HashMap::new()),
             notifier: RwLock::new(None),
             settle_hook: RwLock::new(None),
@@ -190,11 +193,11 @@ impl QuestionModule {
         let mut wire = params.clone();
         wire.question_id = question_id.clone();
         let (sender, receiver) = mpsc::channel();
-        lock_or_recover(&self.pending).insert(
+        self.pending.insert(
             question_id.clone(),
+            session_id,
             PendingQuestion {
                 sender,
-                session_id: session_id.to_string(),
                 options: params.options.clone(),
                 allow_multiple: params.allow_multiple,
             },
@@ -222,7 +225,11 @@ impl QuestionModule {
         answers: Vec<String>,
         skipped: bool,
     ) -> Result<RespondOutcome, RespondError> {
-        let Some(pending) = lock_or_recover(&self.pending).get(question_id).cloned() else {
+        let key = question_id.to_string();
+        let Some(pending) = self.pending.get(&key) else {
+            return Ok(RespondOutcome::Accepted(false));
+        };
+        let Some(session_id) = self.pending.session_of(&key) else {
             return Ok(RespondOutcome::Accepted(false));
         };
         if !skipped {
@@ -235,7 +242,7 @@ impl QuestionModule {
         };
         let settlement = QuestionSettlement {
             question_id: question_id.to_string(),
-            session_id: pending.session_id,
+            session_id,
             outcome,
         };
         if self.settle_once(question_id, &settlement) {
@@ -248,20 +255,16 @@ impl QuestionModule {
     /// Session owning a PENDING question. Settled or unknown ids return `None`
     /// so callers can answer `accepted:false` without an owner check.
     pub fn session_of(&self, question_id: &str) -> Option<String> {
-        lock_or_recover(&self.pending)
-            .get(question_id)
-            .map(|q| q.session_id.clone())
+        self.pending.session_of(&question_id.to_string())
     }
 
     /// Settle every pending question of a session as Skipped (run cancel /
     /// owner disconnect) and drop the session's settled records (决策 #4).
     /// Returns how many pending questions were settled.
     pub fn cancel_session(&self, session_id: &str) -> usize {
-        let ids: Vec<String> = lock_or_recover(&self.pending)
-            .iter()
-            .filter(|(_, q)| q.session_id == session_id)
-            .map(|(id, _)| id.clone())
-            .collect();
+        let mut ids: Vec<String> = Vec::new();
+        self.pending
+            .for_session(session_id, |id, _| ids.push(id.clone()));
         let settled = ids
             .iter()
             .filter(|id| self.settle_skipped(id, session_id))
@@ -272,17 +275,15 @@ impl QuestionModule {
 
     /// Settle every pending question (module shutdown).
     pub fn clear_all(&self) -> usize {
-        let ids: Vec<(String, String)> = lock_or_recover(&self.pending)
+        let entries = self.pending.snapshot();
+        entries
             .iter()
-            .map(|(id, q)| (id.clone(), q.session_id.clone()))
-            .collect();
-        ids.iter()
-            .filter(|(id, session_id)| self.settle_skipped(id, session_id))
+            .filter(|(id, session_id, _)| self.settle_skipped(id, session_id))
             .count()
     }
 
     pub fn pending_count(&self) -> usize {
-        lock_or_recover(&self.pending).len()
+        self.pending.len()
     }
 
     /// Terminal outcome of an already-settled question (diagnostics; `None`
@@ -297,7 +298,7 @@ impl QuestionModule {
     /// The winner records the terminal state, fires the settle hook exactly
     /// once and delivers the outcome to the blocked asker.
     fn settle_once(&self, question_id: &str, settlement: &QuestionSettlement) -> bool {
-        let Some(entry) = lock_or_recover(&self.pending).remove(question_id) else {
+        let Some(entry) = self.pending.remove(&question_id.to_string()) else {
             return false;
         };
         lock_or_recover(&self.settled).insert(
@@ -474,10 +475,8 @@ mod tests {
     /// the generated question id.
     fn wait_for_pending(m: &QuestionModule) -> String {
         for _ in 0..500 {
-            if let Ok(pending) = m.pending.lock()
-                && let Some(id) = pending.keys().next()
-            {
-                return id.clone();
+            if let Some((id, _, _)) = m.pending.snapshot().into_iter().next() {
+                return id;
             }
             std::thread::sleep(Duration::from_millis(10));
         }
@@ -494,10 +493,9 @@ mod tests {
     /// their generated ids.
     fn wait_for_pending_count(m: &QuestionModule, n: usize) -> Vec<String> {
         for _ in 0..500 {
-            if let Ok(pending) = m.pending.lock()
-                && pending.len() >= n
-            {
-                return pending.keys().cloned().collect();
+            let entries = m.pending.snapshot();
+            if entries.len() >= n {
+                return entries.into_iter().map(|(id, _, _)| id).collect();
             }
             std::thread::sleep(Duration::from_millis(10));
         }
@@ -834,6 +832,32 @@ mod tests {
         assert_eq!(module.effective_timeout(&explicit), Some(5));
         module.set_default_timeout_s(None);
         assert_eq!(module.effective_timeout(&params), None);
+    }
+
+    /// The pending table is shared with `PendingRegistry`: cancelling one
+    /// session must settle exactly that session's questions and leave the rest
+    /// pending, while the terminal table still owns idempotency.
+    #[test]
+    fn registry_swap_keeps_session_scoped_cancel() {
+        let m = delivering_module();
+        let asker1 = Arc::clone(&m);
+        let h1 = std::thread::spawn(move || asker1.ask_blocking("s1", &params_with_options()));
+        let asker2 = Arc::clone(&m);
+        let h2 = std::thread::spawn(move || asker2.ask_blocking("s2", &params_with_options()));
+        let ids = wait_for_pending_count(&m, 2);
+        let s1_id = ids
+            .iter()
+            .find(|id| m.session_of(id).as_deref() == Some("s1"))
+            .cloned()
+            .expect("one question belongs to s1");
+        assert_eq!(m.cancel_session("s1"), 1);
+        assert_eq!(m.pending_count(), 1, "the other session stays pending");
+        let (settled_id, outcome) = h1.join().unwrap();
+        assert_eq!(settled_id, s1_id);
+        assert_eq!(outcome, QuestionOutcome::Skipped);
+        assert_eq!(m.cancel_session("s2"), 1);
+        assert_eq!(h2.join().unwrap().1, QuestionOutcome::Skipped);
+        assert_eq!(m.pending_count(), 0);
     }
 
     #[test]
