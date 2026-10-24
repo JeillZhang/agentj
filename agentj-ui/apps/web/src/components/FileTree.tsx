@@ -380,6 +380,17 @@ type SearchResultsProps = {
 };
 
 /**
+ * Result-row icon: hits are files by contract, but a dir entry must never be drawn as a file.
+ */
+function SearchRowIcon({ row }: { row: SearchEntry }) {
+  if (row.kind === "dir") {
+    return <Folder className="dir-icon dir-icon--closed" size={13} aria-hidden="true" />;
+  }
+  const { Icon, category } = fileIconFor(row.name);
+  return <Icon className={`file-icon file-icon--${category}`} size={13} aria-hidden="true" />;
+}
+
+/**
  * Result rows: server order, `name` then the dimmed parent dir, git letter last.
  * Rows follow the tree's roving-tabindex contract (one `0`, the rest `-1`);
  * Escape and the arrows sit on the container so they also fire while a result
@@ -430,7 +441,6 @@ function SearchResults({ state, onPick, onEscape }: SearchResultsProps) {
         {state.rows.map((row, index) => {
           const parent = parentPath(row.path);
           const isActive = index === activeIndex;
-          const { Icon, category } = fileIconFor(row.name);
           return (
             <button
               type="button"
@@ -448,7 +458,7 @@ function SearchResults({ state, onPick, onEscape }: SearchResultsProps) {
               onClick={() => onPick(row.path)}
             >
               <span className="chev" aria-hidden="true" />
-              <Icon className={`file-icon file-icon--${category}`} size={13} aria-hidden="true" />
+              <SearchRowIcon row={row} />
               <span className="name">{row.name}</span>
               {parent ? <span className="name-parent">{`${parent}/`}</span> : null}
               {row.gitStatus ? <StatusCell git={row.gitStatus} /> : null}

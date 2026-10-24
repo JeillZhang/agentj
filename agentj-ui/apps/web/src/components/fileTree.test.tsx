@@ -699,6 +699,22 @@ test("marks a truncated reply as partial", async () => {
   expect(screen.getByText(/部分结果/)).toBeInTheDocument();
 });
 
+test("draws a directory hit as a directory, not as a file", async () => {
+  vi.useFakeTimers();
+  const hits: RawEntry[] = [...SEARCH_HITS, { name: "src", path: "src", kind: "dir", git_status: null }];
+  const client = searchClient(() => ({ entries: hits, total: hits.length, truncated: false }));
+  const { container } = render(<FileTree client={client} sessionId="s1" demo={false} />);
+  await flush();
+  await typeSearch("main");
+  await advanceDebounce();
+
+  const dirRow = container.querySelector('[data-path="src"].trow-search');
+  expect(dirRow?.querySelector(".dir-icon")).not.toBeNull();
+  expect(dirRow?.querySelector(".file-icon")).toBeNull();
+  const fileRow = container.querySelector('[data-path="src/main.ts"].trow-search');
+  expect(fileRow?.querySelector(".file-icon")).not.toBeNull();
+});
+
 test("tree shortcuts are inert while a search result row has focus", async () => {
   vi.useFakeTimers();
   const calls: Call[] = [];
