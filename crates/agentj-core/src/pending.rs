@@ -138,7 +138,10 @@ impl<K: Eq + Hash + Clone, P: Clone> PendingRegistry<K, P> {
             .collect()
     }
 
-    /// Remove and return every pending entry (used on shutdown).
+    /// Remove and return every pending entry, discarding the owning session.
+    /// Test-only: both owning modules need the session id at settle time, so
+    /// their shutdown sweeps use `snapshot` / `prune_where` instead.
+    #[cfg(test)]
     pub fn drain(&self) -> Vec<(K, P)> {
         let mut entries = lock_or_recover(&self.entries);
         entries
@@ -181,6 +184,18 @@ mod tests {
         reg.insert("a".into(), "s1", 7);
         assert_eq!(reg.snapshot(), vec![("a".to_string(), "s1".to_string(), 7)]);
         assert_eq!(reg.len(), 1, "a snapshot must not consume");
+    }
+
+    #[test]
+    fn drain_removes_every_entry() {
+        let reg: PendingRegistry<String, u8> = PendingRegistry::new(None);
+        reg.insert("a".into(), "s1", 1);
+        reg.insert("b".into(), "s2", 2);
+        let mut drained = reg.drain();
+        drained.sort();
+        assert_eq!(drained, vec![("a".to_string(), 1), ("b".to_string(), 2)]);
+        assert!(reg.is_empty(), "drain empties the table");
+        assert!(reg.drain().is_empty(), "a second drain yields nothing");
     }
 
     #[test]

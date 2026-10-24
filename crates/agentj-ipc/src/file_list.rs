@@ -940,9 +940,6 @@ mod tests {
 
     #[derive(serde::Deserialize)]
     struct FixtureEntry {
-        /// Part of the fixture's declared shape; the tree is built from `path`.
-        #[allow(dead_code)]
-        name: String,
         path: String,
         kind: String,
     }
