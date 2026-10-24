@@ -81,6 +81,37 @@ pub struct PendingView {
 /// Notification sink for Ask requests (set once at startup by the IPC layer).
 type Notifier = Arc<dyn Fn(&PermissionRequestParams, &str) + Send + Sync>;
 
+#[cfg(test)]
+type SettleGate = Box<dyn Fn(&PermissionRequestId)>;
+
+#[cfg(test)]
+thread_local! {
+    /// Test-only interleave hook: `respond` runs it right after cloning the
+    /// pending entry and before resolving the owning session, so a test can
+    /// drop the entry inside the exact window a registry sweep opens. Single
+    /// shot (taken on first run) and thread-scoped, so parallel tests and
+    /// non-test builds never observe it.
+    static SETTLE_GATE: std::cell::RefCell<Option<SettleGate>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Install the one-shot interleave hook used by the vanish-window test.
+#[cfg(test)]
+fn set_settle_gate(gate: impl Fn(&PermissionRequestId) + 'static) {
+    SETTLE_GATE.with(|slot| *slot.borrow_mut() = Some(Box::new(gate)));
+}
+
+/// Run (and consume) the interleave hook, if a test installed one.
+#[cfg(test)]
+fn run_settle_gate(request_id: &PermissionRequestId) {
+    SETTLE_GATE.with(|slot| {
+        let gate = slot.borrow_mut().take();
+        if let Some(gate) = gate {
+            gate(request_id);
+        }
+    });
+}
+
 #[derive(Clone)]
 pub struct PermissionModule {
     engine: Arc<PermissionEngine>,
@@ -142,16 +173,24 @@ impl PermissionModule {
     /// *enforced*, not hoped for: the entry's `finished` flag is swapped before
     /// the decision is sent, so two concurrent responds (or a respond racing
     /// cancel_session / clear_all) can never both deliver.
+    ///
+    /// The owning session is resolved BEFORE the flag is claimed: the two
+    /// lookups are separate lock acquisitions, so an entry can vanish between
+    /// them (PENDING_TTL sweep). Claiming first would burn the flag without
+    /// delivering anything — `cancel_session` / `clear_all` then no-op on the
+    /// already-true flag and the waiter waits out `timeout_ms`.
     pub fn respond(&self, request_id: &PermissionRequestId, decision: ApprovalDecision) -> bool {
         let Some(req) = self.pending.get(request_id) else {
             return false; // unknown (or already consumed/pruned) request id
         };
+        #[cfg(test)]
+        run_settle_gate(request_id);
+        let Some(session_id) = self.pending.session_of(request_id) else {
+            return false; // swept between the two lookups: nothing to deliver to
+        };
         if req.finished.swap(true, Ordering::AcqRel) {
             return false; // already settled (another respond / cancel_session / shutdown)
         }
-        let Some(session_id) = self.pending.session_of(request_id) else {
-            return false;
-        };
         let resolved = match decision {
             ApprovalDecision::Allow => PermissionDecision::Allow,
             ApprovalDecision::Deny => PermissionDecision::Deny {
@@ -675,6 +714,43 @@ mod tests {
         assert_eq!(
             m.await_approval(&request_id).await,
             PermissionDecision::Allow
+        );
+    }
+
+    /// Contract pinned: a request whose entry vanishes between the pending
+    /// lookup and the owning-session lookup (the registry's TTL sweep can run
+    /// there) must come back `false` WITHOUT the single-winner claim being
+    /// burned. A burned claim is invisible to `cancel_session` / `clear_all`
+    /// (both no-op on an already-true flag) and to `prune_consumed`, so a
+    /// phantom winner leaves the tool loop waiting out `[permission] timeout_ms`.
+    /// The interleave is injected deterministically: the settle gate drops the
+    /// entry inside `respond` itself, right after the clone and before the
+    /// session is resolved.
+    #[test]
+    fn respond_does_not_burn_the_claim_when_the_entry_vanishes_before_settle() {
+        let m = module();
+        let PermissionDecision::Ask { request_id } = m.check(&ctx(&m, "curl http://example.com"))
+        else {
+            panic!("expected Ask");
+        };
+        let entry = m.pending.get(&request_id).expect("pending entry");
+        let registry = m.pending.clone();
+        let target = request_id.clone();
+        set_settle_gate(move |_| {
+            registry.prune_where(|key, _| *key == target);
+        });
+
+        assert!(
+            !m.respond(&request_id, ApprovalDecision::Allow),
+            "a respond that cannot resolve the session must report false"
+        );
+        assert!(
+            !entry.finished.load(Ordering::Acquire),
+            "the claim must not be taken before the owning session resolves"
+        );
+        assert!(
+            !m.pending.contains(&request_id),
+            "the swept entry stays swept (no phantom pending leftover)"
         );
     }
 
