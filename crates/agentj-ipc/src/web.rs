@@ -390,6 +390,7 @@ pub struct WebConfig {
     sessions: std::sync::RwLock<std::collections::HashSet<String>>,
     login_limiter: LoginLimiter,
     trust_proxy_headers: bool,
+    secure_cookies: bool,
     metrics_state: Option<std::path::PathBuf>,
     ip_sources: std::sync::RwLock<IpSourceTotals>,
     state_report: std::sync::RwLock<StateReport>,
@@ -428,12 +429,19 @@ impl WebConfig {
             sessions: std::sync::RwLock::new(std::collections::HashSet::new()),
             login_limiter: LoginLimiter::new(),
             trust_proxy_headers: false,
+            secure_cookies: false,
             metrics_state: None,
             ip_sources: std::sync::RwLock::new(IpSourceTotals::default()),
             state_report: std::sync::RwLock::new(StateReport::default()),
             flush_task: std::sync::Mutex::new(None),
             flush_interval: Duration::from_secs(5),
         }
+    }
+    /// Mark session cookies `Secure` (enable when TLS terminates in front of the
+    /// kernel). Off by default so plain `http://127.0.0.1` deployments keep working.
+    pub fn with_secure_cookies(mut self, secure: bool) -> Self {
+        self.secure_cookies = secure;
+        self
     }
     #[cfg(test)]
     pub(crate) fn with_login_limiter(mut self, limiter: LoginLimiter) -> Self {
@@ -1078,16 +1086,14 @@ async fn submit_login(
         return throttle_response(throttle, form.next.as_deref());
     }
     let expected = web.token.as_deref().unwrap_or_default();
-    if !expected.is_empty() && form.token == expected {
+    if !expected.is_empty() && crate::secure::ct_eq(&form.token, expected) {
         web.login_limiter.record_success(ip);
         let sid = web.issue_session();
         let mut res = redirect_found(&safe_next(form.next.as_deref()));
-        res.headers_mut().insert(
-            axum::http::header::SET_COOKIE,
-            format!("{SESSION_COOKIE}={sid}; HttpOnly; SameSite=Lax; Path=/")
-                .parse()
-                .expect("valid cookie header"),
-        );
+        if let Some(cookie) = crate::secure::session_cookie_header(&sid, web.secure_cookies) {
+            res.headers_mut()
+                .insert(axum::http::header::SET_COOKIE, cookie);
+        }
         res
     } else {
         let throttle = web.login_limiter.record_failure(ip, now);
@@ -1116,10 +1122,13 @@ fn throttle_response(throttle: Throttle, next: Option<&str>) -> axum::response::
         axum::response::Html(login_page_html(Some(&message), &safe_next(next))),
     )
         .into_response();
-    res.headers_mut().insert(
-        axum::http::header::RETRY_AFTER,
-        axum::http::HeaderValue::from_str(&secs.to_string()).expect("retry-after"),
-    );
+    match axum::http::HeaderValue::from_str(&secs.to_string()) {
+        Ok(retry_after) => {
+            res.headers_mut()
+                .insert(axum::http::header::RETRY_AFTER, retry_after);
+        }
+        Err(e) => tracing::error!(error = %e, "cannot build the Retry-After header"),
+    }
     res
 }
 
@@ -1129,12 +1138,10 @@ async fn logout(web: &WebConfig, headers: axum::http::HeaderMap) -> axum::respon
         web.revoke_session(sid);
     }
     let mut res = redirect_found("/login");
-    res.headers_mut().insert(
-        axum::http::header::SET_COOKIE,
-        format!("{SESSION_COOKIE}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0")
-            .parse()
-            .expect("valid cookie header"),
-    );
+    if let Some(cookie) = crate::secure::clear_cookie_header(web.secure_cookies) {
+        res.headers_mut()
+            .insert(axum::http::header::SET_COOKIE, cookie);
+    }
     res
 }
 

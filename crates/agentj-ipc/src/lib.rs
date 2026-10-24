@@ -3,6 +3,7 @@ pub(crate) mod client_ip;
 pub mod file_list;
 pub(crate) mod login_limiter;
 pub(crate) mod metrics_state;
+pub mod secure;
 pub mod tcp;
 pub mod trajectory;
 pub mod web;

@@ -10,9 +10,9 @@ use agentj_auth::ensure_access;
 use agentj_auth::store::AuthStore;
 use agentj_core::error::ModelError;
 use agentj_core::module::ModelProvider;
-use agentj_core::sync::{read_or_recover, write_or_recover};
 #[cfg(test)]
 use agentj_core::sync::lock_or_recover;
+use agentj_core::sync::{read_or_recover, write_or_recover};
 use agentj_core::types::{ChatMessage, ChatResponse, ModelEvent, ModelOptions, ToolDefinition};
 use futures::stream::BoxStream;
 use std::sync::{Arc, RwLock};
