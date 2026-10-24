@@ -13,4 +13,29 @@ export { BLANK_CHARS, isBlankText } from "./blankText.js";
 export { METHODS } from "./methods.js";
 export { parseProgress } from "./progress.js";
 export type { ProgressFrame, UsageInfo, TodoFrame, TodoItemFrame, FileChangeFrame } from "./progress.js";
+export {
+  MAX_INDENT_DEPTH,
+  buildFileNode,
+  buildSearchIndex,
+  clampSelection,
+  flattenVisible,
+  formatFileRowParts,
+  formatSearchRowParts,
+  isEmptyExpandedDir,
+  moveSelection,
+  parentPath,
+  statusLetterColor,
+  toGitLetter,
+  truncate,
+  updateNode,
+} from "./files.js";
+export type {
+  FileNode,
+  GitLetter,
+  RawFileEntry,
+  RowParts,
+  SearchEntry,
+  VisibleRow,
+  VisibleRowNote,
+} from "./files.js";
 // TcpTransport is Node-only (node:net) — import via "@agentj/sdk/src/transports/tcp.js" for Node consumers.
