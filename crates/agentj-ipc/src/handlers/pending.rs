@@ -9,9 +9,11 @@ use crate::{
     DISCONNECTED_REASON, DispatchError, IpcServer, JsonRpcRequest, build_progress_frame, to_wire,
     trajectory,
 };
-use agentj_permission::ApprovalDecision;
+use agentj_core::permission::PermissionRequestId;
+use agentj_permission::module::PendingView;
+use agentj_permission::{ApprovalDecision, PermissionModule};
 use agentj_protocol::base::error_codes;
-use agentj_protocol::permission::PermissionRespondParams;
+use agentj_protocol::permission::{PermissionDecision, PermissionRespondParams};
 use agentj_protocol::question::{AskQuestionParams, QuestionRespondParams, QuestionRespondResult};
 use agentj_question::{
     QuestionNotifier, QuestionOutcome, QuestionSettlement, RespondError, RespondOutcome, SettleHook,
@@ -20,13 +22,32 @@ use serde_json::Value;
 use std::sync::Arc;
 
 impl IpcServer {
-    /// `permission/respond`: deliver the client's decision to a pending approval.
-    /// An unknown request_id is an error (-32600), never silent success.
-    pub(crate) async fn dispatch_permission_respond(
+    /// Owner gate (决策 #5): only the connection that claimed the session may answer
+    /// its approvals and questions.
+    fn require_session_owner(&self, sid: &str, conn_id: &str) -> Result<(), DispatchError> {
+        let is_owner = self
+            .registry
+            .read()
+            .ok()
+            .and_then(|r| r.session_owner(&sid.to_string()).cloned())
+            .map(|owner| owner == conn_id)
+            .unwrap_or(false);
+        if is_owner {
+            return Ok(());
+        }
+        Err(DispatchError {
+            code: error_codes::NOT_AUTHORIZED,
+            message: "NotAuthorized".into(),
+            data: None,
+        })
+    }
+
+    /// `permission/respond` params → (module, request id, wire decision). A missing
+    /// module is an error, never a silent success.
+    fn parse_permission_respond(
         &self,
         req: &JsonRpcRequest,
-        conn_id: &str,
-    ) -> Result<Value, DispatchError> {
+    ) -> Result<(Arc<PermissionModule>, String, PermissionDecision), DispatchError> {
         let params = req
             .params
             .as_ref()
@@ -37,69 +58,78 @@ impl IpcServer {
             .permission_module
             .clone()
             .ok_or_else(|| DispatchError::invalid_request("no permission module"))?;
-        let request_id = params.request_id.clone();
-        let wire_decision = params.decision.clone();
-        let rid = agentj_core::permission::PermissionRequestId(request_id.clone());
-        let sid = module.session_of(&rid).ok_or_else(|| {
-            DispatchError::invalid_request(format!("unknown permission request: {}", rid.0))
-        })?;
-        let is_owner = self
-            .registry
-            .read()
-            .ok()
-            .and_then(|r| r.session_owner(&sid).cloned())
-            .map(|owner| owner == conn_id)
-            .unwrap_or(false);
-        if !is_owner {
-            return Err(DispatchError {
-                code: error_codes::NOT_AUTHORIZED,
-                message: "NotAuthorized".into(),
-                data: None,
-            });
-        }
-        let decision = match params.decision {
-            agentj_protocol::permission::PermissionDecision::Allow => ApprovalDecision::Allow,
-            agentj_protocol::permission::PermissionDecision::Deny => ApprovalDecision::Deny,
-            agentj_protocol::permission::PermissionDecision::AllowAlways => {
-                ApprovalDecision::AllowAlways
-            }
-            agentj_protocol::permission::PermissionDecision::Unknown => {
-                return Err(DispatchError::invalid_request("unknown decision"));
-            }
-        };
+        Ok((module, params.request_id, params.decision))
+    }
+
+    /// Settle the decision the client asked for: a `false` from the module means the
+    /// request id was unknown (never silent success), and a known one also updates
+    /// the client view and the trajectory.
+    fn settle_permission(
+        &self,
+        module: &PermissionModule,
+        rid: &PermissionRequestId,
+        request_id: &str,
+        decision: ApprovalDecision,
+        wire_decision: &PermissionDecision,
+    ) -> Result<(), DispatchError> {
         let view = self
             .permission_module
             .as_ref()
-            .and_then(|m| m.view(&request_id));
-        if !module.respond(&rid, decision) {
-            return Err(DispatchError::invalid_request(format!(
-                "unknown permission request: {}",
-                rid.0
-            )));
+            .and_then(|m| m.view(request_id));
+        if !module.respond(rid, decision) {
+            return Err(unknown_permission(rid));
         }
         if let Some(view) = view {
-            let sid_clone = view.session_id.clone();
-            let frame = build_progress_frame(
-                &Value::Null,
-                &agentj_protocol::streaming::ProgressValue::Permission {
-                    request_id: request_id.clone(),
-                    tool: view.tool.clone(),
-                    decision: wire_decision.clone(),
-                    session_id: Some(sid_clone.clone()),
-                },
-            );
-            if let Ok(reg) = self.registry.read() {
-                reg.broadcast_to_session(&sid_clone, &frame);
-            }
-            self.record_trajectory(
-                &sid_clone,
-                agentj_protocol::trajectory::TrajectoryValue::Permission {
-                    request_id,
-                    tool: view.tool,
-                    decision: wire_decision,
-                },
-            );
+            self.broadcast_permission_decision(&view, request_id, wire_decision);
         }
+        Ok(())
+    }
+
+    /// `$/progress` Permission settle + trajectory node for an answered approval.
+    fn broadcast_permission_decision(
+        &self,
+        view: &PendingView,
+        request_id: &str,
+        wire_decision: &PermissionDecision,
+    ) {
+        let sid = view.session_id.clone();
+        let frame = build_progress_frame(
+            &Value::Null,
+            &agentj_protocol::streaming::ProgressValue::Permission {
+                request_id: request_id.to_string(),
+                tool: view.tool.clone(),
+                decision: wire_decision.clone(),
+                session_id: Some(sid.clone()),
+            },
+        );
+        if let Ok(reg) = self.registry.read() {
+            reg.broadcast_to_session(&sid, &frame);
+        }
+        self.record_trajectory(
+            &sid,
+            agentj_protocol::trajectory::TrajectoryValue::Permission {
+                request_id: request_id.to_string(),
+                tool: view.tool.clone(),
+                decision: wire_decision.clone(),
+            },
+        );
+    }
+
+    /// `permission/respond`: deliver the client's decision to a pending approval.
+    /// An unknown request_id is an error (-32600), never silent success.
+    pub(crate) async fn dispatch_permission_respond(
+        &self,
+        req: &JsonRpcRequest,
+        conn_id: &str,
+    ) -> Result<Value, DispatchError> {
+        let (module, request_id, wire_decision) = self.parse_permission_respond(req)?;
+        let rid = PermissionRequestId(request_id.clone());
+        let sid = module
+            .session_of(&rid)
+            .ok_or_else(|| unknown_permission(&rid))?;
+        self.require_session_owner(&sid, conn_id)?;
+        let decision = decision_from_wire(&wire_decision)?;
+        self.settle_permission(&module, &rid, &request_id, decision, &wire_decision)?;
         Ok(serde_json::json!({}))
     }
 
@@ -134,20 +164,7 @@ impl IpcServer {
         let Some(session_id) = module.session_of(&question_id) else {
             return Self::question_result(false);
         };
-        let is_owner = self
-            .registry
-            .read()
-            .ok()
-            .and_then(|r| r.session_owner(&session_id).cloned())
-            .map(|owner| owner == conn_id)
-            .unwrap_or(false);
-        if !is_owner {
-            return Err(DispatchError {
-                code: error_codes::NOT_AUTHORIZED,
-                message: "NotAuthorized".into(),
-                data: None,
-            });
-        }
+        self.require_session_owner(&session_id, conn_id)?;
         let params: QuestionRespondParams = serde_json::from_value(raw.clone())
             .map_err(|e| DispatchError::invalid_params(e.to_string()))?;
         match module.respond(&question_id, params.answers, params.skipped) {
@@ -286,5 +303,21 @@ fn record_question_answer(
     };
     if let Err(e) = store.record(&session_id.to_string(), value) {
         tracing::warn!("trajectory record failed for {session_id}: {e}");
+    }
+}
+
+/// The single error for an unknown/expired approval id (both lookups share it).
+fn unknown_permission(rid: &PermissionRequestId) -> DispatchError {
+    DispatchError::invalid_request(format!("unknown permission request: {}", rid.0))
+}
+
+/// Wire decision → engine decision; the forward-compatible `Unknown` variant is a
+/// rejected parameter rather than a silent deny.
+fn decision_from_wire(decision: &PermissionDecision) -> Result<ApprovalDecision, DispatchError> {
+    match decision {
+        PermissionDecision::Allow => Ok(ApprovalDecision::Allow),
+        PermissionDecision::Deny => Ok(ApprovalDecision::Deny),
+        PermissionDecision::AllowAlways => Ok(ApprovalDecision::AllowAlways),
+        PermissionDecision::Unknown => Err(DispatchError::invalid_request("unknown decision")),
     }
 }
