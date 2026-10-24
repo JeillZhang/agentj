@@ -94,8 +94,21 @@ managed = {
 sections = ("dependencies", "dev-dependencies", "build-dependencies")
 
 manifests = sorted((root / "crates").glob("*/Cargo.toml"))
-if len(manifests) != 18:
-    print(f"expected 18 crate manifests, found {len(manifests)}")
+EXPECTED = {
+    "agentj-protocol", "agentj-core", "agentj-config", "agentj-auth",
+    "agentj-session", "agentj-permission", "agentj-question", "agentj-model",
+    "agentj-tools", "agentj-license", "agentj-mcp", "agentj-plugin",
+    "agentj-ipc", "agentj-cli", "agentj-plugin-fixture",
+}
+actual = set()
+for path in manifests:
+    with open(path, "rb") as fh:
+        actual.add(tomllib.load(fh).get("package", {}).get("name", ""))
+if actual != EXPECTED:
+    for name in sorted(actual - EXPECTED):
+        print(f"unexpected crate in crates/: {name}")
+    for name in sorted(EXPECTED - actual):
+        print(f"missing crate in crates/: {name}")
     sys.exit(1)
 
 for path in manifests:

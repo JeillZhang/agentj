@@ -62,14 +62,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "agentj-context"
-version = "0.1.0"
-dependencies = [
- "agentj-core",
- "serde_json",
-]
-
-[[package]]
 name = "agentj-core"
 version = "0.1.0"
 dependencies = [
@@ -224,21 +216,6 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
-]
-
-[[package]]
-name = "agentj-skills"
-version = "0.1.0"
-dependencies = [
- "tempfile",
- "tracing",
-]
-
-[[package]]
-name = "agentj-stats"
-version = "0.1.0"
-dependencies = [
- "agentj-core",
 ]
 
 [[package]]
