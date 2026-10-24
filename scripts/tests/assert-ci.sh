@@ -15,7 +15,7 @@ CHECKS=(harness ci-jobs coverage-gate frontend-job governance-files hygiene docs
 # `check_<name>()` implementations and these lists disagree in either direction,
 # so "one check silently dropped" can no longer look like "everything green".
 EXPECTED_UI_CHECKS="ui-manifests lockfile-root single-lockfile"
-EXPECTED_CARGO_CHECKS="cargo-root crate-inheritance licenses deny-config lockfile-locked"
+EXPECTED_CARGO_CHECKS="cargo-root crate-inheritance licenses deny-config lockfile-locked fn-length"
 EXPECTED_CI_CHECKS="harness ci-jobs coverage-gate frontend-job governance-files hygiene docs-summaries docs-agents"
 
 bad() { printf 'FAIL %s: %s\n' "$1" "$2"; return 1; }

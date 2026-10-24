@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Report Rust functions whose body exceeds 50 lines (spec §3.2 counting rules)."""
+"""Report Rust functions whose body exceeds 50 lines (spec §3.2 counting rules).
+
+Test-only code is exempt: inline `#[cfg(test)] mod` bodies are cut before scanning,
+and modules living in a separate `/tests/` directory (`crates/*/tests/*.rs`,
+`src/tests/*.rs`) are skipped by path. Directories may be passed as arguments and are
+expanded to every `*.rs` file beneath them.
+"""
 import re
 import sys
 import pathlib
@@ -61,10 +67,24 @@ def offenders(path):
             yield rel, code.count('\n', 0, m.start()) + 1, m.group(1), body
 
 
-targets = [pathlib.Path(a).resolve() for a in sys.argv[1:]]
+def is_test_only(path):
+    return 'tests' in path.parts
+
+
+def expand(arg):
+    path = pathlib.Path(arg).resolve()
+    return sorted(path.rglob('*.rs')) if path.is_dir() else [path]
+
+
+targets = [t for arg in sys.argv[1:] for t in expand(arg)]
 if not targets:
     targets = sorted((ROOT / 'crates').glob('**/src/**/*.rs'))
-hits = [h for t in targets for h in offenders(t) if 'target/' not in str(t)]
+hits = [
+    h
+    for t in targets
+    if 'target/' not in str(t) and not is_test_only(t)
+    for h in offenders(t)
+]
 for f, line, name, body in hits:
     print(f'{f}:{line}: fn {name} = {body} lines')
 print(f'{len(hits)} functions > {MAX} lines')

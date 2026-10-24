@@ -8,7 +8,7 @@
 set -euo pipefail
 
 ROOT="${AGENTJ_ROOT:-$(cd -- "$(dirname "$0")/../.." && pwd)}"
-CHECKS=(cargo-root crate-inheritance licenses deny-config lockfile-locked)
+CHECKS=(cargo-root crate-inheritance licenses deny-config lockfile-locked fn-length)
 
 bad() { printf 'FAIL %s: %s\n' "$1" "$2"; return 1; }
 ok() { printf 'PASS %s\n' "$1"; }
@@ -287,6 +287,16 @@ check_lockfile_locked() {
     return 1
   fi
   ok "$name"
+}
+
+check_fn_length() {
+  local name=fn-length
+  local out
+  if ! out=$(python3 "$ROOT/scripts/tests/fn-length.py" "$ROOT/crates" 2>&1); then
+    bad "$name" "$(printf '%s' "$out" | tr '\n' ' ' | cut -c1-400)"
+    return 1
+  fi
+  ok "$name: $(printf '%s\n' "$out" | tail -n 1)"
 }
 
 run_check() {
