@@ -4,4 +4,5 @@
 //! table stays readable and the root file stays small.
 
 pub(crate) mod lifecycle;
+pub(crate) mod run;
 pub(crate) mod session;
