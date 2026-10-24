@@ -150,6 +150,48 @@ pub struct TcpIpcServer {
 }
 
 impl TcpIpcServer {
+    /// The shared server with the optional modules, trajectory store and provider
+    /// handle wired in — one server serves every TCP connection.
+    fn build_server(
+        kernel: Kernel,
+        session: Arc<dyn SessionStore>,
+        permission_module: Option<Arc<agentj_permission::PermissionModule>>,
+        question_module: Option<Arc<agentj_question::QuestionModule>>,
+        options: &TcpBindOptions,
+    ) -> Arc<IpcServer> {
+        let mut server = IpcServer::new(kernel, session);
+        server.permission_module = permission_module;
+        server.question_module = question_module;
+        server.trajectory_store = options.trajectory_store.clone();
+        server.provider_service = options.provider_service.clone();
+        server.attach_permission_notifier();
+        server.attach_question_notifier();
+        server.set_token(options.token.clone());
+        Arc::new(server)
+    }
+
+    /// The web surface for this bind. The metrics state file is port-scoped here and
+    /// not in the CLI: with `--port 0` the port is only known once the listener exists
+    /// (design D4). Restores the persisted counters, then starts the spot-check and
+    /// flush tasks.
+    fn build_web(port: u16, options: &TcpBindOptions) -> Arc<crate::web::WebConfig> {
+        let state_path = options
+            .metrics_state_dir
+            .as_deref()
+            .map(|dir| crate::metrics_state::state_path_in(dir, port));
+        let web = Arc::new(
+            crate::web::WebConfig::new(options.web_dist.clone(), options.token.clone())
+                .with_trust_proxy_headers(options.trust_proxy_headers)
+                .with_secure_cookies(options.secure_cookies)
+                .with_metrics_state(state_path)
+                .with_integrity_options(options.integrity),
+        );
+        web.restore_metrics_state();
+        let _ = web.spawn_spot_check();
+        let _ = web.spawn_metrics_flush();
+        web
+    }
+
     pub async fn bind(
         addr: &str,
         kernel: Kernel,
@@ -161,34 +203,18 @@ impl TcpIpcServer {
         let listener = TcpListener::bind(addr)
             .await
             .map_err(|e| IpcError::InvalidRequest(e.to_string()))?;
-        let mut server = IpcServer::new(kernel, session);
-        server.permission_module = permission_module;
-        server.question_module = question_module;
-        server.trajectory_store = options.trajectory_store.clone();
-        server.provider_service = options.provider_service.clone();
-        server.attach_permission_notifier();
-        server.attach_question_notifier();
-        server.set_token(options.token.clone());
-        let shared = Arc::new(server);
-        let state_path = options.metrics_state_dir.as_deref().map(|dir| {
-            // The port is only known after the listener exists (--port 0), so the
-            // state file is port-scoped here and not in the CLI (design D4).
-            let port = listener
-                .local_addr()
-                .map(|addr| addr.port())
-                .unwrap_or_default();
-            crate::metrics_state::state_path_in(dir, port)
-        });
-        let web = Arc::new(
-            crate::web::WebConfig::new(options.web_dist.clone(), options.token.clone())
-                .with_trust_proxy_headers(options.trust_proxy_headers)
-                .with_secure_cookies(options.secure_cookies)
-                .with_metrics_state(state_path)
-                .with_integrity_options(options.integrity),
+        let shared = Self::build_server(
+            kernel,
+            session,
+            permission_module,
+            question_module,
+            &options,
         );
-        web.restore_metrics_state();
-        let _ = web.spawn_spot_check();
-        let _ = web.spawn_metrics_flush();
+        let port = listener
+            .local_addr()
+            .map(|addr| addr.port())
+            .unwrap_or_default();
+        let web = Self::build_web(port, &options);
         Ok(Self {
             listener,
             shared: shared.clone(),
