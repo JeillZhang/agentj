@@ -268,7 +268,7 @@ impl PermissionModule {
     fn register_ask(&self, ctx: &PermissionContext) -> PermissionDecision {
         let request_id = PermissionRequestId(Uuid::new_v4().to_string());
         let (tx, rx) = watch::channel(None);
-        self.pending.insert(
+        let inserted = self.pending.insert(
             request_id.clone(),
             &ctx.session_id,
             PendingRequest {
@@ -281,6 +281,10 @@ impl PermissionModule {
                 args: ctx.args.clone(),
             },
         );
+        // The registry never overwrites, so a colliding id would hand this ask
+        // the previous request's waiter channel. Enforce the invariant loudly in
+        // debug builds instead of dropping the bool on the floor.
+        debug_assert!(inserted, "duplicate approval request id {}", request_id.0);
         let params = PermissionRequestParams {
             request_id: request_id.0.clone(),
             tool: ctx.tool.clone(),

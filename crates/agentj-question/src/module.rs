@@ -193,7 +193,7 @@ impl QuestionModule {
         let mut wire = params.clone();
         wire.question_id = question_id.clone();
         let (sender, receiver) = mpsc::channel();
-        self.pending.insert(
+        let inserted = self.pending.insert(
             question_id.clone(),
             session_id,
             PendingQuestion {
@@ -202,6 +202,9 @@ impl QuestionModule {
                 allow_multiple: params.allow_multiple,
             },
         );
+        // A colliding id would silently answer the previous asker's channel
+        // (insert never overwrites); enforce the unique-id invariant.
+        debug_assert!(inserted, "duplicate question id {question_id}");
         if !self.deliver(&wire, session_id) {
             self.settle_skipped(&question_id, session_id);
             return (question_id, QuestionOutcome::Skipped);
