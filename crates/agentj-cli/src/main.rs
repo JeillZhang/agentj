@@ -1349,10 +1349,7 @@ mod tests {
     use std::sync::OnceLock;
     static ENV_LOCK: OnceLock<std::sync::Mutex<()>> = OnceLock::new();
     fn env_lock() -> std::sync::MutexGuard<'static, ()> {
-        ENV_LOCK
-            .get_or_init(|| std::sync::Mutex::new(()))
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
+        agentj_core::sync::lock_or_recover(ENV_LOCK.get_or_init(|| std::sync::Mutex::new(())))
     }
 
     #[test]

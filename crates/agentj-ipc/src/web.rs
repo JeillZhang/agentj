@@ -568,9 +568,7 @@ impl WebConfig {
     /// The memoised verdict for `key`, for tests that need to see the cache.
     #[cfg(test)]
     fn verify_cache_verdict(&self, key: &str) -> Option<AssetCheck> {
-        self.verify_cache
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
+        agentj_core::sync::lock_or_recover(&self.verify_cache)
             .get(key)
             .map(|entry| entry.verdict)
     }
@@ -612,11 +610,7 @@ impl WebConfig {
         }
     }
     fn warn_once(&self, key: &str, message: &str) {
-        let first = self
-            .warned
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(key.to_string());
+        let first = agentj_core::sync::lock_or_recover(&self.warned).insert(key.to_string());
         if first {
             tracing::warn!("{message}");
         }
@@ -706,11 +700,7 @@ impl WebConfig {
     /// Graceful-shutdown API: abort the debounced flush task. Callers flush
     /// first (`flush_metrics_state`), so the last snapshot is never lost.
     pub fn stop_metrics_flush(&self) {
-        let task = self
-            .flush_task
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .take();
+        let task = agentj_core::sync::lock_or_recover(&self.flush_task).take();
         if let Some(task) = task {
             task.abort();
         }
@@ -765,11 +755,7 @@ impl WebConfig {
     /// The runtime spot-check report plus the age of its last round in whole
     /// seconds; the age is `None` until the first round has run (design G7).
     pub(crate) fn runtime_snapshot(&self) -> (SpotCheckReport, Option<u64>) {
-        let report = self
-            .spot_report
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone();
+        let report = agentj_core::sync::read_or_recover(&self.spot_report).clone();
         let age = report
             .last_run
             .map(|t| Instant::now().duration_since(t).as_secs());
@@ -777,11 +763,7 @@ impl WebConfig {
     }
     /// Request-path verification counters plus the current memo size (design G2).
     pub(crate) fn request_integrity_snapshot(&self) -> RequestIntegritySnapshot {
-        let cache_entries = self
-            .verify_cache
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .len();
+        let cache_entries = agentj_core::sync::lock_or_recover(&self.verify_cache).len();
         RequestIntegritySnapshot {
             checked: self
                 .request_checked
@@ -798,11 +780,7 @@ impl WebConfig {
     /// Report the manual-sweep totals plus the age of the last sweep in whole
     /// seconds; `None` until the first sweep has run (design G7).
     pub(crate) fn on_demand_snapshot(&self) -> (IntegrityOnDemandReport, Option<u64>) {
-        let report = self
-            .on_demand
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone();
+        let report = agentj_core::sync::read_or_recover(&self.on_demand).clone();
         let age = report
             .last_run
             .map(|t| Instant::now().duration_since(t).as_secs());
@@ -860,11 +838,8 @@ impl WebConfig {
                 ticks.tick().await;
                 let round = web.run_spot_round();
                 for path in round.offenses {
-                    let first = web
-                        .warned
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .insert(path.clone());
+                    let first =
+                        agentj_core::sync::lock_or_recover(&web.warned).insert(path.clone());
                     if first {
                         tracing::warn!(path = %path, "web asset spot check failed");
                     }
@@ -878,11 +853,7 @@ impl WebConfig {
     /// Abort the periodic spot-check task, if one is running (server shutdown,
     /// tests).
     pub(crate) fn stop_spot_check(&self) {
-        let task = self
-            .spot_task
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .take();
+        let task = agentj_core::sync::lock_or_recover(&self.spot_task).take();
         if let Some(task) = task {
             task.abort();
         }

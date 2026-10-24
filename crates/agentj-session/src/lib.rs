@@ -65,10 +65,7 @@ impl SessionStore for InMemoryStore {
         let id = uuid::Uuid::new_v4().to_string();
         lock_or_recover(&self.sessions).insert(id.clone(), vec![]);
         lock_or_recover(&self.statuses).insert(id.clone(), SessionStatus::Active);
-        self.last_activity
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .insert(id.clone(), self.now());
+        agentj_core::sync::lock_or_recover(&self.last_activity).insert(id.clone(), self.now());
         Ok(id)
     }
 
@@ -76,10 +73,7 @@ impl SessionStore for InMemoryStore {
         self.require_active(session)?; // inactive → SessionError::InactiveSession
         let mut map = lock_or_recover(&self.sessions);
         map.entry(session.clone()).or_default().push(message);
-        self.last_activity
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .insert(session.clone(), self.now());
+        agentj_core::sync::lock_or_recover(&self.last_activity).insert(session.clone(), self.now());
         Ok(())
     }
 
@@ -99,18 +93,13 @@ impl SessionStore for InMemoryStore {
     }
 
     fn project_root(&self, session: &SessionId) -> Option<PathBuf> {
-        self.roots
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
+        agentj_core::sync::lock_or_recover(&self.roots)
             .get(session)
             .cloned()
     }
 
     fn set_project_root(&self, session: &SessionId, root: PathBuf) -> Result<(), ModuleError> {
-        self.roots
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .insert(session.clone(), root);
+        agentj_core::sync::lock_or_recover(&self.roots).insert(session.clone(), root);
         Ok(())
     }
 
@@ -192,10 +181,7 @@ impl SessionStore for InMemoryStore {
         now_epoch: u64,
         bus: &EventBus,
     ) -> Result<usize, ModuleError> {
-        let ledger: Vec<(SessionId, u64)> = self
-            .last_activity
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
+        let ledger: Vec<(SessionId, u64)> = agentj_core::sync::lock_or_recover(&self.last_activity)
             .iter()
             .map(|(sid, last)| (sid.clone(), *last))
             .collect();
@@ -232,10 +218,7 @@ impl SessionStore for InMemoryStore {
 impl InMemoryStore {
     fn is_active(&self, session: &SessionId) -> bool {
         matches!(
-            self.statuses
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .get(session),
+            agentj_core::sync::lock_or_recover(&self.statuses).get(session),
             Some(SessionStatus::Active)
         )
     }

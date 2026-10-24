@@ -664,9 +664,7 @@ impl TurnRunner {
 }
 
 fn next_todo_revision(revisions: &Mutex<HashMap<String, u64>>, run_id: &str) -> u64 {
-    let mut map = revisions
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut map = crate::sync::lock_or_recover(revisions);
     let next = map.entry(run_id.to_string()).or_insert(0);
     *next += 1;
     *next

@@ -4745,9 +4745,7 @@ mod tests {
     async fn wait_for_line(log: &SharedLog, predicate: impl Fn(&str) -> bool) -> String {
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
-                if let Some(m) = log
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
+                if let Some(m) = agentj_core::sync::lock_or_recover(log)
                     .iter()
                     .find(|m| predicate(m))
                 {
