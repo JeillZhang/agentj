@@ -3,6 +3,7 @@
 pub mod agent_loop_module;
 pub mod artifacts;
 pub mod budget;
+mod context_pipeline;
 pub mod dispatcher;
 pub mod error;
 pub mod git_sample;
@@ -22,6 +23,7 @@ pub mod turn_runner;
 pub mod types;
 pub mod usage_stats;
 
+pub use context_pipeline::DefaultContextPipeline;
 pub use resolver::{KernelService, ModuleResolver, ServiceRegistry};
 pub use usage_stats::{SessionUsage, UsageCollector};
 
