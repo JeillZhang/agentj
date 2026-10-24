@@ -37,7 +37,11 @@ const shared = vi.hoisted(() => ({
   },
 }));
 
-vi.mock("@agentj/sdk", () => {
+vi.mock("@agentj/sdk", async () => {
+  // Spread the real SDK so every export the tests do not stub (BLANK_CHARS,
+  // isBlankText, ...) comes from the single source of truth in packages/sdk.
+  // `vi.importActual` must be called inside the hoisted factory.
+  const actual = await vi.importActual<typeof import("@agentj/sdk")>("@agentj/sdk");
   const derivePageHost = (location?: { hostname: string; protocol: string }): string | undefined => {
     if (!location) return undefined;
     if (location.protocol !== "http:" && location.protocol !== "https:") return undefined;
@@ -128,13 +132,10 @@ vi.mock("@agentj/sdk", () => {
     }
   }
   return {
+    ...actual,
     RpcClient,
     ResponseRouter,
     WebSocketTransport,
-    // DRIFT WARNING: mirror of @agentj/sdk src/blankText.ts (T14 moved it there);
-    // the mock replaces the whole module, so the export must exist here too.
-    BLANK_CHARS: /[\s\u200b-\u200f\u2060\ufeff]/g,
-    isBlankText: (text: string) => text.replace(/[\s\u200b-\u200f\u2060\ufeff]/g, "") === "",
     // DRIFT WARNING: keep in step with resolveWsUrl in @agentj/sdk src/config.ts (page-location host/scheme).
     resolveWsUrl: vi.fn(
       (o?: {
@@ -313,6 +314,20 @@ async function clearFromSettings(): Promise<void> {
   await screen.findByText(/已解除链接/);
   fireEvent.click(screen.getByRole("button", { name: "close" }));
 }
+
+describe("SDK mock surface (BUG-002)", () => {
+  it("takes blank-text helpers from the real SDK instead of a hand copy", async () => {
+    const actual = await vi.importActual<typeof import("@agentj/sdk")>("@agentj/sdk");
+    const sdk = await import("@agentj/sdk");
+    // A hand copy would be a different function/regex object and could drift.
+    expect(sdk.BLANK_CHARS).toBe(actual.BLANK_CHARS);
+    expect(sdk.isBlankText).toBe(actual.isBlankText);
+    // Keep-alive frames carry a lone zero-width space: the shared source strips it.
+    expect(sdk.isBlankText("\u200b")).toBe(true);
+    expect(sdk.isBlankText(" \u200b\u200b ")).toBe(true);
+    expect(sdk.isBlankText("\u200b分析")).toBe(false);
+  });
+});
 
 describe("App with mocked SDK transport", () => {
   beforeEach(() => {
