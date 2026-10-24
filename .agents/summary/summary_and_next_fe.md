@@ -8,14 +8,43 @@
 > 待实施），不得随内容替换而删除；仅当该特性实际实施完成后才能移除（移入功能记录）。
 > 后端总结独立存放于 `summary_and_next_se.md`；两文件内容隔离，互不写入对方文件。
 
-本文件当前记录**工程治理批次（前端侧）**（包管理 / lockfile / CI 门禁 / 卫生，无 UI 逻辑重写）。
+本文件当前记录**健壮性与去重批次（前端侧）**（视觉空白判定上提共享包，wire 面零变更）。
 
-> 当前功能：**工程治理批次（前端侧）** —— 分支 `chore/engineering-governance-batch`（自 `5062736` 起）。
-> npm 单一 lockfile + `packageManager` / `engines` 元数据 + 版本对齐 + registry 固定；新增
-> `frontend` CI 作业（17 步覆盖全部 UI 门禁）+ 跨平台构建作业；工作区卫生清理。
-> wire 面零变更（`PROTOCOL_VERSION` 仍 0.19.0，`VERSION` 仍 0.1.0）。
+> 当前功能：**健壮性与去重批次（前端侧）** —— 分支 `chore/hardening-dedup-batch`（自 `b1edc78` 起）。
+> 本轮前端只落地待实施 **㉓**：`isBlankText` 上提 `@agentj/sdk` + TUI 运行视图丢弃空白帧。
+> `PROTOCOL_VERSION` 仍 0.19.0，`VERSION` 仍 0.1.0。
 
-## 工程治理批次（前端）✅
+## 健壮性与去重批次（前端）✅
+
+### 交付
+
+- **`isBlankText` 上提 `@agentj/sdk`**（待实施 ㉓）：新增
+  `agentj-ui/packages/sdk/src/blankText.ts`（`BLANK_CHARS` 正则 + `isBlankText`），从
+  `index.ts` 导出；Web 的 `Trajectory.tsx` / `RunPanel.tsx` 改为从 `@agentj/sdk` 引入并删除
+  `apps/web/src/blankText.ts`（测试随实现迁到 `packages/sdk/src/__tests__/blankText.test.ts`）。
+  `App.test.tsx` 的 `vi.mock("@agentj/sdk")` 同步补 `BLANK_CHARS` / `isBlankText`
+  （带 DRIFT WARNING 注释）。
+- **TUI 空白帧不再建行**：`agentj-ui/apps/tui/src/runview.tsx` 的 `rowsFromFrame` 在
+  `case "text"` 先判 `isBlankText(frame.text)`，零宽保活增量不再产生空行。
+
+### 验证
+
+| 门禁 | 结果 |
+|------|------|
+| `npm --prefix agentj-ui test --workspace=@agentj/sdk` | 59 passed（7 files） |
+| `npm --prefix agentj-ui run build --workspace=@agentj/sdk` | `tsc --noEmit` 通过 |
+| `npm --prefix agentj-ui test --workspace=@agentj/web` | 677 passed（54 files） |
+| `npm --prefix agentj-ui run build --workspace=@agentj/web` | 通过 |
+| `bun --cwd agentj-ui/apps/tui test` | 193 pass / 0 fail（新增空白帧用例） |
+| `npm --prefix agentj-ui run lint --workspace=@agentj/web` | 仅既有 warning（49 条，无 error） |
+
+### 遗留问题（本批次）
+
+- `App.test.tsx` 的 SDK mock 是整包替换，SDK 每加一个 Web 会调用的导出都要在 mock 里补一份
+  （本轮已再次踩到：缺 `isBlankText` 导致 10 个用例报 `No "isBlankText" export`）。
+  ㉔「三端共享逻辑收敛」应顺带评估「mock 只替换 transport 层」的做法。
+
+## 归档：工程治理批次（前端）✅
 
 分支 `chore/engineering-governance-batch`。对应 `_se.md` 同批次；本侧落地待实施 ㉑ ㉒ ㉕ ㉝ ㉞
 （㉒ 仅到「跨平台可编译」，打包链路遗留为 `_se.md` ㉟）。
@@ -156,7 +185,6 @@
 | # | 特性 | 内容 | 依赖 | 状态 |
 |---|------|------|------|------|
 | ③ | Web 接入服务端搜索 | Web Files 搜索态打通（消费服务端 `query`/`total`；提示行搜索态可达） | 无（基于服务端搜索） | 待实施 |
-| ㉓ | 【修复】`isBlankText` 上提 SDK + TUI 盲区 | BUG-017 的视觉空白过滤现散落两处（内核 `flush_thinking` + Web `blankText.ts`），而 `agentj-ui/apps/tui/src/runview.tsx:126` 的 `case "text"` 仍无条件 `next.push(...)` → 零宽帧多一个空行（同源盲区未修）。把 `isBlankText` 上提 `@agentj/sdk`，三端共享（需同改 Web import 与 SDK 测试） | 无 | 待实施 |
 | ㉔ | 【债】三端共享逻辑收敛 | Web 19,930 行 / TUI 7,939 行各自重写会话、运行视图、文件树、搜索（`toolSummary`、files 懒加载、空文本过滤等均为双份实现）；评估把无 UI 依赖的纯函数上提 `@agentj/sdk`，避免同一缺陷修两次 | 与 ㉓ 同向 | 待实施 |
 
 > 类型标记：`【债】` = 工程债 / 质量门禁，`【修复】` = 已确认缺陷或元数据不一致；无标记 = 特性。
@@ -165,12 +193,9 @@
 
 ## 下一步
 
-- 工程治理批次（前端侧）已收尾，`AGENTS.md` / `README.md` 已同步门禁清单，远端已重命名
-  （`origin` = GitHub 唯一权威、`gitcode` = 只读镜像），分支已推送两个远端；当前处于**测试验收**
-  循环（缺陷清单在 `.superpowers/acceptance/bugs.md`，本地产物不入库），验收 PASS 后在 `origin`
-  开 PR（用户负责合并）。
-- 前端候选：③ Web 接入服务端搜索（消费服务端 `query` / `total`）；㉓ `isBlankText` 上提 SDK 修
-  TUI 盲区；㉔ 三端共享逻辑收敛；或订阅状态常驻指示（需先定义新鲜度语义）；或清理
-  `TopbarMenu` / `SettingsDialog` 测试里的重复 stub helper；或 TUI `/models` 与 Web 选择语义对齐
-  （TUI 仍是内存态、不跨进程持久化）。
+- 健壮性与去重批次（前端侧）已收尾，分支推送 `origin` 与 `gitcode`，PR 开在 `origin`
+  （用户负责合并）。
+- 前端候选：③ Web 接入服务端搜索（消费服务端 `query` / `total`，唯一带协议消费面的待实施项）；
+  ㉔ 三端共享逻辑收敛（建议与 ③ 同批：files 懒加载 / `toolSummary` / 空文本过滤都在两侧重复）；
+  或订阅状态常驻指示；或 TUI `/models` 与 Web 选择语义对齐。
 - 后端候选见 `summary_and_next_se.md`。

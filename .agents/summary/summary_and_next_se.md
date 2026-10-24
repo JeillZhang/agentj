@@ -7,14 +7,65 @@
 > 待实施），不得随内容替换而删除；仅当该特性实际实施完成后才能移除（移入功能记录）。
 > 前端总结独立存放于 `summary_and_next_fe.md`；两文件内容隔离，互不写入对方文件。
 
-本文件当前记录**工程治理批次**（配置 / 门禁 / 元数据 / 卫生，wire 面零变更）。
+本文件当前记录**健壮性与去重批次**（锁中毒 / panic 隔离 / 安全细节 / SSE 去重，wire 面零变更）。
 
-> 当前功能：**工程治理批次** —— 分支 `chore/engineering-governance-batch`（自 `5062736` 起）。
-> 仓库断言 harness + CI 补全（deny / cross-platform / frontend）+ 覆盖率棘轮 + 依赖与许可治理 +
-> 社区治理文件 + Cargo 工作区策略 + 版本元数据 + 工作区卫生 + 远端命名对齐。
-> `crates/*` 运行期逻辑零改动，`PROTOCOL_VERSION` 仍 **0.19.0**、工作区仍 **0.1.0**。
+> 当前功能：**健壮性与去重批次** —— 分支 `chore/hardening-dedup-batch`（自 `b1edc78` 起）。
+> 对应待实施 **⑫ ㉗ ㉘ ㉚** 的实施落地（后端侧）；前端 ㉓ 见 `summary_and_next_fe.md`。
+> `PROTOCOL_VERSION` 仍 **0.19.0**（28 方法 / 78 schemas）、工作区仍 **0.1.0**，无 wire 变更。
 
-## 工程治理批次 ✅
+## 健壮性与去重批次 ✅
+
+分支 `chore/hardening-dedup-batch`，14 个提交（`d13ebab..808424f`）。
+
+### 交付
+
+- **防中毒锁 helper**（`crates/agentj-core/src/sync.rs`，新模块）：`lock_or_recover` /
+  `read_or_recover` / `write_or_recover`（中毒即 `tracing::error!` + `into_inner()`）+
+  `panic_payload_message`（`&str` / `String` 负载，回退 `<non-string panic payload>`，
+  `PANIC_MESSAGE_LIMIT = 200` 按字符截断）。全仓 233 处 `.lock()/.read()/.write().unwrap()/expect()`
+  与既有 `.unwrap_or_else(|e| e.into_inner())` 全部收敛：core / session / permission / question /
+  model / ipc / cli；`agentj-session/src/file_store.rs:53` 保留等价本地 helper。
+- **长驻任务 panic 隔离**：`kernel::route_message` 抽出 + `catch_unwind`（单条消息 panic 不杀守护
+  循环）；`IpcServer::dispatch_request` 抽出 + `isolate_panic`（panic → `-32603`
+  `InternalPanic`，`error.data { method, reason }`）；`TurnRunner::spawn_turn` 包住 `run_turn`
+  （panic → `AgentEvent::Error` + 释放 `turns` 槽位，不再永久 `SESSION_BUSY`）。
+- **登录门加固**（`crates/agentj-ipc/src/secure.rs`，新模块）：`ct_eq` 常量时间比较替代
+  `form.token == expected`；`session_cookie_header` / `clear_cookie_header` 单点构造 cookie
+  （`HttpOnly; SameSite=Lax; Path=/` + 可选 `Secure` + 可选 `Max-Age=0`），序列化失败记日志而非
+  `expect`；`Retry-After` 同改。
+- **`[web] secure_cookies`**：`agentj-config` `WebSection` → `TcpBindOptions.secure_cookies` →
+  `WebConfig::with_secure_cookies` → cookie 属性；CLI `TcpServeOptions.secure_cookies` 在
+  `serve` / `dashboard` 两条装配路径注入。文档落在 `docs/guide/http-and-auth.md`。
+- **SSE 分派收敛**（`crates/agentj-model/src/sse.rs`）：`SseFrame` / `decode_frame` /
+  `SsePayload` trait / `push_line` 驱动；responses / anthropic / openai-compat 三份 `push_line`
+  只剩 `crate::sse::push_line(self, line, out)`，payload 解释留在各自 `push_payload`。
+- **响应序列化去 `expect`**：`to_wire` helper（失败 → `-32603`）；轨迹写入遇不可序列化事件记
+  日志跳过并推进 seq。
+- **约定落地**：`CONTRIBUTING.md` 新增「Panics, locks and swallowed errors」章节（锁 / panic
+  隔离 / `let _ =` 三条规则），`AGENTS.md` Conventions 同步一行。
+
+### 验证
+
+| 命令 | 结果 |
+|------|------|
+| `cargo fmt --all --check` | 干净 |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings` | 0 警告 |
+| `cargo test --workspace` | 48 组 `test result: ok`，无失败 |
+| 单 crate | core 184 → 186、ipc 277 → 281、model 75 → 79、session 34、permission 49、question 21、config 43 |
+| `npm --prefix agentj-ui test --workspace=@agentj/sdk` | 59 passed（7 files，含新增 blankText） |
+| `npm --prefix agentj-ui test --workspace=@agentj/web` | 677 passed（54 files） |
+| `bun --cwd agentj-ui/apps/tui test` | 193 pass / 0 fail |
+| `npm --prefix agentj-ui run build --workspace=@agentj/web` | 通过；oxlint 仅既有 warning |
+
+### 遗留问题 / 已知限制（本批次）
+
+- `let _ =` 仍 165 处（lib 代码 58 处）：本批次只**约定**语义、未逐处改写；后续按约定在触碰时收敛。
+- `sync.rs` 之外仍有 3 处 `panic!`/`expect` 属启动期常量（`agentj-model/src/catalog.rs:68`
+  内嵌目录解析、`gen_opencode_catalog` 生成器、`http.rs:17` 客户端构造）——不在请求路径，未改。
+- 常量时间比较不防护「长度差异」以外的时间侧信道（长度本身可由计数侧信道获得），限流仍是主防线。
+- `Secure` 属性由部署方显式开启（`[web] secure_cookies`），未做「按 `X-Forwarded-Proto` 自动判定」。
+
+## 归档：工程治理批次 ✅
 
 分支 `chore/engineering-governance-batch`。对应待实施 ⑮ ⑳ ㉛ ㉜ 的实施落地（本侧）；
 ㉑ ㉒ ㉕ ㉝ ㉞ 属前端侧，见 `summary_and_next_fe.md`。
@@ -342,14 +393,10 @@
 | ⑥ | 用量历史（服务端持久化 + 趋势） | `provider/usage` 由按需 TTL 300s 扩为服务端持久化采样 + 历史/趋势查询（协议加性）、Web/TUI 趋势视图与保留策略 | 无（基于 v0.27.0 用量面板；设计需先定采样归属/保留/加性 wire） | 待实施 |
 | ⑩ | 【债】IPC 协议层拆分 | `crates/agentj-ipc/src/lib.rs`（实测 **7,339 行 / 295,749 B**）按 dispatch 域拆为 `dispatch_session` / `dispatch_permission` / `dispatch_question` / `dispatch_file` / `dispatch_provider` 等子模块；`impl IpcServer`（行 486–1931，约 **1,445 行**、30+ 方法）切分为多个 impl 块或独立 handler | 无（纯重构，wire 面不变） | 待实施 |
 | ⑪ | 【债】超长函数治理 | 实测 lib 代码 831 个函数中 **26 个 >50 行**（违反 `AGENTS.md` 「function ≤50 lines」）：`crates/agentj-cli/src/main.rs:466 fn main`（**379 行**）、`crates/agentj-core/src/turn_runner.rs:189 fn run_turn`（**362 行**）、`crates/agentj-ipc/src/lib.rs:861 fn dispatch_session_run`（**252 行**）、`crates/agentj-ipc/src/lib.rs:1420 fn dispatch_permission_respond`（80 行）——按域抽子函数 | 与 ⑩ 同批执行 | 待实施 |
-| ⑫ | 【债】锁中毒与 panic 隔离 | 非测试代码 **170 处 `.lock().unwrap()`**：内核是常驻多客户端守护进程，任一线程持锁 panic → mutex 中毒 → 后续每次取锁全部 panic（单会话 bug 可升级为整内核不可用）。改 `unwrap_or_else(|e| e.into_inner())` 或统一封装；请求入口（`agentj-ipc` dispatch / `turn_runner`）补 `catch_unwind` + 错误响应（现全仓仅 `agentj-core/src/hooks.rs:117`、`agentj-question/src/module.rs:356` 两处隔离；另 `crates/agentj-ipc/src/web.rs:257` 的 `std::sync::RwLock` 用 `web.rs:453/457/460` 的 `.read()/.write().expect("sessions")`，是同类中毒路径） | 无 | 待实施 |
 | ⑬ | 【债】permission / question 待决机制收敛 | `crates/agentj-permission/src/module.rs` 与 `crates/agentj-question/src/module.rs` 是同一套 pending / owner / settle 的双份镜像（`new` / `set_notifier` / `respond` / `session_of` / `cancel_session` / `clear_all` + `PENDING_TTL` 一一对应）；抽出共用 `PendingRegistry`，消除「修一处漏一处」（BUG-017 已证明代价） | 无 | 待实施 |
 | ⑯ | 【债】crate 粒度收敛 | `agentj-context` 87 行 / `agentj-stats` 133 / `agentj-skills` 132 / `agentj-license` 149 均为 <150 行的独立 crate，而 `agentj-ipc` 单 crate 12,514 行；评估合并或降级为模块（触及 `agentj-cli` 装配与 CI） | 无 | 待实施 |
 | ⑰ | 模型元数据与 token 预算 | `schemas/ModelEntry.json` 补 `context_window`（加性 wire），把 `estimate_tokens` 的「ASCII/4 + 非 ASCII×1」字符启发式换成真 tokenizer，或至少按模型真实窗口裁剪（现默认 128k 是保守假设） | 取决于上游目录是否提供窗口字段 | 待实施 |
-| ㉗ | 【债】错误处理约定与生产 `expect` | lib 代码 `let _ =` **58 处**（已剔除 `#[cfg(test)]`；报告所称 222 含测试），多数是合理「尽力而为」却无统一约定与注释，审计成本高；生产路径 `crates/agentj-ipc/src/web.rs:595/642 .expect("valid cookie header")`、`web.rs:627 .expect("retry-after")` 本可 `if let` 处理 | 无 | 待实施 |
-| ㉘ | 【修复】Web 登录门与 cookie 安全细节 | ① `crates/agentj-ipc/src/web.rs:587 if !expected.is_empty() && form.token == expected` 非常量时间比较（低成本可换 `subtle::ConstantTimeEq`，限流已缓解但非等价）；② `web.rs:593/640` 会话 cookie 仅 `HttpOnly; SameSite=Lax; Path=/`，**缺 `Secure`**（https 部署下明文回放） | 无 | 待实施 |
 | ㉙ | 【债】工具侧路径校验弱于 IPC 侧 | `crates/agentj-ipc/src/file_list.rs:71/126/331` 用 `canonicalize` + 前缀比对（真沙箱），而 `crates/agentj-permission/src/engine.rs:76 escapes_root` = `lexical_normalize` + `starts_with`、`crates/agentj-core/src/tool_paths.rs:16 rebase_tool_args` 亦纯词法归一化 → **符号链接可绕过**；bash 只设 `current_dir`，模型可 `cd /` 后任意操作（无 seccomp/namespace 硬隔离，安全性完全押在权限系统 + 用户审批上）→ 统一到 canonicalize 或明确文档化该边界 | 无 | 待实施 |
-| ㉚ | 【债】SSE 事件分派三份重复 | `crates/agentj-model/src/responses.rs:141`、`anthropic.rs:140`、`openai_compat.rs:188` 各一份 ~96–101 行 `push_line`（字节流→行的组装已抽到 `sse.rs`，**事件分派层未抽**）→ 新增 provider 需再抄一遍 | 无 | 待实施 |
 | ㉟ | 【债】Desktop 安装包构建验证 | `cross-platform` 作业目前只做 `cargo build --workspace --locked`；`agentj-ui/apps/desktop` 声称 deb/AppImage/dmg/msi 四件套，但 `tauri build` 与 `check-artifacts.sh` 从未在 CI 执行（macOS/Windows 打包链路无回归保护） | 需 macOS/Windows runner + 签名/公证策略决策 | 待实施 |
 
 > 类型标记：`【债】` = 工程债 / 质量门禁，`【修复】` = 已确认缺陷或元数据不一致；无标记 = 特性。
@@ -358,15 +405,15 @@
 
 ## 下一步
 
-- 工程治理批次代码 / 门禁 / 文档 / summary(se/fe) 已收尾，`AGENTS.md` / `README.md` 已同步门禁清单，
-  远端已重命名（`origin` = GitHub 唯一权威、`gitcode` = 只读镜像），分支已推送两个远端；
-  当前处于**测试验收**循环（缺陷清单在 `.superpowers/acceptance/bugs.md`，本地产物不入库）。
-- **待用户决策（唯一阻塞项）**：`origin/main`（GitHub，`d883a79`）与本地 `main`（`5062736`）是
-  同一份内容的两个 merge commit，`git push origin main` 非快进 → 二选一：① 在 `main` 上
-  `git merge origin/main` 生成零内容变化的合并提交后再 `git push origin main`（不改写历史）；
-  ② 重置镜像 / 权威端的 `main`。验收 PASS 后在 `origin` 开 PR（用户负责合并）。
-- 下一特性候选：待实施 ⑥「用量历史服务端持久化」（特性）；或上表 ⑩–⑬、⑯、⑰、㉗–㉚、㉟
-  （工程债 / 修复）；或前端跟进见 `summary_and_next_fe.md`（含 ③ Web 接入服务端搜索 + ㉓ ㉔）。
+- 健壮性与去重批次已收尾（代码 / 门禁 / 文档 / summary），分支推送 `origin` 与 `gitcode`，
+  PR 开在 `origin`（用户负责合并）。
+- 下一批候选（建议合并实施）：⑩⑪「IPC 拆分 + 超长函数」与 ⑬「pending 机制收敛」同批——三者都
+  围绕 `crates/agentj-ipc/src/lib.rs` 与 permission/question 两个 module，可一次重构 + 一次回归。
+- 其余候选：⑥ 用量历史（特性，最大件）；⑯ crate 粒度；⑰ 模型窗口元数据；㉙ 路径校验
+  canonicalize；㉟ desktop 打包验证。前端见 `summary_and_next_fe.md`（③ 服务端搜索、㉔ 三端收敛）。
+
+> 远端提示：`git fetch gitcode` 在本机报 `fatal: couldn't find remote ref gitcode`（镜像缺该
+> ref），按纪律未 `--force`；分支仍照常 `git push gitcode <branch>:<branch>`，失败即如实记录。
 - 可选跟进（run 可靠性批次遗留，非阻塞）：非 TTY 未加 `--yes` 改为**立即**拒绝（现等
   `timeout_ms` 预算）；`glob` 超时由文本结果改为结构化 Err；把「工具结果已截断」作为可观测事件
   透出（当前仅内核内 `AgentEvent::ToolResultTruncated`）。

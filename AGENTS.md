@@ -106,7 +106,9 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
   + `TurnArtifact`（FileChange/Todo 产出 + 自研 unified diff，per-run `run_id`/`seq`）
   + 工具结果单点裁剪（`[agent] max_tool_result_chars`：超限只截一次并广播
   `ToolResultTruncated`；`AgentEvent::Done` 携带本轮生效的 `provider`/`model`）
-  + 事件总线重入防护（EventGuard thread_local + MAX_EVENT_DEPTH=16）。
+  + 事件总线重入防护（EventGuard thread_local + MAX_EVENT_DEPTH=16）
+  + `sync`（`lock_or_recover`/`read_or_recover`/`write_or_recover` 防中毒锁 helper
+  + `panic_payload_message`：把 panic 负载渲染成可上报文本）。
 - `agentj-config`：TOML 配置（[model]/[agent]/[permission]/[session]/[license]/[[mcp.servers]]；
   `[permission] timeout_ms` 调整 `ask` 自动拒绝等待预算（缺省 60s，钳制 100..=600_000，
   越界钳制并告警；e2e fixture 调至 800ms）；
@@ -171,6 +173,10 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
     包裹 cache 层与登录门，避免 `Router::layer` 波及 `/ws`）+ 不透明会话 cookie
     + 同源 Origin 校验 + `next` 白名单（防开放重定向）+ WS cookie 第三通道
     （`WsConnection::with_init_token` + `supply_initialize_token` 注入 server token）。
+  - `secure`：`ct_eq`（常量时间比较）+ 会话/清除 cookie 的单点构造
+    （`HttpOnly; SameSite=Lax; Path=/` + 可选 `Secure`/`Max-Age=0`，序列化失败记日志）。
+  - 请求入口 panic 隔离：`handle_request_from` → `dispatch_request`（24 方法）经 `isolate_panic`
+    兜底，panic 转 `-32603` `InternalPanic`（`error.data { method, reason }`）。
   - `login_limiter`：按来源 IP 失败计数与指数锁定（第 5 次失败起 30s、×2、封顶 900s；
     `429 + Retry-After`；idle_ttl 1800s / max_tracked 1024 淘汰；回环同样计数）
     + `snapshot()` 只读投影（供指标导出）。
@@ -268,6 +274,11 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
   未知能力/枚举值容忍）。
 - 值枚举带 `#[serde(other)]` + `#[schemars(skip)]` Unknown 变体（向前兼容）。
 - Rust function ≤50 lines，≤120 chars per line。
+- 锁与 panic：锁一律走 `agentj_core::sync::{lock_or_recover, read_or_recover, write_or_recover}`
+  （中毒记日志并取回内部状态，禁止 `.lock().unwrap()`）；长驻任务（内核消息循环 / 请求派发 /
+  一轮 turn）必须 `catch_unwind` 隔离，且 panic 后仍完成协议契约（错误事件 / `-32603` /
+  释放 turn 槽）；`let _ =` 只用于无结果语义的场景（通道发送、`abort()`、写入 `String`），
+  其余必须记日志或传播 —— 细则见 `CONTRIBUTING.md`「Panics, locks and swallowed errors」。
 
 ## Rules
 
