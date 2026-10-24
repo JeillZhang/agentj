@@ -742,6 +742,53 @@ test("tree shortcuts are inert while a search result row has focus", async () =>
   expect(rows[1]).toHaveAttribute("aria-selected", "false");
 });
 
+test("treats total:0 as an empty result set, not as an old kernel", async () => {
+  vi.useFakeTimers();
+  const client = searchClient(() => ({ entries: [], total: 0, truncated: false }));
+  render(<FileTree client={client} sessionId="s1" demo={false} />);
+  await flush();
+  await typeSearch("zzz");
+  await advanceDebounce();
+
+  // `total: 0` is a real count: the `typeof === "number"` check must not treat it as absent.
+  expect(screen.getByText("搜索到 0 / 0 项")).toBeInTheDocument();
+  expect(screen.queryByText(/不支持服务端搜索/)).toBeNull();
+});
+
+test("Escape before the debounce elapses cancels the pending request", async () => {
+  vi.useFakeTimers();
+  const calls: Call[] = [];
+  const client = searchClient(() => ({ entries: SEARCH_HITS, total: 3, truncated: false }), calls);
+  render(<FileTree client={client} sessionId="s1" demo={false} />);
+  await flush();
+
+  const input = screen.getByRole("searchbox");
+  fireEvent.change(input, { target: { value: "main" } });
+  fireEvent.keyDown(input, { key: "Escape" });
+  await advanceDebounce();
+
+  expect(searchCalls(calls)).toHaveLength(0);
+  expect(screen.getAllByRole("treeitem")[0]).toHaveTextContent("src");
+});
+
+test("unmounting during the debounce fires no request and no state update", async () => {
+  vi.useFakeTimers();
+  const calls: Call[] = [];
+  const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+  const client = searchClient(() => ({ entries: SEARCH_HITS, total: 3, truncated: false }), calls);
+  const { unmount } = render(<FileTree client={client} sessionId="s1" demo={false} />);
+  await flush();
+
+  fireEvent.change(screen.getByRole("searchbox"), { target: { value: "main" } });
+  unmount();
+  await advanceDebounce();
+
+  expect(searchCalls(calls)).toHaveLength(0);
+  // React logs a warning if a timer callback sets state after unmount.
+  expect(consoleError).not.toHaveBeenCalled();
+  consoleError.mockRestore();
+});
+
 test("demo mode has no search box", () => {
   const client = mockClient(() => null);
   render(<FileTree client={client} sessionId="s1" demo />);
