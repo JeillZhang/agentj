@@ -55,6 +55,9 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
   + `protocol/methods.json` + `agentj-ui/package.json` / `apps/web` / `apps/tui` / `apps/desktop`
   + `agentj-ui/package-lock.json` 根条目；失败打印出错文件与命中字面量。
   `AGENTJ_ROOT=<路径>` 可对任意目录跑同一套断言，`scripts/test-check-version.sh` 是其正/负样例）
+- `python3 scripts/tests/fn-length.py [PATH…]` — 逐个 `fn` 计 body 行数，>50 行即失败并列出
+  `file:line: fn name = N lines`（目录参数自动展开；`/tests/` 段跳过并打印
+  `scanned N file(s), skipped M test file(s)`；空目标集 `rc=2` 拒绝空过）。
 - `bash scripts/tests/assert-{ui,cargo,ci}.sh all` — 仓库不变量断言（17 个 check：UI 清单 /
   单一 lockfile / Cargo 工作区策略 / 15 crate 继承 / LICENSE / deny.toml / lockfile 一致性 /
   函数长度 / CI 作业契约 / 覆盖率棘轮 / 治理文件 / 卫生 / summary / 文档基线 —— 文档基线一项
@@ -171,6 +174,13 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
   + `error.data` 透传 + 非法结构请求回显可确定 id（可确定 id → `-32600`；语法错误
   → `-32700` + `id:null`）。**错误码表与鉴权通道契约以
   [`docs/specs/ipc-protocol.md`](docs/specs/ipc-protocol.md) 为准**，本文件不复述。
+  - **模块布局**（`lib.rs` 仅剩装配 + 再导出，≤600 行）：`dispatch`（`handle_request_from` /
+    `auth_gate` / `dispatch_request` / `DISPATCH_METHODS` 方法表）+ `handlers/{lifecycle,
+    session,run,pending,provider,file}`（24 个方法处理器）+ `rpc`（JSON-RPC 信封 +
+    `DispatchError`）+ `registry`（`Connection` / `ConnectionRegistry`）+ `frames`（帧构造与
+    artifact wire 映射）+ `stdio` / `tcp` / `web` / `ws` + `tests/*`（按域分文件）。
+    两道防漂移 pin：`DISPATCH_METHODS` ↔ `protocol/methods.json` 双向；`tests/pins.rs` 断言
+    已搬走的符号不再回潮到 `lib.rs` / `web.rs` / `tcp.rs` / `ws.rs`。
   - `web` 子模块（同端口静态托管 + 混合鉴权）：`WebConfig` + `build_router`
     （`/ws` + `/login`/`/logout` + 静态 `ServeDir`/SPA fallback；两静态服务各自
     包裹 cache 层与登录门，避免 `Router::layer` 波及 `/ws`）+ 不透明会话 cookie
@@ -216,6 +226,10 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
   `VERSION` / `PROTOCOL_VERSION` / `resolveWsUrl` + `src/methods.ts` METHODS
   + `transports/websocket.ts` + `transports/tcp.ts`；`RpcClient.request` 拦截
   空/未定义 method；`index.ts` barrel 导出 `VERSION`），被 Web/TUI/Desktop 同源消费。
+  - 三端共享纯逻辑：`src/files.ts`（文件树模型/导航/行格式化/搜检索引：`buildFileNode` /
+    `updateNode` / `flattenVisible` / `moveSelection` / `formatFileRowParts` /
+    `formatSearchRowParts` / `toGitLetter` / `parentPath` …）+ `src/toolSummary.ts`
+    （工具调用摘要）：Web 与 TUI 都只消费这一份，不得在应用内重写。
   - `resolveWsUrl` 页面地址派生：无 `VITE_AGENTJ_WS_URL`/显式 host 时取页面
     `location.hostname:4096`（https → wss；`tauri.localhost` 保持明文回环）。
   - 手动连接持久化到 `agentj.connection`（刷新自动恢复并重连）；显式设置优先于

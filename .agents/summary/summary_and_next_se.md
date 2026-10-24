@@ -7,17 +7,121 @@
 > 待实施），不得随内容替换而删除；仅当该特性实际实施完成后才能移除（移入功能记录）。
 > 前端总结独立存放于 `summary_and_next_fe.md`；两文件内容隔离，互不写入对方文件。
 
-本文件当前记录**依赖刷新批次**（一次把 11 个 dependabot PR 落到一个分支，wire 面零变更）。
+本文件当前记录**结构债收敛与三端纯函数共享（后端侧）**——七个结构债项一次收尾，wire 面零变更。
 
-> 当前功能：**依赖刷新批次** —— 分支 `chore/dependency-refresh-batch`（自 `c82c679` 起）。
-> 把 11 个 dependabot PR 的更新合并为一次变更：Rust 侧 reqwest / criterion / toml / sha2 /
-> base64 / libloading，前端 react / vite / vitest / jsdom / jest-dom / lucide-react / @opentui /
-> @tauri-apps/cli；不涉及 `PROTOCOL_VERSION`（仍 **0.19.0**，28 方法 / 78 schemas）与工作区版本
-> （仍 **0.1.0**）。
+> 当前功能：**结构债收敛 + 函数长度门禁** —— 分支 `refactor/structure-debt-and-web-search`
+> （自 `b7a3ae7` 起，47 个任务 / 4 个阶段）。目标：**同一语义只有一份实现**。
+> 不涉及 `PROTOCOL_VERSION`（仍 **0.19.0**，28 方法 / 78 schemas）与工作区版本（仍 **0.1.0**）
+> ——`schemas/*.json` / `protocol/methods.json` / `types.d.ts` 全程零 diff（每个阶段都跑了
+> drift 门禁与 `git status --porcelain schemas/` 回验）。
+>
+> 七个结构债项：① permission/question 待决表双份镜像 → `PendingRegistry`；
+> ② 三处路径逃逸校验各自为政 → `core::paths::resolve_within_root`；
+> ③ `ipc/src/lib.rs` 7,445 行巨型模块 → `dispatch` / `handlers/*` / `rpc` / `registry` /
+> `frames` / `stdio` / `tests/*`；④ 26+ 个超长函数 → 全部拆到 ≤50 行并有门禁；
+> ⑤ 三个 <150 行的薄 crate → 并入 `agentj-core`（18→15 crate）；
+> ⑥ 前端文件树/工具摘要在 Web 与 TUI 各写一份 → 上提 `@agentj/sdk`；
+> ⑦ Web 文件树无搜索能力 → 接入内核服务端搜检。
 
-## 依赖刷新批次 ✅
+## 结构债收敛 + 三端纯函数共享（后端侧） ✅
 
-分支 `chore/dependency-refresh-batch`（自 `c82c679`）。
+分支 `refactor/structure-debt-and-web-search`（自 `b7a3ae7`）。逐任务的执行记录见
+`.superpowers/sdd/progress.md`（本地文件，不入库）。
+
+### 交付
+
+**A. 两个新基础原语（`agentj-core`）**
+
+- `pending.rs`：`PendingRegistry<K, P>`（`ttl: Option<Duration>` + 按会话归属 + 超时回收 +
+  `prune_where` / `for_session` / `drain`）——permission 与 question 从双份镜像变为同一实现；
+  permission 保留 `_keepalive` watch 通道与 `PENDING_TTL` 300s，question 保留 `settled` 表 +
+  settle hook（`ttl = None`）。
+- `paths.rs`：`Resolved::{Inside(PathBuf), Outside{requested}}` + `resolve_within_root`——
+  fail-closed canonicalize（根不可解析⇒词法退化；目标不存在⇒最近存在祖先 + 词法尾部；
+  其他 io 错误⇒Outside），永不 panic。permission `eval_path`、`tool_paths::rebase_tool_args`、
+  `file_list::resolve_scope` 三处改用，删掉 `lexical_normalize` / `escapes_root` / `lexical_join`。
+
+**B. `agentj-ipc` 按域拆分（`lib.rs` 7,445 → 453 行）**
+
+- `dispatch.rs`（`handle_request_from` / `auth_gate` / `dispatch_request` / `DISPATCH_METHODS`）、
+  `handlers/{lifecycle,session,run,pending,provider,file}.rs`（24 个方法处理器）、
+  `rpc.rs`（JSON-RPC 信封 + `DispatchError`）、`registry.rs`（`Connection` / `ConnectionRegistry`）、
+  `frames.rs`（帧构造 + artifact wire 映射）、`stdio.rs`（`serve_stdio` + `StdioStep`）、
+  `tcp.rs` / `web.rs` / `ws.rs` 保持原位置。
+- 1,160 行内联测试 → `src/tests/{mod,lifecycle,session,run,pending,provider,file,stdio,frames,dispatch,pins}.rs`
+  （116+ 个测试，断言逐字未改，仅解缬后由 rustfmt 重排）。
+- 不漂移的两道保险：`DISPATCH_METHODS` 与 `protocol/methods.json` 双向 pin（表 ↔ `match` 臂
+  以 `"\"{method}\" =>"` 为针）；`tests/pins.rs` 断言 42 个已搬走的符号不再出现在
+  `lib.rs` / `web.rs` / `tcp.rs` / `ws.rs`（针运行时拼，防自满足）。
+- `StdioConnection` 收为 crate 内部类型（无仓内使用者；对外可见性变化已记入 changelog）。
+
+**C. 超长函数治理 + 仓内门禁**
+
+- `scripts/tests/fn-length.py`：逐 `fn` 计 body 行数（>50 失败），识别
+  `pub(crate) async` / `const` / `unsafe` / `extern "C"` / `default` / 泛型 / raw string，
+  平衡切掉内联 `#[cfg(test)] mod` 后继续扫描；**空目标集 `rc=2` 拒绝空过**。
+- 接入 `scripts/tests/assert-cargo.sh`（`fn-length` 检查，实测 `0 functions > 50 lines`），
+  `assert-ci.sh` 的 `docs-agents` 断言核对 `AGENTS.md` 的检查总数（现 **17** = 3 ui + 6 cargo + 8 ci）。
+- 拆分代表值：`run_turn` 385→43、`spawn_turn` 71→22、`shutdown_all` 72→23、`route_message` 58→23、
+  CLI `main` 432→4、`build_providers` 118→27、`generate_schemas` 141→5（78 schema 行拆 11 组分表，
+  drift 仍绿）、`dispatch_session_run` 274→23、`dispatch_permission_respond` 79→14、`serve_stdio` 85→39、
+  `open_stream` 138→12、三个 wire 的 `push_payload` 78/75/73→≤18、`request_body` 52→14、
+  `fetch_account_models` 56→25、MCP `execute` 56→9 / `call_server` 54→11、`ensure_access` 54→12、
+  `FileBackedStore::new` 57→11、`version_handler` 56→7。
+
+**D. 工作区 18 → 15 crate**
+
+- `agentj-stats` → `core::usage_stats`、`agentj-skills` → `core::skills/{mod,loader}`（导 `load_skills` 仍在此）、
+  `agentj-context` → `core::context_pipeline::DefaultContextPipeline`（根 re-export）。
+- `agentj-core/src/lib.rs` 42 行；`Cargo.lock` −23 行；三份 manifest 减去 path/dev 依赖；
+  `assert-cargo.sh` 的 `!= 18` 计数改为**显式 15 名单**断言（多/少一个都报出 crate 名）。
+
+**E. 缺陷修复（本轮新发现，均已入 changelog `### Fixed`）**
+
+- `permission/respond` 不再是单一赢家（两次独立加锁 → 一次性 `finished: Arc<AtomicBool>` 认领，
+  且**先解会话再取认领**，避免认领被烧但决定未送）；
+- 符号链接可绕过工具路径校验（`link → /` 现为 Deny）；
+- 不存在的写入目标被误判为逃逸（`write src/new/deep.rs` 现为 `Ask`）；
+- 工具参数被重定基到工作区外（`Outside` 现原样返回，交权限系统裁决）；
+- `OutsideRoot` 文案误诊 EACCES；pending 插入冲突只在 `debug_assert`（现同时 `tracing::error!`）。
+
+### 验证
+
+| 命令 | 结果 |
+|------|------|
+| `cargo test --workspace --locked` | 全绿（15 crate，42 个测试目标，单测 1150+） |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings` | 0 警告 |
+| `cargo fmt --all --check` | 干净 |
+| `python3 scripts/tests/fn-length.py crates/` | `0 functions > 50 lines` |
+| `bash scripts/tests/assert-{ui,cargo,ci}.sh all` | 3 / 6 / 8 passed，0 failed |
+| `cargo test -p agentj-protocol -- drift` + `gen_schemas` | 绿，78 schema 零 diff |
+| `./scripts/check-version.sh` | `version-ok`（版本未动，仍 0.1.0） |
+| `cargo deny check advisories licenses bans sources -D unmatched-skip` | 全 ok |
+
+### 决策与偏差（本批次）
+
+- **单一文档同步提交**：四个阶段的门禁都在各自提交里跑，但 `docs/changelog` + 两份 summary +
+  AGENTS/README 收在一个提交里（同一特性阶段，避免四份半成品文档）。
+- **纯重构不改行为**：`dispatch_session_run` 仅 `acc.usage` 赋值位置从分支内移到 `emit_usage`
+  （acc 为循环局部，不可观测）；新增 `turn_broadcast_order_is_progress_todo_usage_then_done_settlement`
+  把帧序 `text → tool_call → tool_result → todo → text → usage` 与 `Done` 载荷顺序钉住（原为「仅看似正确」）。
+- **path 解析**：`resolve_within_root` 对根内符号链接别名返回 **canonical 前缀**的路径（已入 changelog）。
+- **fn-length 度量规则**：从 `fn` 关键字到右花括号（多行签名会计入），已写进脚本 docstring；
+  `/tests/` 路径段整体豁免（测试夹具多行构造），脚本会打印 `scanned N / skipped M` 使其可见。
+- **tcp 绑定时的一次 `local_addr()`** 保留（为 metrics 路径服务；做成懒值需 `Option<u16>`，反而易读出静默 0）。
+
+### 遗留问题 / 已知限制（本批次）
+
+- `agentj-ipc/src/web.rs` 仍 **4,032 行**（拆分前就存在，不在计划文件清单内）：内部已拆出
+  `static_surface` / `version_handler` 的子函数，但文件级拆分仍是下一轮候选。
+- `agentj-ui/apps/tui/src/files.test.ts` 仍逐条重测 `@agentj/sdk` 已覆盖的断言（~190 行重复期望）；
+  行为真源已是 `packages/sdk/src/__tests__/files.test.ts`，可下次收窄。
+- Web `FileTree.tsx` 695 行里有两套状态机（懒加载树 + 搜索），`SearchState` 那一块（~90 行无 JSX）
+  适合提为 `hooks/useFileSearch.ts`（本轮受计划文件清单约束未提）。
+
+## 归档：依赖刷新批次 ✅
+
+分支 `chore/dependency-refresh-batch`（自 `c82c679`），11 个 dependabot PR 合成一次变更。
 
 ### 交付
 
@@ -115,7 +219,7 @@
 
 - **仓库断言 harness**（`scripts/tests/assert-ui.sh` / `assert-cargo.sh` / `assert-ci.sh`）：
   `--list` / `<check>` / `all` / `--strict` 四种入口，未实现项以 `SKIP`（exit 3）显式暴露、
-  `--strict` 视为失败。16 个检查覆盖 UI 清单与单一 lockfile、workspace Cargo 策略与 18 crate
+  `--strict` 视为失败。17 个检查覆盖 UI 清单与单一 lockfile、workspace Cargo 策略与 15 crate
   继承、LICENSE 三件套、`deny.toml`、lockfile 一致性（`cargo metadata --locked`）、CI 作业契约、
   覆盖率棘轮、frontend 作业、治理文件、工作区卫生、两份 summary 与文档基线。
 - **CI 作业补全**（`.github/workflows/ci.yml`）：新增 `deny`（cargo-deny 四类检查）、
@@ -432,12 +536,7 @@
 | # | 特性 | 内容 | 依赖 | 状态 |
 |---|------|------|------|------|
 | ⑥ | 用量历史（服务端持久化 + 趋势） | `provider/usage` 由按需 TTL 300s 扩为服务端持久化采样 + 历史/趋势查询（协议加性）、Web/TUI 趋势视图与保留策略 | 无（基于 v0.27.0 用量面板；设计需先定采样归属/保留/加性 wire） | 待实施 |
-| ⑩ | 【债】IPC 协议层拆分 | `crates/agentj-ipc/src/lib.rs`（实测 **7,339 行 / 295,749 B**）按 dispatch 域拆为 `dispatch_session` / `dispatch_permission` / `dispatch_question` / `dispatch_file` / `dispatch_provider` 等子模块；`impl IpcServer`（行 486–1931，约 **1,445 行**、30+ 方法）切分为多个 impl 块或独立 handler | 无（纯重构，wire 面不变） | 待实施 |
-| ⑪ | 【债】超长函数治理 | 实测 lib 代码 831 个函数中 **26 个 >50 行**（违反 `AGENTS.md` 「function ≤50 lines」）：`crates/agentj-cli/src/main.rs:466 fn main`（**379 行**）、`crates/agentj-core/src/turn_runner.rs:189 fn run_turn`（**362 行**）、`crates/agentj-ipc/src/lib.rs:861 fn dispatch_session_run`（**252 行**）、`crates/agentj-ipc/src/lib.rs:1420 fn dispatch_permission_respond`（80 行）——按域抽子函数 | 与 ⑩ 同批执行 | 待实施 |
-| ⑬ | 【债】permission / question 待决机制收敛 | `crates/agentj-permission/src/module.rs` 与 `crates/agentj-question/src/module.rs` 是同一套 pending / owner / settle 的双份镜像（`new` / `set_notifier` / `respond` / `session_of` / `cancel_session` / `clear_all` + `PENDING_TTL` 一一对应）；抽出共用 `PendingRegistry`，消除「修一处漏一处」（BUG-017 已证明代价） | 无 | 待实施 |
-| ⑯ | 【债】crate 粒度收敛 | `agentj-context` 87 行 / `agentj-stats` 133 / `agentj-skills` 132 / `agentj-license` 149 均为 <150 行的独立 crate，而 `agentj-ipc` 单 crate 12,514 行；评估合并或降级为模块（触及 `agentj-cli` 装配与 CI） | 无 | 待实施 |
 | ⑰ | 模型元数据与 token 预算 | `schemas/ModelEntry.json` 补 `context_window`（加性 wire），把 `estimate_tokens` 的「ASCII/4 + 非 ASCII×1」字符启发式换成真 tokenizer，或至少按模型真实窗口裁剪（现默认 128k 是保守假设） | 取决于上游目录是否提供窗口字段 | 待实施 |
-| ㉙ | 【债】工具侧路径校验弱于 IPC 侧 | `crates/agentj-ipc/src/file_list.rs:71/126/331` 用 `canonicalize` + 前缀比对（真沙箱），而 `crates/agentj-permission/src/engine.rs:76 escapes_root` = `lexical_normalize` + `starts_with`、`crates/agentj-core/src/tool_paths.rs:16 rebase_tool_args` 亦纯词法归一化 → **符号链接可绕过**；bash 只设 `current_dir`，模型可 `cd /` 后任意操作（无 seccomp/namespace 硬隔离，安全性完全押在权限系统 + 用户审批上）→ 统一到 canonicalize 或明确文档化该边界 | 无 | 待实施 |
 | ㉟ | 【债】Desktop 安装包构建验证 | `cross-platform` 作业目前只做 `cargo build --workspace --locked`；`agentj-ui/apps/desktop` 声称 deb/AppImage/dmg/msi 四件套，但 `tauri build` 与 `check-artifacts.sh` 从未在 CI 执行（macOS/Windows 打包链路无回归保护） | 需 macOS/Windows runner + 签名/公证策略决策 | 待实施 |
 
 > 类型标记：`【债】` = 工程债 / 质量门禁，`【修复】` = 已确认缺陷或元数据不一致；无标记 = 特性。
@@ -446,12 +545,12 @@
 
 ## 下一步
 
-- 健壮性与去重批次已收尾（代码 / 门禁 / 文档 / summary），分支推送 `origin` 与 `gitcode`，
-  PR 开在 `origin`（用户负责合并）。
-- 下一批候选（建议合并实施）：⑩⑪「IPC 拆分 + 超长函数」与 ⑬「pending 机制收敛」同批——三者都
-  围绕 `crates/agentj-ipc/src/lib.rs` 与 permission/question 两个 module，可一次重构 + 一次回归。
-- 其余候选：⑥ 用量历史（特性，最大件）；⑯ crate 粒度；⑰ 模型窗口元数据；㉙ 路径校验
-  canonicalize；㉟ desktop 打包验证。前端见 `summary_and_next_fe.md`（③ 服务端搜索、㉔ 三端收敛）。
+- 结构债收敛批次已收尾（代码 / 门禁 / 文档 / summary），分支推送 `origin` 与 `gitcode`，
+  PR 开在 `origin`（用户负责合并）。⑩⑪⑬⑯㉙ 五项已实施，从上表移除。
+- 下一批候选：⑥ 用量历史（当前唯一带协议加性面的大件特性）；⑰ 模型窗口元数据 / 真 tokenizer；
+  ㉟ desktop 打包验证（需 macOS/Windows runner 与签名策略）。
+- 已收尾但仍留在表外的技术债（不进 待实施 表，仅备查）：`agentj-ipc/src/web.rs` 4,032 行的文件级拆分、
+  Web `FileTree.tsx` 的 `useFileSearch` 提取、TUI `files.test.ts` 与 SDK 测试的重复。
 
 > 远端提示：`git fetch gitcode` 在本机报 `fatal: couldn't find remote ref gitcode`（镜像缺该
 > ref），按纪律未 `--force`；分支仍照常 `git push gitcode <branch>:<branch>`，失败即如实记录。
