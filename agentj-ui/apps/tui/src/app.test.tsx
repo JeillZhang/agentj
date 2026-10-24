@@ -751,8 +751,9 @@ describe("files search mode", () => {
     await settleDebounce(setup);
     const reply = await searchReply(kernel, "main");
     expect(reply.entries.map((e) => e.path)).toEqual(contract!.expected_ranked_paths);
-    // The UI half: the surviving file row is actually rendered.
-    expect(setup.captureCharFrame()).toContain("main.rs");
+    // The UI half: the surviving file row is actually rendered. @opentui 0.6 paints on
+    // its own scheduler, so wait for the frame instead of snapshotting after flush().
+    await setup.waitForFrame((frame) => frame.includes("main.rs"));
     act(() => setup.renderer.destroy());
   });
 
@@ -897,13 +898,8 @@ describe("files search mode", () => {
     const before = rootCalls();
     await act(async () => { input.press("enter"); await setup.flush(); });
     await act(async () => { await setup.waitFor(() => rootCalls() > before); });
-    await act(async () => {
-      await setup.waitFor(() => !setup.captureCharFrame().includes("type filter"));
-    });
-    await act(async () => {
-      await setup.waitFor(() => setup.captureCharFrame().includes("path no longer exists"));
-    });
-    expect(setup.captureCharFrame()).toContain("path no longer exists");
+    await setup.waitForFrame((frame) => !frame.includes("type filter"));
+    await setup.waitForFrame((frame) => frame.includes("path no longer exists"));
     act(() => setup.renderer.destroy());
   });
 
@@ -1048,8 +1044,9 @@ describe("files search mode", () => {
     await settleDebounce(setup);
 
     // the sidebar wraps the hint across cells, so compare on a single-line projection
-    const frame = setup.captureCharFrame().replace(/[\s│]+/g, " ");
-    expect(frame).toContain(SEARCH_UNSUPPORTED_HINT);
+    await setup.waitForFrame((frame) =>
+      frame.replace(/[\s│]+/g, " ").includes(SEARCH_UNSUPPORTED_HINT),
+    );
     act(() => setup.renderer.destroy());
   });
 

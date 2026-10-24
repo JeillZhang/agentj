@@ -21,9 +21,9 @@ uuid = "1"
 async-trait = "0.1"
 futures = "0.3"
 tempfile = "3"
-base64 = "0.22"
+base64 = "0.23"
 wiremock = "0.6"
-libloading = "0.8"
+libloading = "0.9"
 
 # Lint policy lives in the repository, not only in the CI command line.
 # `-D warnings` in CI decides "warn means fail"; this table decides which

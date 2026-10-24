@@ -96,21 +96,21 @@ describe("Composer", () => {
       await new Promise((r) => setTimeout(r, 20));
       await setup.flush();
     });
-    expect(setup.captureCharFrame()).toContain("second");
+    await setup.waitForFrame((frame) => frame.includes("second"));
     await act(async () => {
       input.press("up");
       await setup.flush();
       await new Promise((r) => setTimeout(r, 20));
       await setup.flush();
     });
-    expect(setup.captureCharFrame()).toContain("first");
+    await setup.waitForFrame((frame) => frame.includes("first"));
     await act(async () => {
       input.press("down");
       await setup.flush();
       await new Promise((r) => setTimeout(r, 20));
       await setup.flush();
     });
-    expect(setup.captureCharFrame()).toContain("second");
+    await setup.waitForFrame((frame) => frame.includes("second"));
     act(() => setup.renderer.destroy());
   });
 

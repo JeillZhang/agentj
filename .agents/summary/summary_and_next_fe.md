@@ -8,14 +8,39 @@
 > 待实施），不得随内容替换而删除；仅当该特性实际实施完成后才能移除（移入功能记录）。
 > 后端总结独立存放于 `summary_and_next_se.md`；两文件内容隔离，互不写入对方文件。
 
-本文件当前记录**健壮性与去重批次（前端侧）**（视觉空白判定上提共享包，wire 面零变更）。
+本文件当前记录**依赖刷新批次（前端侧）**（react / vite / vitest / jsdom / jest-dom /
+lucide-react / @opentui / @tauri-apps/cli 一次性升级，wire 面零变更）。
 
-> 当前功能：**健壮性与去重批次（前端侧）** —— 分支 `chore/hardening-dedup-batch`（自 `b1edc78` 起）。
-> 本轮前端只落地「`isBlankText` 上提共享包 + TUI 空白帧」一项：过滤实现从 Web 应用移到
-> `@agentj/sdk`，TUI 运行视图同样丢弃零宽保活帧。
+> 当前功能：**依赖刷新批次（前端侧）** —— 分支 `chore/dependency-refresh-batch`（自 `c82c679` 起）。
+> 后端同批次的 Rust 侧记录见 `summary_and_next_se.md`。
 > `PROTOCOL_VERSION` 仍 0.19.0，`VERSION` 仍 0.1.0。
 
-## 健壮性与去重批次（前端）✅
+## 依赖刷新批次（前端）✅
+
+### 交付
+
+- **依赖升级**：`apps/web` react/react-dom 19.3、vite 8.3、vitest 5、jsdom 30、
+  `@testing-library/jest-dom` 7、`lucide-react` 1.60、oxlint 1.89；`apps/tui` `@opentui/*` 0.6；
+  `apps/desktop` `@tauri-apps/cli` 2.12。
+- **vitest 版本统一**：`packages/{protocol,sdk,tokens}` 同步升到 vitest 5——否则 jest-dom 7 的
+  `Assertion` 类型增强会绑到被提升的 vitest 4 类型上，`tsc -b` 报一批 `TS2339`。
+- **TUI 测试改等帧**：`@opentui` 0.6 的 `captureCharFrame()` 在渲染进行中调用会抛
+  `OutputBusy (status: -13)`，且 `flush()` 后抓帧可能落后一帧；`app.test.tsx` / `tui-flow.test.tsx`
+  的 6 处断言改为 `await setup.waitForFrame(predicate)`，应用代码未改。
+- **`scaffold.test.ts`**：`lucide-react` 断言从 `^0.` 改为 `^1.`。
+
+### 验证
+
+| 门禁 | 结果 |
+|------|------|
+| `bash -c 'bun --cwd agentj-ui/apps/tui test'` | 193 pass / 0 fail（22 files） |
+| `npm --prefix agentj-ui test --workspace=@agentj/web` | 678 passed（54 files） |
+| `npm --prefix agentj-ui test --workspace=@agentj/sdk` | 59 passed（7 files） |
+| `npm --prefix agentj-ui run build --workspace=@agentj/web` | 通过 |
+| `node agentj-ui/apps/desktop/check-desktop-ui.mjs` | `desktop-ui-ok` |
+| `./scripts/check-version.sh` | `version-ok` |
+
+## 归档：健壮性与去重批次（前端）✅
 
 ### 交付
 
