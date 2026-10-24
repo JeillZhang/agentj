@@ -939,3 +939,190 @@ fn run_handlers_moved_out_of_lib() {
         );
     }
 }
+
+/// One settled turn, captured together so the order assertions read top-down:
+struct OrderedTurn {
+    sid: String,
+    frames: Vec<serde_json::Value>,
+    reply: serde_json::Value,
+    kinds: Vec<String>,
+}
+
+/// Mock provider with one scripted stream per `chat_stream` call: the first call
+/// yields the tool batch, the next one the post-tool tail, then a bare `Done`.
+/// `MockModelProvider` drains its whole script in the first call, which cannot
+/// produce a delta that arrives after a tool result.
+struct PerCallScriptProvider {
+    scripts: std::sync::Mutex<
+        std::collections::VecDeque<Vec<Result<ModelEvent, agentj_core::error::ModelError>>>,
+    >,
+}
+
+impl PerCallScriptProvider {
+    fn new(scripts: Vec<Vec<Result<ModelEvent, agentj_core::error::ModelError>>>) -> Self {
+        Self {
+            scripts: std::sync::Mutex::new(scripts.into()),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl agentj_core::module::ModelProvider for PerCallScriptProvider {
+    async fn chat_stream(
+        &self,
+        _m: Vec<ChatMessage>,
+        _t: Vec<ToolDefinition>,
+        _o: ModelOptions,
+    ) -> Result<
+        futures::stream::BoxStream<'static, Result<ModelEvent, agentj_core::error::ModelError>>,
+        agentj_core::error::ModelError,
+    > {
+        let next = self
+            .scripts
+            .lock()
+            .map_err(|_| agentj_core::error::ModelError::Stream("per-call script poisoned".into()))?
+            .pop_front()
+            .unwrap_or_else(|| vec![Ok(ModelEvent::Done)]);
+        Ok(Box::pin(futures::stream::iter(next)))
+    }
+
+    async fn chat(
+        &self,
+        _m: Vec<ChatMessage>,
+        _o: ModelOptions,
+    ) -> Result<ChatResponse, agentj_core::error::ModelError> {
+        Ok(ChatResponse {
+            content: String::new(),
+            tool_calls: vec![],
+        })
+    }
+}
+
+/// `kind` of every `$/progress` frame, in the order the subscriber received them.
+fn frame_kinds(frames: &[serde_json::Value]) -> Vec<String> {
+    frames
+        .iter()
+        .map(|f| {
+            f["params"]["value"]["kind"]
+                .as_str()
+                .expect("every progress frame carries a kind")
+                .to_string()
+        })
+        .collect()
+}
+
+/// Drive one `session/run` that emits a text delta, a `todo` tool call (→ Todo
+/// artifact), a tail delta and a usage settlement, keeping a second connection
+/// subscribed so the broadcast order is observable.
+async fn drive_ordered_turn(server: &Arc<IpcServer>, dir: &std::path::Path) -> OrderedTurn {
+    let run_conn = register_fake_conn(server);
+    let sub_conn = register_fake_conn(server);
+    let new_resp = server
+        .handle_request_from(
+            r#"{"jsonrpc":"2.0","id":1,"method":"session/new"}"#,
+            &run_conn,
+        )
+        .await
+        .unwrap();
+    let sid = extract_sid(&new_resp);
+    server
+        .handle_request_from(
+            &format!(
+                r#"{{"jsonrpc":"2.0","id":2,"method":"session/subscribe","params":{{"session_id":"{sid}"}}}}"#
+            ),
+            &sub_conn,
+        )
+        .await
+        .unwrap();
+    let run_raw = format!(
+        r#"{{"jsonrpc":"2.0","id":3,"method":"session/run","params":{{"session_id":"{sid}","content":"hi"}}}}"#
+    );
+    let reply_raw = server
+        .handle_request_from(&run_raw, &run_conn)
+        .await
+        .unwrap();
+    let events = read_traj_events(dir, &sid);
+    OrderedTurn {
+        frames: progress_frames(server, &sub_conn),
+        reply: serde_json::from_str(&reply_raw).unwrap(),
+        kinds: traj_kinds(&events),
+        sid,
+    }
+}
+
+#[tokio::test]
+async fn turn_broadcast_order_is_progress_todo_usage_then_done_settlement() {
+    let dir = temp_dir_traj("order");
+    let todo_call = Ok(ModelEvent::ToolCall(ToolCall {
+        id: "call_todo".into(),
+        name: "todo".into(),
+        arguments: serde_json::json!({"items": [
+            {"content": "ship it", "status": "in_progress"}
+        ]}),
+    }));
+    let tail = vec![
+        Ok(ModelEvent::Delta("tail".into())),
+        Ok(ModelEvent::Usage(TokenUsage {
+            prompt_tokens: 7,
+            completion_tokens: 3,
+        })),
+        Ok(ModelEvent::Done),
+    ];
+    let provider = PerCallScriptProvider::new(vec![
+        vec![Ok(ModelEvent::Delta("plan".into())), todo_call],
+        tail,
+    ]);
+    let mut server = run_server_with_provider(Arc::new(provider), |tools| {
+        tools.register(Arc::new(TodoMock));
+    });
+    server.trajectory_store = Some(wired_store(&dir));
+    let server = Arc::new(server);
+    let turn = drive_ordered_turn(&server, &dir).await;
+
+    assert_eq!(
+        frame_kinds(&turn.frames),
+        vec!["text", "tool_call", "tool_result", "todo", "text", "usage"],
+        "broadcast order is stream order, with usage settled last by Done: {:?}",
+        turn.frames
+    );
+    assert_eq!(turn.reply["result"]["content"], "plantail");
+    assert_done_settles_in_order(&turn);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// `Done` settlement order: run_id, thinking flush, usage, tool calls, model.
+fn assert_done_settles_in_order(turn: &OrderedTurn) {
+    let result = &turn.reply["result"];
+    let todo = turn
+        .frames
+        .iter()
+        .find(|f| f["params"]["value"]["kind"] == "todo")
+        .expect("a todo frame");
+    let run_id = todo["params"]["value"]["run_id"].as_str().expect("run id");
+    assert_eq!(result["run_id"], run_id, "run_id is settled first");
+    assert_eq!(todo["params"]["value"]["session_id"], turn.sid);
+    assert_eq!(
+        result["usage"]["prompt_tokens"], 7,
+        "usage reaches the reply: {result}"
+    );
+    assert_eq!(result["usage"]["completion_tokens"], 3);
+    assert_eq!(
+        result["tool_calls"][0]["name"], "todo",
+        "tool calls reach the reply: {result}"
+    );
+    assert!(result["provider"].is_string() && result["model"].is_string());
+    assert_eq!(
+        turn.kinds,
+        vec![
+            "user",
+            "thinking",
+            "tool_call",
+            "tool_result",
+            "todo",
+            "thinking",
+            "usage",
+            "run_model",
+        ],
+        "run_id → flush → usage → tool calls → provider/model, in that order"
+    );
+}
