@@ -188,10 +188,9 @@ impl OpenAiChunkParser {
     fn push_line(&mut self, line: &str, out: &mut Vec<Result<ModelEvent, ModelError>>) {
         crate::sse::push_line(self, line, out);
     }
-}
 
-impl crate::sse::SsePayload for OpenAiChunkParser {
-    fn push_payload(&mut self, json: Value, out: &mut Vec<Result<ModelEvent, ModelError>>) {
+    /// Top-level `usage` object → Usage (only when both token counts are present).
+    fn push_usage(&self, json: &Value, out: &mut Vec<Result<ModelEvent, ModelError>>) {
         if let Some(u) = json.get("usage").and_then(|u| u.as_object())
             && let (Some(p), Some(c)) = (
                 u.get("prompt_tokens").and_then(|v| v.as_u64()),
@@ -203,67 +202,99 @@ impl crate::sse::SsePayload for OpenAiChunkParser {
                 completion_tokens: c,
             })));
         }
+    }
+
+    /// Walk every `choices[]` entry of one payload.
+    fn note_finish(&mut self, choice: &Value) {
+        if let Some(finish) = choice.get("finish_reason").and_then(|v| v.as_str())
+            && finish == "tool_calls"
+        {
+            self.saw_tool_finish = true;
+        }
+    }
+
+    /// One `delta` object → text Delta plus accumulated tool-call fragments.
+    fn push_delta(&mut self, delta: &Value, out: &mut Vec<Result<ModelEvent, ModelError>>) {
+        self.push_text_delta(delta, out);
+        if let Some(tcs) = delta.get("tool_calls").and_then(|v| v.as_array()) {
+            for tc in tcs {
+                self.push_tool_call(tc);
+            }
+        }
+    }
+
+    /// `delta.content` → Delta when non-empty.
+    fn push_text_delta(&self, delta: &Value, out: &mut Vec<Result<ModelEvent, ModelError>>) {
+        if let Some(content) = delta.get("content").and_then(|v| v.as_str())
+            && !content.is_empty()
+        {
+            out.push(Ok(ModelEvent::Delta(content.to_string())));
+        }
+    }
+
+    /// Accumulate one `delta.tool_calls[]` fragment by index.
+    fn push_tool_call(&mut self, tc: &Value) {
+        let idx = tc.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+        let entry = self.pending.entry(idx).or_insert_with(|| ToolCall {
+            id: String::new(),
+            name: String::new(),
+            arguments: Value::Null,
+        });
+        if let Some(id) = tc.get("id").and_then(|v| v.as_str()) {
+            entry.id = id.to_string();
+        }
+        let Some(f) = tc.get("function") else {
+            return;
+        };
+        if let Some(name) = f.get("name").and_then(|v| v.as_str()) {
+            entry.name = name.to_string();
+        }
+        if let Some(args) = f.get("arguments").and_then(|v| v.as_str()) {
+            let mut accumulated = match &entry.arguments {
+                Value::String(s) => s.clone(),
+                _ => String::new(),
+            };
+            accumulated.push_str(args);
+            entry.arguments = match serde_json::from_str(&accumulated) {
+                Ok(v) => v,
+                Err(_) => Value::String(accumulated), // still partial JSON
+            };
+        }
+    }
+
+    /// Emit assembled tool calls once the `finish_reason=tool_calls` marker is seen
+    /// (arguments for an index arrive in subsequent chunks after id+name).
+    fn flush_tool_calls(&mut self, out: &mut Vec<Result<ModelEvent, ModelError>>) {
+        if !self.saw_tool_finish || self.pending.is_empty() {
+            return;
+        }
+        let mut idxs: Vec<usize> = self.pending.keys().copied().collect();
+        idxs.sort_unstable();
+        for idx in idxs {
+            if let Some(tc) = self.pending.remove(&idx)
+                && !tc.id.is_empty()
+                && !tc.name.is_empty()
+            {
+                out.push(Ok(ModelEvent::ToolCall(tc)));
+            }
+        }
+        self.pending.clear();
+    }
+}
+
+impl crate::sse::SsePayload for OpenAiChunkParser {
+    fn push_payload(&mut self, json: Value, out: &mut Vec<Result<ModelEvent, ModelError>>) {
+        self.push_usage(&json, out);
         let Some(choices) = json.get("choices").and_then(|c| c.as_array()) else {
             return;
         };
         for choice in choices {
             if let Some(delta) = choice.get("delta") {
-                if let Some(content) = delta.get("content").and_then(|v| v.as_str())
-                    && !content.is_empty()
-                {
-                    out.push(Ok(ModelEvent::Delta(content.to_string())));
-                }
-                if let Some(tcs) = delta.get("tool_calls").and_then(|v| v.as_array()) {
-                    for tc in tcs {
-                        let idx = tc.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-                        let entry = self.pending.entry(idx).or_insert_with(|| ToolCall {
-                            id: String::new(),
-                            name: String::new(),
-                            arguments: Value::Null,
-                        });
-                        if let Some(id) = tc.get("id").and_then(|v| v.as_str()) {
-                            entry.id = id.to_string();
-                        }
-                        if let Some(f) = tc.get("function") {
-                            if let Some(name) = f.get("name").and_then(|v| v.as_str()) {
-                                entry.name = name.to_string();
-                            }
-                            if let Some(args) = f.get("arguments").and_then(|v| v.as_str()) {
-                                let mut accumulated = match &entry.arguments {
-                                    Value::String(s) => s.clone(),
-                                    _ => String::new(),
-                                };
-                                accumulated.push_str(args);
-                                entry.arguments = match serde_json::from_str(&accumulated) {
-                                    Ok(v) => v,
-                                    Err(_) => Value::String(accumulated), // still partial JSON
-                                };
-                            }
-                        }
-                    }
-                }
+                self.push_delta(delta, out);
             }
-            if let Some(finish) = choice.get("finish_reason").and_then(|v| v.as_str())
-                && finish == "tool_calls"
-            {
-                self.saw_tool_finish = true;
-            }
+            self.note_finish(choice);
         }
-        // Emit assembled tool calls once the finish_reason=tool_calls marker is seen
-        // (arguments for an index arrive in subsequent chunks after id+name).
-        if self.saw_tool_finish && !self.pending.is_empty() {
-            let mut idxs: Vec<usize> = self.pending.keys().copied().collect();
-            idxs.sort_unstable();
-            for idx in idxs {
-                if let Some(tc) = self.pending.remove(&idx)
-                    && !tc.id.is_empty()
-                    && !tc.name.is_empty()
-                {
-                    out.push(Ok(ModelEvent::ToolCall(tc)));
-                }
-            }
-            self.pending.clear();
-        }
+        self.flush_tool_calls(out);
     }
 
     fn done_emitted_mut(&mut self) -> &mut bool {
