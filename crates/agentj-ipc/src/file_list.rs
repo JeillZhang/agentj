@@ -159,8 +159,81 @@ fn resolve_target(root: &Path, requested: &str) -> Result<PathBuf, FileListError
     }
     match resolve_within_root(root, requested) {
         Resolved::Inside(target) => Ok(target),
-        Resolved::Outside { .. } => Err(outside_root(requested)),
+        Resolved::Outside { .. } => Err(outside_or_enotdir(root, requested)),
     }
+}
+
+/// Map an `Outside` verdict onto the error shape `file/list` documents.
+///
+/// The shared resolver fails closed, and `ENOTDIR` (a trail under a path
+/// component that is a regular file, e.g. `a.txt/sub`) is one of the failures it
+/// cannot tell apart from an escape. For `file/list` that collapse is a
+/// client-visible drift (BUG-003): the base behaviour was `-32603` + the real
+/// io reason, not `-32807 outside_root`. Disambiguate on the error path only —
+/// never on the happy path — and only when the descent tripped over a regular
+/// file that really lives inside the root, so genuine escapes and unstatable
+/// ancestors (EACCES) keep failing closed.
+fn outside_or_enotdir(root: &Path, requested: &str) -> FileListError {
+    if let Some(reason) = enotdir_in_root(root, requested) {
+        return FileListError::Io {
+            path: requested.to_string(),
+            reason,
+        };
+    }
+    outside_root(requested)
+}
+
+/// Real `ENOTDIR` reason when `requested` descends past a regular file **inside**
+/// the root; `None` keeps the fail-closed `OutsideRoot` verdict.
+fn enotdir_in_root(root: &Path, requested: &str) -> Option<String> {
+    let inside = lexical_scope(root, requested)?;
+    let error = std::fs::metadata(&inside).err()?;
+    if error.kind() != std::io::ErrorKind::NotADirectory {
+        return None;
+    }
+    // The offending component must canonicalize inside the root: a symlink that
+    // leaves it is an escape, not an io failure.
+    let canonical = deepest_stat(&inside)?.canonicalize().ok()?;
+    canonical.starts_with(root).then(|| error.to_string())
+}
+
+/// Deepest prefix of `path` that still stats — for an `ENOTDIR` request that is
+/// the regular file the descent tripped over.
+fn deepest_stat(path: &Path) -> Option<PathBuf> {
+    let mut probe = path;
+    loop {
+        if std::fs::metadata(probe).is_ok() {
+            return Some(probe.to_path_buf());
+        }
+        probe = probe.parent()?;
+    }
+}
+
+/// Lexically normalize `requested` against `root`, refusing anything that climbs
+/// above it. `Some` means "inside the root as spelled" — not "safe": symlinks
+/// are resolved by the caller.
+fn lexical_scope(root: &Path, requested: &str) -> Option<PathBuf> {
+    let path = Path::new(requested);
+    let mut stack: Vec<Component> = if path.is_absolute() {
+        Vec::new()
+    } else {
+        root.components().collect()
+    };
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => match stack.last() {
+                Some(Component::RootDir | Component::Prefix(_)) => {}
+                Some(_) => {
+                    stack.pop();
+                }
+                None => return None,
+            },
+            other => stack.push(other),
+        }
+    }
+    let normalized: PathBuf = stack.iter().collect();
+    normalized.starts_with(root).then_some(normalized)
 }
 
 /// Map a metadata/canonicalization failure: missing → `NotFound`, else `Io`.
@@ -777,6 +850,90 @@ mod tests {
             Err(FileListError::NotADirectory)
         ));
         fs::remove_dir_all(&root).ok();
+    }
+
+    /// BUG-003: a trail under a **regular file** is an io failure, not a sandbox
+    /// verdict. The base commit canonicalized the request directly and reported
+    /// `-32603` + the real `ENOTDIR` reason; the shared fail-closed resolver
+    /// answers `Outside` for anything it cannot canonicalize, which silently
+    /// moved this shape to `-32807 outside_root`. The documented `file/list`
+    /// error split (io vs. outside) must not drift.
+    #[test]
+    fn path_under_a_regular_file_is_io_not_outside_root() {
+        let root = temp_dir("file-sub");
+        fs::write(root.join("a.txt"), "x").unwrap();
+        match list(&root, Some("a.txt/sub"), None).unwrap_err() {
+            FileListError::Io { path, reason } => {
+                assert_eq!(path, "a.txt/sub", "io label is the requested spelling");
+                assert!(!reason.is_empty(), "io reason must be carried");
+                #[cfg(unix)]
+                assert!(
+                    reason.contains("Not a directory"),
+                    "reason must report ENOTDIR, got {reason:?}"
+                );
+            }
+            other => panic!("a path under a regular file must stay Io, got {other:?}"),
+        }
+        fs::remove_dir_all(&root).ok();
+    }
+
+    /// The BUG-003 disambiguation must only widen io for `ENOTDIR`: real escapes
+    /// stay `OutsideRoot` and a missing path stays `NotFound`.
+    #[test]
+    fn escape_and_missing_verdicts_are_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        fs::write(root.join("a.txt"), "x").unwrap();
+        assert!(matches!(
+            list(&root, Some(".."), None),
+            Err(FileListError::OutsideRoot { .. })
+        ));
+        assert!(matches!(
+            list(&root, Some("a.txt/../.."), None),
+            Err(FileListError::OutsideRoot { .. })
+        ));
+        assert!(matches!(
+            list(&root, Some("nope"), None),
+            Err(FileListError::NotFound)
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_outside_with_file_tail_is_still_outside_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        fs::write(outside.path().join("secret.txt"), "x").unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.join("link")).unwrap();
+        assert!(matches!(
+            list(&root, Some("link/secret.txt/sub"), None),
+            Err(FileListError::OutsideRoot { .. })
+        ));
+    }
+
+    /// An ancestor that cannot be stat'ed (EACCES) is *not* an `ENOTDIR` io
+    /// failure: the sandbox cannot prove containment, so it keeps failing closed.
+    #[cfg(unix)]
+    #[test]
+    fn unsearchable_ancestor_stays_outside_root() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let locked = root.join("locked");
+        fs::create_dir(&locked).unwrap();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+        if fs::metadata(locked.join("sub")).is_ok() {
+            // Privileged runner: permission bits are not enforced → unexercisable.
+            fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+            return;
+        }
+        let verdict = list(&root, Some("locked/sub"), None).unwrap_err();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(
+            matches!(verdict, FileListError::OutsideRoot { .. }),
+            "EACCES must stay OutsideRoot, got {verdict:?}"
+        );
     }
 
     #[test]
