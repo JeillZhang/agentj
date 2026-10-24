@@ -454,6 +454,13 @@ const FileTree = forwardRef<FileTreeHandle, FileTreeProps>(function FileTree(
   const [search, setSearch] = useState<SearchState>(IDLE_SEARCH);
   /** Monotonic request id: any reply whose id is stale (query moved on, session changed) is dropped. */
   const searchSeq = useRef(0);
+  /**
+   * Session a reply must still belong to. Written during render, not in the reset
+   * effect below: a reply can resolve in the microtask window before effects flush,
+   * and it must not paint the previous session's rows for a frame.
+   */
+  const sessionRef = useRef(sessionId);
+  sessionRef.current = sessionId;
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const demoEntries = useMemo(() => flattenDemo(DEMO_FILE_TREE), []);
@@ -500,6 +507,7 @@ const FileTree = forwardRef<FileTreeHandle, FileTreeProps>(function FileTree(
   const runSearch = useCallback(
     async (query: string, seq: number): Promise<void> => {
       if (!client || !sessionId) return;
+      const requestSession = sessionRef.current;
       try {
         const reply = (await client.request(METHODS.fileList, {
           session_id: sessionId,
@@ -507,10 +515,10 @@ const FileTree = forwardRef<FileTreeHandle, FileTreeProps>(function FileTree(
           depth: SEARCH_DEPTH,
           query,
         })) as FileListReply;
-        if (searchSeq.current !== seq) return;
+        if (searchSeq.current !== seq || sessionRef.current !== requestSession) return;
         setSearch((prev) => (prev.active && prev.query === query ? applySearchReply(prev, reply) : prev));
       } catch (e) {
-        if (searchSeq.current !== seq) return;
+        if (searchSeq.current !== seq || sessionRef.current !== requestSession) return;
         const message = e instanceof Error ? e.message : String(e);
         setSearch((prev) =>
           prev.active && prev.query === query ? { ...prev, error: message, notice: null } : prev,
