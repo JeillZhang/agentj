@@ -1,8 +1,8 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, ReactNode } from "react";
 import { ChevronRight, Folder, FolderOpen } from "lucide-react";
-import { METHODS, parentPath, toGitLetter } from "@agentj/sdk";
-import type { GitLetter, RpcClient } from "@agentj/sdk";
+import { METHODS, buildSearchIndex, parentPath, toGitLetter } from "@agentj/sdk";
+import type { GitLetter, RawFileEntry as SharedRawFileEntry, RpcClient, SearchEntry } from "@agentj/sdk";
 import { DEMO_FILE_TREE } from "../demoData";
 import type { FileNode } from "../demoData";
 import { fileIconFor } from "../fileIcons";
@@ -27,6 +27,15 @@ export type FileTreeHandle = {
 
 const ROOT = "";
 
+/** Wait before asking the kernel so a fast typist issues one search, not one per key. */
+const SEARCH_DEBOUNCE_MS = 150;
+
+/** Search walks deeper than the lazy tree (`depth: 1` per expand) in one round trip. */
+const SEARCH_DEPTH = 8;
+
+/** Shown when the reply carries no `total`: the kernel predates `file/list { query }`. */
+const SEARCH_UNSUPPORTED_HINT = "内核不支持服务端搜索";
+
 /** One rendered row; `git` is the shared `toGitLetter` normalization of `git_status`. */
 type ViewEntry = {
   name: string;
@@ -42,7 +51,37 @@ type RawFileEntry = {
   git_status?: unknown;
 };
 
-type FileListReply = { entries?: RawFileEntry[] | null } | null;
+type FileListReply = {
+  entries?: RawFileEntry[] | null;
+  /** Server-side search only: total hit count; absent on kernels without `query`. */
+  total?: unknown;
+  truncated?: unknown;
+} | null;
+
+/**
+ * Search is a separate mode, not a filter over the loaded map: the kernel ranks
+ * (`file_list::search_rank`) and this component only renders what came back.
+ */
+type SearchState = {
+  active: boolean;
+  query: string;
+  rows: SearchEntry[];
+  total: number;
+  truncated: boolean;
+  error: string | null;
+  /** Old-kernel notice; mutually exclusive with `error`. */
+  notice: string | null;
+};
+
+const IDLE_SEARCH: SearchState = {
+  active: false,
+  query: "",
+  rows: [],
+  total: 0,
+  truncated: false,
+  error: null,
+  notice: null,
+};
 
 type FileTreeStats = {
   files: number;
@@ -120,6 +159,42 @@ type NodeListProps = {
 
 function StatusCell({ git }: { git: GitLetter }) {
   return <span className={`status-txt status-${git}`}>{git}</span>;
+}
+
+/** Narrows one wire entry into the shared search-entry shape. */
+function toSearchEntry(entry: RawFileEntry): SharedRawFileEntry {
+  return {
+    name: String(entry.name ?? ""),
+    path: String(entry.path ?? ""),
+    kind: entry.kind === "dir" ? "dir" : "file",
+    git_status: typeof entry.git_status === "string" ? entry.git_status : null,
+  };
+}
+
+/**
+ * A reply carrying `total` is a server-ranked search. Without it the kernel cannot
+ * search at all — say so instead of filtering the loaded tree locally, which would
+ * report a subset of a subset as if it were the whole answer.
+ */
+function applySearchReply(prev: SearchState, reply: FileListReply): SearchState {
+  if (typeof reply?.total !== "number") {
+    return { ...prev, rows: [], total: 0, truncated: false, error: null, notice: SEARCH_UNSUPPORTED_HINT };
+  }
+  return {
+    ...prev,
+    rows: buildSearchIndex((reply.entries ?? []).map(toSearchEntry)),
+    total: reply.total,
+    truncated: Boolean(reply.truncated),
+    error: null,
+    notice: null,
+  };
+}
+
+/** Header line above the result rows. */
+function searchHead(state: SearchState): string {
+  if (state.notice) return state.notice;
+  if (state.query.trim().length === 0) return "输入关键字搜索文件名";
+  return `搜索到 ${state.rows.length} / ${state.total} 项${state.truncated ? " · 部分结果" : ""}`;
 }
 
 /** Renders one loaded level; dirs recurse only while expanded and drive their own load state. */
@@ -249,6 +324,69 @@ function NodeList({
   );
 }
 
+type SearchBarProps = {
+  query: string;
+  onChange: (value: string) => void;
+  onEscape: () => void;
+};
+
+/** Debounced search input; Escape hands control back to the tree. */
+function SearchBar({ query, onChange, onEscape }: SearchBarProps) {
+  return (
+    <div className="ft-search">
+      <input
+        type="search"
+        className="aj-input"
+        aria-label="搜索文件"
+        placeholder="搜索文件…"
+        value={query}
+        onChange={(event) => onChange(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key !== "Escape") return;
+          event.preventDefault();
+          onEscape();
+        }}
+      />
+    </div>
+  );
+}
+
+/** Result rows: server order, `name` then the dimmed parent dir, git letter last. */
+function SearchResults({ state, onPick }: { state: SearchState; onPick: (path: string) => void }) {
+  return (
+    <>
+      <p className="ft-search-head" data-empty={state.rows.length === 0 ? "true" : undefined}>
+        {searchHead(state)}
+      </p>
+      {state.error ? <p className="ft-search-error">{`搜索失败：${state.error}`}</p> : null}
+      <div className="tree" role="tree" aria-label="搜索结果">
+        {state.rows.map((row) => {
+          const parent = parentPath(row.path);
+          const { Icon, category } = fileIconFor(row.name);
+          return (
+            <button
+              type="button"
+              role="treeitem"
+              className="trow trow-search"
+              key={row.path}
+              aria-selected={false}
+              tabIndex={-1}
+              data-path={row.path}
+              onClick={() => onPick(row.path)}
+            >
+              <span className="chev" aria-hidden="true" />
+              <Icon className={`file-icon file-icon--${category}`} size={13} aria-hidden="true" />
+              <span className="name">{row.name}</span>
+              {parent ? <span className="name-parent">{`${parent}/`}</span> : null}
+              {row.gitStatus ? <StatusCell git={row.gitStatus} /> : null}
+            </button>
+          );
+        })}
+      </div>
+    </>
+  );
+}
+
 /**
  * Left-panel 文件 tab body: lazily loads directories via `file/list`, caches children,
  * renders git markers and footer stats. Rows form a roving-tabindex tree: arrows move
@@ -265,6 +403,10 @@ const FileTree = forwardRef<FileTreeHandle, FileTreeProps>(function FileTree(
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const rowRefs = useRef(new Map<string, HTMLElement>());
+  const [search, setSearch] = useState<SearchState>(IDLE_SEARCH);
+  /** Monotonic request id: any reply whose id is stale (query moved on, session changed) is dropped. */
+  const searchSeq = useRef(0);
+  const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const demoEntries = useMemo(() => flattenDemo(DEMO_FILE_TREE), []);
   const entries = demo ? demoEntries : fetched;
@@ -300,8 +442,72 @@ const FileTree = forwardRef<FileTreeHandle, FileTreeProps>(function FileTree(
     [client, sessionId],
   );
 
+  const cancelSearchTimer = useCallback((): void => {
+    if (searchTimer.current === null) return;
+    clearTimeout(searchTimer.current);
+    searchTimer.current = null;
+  }, []);
+
+  // A failed search keeps its rows and error on screen; it is never resent implicitly.
+  const runSearch = useCallback(
+    async (query: string, seq: number): Promise<void> => {
+      if (!client || !sessionId) return;
+      try {
+        const reply = (await client.request(METHODS.fileList, {
+          session_id: sessionId,
+          path: null,
+          depth: SEARCH_DEPTH,
+          query,
+        })) as FileListReply;
+        if (searchSeq.current !== seq) return;
+        setSearch((prev) => (prev.active && prev.query === query ? applySearchReply(prev, reply) : prev));
+      } catch (e) {
+        if (searchSeq.current !== seq) return;
+        const message = e instanceof Error ? e.message : String(e);
+        setSearch((prev) =>
+          prev.active && prev.query === query ? { ...prev, error: message, notice: null } : prev,
+        );
+      }
+    },
+    [client, sessionId],
+  );
+
+  const changeQuery = useCallback(
+    (value: string): void => {
+      cancelSearchTimer();
+      searchSeq.current += 1;
+      const seq = searchSeq.current;
+      const blank = value.trim().length === 0;
+      setSearch((prev) => ({
+        ...prev,
+        active: true,
+        query: value,
+        error: null,
+        notice: null,
+        ...(blank ? { rows: [], total: 0, truncated: false } : {}),
+      }));
+      if (blank) return;
+      searchTimer.current = setTimeout(() => {
+        searchTimer.current = null;
+        void runSearch(value, seq);
+      }, SEARCH_DEBOUNCE_MS);
+    },
+    [cancelSearchTimer, runSearch],
+  );
+
+  const exitSearch = useCallback((): void => {
+    cancelSearchTimer();
+    searchSeq.current += 1;
+    setSearch(IDLE_SEARCH);
+  }, [cancelSearchTimer]);
+
+  useEffect(() => cancelSearchTimer, [cancelSearchTimer]);
+
   // Root load on mount / session change; demo mode resets to fixtures with no request.
   useEffect(() => {
+    cancelSearchTimer();
+    searchSeq.current += 1;
+    setSearch(IDLE_SEARCH);
     setFetched(new Map());
     setLoading(new Set());
     setErrors(new Map());
@@ -309,7 +515,7 @@ const FileTree = forwardRef<FileTreeHandle, FileTreeProps>(function FileTree(
     setSelectedPath(null);
     if (demo || !client || !sessionId) return;
     void loadDir(ROOT);
-  }, [demo, client, sessionId, loadDir]);
+  }, [demo, client, sessionId, loadDir, cancelSearchTimer]);
 
   const toggle = useCallback(
     (path: string): void => {
@@ -462,9 +668,22 @@ const FileTree = forwardRef<FileTreeHandle, FileTreeProps>(function FileTree(
     body = <p className="aj-empty">加载中…</p>;
   }
 
+  const searchBar =
+    demo || !sessionId ? null : (
+      <SearchBar query={search.query} onChange={changeQuery} onEscape={exitSearch} />
+    );
+  // Search mode replaces the tree body but never unmounts its state, so Escape restores
+  // the fetched/expanded tree exactly as it was.
+  const pane = search.active ? (
+    <SearchResults state={search} onPick={(path) => onFileSelect?.(path)} />
+  ) : (
+    body
+  );
+
   return (
     <div className="filetree">
-      {body}
+      {searchBar}
+      {pane}
       <div className="left-foot">
         <span>{stats.files} 个文件 · {stats.changes} 处变更</span>
         <span>⤢ 展开全部</span>

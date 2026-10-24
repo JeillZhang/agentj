@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { expect, test, vi } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
 import { createRef } from "react";
 import type { RpcClient } from "@agentj/sdk";
@@ -8,6 +8,11 @@ import FileTree from "./FileTree";
 import type { FileTreeHandle } from "./FileTree";
 import { visiblePaths } from "./fileTreeNav";
 import type { NavEntry } from "./fileTreeNav";
+
+// Every search case drives the 150ms debounce with fake timers; never leak them.
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 type Call = { method: string; params: Record<string, unknown> };
 
@@ -398,4 +403,185 @@ test("renders git letters from the shared helper and drops unknown ones", async 
 test("navigates to the parent directory via the shared parentPath", () => {
   expect(parentPath("src/components/FileTree.tsx")).toBe("src/components");
   expect(parentPath("README.md")).toBeNull();
+});
+
+// --- T47: server-side search -------------------------------------------------
+
+const SEARCH_HITS: RawEntry[] = [
+  { name: "main.ts", path: "src/main.ts", kind: "file", git_status: "M" },
+  { name: "main.css", path: "styles/main.css", kind: "file", git_status: null },
+  { name: "domain.rs", path: "crates/domain.rs", kind: "file", git_status: "D" },
+];
+
+/** Flushes the microtask queue React needs after a resolved request promise. */
+async function flush(): Promise<void> {
+  await act(async () => {});
+}
+
+async function typeSearch(value: string): Promise<void> {
+  fireEvent.change(screen.getByRole("searchbox"), { target: { value } });
+  await flush();
+}
+
+async function advanceDebounce(): Promise<void> {
+  await act(async () => {
+    vi.advanceTimersByTime(150);
+  });
+  await flush();
+}
+
+/** Client double: query requests answer from `hits`, tree requests from `byPath`. */
+function searchClient(hits: () => unknown, calls: Call[] = []): RpcClient {
+  return mockClient((path, call) => {
+    if ("query" in call.params) return hits();
+    return { entries: path ? CHILDREN : ROOT, truncated: false };
+  }, calls);
+}
+
+const searchCalls = (calls: Call[]): Call[] => calls.filter((c) => "query" in c.params);
+
+test("debounces into one server-side search request", async () => {
+  vi.useFakeTimers();
+  const calls: Call[] = [];
+  const client = searchClient(() => ({ entries: SEARCH_HITS, total: 42, truncated: false }), calls);
+  render(<FileTree client={client} sessionId="s1" demo={false} />);
+  await flush();
+
+  await typeSearch("main");
+  expect(searchCalls(calls)).toHaveLength(0);
+  await advanceDebounce();
+
+  const searches = searchCalls(calls);
+  expect(searches).toHaveLength(1);
+  expect(searches[0].method).toBe("file/list");
+  expect(searches[0].params).toEqual({ session_id: "s1", path: null, depth: 8, query: "main" });
+  expect(screen.getByText(/42/)).toBeInTheDocument();
+});
+
+test("reports an old kernel instead of filtering locally", async () => {
+  vi.useFakeTimers();
+  const client = searchClient(() => ({ entries: SEARCH_HITS, truncated: false }));
+  const { container } = render(<FileTree client={client} sessionId="s1" demo={false} />);
+  await flush();
+  await typeSearch("main");
+  await advanceDebounce();
+
+  expect(screen.getByText("内核不支持服务端搜索")).toBeInTheDocument();
+  expect(container.querySelectorAll(".trow-search")).toHaveLength(0);
+});
+
+test("drops a stale reply when the query moves on", async () => {
+  vi.useFakeTimers();
+  let resolveStale: (value: unknown) => void = () => {};
+  const client = {
+    request: (_method: string, params: Record<string, unknown> = {}) => {
+      const query = params.query;
+      if (query === "ma") return new Promise((resolve) => { resolveStale = resolve; });
+      if (query === "main") return Promise.resolve({ entries: SEARCH_HITS, total: 3, truncated: false });
+      return Promise.resolve({ entries: ROOT, truncated: false });
+    },
+  } as unknown as RpcClient;
+  render(<FileTree client={client} sessionId="s1" demo={false} />);
+  await flush();
+
+  await typeSearch("ma");
+  await advanceDebounce();
+  await typeSearch("main");
+  await advanceDebounce();
+  expect(screen.getByText("main.ts")).toBeInTheDocument();
+
+  await act(async () => {
+    resolveStale({ entries: [{ name: "stale.ts", path: "stale.ts", kind: "file" }], total: 1 });
+  });
+  await flush();
+  expect(screen.queryByText("stale.ts")).toBeNull();
+  expect(screen.getByText("main.ts")).toBeInTheDocument();
+});
+
+test("drops a stale reply when the session changes", async () => {
+  vi.useFakeTimers();
+  let resolveStale: (value: unknown) => void = () => {};
+  const client = {
+    request: (_method: string, params: Record<string, unknown> = {}) => {
+      if (params.query) return new Promise((resolve) => { resolveStale = resolve; });
+      return Promise.resolve({ entries: ROOT, truncated: false });
+    },
+  } as unknown as RpcClient;
+  const { rerender } = render(<FileTree client={client} sessionId="s1" demo={false} />);
+  await flush();
+  await typeSearch("main");
+  await advanceDebounce();
+
+  rerender(<FileTree client={client} sessionId="s2" demo={false} />);
+  await flush();
+  expect((screen.getByRole("searchbox") as HTMLInputElement).value).toBe("");
+
+  await act(async () => {
+    resolveStale({ entries: SEARCH_HITS, total: 3, truncated: false });
+  });
+  await flush();
+  expect(screen.queryByText("main.ts")).toBeNull();
+});
+
+test("keeps rows and shows an error when the request fails", async () => {
+  vi.useFakeTimers();
+  const calls: Call[] = [];
+  let failNext = false;
+  const client = searchClient(() => {
+    if (failNext) {
+      failNext = false;
+      throw new Error("boom");
+    }
+    return { entries: SEARCH_HITS, total: 3, truncated: false };
+  }, calls);
+  const { container } = render(<FileTree client={client} sessionId="s1" demo={false} />);
+  await flush();
+
+  await typeSearch("ma");
+  await advanceDebounce();
+  expect(container.querySelectorAll(".trow-search")).toHaveLength(3);
+
+  failNext = true;
+  await typeSearch("main");
+  await advanceDebounce();
+  expect(container.querySelectorAll(".trow-search")).toHaveLength(3);
+  expect(screen.getByText(/boom/)).toBeInTheDocument();
+  expect(searchCalls(calls)).toHaveLength(2);
+});
+
+test("restores the tree on Escape and keeps the box after a row click", async () => {
+  vi.useFakeTimers();
+  const onFileSelect = vi.fn();
+  const client = searchClient(() => ({ entries: SEARCH_HITS, total: 3, truncated: false }));
+  render(<FileTree client={client} sessionId="s1" demo={false} onFileSelect={onFileSelect} />);
+  await flush();
+
+  await typeSearch("main");
+  await advanceDebounce();
+  fireEvent.click(screen.getByText("main.ts"));
+  expect(onFileSelect).toHaveBeenCalledWith("src/main.ts");
+  expect((screen.getByRole("searchbox") as HTMLInputElement).value).toBe("main");
+
+  fireEvent.keyDown(screen.getByRole("searchbox"), { key: "Escape" });
+  await flush();
+  expect(screen.getByText("README.md")).toBeInTheDocument();
+  expect(screen.queryAllByRole("treeitem")).toHaveLength(2);
+});
+
+test("marks a truncated reply as partial", async () => {
+  vi.useFakeTimers();
+  const client = searchClient(() => ({ entries: SEARCH_HITS, total: 500, truncated: true }));
+  render(<FileTree client={client} sessionId="s1" demo={false} />);
+  await flush();
+  await typeSearch("main");
+  await advanceDebounce();
+
+  expect(screen.getByText(/500/)).toBeInTheDocument();
+  expect(screen.getByText(/部分结果/)).toBeInTheDocument();
+});
+
+test("demo mode has no search box", () => {
+  const client = mockClient(() => null);
+  render(<FileTree client={client} sessionId="s1" demo />);
+  expect(screen.queryByRole("searchbox")).toBeNull();
 });
