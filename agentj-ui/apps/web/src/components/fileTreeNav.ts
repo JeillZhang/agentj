@@ -26,7 +26,3 @@ export function visiblePaths(
   walk(ROOT);
   return paths;
 }
-
-/** Parent directory row path for a nested row, or null for a root-level row.
- *  Re-exported from the shared SDK module so this file stays the Web tree's nav entry. */
-export { parentPath } from "@agentj/sdk";
