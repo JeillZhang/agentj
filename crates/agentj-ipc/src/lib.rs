@@ -338,6 +338,15 @@ fn optional_trimmed(params: &Value, key: &str) -> Result<Option<String>, Dispatc
     }
 }
 
+/// Serialize a protocol value into a response body.
+///
+/// serde on our own wire types practically cannot fail, but a `panic!` inside a
+/// request would drop the connection, so the impossible case becomes `-32603`.
+fn to_wire<T: serde::Serialize>(value: T) -> Result<Value, DispatchError> {
+    serde_json::to_value(value)
+        .map_err(|e| DispatchError::internal(format!("response serialization failed: {e}")))
+}
+
 /// Method-dispatch failure carrying the JSON-RPC 2.0 standard error code
 /// (design 决策 #4). `handle_request` echoes the request `id` alongside this
 /// code so every error path round-trips the correlation id. `data` carries
@@ -1205,7 +1214,7 @@ impl IpcServer {
             body["default_model"] = serde_json::json!(model);
         }
         if let Some(ps) = providers {
-            body["providers"] = serde_json::to_value(ps).expect("serializable");
+            body["providers"] = to_wire(ps)?;
         }
         Ok(body)
     }
@@ -1302,7 +1311,7 @@ impl IpcServer {
             status: Self::wire_session_status(status),
             project_root,
         };
-        Ok(serde_json::to_value(result).expect("serializable"))
+        to_wire(result)
     }
 
     /// `session/archive` (spec §8.9): only an active session may be archived.
@@ -1375,7 +1384,7 @@ impl IpcServer {
             events,
             next_cursor: next,
         };
-        Ok(serde_json::to_value(result).expect("serializable"))
+        to_wire(result)
     }
     /// Deserialize a subscription method's params (missing → `{}`). A malformed shape is
     /// `-32602` and the injected service is never called.
@@ -1475,7 +1484,7 @@ impl IpcServer {
         match result {
             Ok(result) => {
                 let result = attach_git_statuses(result, &root).await;
-                Ok(serde_json::to_value(result).expect("serializable"))
+                to_wire(result)
             }
             Err(e) => Err(map_file_list_error(e, &params.path)),
         }
@@ -1566,8 +1575,8 @@ impl IpcServer {
 
     /// Wire result for `question/respond` (design item 5): `false` is the
     /// idempotent answer for duplicate / already-settled / unknown ids.
-    fn question_result(accepted: bool) -> Value {
-        serde_json::to_value(QuestionRespondResult { accepted }).expect("serializable")
+    fn question_result(accepted: bool) -> Result<Value, DispatchError> {
+        to_wire(QuestionRespondResult { accepted })
     }
 
     /// `question/respond`: owner-gated, idempotent answer delivery. Check order
@@ -1593,7 +1602,7 @@ impl IpcServer {
             .ok_or_else(|| DispatchError::invalid_params("missing question_id"))?
             .to_string();
         let Some(session_id) = module.session_of(&question_id) else {
-            return Ok(Self::question_result(false));
+            return Self::question_result(false);
         };
         let is_owner = self
             .registry
@@ -1612,7 +1621,7 @@ impl IpcServer {
         let params: QuestionRespondParams = serde_json::from_value(raw.clone())
             .map_err(|e| DispatchError::invalid_params(e.to_string()))?;
         match module.respond(&question_id, params.answers, params.skipped) {
-            Ok(RespondOutcome::Accepted(accepted)) => Ok(Self::question_result(accepted)),
+            Ok(RespondOutcome::Accepted(accepted)) => Self::question_result(accepted),
             Err(RespondError::UnknownOptions { unknown }) => {
                 Err(DispatchError::invalid_params_with_data(
                     "unknown option ids",

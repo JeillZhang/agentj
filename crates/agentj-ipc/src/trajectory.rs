@@ -72,7 +72,13 @@ impl TrajectoryStore {
             ts,
             value,
         };
-        let line = format!("{}\n", serde_json::to_string(&event).expect("serializable"));
+        let line = match serde_json::to_string(&event) {
+            Ok(json) => format!("{json}\n"),
+            Err(e) => {
+                tracing::error!(error = %e, "trajectory event is not serializable; skipped");
+                return Ok(event.seq);
+            }
+        };
         let add = line.len() as u64;
         if state.count >= self.max_events || state.bytes + add > self.max_bytes {
             trim_to_caps(&path, state, self.max_events, self.max_bytes)?;
@@ -179,8 +185,13 @@ fn trim_to_caps(
     kept.reverse();
     let mut text = String::new();
     for ev in &kept {
-        text.push_str(&serde_json::to_string(ev).expect("serializable"));
-        text.push('\n');
+        match serde_json::to_string(ev) {
+            Ok(json) => {
+                text.push_str(&json);
+                text.push('\n');
+            }
+            Err(e) => tracing::error!(error = %e, "trajectory event is not serializable; dropped"),
+        }
     }
     let tmp = path.with_extension("trajectory.tmp");
     fs::write(&tmp, text.as_bytes())?;
