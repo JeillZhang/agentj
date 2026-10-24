@@ -34,16 +34,22 @@
 |------|------|
 | `npm --prefix agentj-ui test --workspace=@agentj/sdk` | 59 passed（7 files） |
 | `npm --prefix agentj-ui run build --workspace=@agentj/sdk` | `tsc --noEmit` 通过 |
-| `npm --prefix agentj-ui test --workspace=@agentj/web` | 677 passed（54 files） |
+| `npm --prefix agentj-ui test --workspace=@agentj/web` | 678 passed（54 files） |
 | `npm --prefix agentj-ui run build --workspace=@agentj/web` | 通过 |
 | `bun --cwd agentj-ui/apps/tui test` | 193 pass / 0 fail（新增空白帧用例） |
 | `npm --prefix agentj-ui run lint --workspace=@agentj/web` | 仅既有 warning（49 条，无 error） |
 
+### 验收修复
+
+- `1ab524f` BUG-002：`App.test.tsx` 的 `vi.mock("@agentj/sdk")` 改为 `await vi.importActual(...)`
+  展开真源、只覆盖需要 stub 的导出（`RpcClient` / `ResponseRouter` / `WebSocketTransport` /
+  `resolveWsUrl` / `parseProgress` / `METHODS` / `PROTOCOL_VERSION` / `VERSION`），手抄的
+  `BLANK_CHARS` / `isBlankText` 正则删除，并新增身份 + 行为断言（重新手抄即 RED）。
+
 ### 遗留问题（本批次）
 
-- `App.test.tsx` 的 SDK mock 是整包替换，SDK 每加一个 Web 会调用的导出都要在 mock 里补一份
-  （本轮已再次踩到：缺 `isBlankText` 导致 10 个用例报 `No "isBlankText" export`）。
-  ㉔「三端共享逻辑收敛」应顺带评估「mock 只替换 transport 层」的做法。
+- 整包 mock 的教训仍在：以后新增 Web 会调用的 SDK 导出不需要再补 mock（`...actual` 已覆盖），
+  但需要 stub 的导出仍要显式覆盖；㉔ 可考虑「只 mock transport 层」。
 
 ## 归档：工程治理批次（前端）✅
 

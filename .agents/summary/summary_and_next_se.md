@@ -44,6 +44,10 @@
   日志跳过并推进 seq。
 - **约定落地**：`CONTRIBUTING.md` 新增「Panics, locks and swallowed errors」章节（锁 / panic
   隔离 / `let _ =` 三条规则），`AGENTS.md` Conventions 同步一行。
+- **验收修复**：`e7718dc` BUG-001 补上换行写法（`.lock()` 换行接 `.unwrap()`）的 48 处漏改
+  （含 16 处生产路径），并加不变量测试 `kernel::tests::modules_survive_a_poisoned_state_mutex`；
+  `862ec69` 把最后 12 处内联 `.unwrap_or_else(|p| p.into_inner())`（含 3 个测试 `env_lock`）
+  也改走 helper，保证「中毒必打日志」全仓一致。
 
 ### 验证
 
@@ -52,7 +56,7 @@
 | `cargo fmt --all --check` | 干净 |
 | `cargo clippy --workspace --all-targets --locked -- -D warnings` | 0 警告 |
 | `cargo test --workspace` | 48 组 `test result: ok`，无失败 |
-| 单 crate | core 184 → 186、ipc 277 → 281、model 75 → 79、session 34、permission 49、question 21、config 43 |
+| 单 crate | core 184 → 185（含 `modules_survive_a_poisoned_state_mutex`）、ipc 277 → 281、model 75 → 79、session 34、permission 49、question 21、config 43 |
 | `npm --prefix agentj-ui test --workspace=@agentj/sdk` | 59 passed（7 files，含新增 blankText） |
 | `npm --prefix agentj-ui test --workspace=@agentj/web` | 677 passed（54 files） |
 | `bun --cwd agentj-ui/apps/tui test` | 193 pass / 0 fail |
