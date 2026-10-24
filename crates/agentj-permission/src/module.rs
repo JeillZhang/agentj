@@ -9,6 +9,7 @@
 //! (a zero-receiver `watch::Sender::send` would drop the value).
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::watch;
@@ -55,12 +56,18 @@ const PENDING_TTL: Duration = Duration::from_secs(300);
 /// keeps a `_rx` alive in the entry (see register_ask) so a respond that arrives
 /// BEFORE await_approval subscribes is still stored and delivered — the guard
 /// against the respond/await race is exact, not approximate.
+///
+/// `finished` is the single-winner arbiter for the *decision*: the first of
+/// respond / cancel_session / clear_all to swap it delivers, every other settler
+/// gets `false`. It must be an `Arc` so the clones handed out by
+/// `PendingRegistry::get` observe the same flag as the stored entry.
 #[derive(Debug, Clone)]
 struct PendingRequest {
     decision: Arc<watch::Sender<Option<PermissionDecision>>>,
     // Keep a receiver alive: `watch::Sender::send` with zero receivers drops the
     // value; an early respond must not be lost before await_approval subscribes.
     _keepalive: watch::Receiver<Option<PermissionDecision>>,
+    finished: Arc<AtomicBool>,
     tool: String,
     args: serde_json::Value,
 }
@@ -131,14 +138,16 @@ impl PermissionModule {
     /// removing it here made the tool loop deny its own approved call with
     /// "request not found" whenever the client answered first.
     /// Returns true when this call is the first decision for the request;
-    /// false for an unknown id or an already-settled request (a second decision
-    /// must not silently override the first).
+    /// false for an unknown id or an already-settled request. Single-winner is
+    /// *enforced*, not hoped for: the entry's `finished` flag is swapped before
+    /// the decision is sent, so two concurrent responds (or a respond racing
+    /// cancel_session / clear_all) can never both deliver.
     pub fn respond(&self, request_id: &PermissionRequestId, decision: ApprovalDecision) -> bool {
         let Some(req) = self.pending.get(request_id) else {
             return false; // unknown (or already consumed/pruned) request id
         };
-        if req._keepalive.borrow().is_some() {
-            return false; // already settled (respond / cancel_session / shutdown)
+        if req.finished.swap(true, Ordering::AcqRel) {
+            return false; // already settled (another respond / cancel_session / shutdown)
         }
         let Some(session_id) = self.pending.session_of(request_id) else {
             return false;
@@ -167,11 +176,13 @@ impl PermissionModule {
     /// Resolve ALL pending approvals for a session to Deny (session
     /// termination / $/cancelRequest / client disconnect). The entries stay
     /// until their tool loop consumes the decision, so the waiter reports the
-    /// real reason instead of a missing request.
+    /// real reason instead of a missing request. Claims each entry with the same
+    /// `finished` flag as `respond`, so a disconnect Deny and a user Allow can
+    /// never both settle one request.
     pub fn cancel_session(&self, session_id: &str, reason: &str) -> usize {
         let mut n = 0;
         self.pending.for_session(session_id, |_, req| {
-            if req._keepalive.borrow().is_none() {
+            if !req.finished.swap(true, Ordering::AcqRel) {
                 let _ = req.decision.send(Some(PermissionDecision::Deny {
                     reason: reason.to_string(),
                 }));
@@ -265,6 +276,7 @@ impl PermissionModule {
                 // Keep the initial receiver alive so an early respond() (before
                 // await_approval subscribes) is stored, not silently dropped.
                 _keepalive: rx,
+                finished: Arc::new(AtomicBool::new(false)),
                 tool: ctx.tool.clone(),
                 args: ctx.args.clone(),
             },
@@ -434,9 +446,11 @@ impl PermissionModule {
         // `false` = never prune: entries stay readable until their tool loop
         // consumes them (same contract as `cancel_session`).
         self.pending.prune_where(|_, req| {
-            let _ = req.decision.send(Some(PermissionDecision::Deny {
-                reason: "shutdown".into(),
-            }));
+            if !req.finished.swap(true, Ordering::AcqRel) {
+                let _ = req.decision.send(Some(PermissionDecision::Deny {
+                    reason: "shutdown".into(),
+                }));
+            }
             false
         });
     }
@@ -473,7 +487,8 @@ mod tests {
     use agentj_protocol::permission::PermissionRequestParams;
     use std::collections::HashMap;
     use std::path::PathBuf;
-    use std::sync::{Arc, Mutex};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Barrier, Mutex};
     use std::time::Duration;
 
     fn module() -> PermissionModule {
@@ -1205,6 +1220,86 @@ mod tests {
         assert_eq!(m.pending_len(), 1);
         m.prune_consumed(&id);
         assert_eq!(m.pending_len(), 0);
+    }
+
+    /// A disconnect Deny must win against a later user Allow: once the entry is
+    /// claimed, a second settler is rejected instead of overwriting it.
+    #[test]
+    fn respond_after_cancel_session_is_rejected() {
+        let m = module();
+        let id = pending_id(&m, "s1", "curl http://example.com");
+        assert_eq!(m.cancel_session("s1", "disconnected"), 1);
+        assert!(
+            !m.respond(&id, ApprovalDecision::Allow),
+            "a later Allow must not overwrite the disconnect Deny"
+        );
+        assert_eq!(m.cancel_session("s1", "disconnected"), 0, "settled once");
+    }
+
+    /// Single winner under concurrency: the entry's one-shot claim flag admits
+    /// exactly one of N racing `respond` calls, so the delivered decision is
+    /// never a coin flip between two clients.
+    #[test]
+    fn concurrent_respond_calls_have_exactly_one_winner() {
+        const THREADS: usize = 8;
+        const ROUNDS: usize = 32;
+        for round in 0..ROUNDS {
+            let m = module();
+            let id = pending_id(&m, "s1", "curl http://example.com");
+            let winners = Arc::new(AtomicUsize::new(0));
+            let barrier = Arc::new(Barrier::new(THREADS));
+            let handles: Vec<_> = (0..THREADS)
+                .map(|_| {
+                    let m = m.clone();
+                    let id = id.clone();
+                    let winners = Arc::clone(&winners);
+                    let barrier = Arc::clone(&barrier);
+                    std::thread::spawn(move || {
+                        barrier.wait();
+                        if m.respond(&id, ApprovalDecision::Allow) {
+                            winners.fetch_add(1, Ordering::AcqRel);
+                        }
+                    })
+                })
+                .collect();
+            for handle in handles {
+                handle.join().unwrap();
+            }
+            assert_eq!(
+                winners.load(Ordering::Acquire),
+                1,
+                "round {round}: exactly one responder may win"
+            );
+        }
+    }
+
+    /// `respond` racing `cancel_session` for one request: both go through the
+    /// same claim flag, so exactly one of them settles it.
+    #[test]
+    fn cancel_session_and_respond_cannot_both_settle() {
+        const ROUNDS: usize = 32;
+        for round in 0..ROUNDS {
+            let m = module();
+            let id = pending_id(&m, "s1", "curl http://example.com");
+            let barrier = Arc::new(Barrier::new(2));
+            let responder = {
+                let m = m.clone();
+                let id = id.clone();
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    m.respond(&id, ApprovalDecision::Allow)
+                })
+            };
+            barrier.wait();
+            let cancelled = m.cancel_session("s1", "disconnected");
+            let allowed = responder.join().unwrap();
+            assert_eq!(
+                usize::from(allowed) + cancelled,
+                1,
+                "round {round}: exactly one settler may claim the request"
+            );
+        }
     }
 
     fn pending_id(m: &PermissionModule, session: &str, cmd: &str) -> PermissionRequestId {
