@@ -642,18 +642,20 @@ const FileTree = forwardRef<FileTreeHandle, FileTreeProps>(function FileTree(
 
   const moveBy = useCallback(
     (delta: number): void => {
-      if (paths.length === 0) return;
+      // The sidebar scope stays live while the search surface replaces the tree: moves would
+      // silently change an invisible selection.
+      if (search.active || paths.length === 0) return;
       const current = selectedPath ? (indexByPath.get(selectedPath) ?? -1) : -1;
       selectPath(paths[moveSelection(current, delta, paths.length)]);
     },
-    [paths, indexByPath, selectedPath, selectPath],
+    [paths, indexByPath, selectedPath, selectPath, search.active],
   );
 
   const refresh = useCallback((): void => {
-    if (demo || !client || !sessionId) return;
+    if (search.active || demo || !client || !sessionId) return;
     void loadDir(ROOT);
     for (const path of expanded) void loadDir(path);
-  }, [demo, client, sessionId, expanded, loadDir]);
+  }, [demo, client, sessionId, expanded, loadDir, search.active]);
 
   useImperativeHandle(ref, () => ({ moveBy, refresh }), [moveBy, refresh]);
 

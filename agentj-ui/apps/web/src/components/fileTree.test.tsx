@@ -699,6 +699,33 @@ test("marks a truncated reply as partial", async () => {
   expect(screen.getByText(/部分结果/)).toBeInTheDocument();
 });
 
+test("tree shortcuts are inert while a search result row has focus", async () => {
+  vi.useFakeTimers();
+  const calls: Call[] = [];
+  const client = searchClient(() => ({ entries: SEARCH_HITS, total: 3, truncated: false }), calls);
+  const ref = createRef<FileTreeHandle>();
+  render(<FileTree ref={ref} client={client} sessionId="s1" demo={false} />);
+  await flush();
+  await typeSearch("main");
+  await advanceDebounce();
+  const treeRequests = (): number => calls.filter((c) => !("query" in c.params)).length;
+  const before = treeRequests();
+
+  act(() => {
+    ref.current?.moveBy(1);
+    ref.current?.refresh();
+  });
+
+  // The tree is not on screen: neither shortcut may touch its state or hit the kernel.
+  expect(treeRequests()).toBe(before);
+  fireEvent.keyDown(screen.getAllByRole("treeitem")[0], { key: "Escape" });
+  await flush();
+  const rows = screen.getAllByRole("treeitem");
+  expect(rows[0]).toHaveTextContent("src");
+  expect(rows[0]).toHaveAttribute("aria-selected", "false");
+  expect(rows[1]).toHaveAttribute("aria-selected", "false");
+});
+
 test("demo mode has no search box", () => {
   const client = mockClient(() => null);
   render(<FileTree client={client} sessionId="s1" demo />);
