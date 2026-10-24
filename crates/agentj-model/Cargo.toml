@@ -17,7 +17,7 @@ tokio = { workspace = true, features = ["sync", "rt", "rt-multi-thread", "macros
 tokio-util = { version = "0.7.19", features = ["io"] }
 
 [dev-dependencies]
-criterion = { version = "0.5", features = ["async_tokio"] }
+criterion = { version = "0.8", features = ["async_tokio"] }
 futures.workspace = true
 wiremock.workspace = true
 
