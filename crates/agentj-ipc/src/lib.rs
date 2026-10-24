@@ -479,6 +479,36 @@ fn provider_result<T: Serialize>(out: T) -> Result<Value, DispatchError> {
     })
 }
 
+/// The client-callable methods routed by `IpcServer::dispatch_request`, in the
+/// same order as the route table. Pinned against `protocol/methods.json` by
+/// `dispatch_table_matches_methods_json`; `initialized` (notification) and
+/// `exit` (transport close) are deliberately absent — neither is dispatched.
+pub(crate) const DISPATCH_METHODS: &[&str] = &[
+    "initialize",
+    "session/new",
+    "session/run",
+    "session/subscribe",
+    "session/unsubscribe",
+    "kernel/status",
+    "session/list",
+    "session/history",
+    "session/status",
+    "session/archive",
+    "session/delete",
+    "file/list",
+    "model/list",
+    "auth/status",
+    "provider/usage",
+    "auth/deviceStart",
+    "auth/devicePoll",
+    "auth/setApiKey",
+    "auth/clearCredential",
+    "shutdown",
+    "permission/respond",
+    "question/respond",
+    "$/cancelRequest",
+];
+
 pub struct IpcServer {
     kernel: Kernel,
     session_store: Arc<dyn SessionStore>,
@@ -697,7 +727,16 @@ impl IpcServer {
             "permission/respond" => self.dispatch_permission_respond(req, conn_id).await,
             "question/respond" => self.dispatch_question_respond(req, conn_id),
             "$/cancelRequest" => self.dispatch_cancel_request(req).await,
-            other => Err(DispatchError::method_not_found(other)),
+            other => {
+                // `DISPATCH_METHODS` is the published route table; a method it
+                // advertises but this match does not route is a table/match
+                // disagreement, which is a bug worth catching in debug builds.
+                debug_assert!(
+                    !DISPATCH_METHODS.contains(&other),
+                    "{other} is advertised in DISPATCH_METHODS but has no match arm"
+                );
+                Err(DispatchError::method_not_found(other))
+            }
         }
     }
 
@@ -7441,5 +7480,57 @@ mod tests {
             .await
             .expect("a successful dispatch keeps its result");
         assert_eq!(ok["a"], 1);
+    }
+
+    /// The route table must stay in lockstep with the protocol registry: the
+    /// client-callable methods of `protocol/methods.json` (minus the two that
+    /// are handled outside dispatch: `initialized` is a notification, `exit`
+    /// closes the transport) are exactly the methods `dispatch_request` routes.
+    #[test]
+    fn dispatch_table_matches_methods_json() {
+        let raw = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../protocol/methods.json"
+        ))
+        .unwrap();
+        let json: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        let mut expected: Vec<String> = json["methods"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|m| {
+                matches!(
+                    m["direction"].as_str(),
+                    Some("client_to_server") | Some("both")
+                )
+            })
+            .map(|m| m["method"].as_str().unwrap().to_string())
+            .filter(|m| m != "initialized" && m != "exit")
+            .collect();
+        expected.sort();
+        let mut actual: Vec<String> = DISPATCH_METHODS.iter().map(|s| s.to_string()).collect();
+        actual.sort();
+        assert_eq!(actual, expected);
+        assert_eq!(DISPATCH_METHODS.len(), 23);
+        let unique: std::collections::BTreeSet<&String> = actual.iter().collect();
+        assert_eq!(
+            actual.len(),
+            unique.len(),
+            "duplicate method in DISPATCH_METHODS"
+        );
+    }
+
+    /// Every method the table advertises must have a real match arm; a method
+    /// added to `DISPATCH_METHODS` without an arm would answer
+    /// `method_not_found` while the table claimed it was routed.
+    #[test]
+    fn every_dispatch_method_appears_in_the_match() {
+        let src = include_str!("lib.rs"); // repointed to dispatch.rs by T09
+        for method in DISPATCH_METHODS {
+            assert!(
+                src.contains(&format!("\"{method}\"")),
+                "{method} has no match arm"
+            );
+        }
     }
 }
