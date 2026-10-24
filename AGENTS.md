@@ -1,6 +1,6 @@
 # AGENTS.md
 
-> **当前版本 0.1.0** · `PROTOCOL_VERSION` **0.19.0**（28 方法 / 78 schemas / 18 crates）
+> **当前版本 0.1.0** · `PROTOCOL_VERSION` **0.19.0**（28 方法 / 78 schemas / 15 crates）
 > 本文件只记录**约束、入口与基线**（Setup / Commands / Architecture / Conventions / Rules）。
 > **逐版本变更与历史决策不写在这里** —— 见 [`docs/changelog/`](docs/changelog/)、
 > [`docs/guide/`](docs/guide/)、[`docs/specs/`](docs/specs/) 与 `.agents/summary/`。
@@ -8,7 +8,7 @@
 ## Project Overview
 
 AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + 可插拔模块」架构。
-后端 18 个 crate 位于 `crates/`；前端 monorepo 位于 `agentj-ui/`（npm workspaces
+后端 15 个 crate 位于 `crates/`；前端 monorepo 位于 `agentj-ui/`（npm workspaces
 `apps/*` + `packages/*`，三端共享 SDK / protocol / tokens）；WebSocket 网关同端口复用。
 
 ## Setup
@@ -56,7 +56,7 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
   + `agentj-ui/package-lock.json` 根条目；失败打印出错文件与命中字面量。
   `AGENTJ_ROOT=<路径>` 可对任意目录跑同一套断言，`scripts/test-check-version.sh` 是其正/负样例）
 - `bash scripts/tests/assert-{ui,cargo,ci}.sh all` — 仓库不变量断言（16 个 check：UI 清单 /
-  单一 lockfile / Cargo 工作区策略 / 18 crate 继承 / LICENSE / deny.toml / lockfile 一致性 /
+  单一 lockfile / Cargo 工作区策略 / 15 crate 继承 / LICENSE / deny.toml / lockfile 一致性 /
   CI 作业契约 / 覆盖率棘轮 / 治理文件 / 卫生 / summary / 文档基线）。`<check>` 单跑、
   `--list` 列出、`--strict` 把未实现项（SKIP）视为失败 —— **收尾门禁用 `--strict`**
 
@@ -89,7 +89,7 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
 
 ## Architecture
 
-> 全部 18 个 crate 位于 `crates/`（`crates/*`），前端 monorepo 位于
+> 全部 15 个 crate 位于 `crates/`（`crates/*`），前端 monorepo 位于
 > `agentj-ui/`（npm workspaces，frontend stays in-repo，不拆独立仓），
 > 下文 `agentj-*` 均为 `crates/agentj-*`，`@agentj/*` 为 `agentj-ui` 包。
 
@@ -108,7 +108,12 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
   `ToolResultTruncated`；`AgentEvent::Done` 携带本轮生效的 `provider`/`model`）
   + 事件总线重入防护（EventGuard thread_local + MAX_EVENT_DEPTH=16）
   + `sync`（`lock_or_recover`/`read_or_recover`/`write_or_recover` 防中毒锁 helper
-  + `panic_payload_message`：把 panic 负载渲染成可上报文本）。
+  + `panic_payload_message`：把 panic 负载渲染成可上报文本）
+  + `pending`（`PendingRegistry`：待决条目存储 + TTL/归属回收，permission/question 共用）
+  + `paths`/`tool_paths`（`resolve_within_root` 越界判定 + 工具相对路径重定基）
+  + `context_pipeline`（`DefaultContextPipeline`：装配/回流纯函数；预算裁剪由 `budget` 统一下发）
+  + `usage_stats`（`UsageCollector`/`SessionUsage` 用量统计）
+  + `skills`（`.aj` > `.agents` > `.claude` skills 加载器）。
 - `agentj-config`：TOML 配置（[model]/[agent]/[permission]/[session]/[license]/[[mcp.servers]]；
   `[permission] timeout_ms` 调整 `ask` 自动拒绝等待预算（缺省 60s，钳制 100..=600_000，
   越界钳制并告警；e2e fixture 调至 800ms）；
@@ -149,12 +154,9 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
   两个进程型工具（`bash` / `grep`）统一经 `ToolExecutor`（`executor.rs`）以独立进程组
   执行，超时杀整组并按工具默认值（`bash` 120s、`grep` 60s）生效，可经入参 `timeout_ms`
   覆盖（钳制 1s–600s）。
-- `agentj-context`：上下文管线（装配/回流纯函数；预算裁剪由 `agentj-core::budget` 统一下发）。
-- `agentj-stats`：用量统计 UsageCollector。
 - `agentj-license`：Ed25519 许可证校验（entitlements + free mode）。
 - `agentj-mcp`：MCP 客户端 + McpConnectionManager 长驻连接
   （McpServerSpec + close_all）。
-- `agentj-skills`：skills 加载器。
 - `agentj-plugin`：插件系统（manifest + 状态机 + 依赖图 + libloading）。
 - `agentj-ipc`：JSON-RPC IPC（stdio/TCP/WS + 同端口分类器 + WsConnection
   + 注入式 `ProviderService` handle（`model/list` / `auth/status` / `provider/usage` /
@@ -262,7 +264,7 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
 - **守护内核**：统一 Connection 抽象 + `serve --port` 常驻多客户端 + `run --attach`
   + `dashboard`（见 daemon-kernel 设计文档）。
 
-> Crate 边界：Rust 18 crate 保持 `crates/*` 边界纯净，
+> Crate 边界：Rust 15 crate 保持 `crates/*` 边界纯净，
 > 前端（TS/React/Bun/Tauri）全部收敛于 `agentj-ui/` 内，
 > 通过 `protocol/methods.json` + `schemas/*.json` 与后端契约对齐，
 > 不向 Rust workspace 注入前端构建产物。
