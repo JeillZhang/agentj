@@ -36,148 +36,198 @@ use crate::types::{
 
 /// Map of type name -> JSON Schema, the single machine source of truth.
 pub fn generate_schemas() -> BTreeMap<String, Schema> {
-    let mut m = BTreeMap::new();
-    m.insert("Id".into(), schema_for!(Id));
-    m.insert("ProgressToken".into(), schema_for!(ProgressToken));
-    m.insert("RequestMessage".into(), schema_for!(RequestMessage));
-    m.insert(
-        "NotificationMessage".into(),
-        schema_for!(NotificationMessage),
-    );
-    m.insert("ResponseMessage".into(), schema_for!(ResponseMessage));
-    m.insert("ErrorObject".into(), schema_for!(ErrorObject));
-    m.insert("Role".into(), schema_for!(Role));
-    m.insert("ToolCall".into(), schema_for!(ToolCall));
-    m.insert("ChatMessage".into(), schema_for!(ChatMessage));
-    m.insert("Attachment".into(), schema_for!(Attachment));
-    m.insert("ToolDefinition".into(), schema_for!(ToolDefinition));
-    m.insert("ModuleState".into(), schema_for!(ModuleState));
-    m.insert("SessionStatus".into(), schema_for!(SessionStatus));
-    m.insert("ClientInfo".into(), schema_for!(ClientInfo));
-    m.insert("ServerInfo".into(), schema_for!(ServerInfo));
-    m.insert("InitializeParams".into(), schema_for!(InitializeParams));
-    m.insert("InitializeResult".into(), schema_for!(InitializeResult));
-    m.insert("SessionNewResult".into(), schema_for!(SessionNewResult));
-    m.insert("SessionNewParams".into(), schema_for!(SessionNewParams));
-    m.insert("SessionRunParams".into(), schema_for!(SessionRunParams));
-    m.insert("SessionRunResult".into(), schema_for!(SessionRunResult));
-    m.insert("UsageInfo".into(), schema_for!(UsageInfo));
-    m.insert("SessionIdParams".into(), schema_for!(SessionIdParams));
-    m.insert(
-        "SessionStatusResult".into(),
-        schema_for!(SessionStatusResult),
-    );
-    m.insert(
-        "SessionSubscribeParams".into(),
-        schema_for!(SessionSubscribeParams),
-    );
-    m.insert("SessionSummary".into(), schema_for!(SessionSummary));
-    m.insert("SessionListParams".into(), schema_for!(SessionListParams));
-    m.insert("SessionListResult".into(), schema_for!(SessionListResult));
-    m.insert(
-        "SessionHistoryParams".into(),
-        schema_for!(SessionHistoryParams),
-    );
-    m.insert(
-        "SessionHistoryResult".into(),
-        schema_for!(SessionHistoryResult),
-    );
-    m.insert("ProgressParams".into(), schema_for!(ProgressParams));
-    m.insert("ProgressValue".into(), schema_for!(ProgressValue));
-    m.insert("CancelParams".into(), schema_for!(CancelParams));
-    m.insert("KernelStatusResult".into(), schema_for!(KernelStatusResult));
-    m.insert("ModuleInfo".into(), schema_for!(ModuleInfo));
-    m.insert(
-        "PermissionRequestParams".into(),
-        schema_for!(PermissionRequestParams),
-    );
-    m.insert(
-        "PermissionRespondParams".into(),
-        schema_for!(PermissionRespondParams),
-    );
-    m.insert(
-        "PermissionRespondResult".into(),
-        schema_for!(PermissionRespondResult),
-    );
-    m.insert("PermissionDecision".into(), schema_for!(PermissionDecision));
-    m.insert("ModelListParams".into(), schema_for!(ModelListParams));
-    m.insert("ModelListResult".into(), schema_for!(ModelListResult));
-    m.insert("ModelEntry".into(), schema_for!(ModelEntry));
-    m.insert("ModelSource".into(), schema_for!(ModelSource));
-    m.insert("AuthStatusParams".into(), schema_for!(AuthStatusParams));
-    m.insert("AuthStatusResult".into(), schema_for!(AuthStatusResult));
-    m.insert("CredentialInfo".into(), schema_for!(CredentialInfo));
-    m.insert("CredentialKind".into(), schema_for!(CredentialKind));
-    m.insert("CredentialSource".into(), schema_for!(CredentialSource));
-    m.insert(
-        "ProviderUsageParams".into(),
-        schema_for!(ProviderUsageParams),
-    );
-    m.insert(
-        "ProviderUsageResult".into(),
-        schema_for!(ProviderUsageResult),
-    );
-    m.insert("UsageWindow".into(), schema_for!(UsageWindow));
-    m.insert("UsageWindowKind".into(), schema_for!(UsageWindowKind));
-    m.insert("UsageWindowStatus".into(), schema_for!(UsageWindowStatus));
-    m.insert("ProviderUsageError".into(), schema_for!(ProviderUsageError));
-    m.insert(
-        "AuthDeviceStartParams".into(),
-        schema_for!(AuthDeviceStartParams),
-    );
-    m.insert(
-        "AuthDeviceStartResult".into(),
-        schema_for!(AuthDeviceStartResult),
-    );
-    m.insert(
-        "AuthDevicePollParams".into(),
-        schema_for!(AuthDevicePollParams),
-    );
-    m.insert(
-        "AuthDevicePollResult".into(),
-        schema_for!(AuthDevicePollResult),
-    );
-    m.insert("DeviceAuthState".into(), schema_for!(DeviceAuthState));
-    m.insert(
-        "AuthSetApiKeyParams".into(),
-        schema_for!(AuthSetApiKeyParams),
-    );
-    m.insert(
-        "AuthSetApiKeyResult".into(),
-        schema_for!(AuthSetApiKeyResult),
-    );
-    m.insert("ApiKeyOutcome".into(), schema_for!(ApiKeyOutcome));
-    m.insert("ApiKeyLinkError".into(), schema_for!(ApiKeyLinkError));
-    m.insert(
-        "AuthClearCredentialParams".into(),
-        schema_for!(AuthClearCredentialParams),
-    );
-    m.insert(
-        "AuthClearCredentialResult".into(),
-        schema_for!(AuthClearCredentialResult),
-    );
-    m.insert("FileListParams".into(), schema_for!(FileListParams));
-    m.insert("FileListResult".into(), schema_for!(FileListResult));
-    m.insert("FileEntry".into(), schema_for!(FileEntry));
-    m.insert("FileKind".into(), schema_for!(FileKind));
-    m.insert("AskQuestionParams".into(), schema_for!(AskQuestionParams));
-    m.insert("AskOption".into(), schema_for!(AskOption));
-    m.insert(
-        "QuestionRespondParams".into(),
-        schema_for!(QuestionRespondParams),
-    );
-    m.insert(
-        "QuestionRespondResult".into(),
-        schema_for!(QuestionRespondResult),
-    );
-    m.insert("TodoItem".into(), schema_for!(TodoItem));
-    m.insert("TodoStatus".into(), schema_for!(TodoStatus));
-    m.insert("FileChange".into(), schema_for!(FileChange));
-    m.insert("FileChangeKind".into(), schema_for!(FileChangeKind));
-    m.insert("FileChangeSource".into(), schema_for!(FileChangeSource));
-    m
+    schema_targets()
+        .into_iter()
+        .map(|(name, build)| (name.to_string(), build()))
+        .collect()
 }
 
+/// One schema-producing function: `schema_for!` is a macro, so each target needs its own
+/// zero-argument closure to sit in a table.
+type SchemaFn = fn() -> Schema;
+
+/// Every type exposed on the wire, as (name, builder). The rows live in the group functions
+/// below so no single table outgrows the function-length gate; adding a wire type means
+/// adding a row (plus the corresponding entry in `protocol/methods.json`).
+fn schema_targets() -> Vec<(&'static str, SchemaFn)> {
+    base_targets()
+        .into_iter()
+        .chain(session_targets())
+        .chain(stream_targets())
+        .chain(permission_targets())
+        .chain(model_targets())
+        .chain(auth_targets())
+        .chain(usage_targets())
+        .chain(device_targets())
+        .chain(link_targets())
+        .chain(file_targets())
+        .chain(question_targets())
+        .collect()
+}
+
+/// Base envelope, shared value and lifecycle types.
+fn base_targets() -> Vec<(&'static str, SchemaFn)> {
+    vec![
+        ("ErrorObject", || schema_for!(ErrorObject)),
+        ("Id", || schema_for!(Id)),
+        ("NotificationMessage", || schema_for!(NotificationMessage)),
+        ("ProgressToken", || schema_for!(ProgressToken)),
+        ("RequestMessage", || schema_for!(RequestMessage)),
+        ("ResponseMessage", || schema_for!(ResponseMessage)),
+        ("Role", || schema_for!(Role)),
+        ("ToolCall", || schema_for!(ToolCall)),
+        ("ChatMessage", || schema_for!(ChatMessage)),
+        ("Attachment", || schema_for!(Attachment)),
+        ("ToolDefinition", || schema_for!(ToolDefinition)),
+        ("ModuleState", || schema_for!(ModuleState)),
+        ("SessionStatus", || schema_for!(SessionStatus)),
+        ("ClientInfo", || schema_for!(ClientInfo)),
+        ("ServerInfo", || schema_for!(ServerInfo)),
+        ("InitializeParams", || schema_for!(InitializeParams)),
+        ("InitializeResult", || schema_for!(InitializeResult)),
+    ]
+}
+
+/// Session lifecycle, history and usage types.
+fn session_targets() -> Vec<(&'static str, SchemaFn)> {
+    vec![
+        ("SessionNewResult", || schema_for!(SessionNewResult)),
+        ("SessionNewParams", || schema_for!(SessionNewParams)),
+        ("SessionRunParams", || schema_for!(SessionRunParams)),
+        ("SessionRunResult", || schema_for!(SessionRunResult)),
+        ("UsageInfo", || schema_for!(UsageInfo)),
+        ("SessionIdParams", || schema_for!(SessionIdParams)),
+        ("SessionStatusResult", || schema_for!(SessionStatusResult)),
+        ("SessionSubscribeParams", || {
+            schema_for!(SessionSubscribeParams)
+        }),
+        ("SessionSummary", || schema_for!(SessionSummary)),
+        ("SessionListParams", || schema_for!(SessionListParams)),
+        ("SessionListResult", || schema_for!(SessionListResult)),
+        ("SessionHistoryParams", || schema_for!(SessionHistoryParams)),
+        ("SessionHistoryResult", || schema_for!(SessionHistoryResult)),
+    ]
+}
+
+/// Progress, cancel, kernel-status and todo/file-change event types.
+fn stream_targets() -> Vec<(&'static str, SchemaFn)> {
+    vec![
+        ("ProgressParams", || schema_for!(ProgressParams)),
+        ("ProgressValue", || schema_for!(ProgressValue)),
+        ("CancelParams", || schema_for!(CancelParams)),
+        ("KernelStatusResult", || schema_for!(KernelStatusResult)),
+        ("ModuleInfo", || schema_for!(ModuleInfo)),
+        ("TodoItem", || schema_for!(TodoItem)),
+        ("TodoStatus", || schema_for!(TodoStatus)),
+        ("FileChange", || schema_for!(FileChange)),
+        ("FileChangeKind", || schema_for!(FileChangeKind)),
+        ("FileChangeSource", || schema_for!(FileChangeSource)),
+    ]
+}
+
+/// Permission request/response types.
+fn permission_targets() -> Vec<(&'static str, SchemaFn)> {
+    vec![
+        ("PermissionRequestParams", || {
+            schema_for!(PermissionRequestParams)
+        }),
+        ("PermissionRespondParams", || {
+            schema_for!(PermissionRespondParams)
+        }),
+        ("PermissionRespondResult", || {
+            schema_for!(PermissionRespondResult)
+        }),
+        ("PermissionDecision", || schema_for!(PermissionDecision)),
+    ]
+}
+
+/// Model listing types.
+fn model_targets() -> Vec<(&'static str, SchemaFn)> {
+    vec![
+        ("ModelListParams", || schema_for!(ModelListParams)),
+        ("ModelListResult", || schema_for!(ModelListResult)),
+        ("ModelEntry", || schema_for!(ModelEntry)),
+        ("ModelSource", || schema_for!(ModelSource)),
+    ]
+}
+
+/// Credential status types.
+fn auth_targets() -> Vec<(&'static str, SchemaFn)> {
+    vec![
+        ("AuthStatusParams", || schema_for!(AuthStatusParams)),
+        ("AuthStatusResult", || schema_for!(AuthStatusResult)),
+        ("CredentialInfo", || schema_for!(CredentialInfo)),
+        ("CredentialKind", || schema_for!(CredentialKind)),
+        ("CredentialSource", || schema_for!(CredentialSource)),
+    ]
+}
+
+/// Provider usage quota types.
+fn usage_targets() -> Vec<(&'static str, SchemaFn)> {
+    vec![
+        ("ProviderUsageParams", || schema_for!(ProviderUsageParams)),
+        ("ProviderUsageResult", || schema_for!(ProviderUsageResult)),
+        ("UsageWindow", || schema_for!(UsageWindow)),
+        ("UsageWindowKind", || schema_for!(UsageWindowKind)),
+        ("UsageWindowStatus", || schema_for!(UsageWindowStatus)),
+        ("ProviderUsageError", || schema_for!(ProviderUsageError)),
+    ]
+}
+
+/// Device-code authorization types.
+fn device_targets() -> Vec<(&'static str, SchemaFn)> {
+    vec![
+        ("AuthDeviceStartParams", || {
+            schema_for!(AuthDeviceStartParams)
+        }),
+        ("AuthDeviceStartResult", || {
+            schema_for!(AuthDeviceStartResult)
+        }),
+        ("AuthDevicePollParams", || schema_for!(AuthDevicePollParams)),
+        ("AuthDevicePollResult", || schema_for!(AuthDevicePollResult)),
+        ("DeviceAuthState", || schema_for!(DeviceAuthState)),
+    ]
+}
+
+/// Api-key link/clear types.
+fn link_targets() -> Vec<(&'static str, SchemaFn)> {
+    vec![
+        ("AuthSetApiKeyParams", || schema_for!(AuthSetApiKeyParams)),
+        ("AuthSetApiKeyResult", || schema_for!(AuthSetApiKeyResult)),
+        ("ApiKeyOutcome", || schema_for!(ApiKeyOutcome)),
+        ("ApiKeyLinkError", || schema_for!(ApiKeyLinkError)),
+        ("AuthClearCredentialParams", || {
+            schema_for!(AuthClearCredentialParams)
+        }),
+        ("AuthClearCredentialResult", || {
+            schema_for!(AuthClearCredentialResult)
+        }),
+    ]
+}
+
+/// File listing types.
+fn file_targets() -> Vec<(&'static str, SchemaFn)> {
+    vec![
+        ("FileListParams", || schema_for!(FileListParams)),
+        ("FileListResult", || schema_for!(FileListResult)),
+        ("FileEntry", || schema_for!(FileEntry)),
+        ("FileKind", || schema_for!(FileKind)),
+    ]
+}
+
+/// Kernel-to-client question types.
+fn question_targets() -> Vec<(&'static str, SchemaFn)> {
+    vec![
+        ("AskQuestionParams", || schema_for!(AskQuestionParams)),
+        ("AskOption", || schema_for!(AskOption)),
+        ("QuestionRespondParams", || {
+            schema_for!(QuestionRespondParams)
+        }),
+        ("QuestionRespondResult", || {
+            schema_for!(QuestionRespondResult)
+        }),
+    ]
+}
 #[cfg(test)]
 mod tests {
     use super::*;
