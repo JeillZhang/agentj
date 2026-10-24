@@ -9,6 +9,7 @@ use crate::budget::{self, DEFAULT_CONTEXT_TOKENS, MAX_OVERFLOW_RETRIES};
 use crate::error::{ModelError, ModuleError};
 use crate::kernel::KernelSender;
 use crate::module::{ContextPipeline, KernelContext, KernelMessage, ToolExecutionOutcome};
+use crate::sync::lock_or_recover;
 use crate::text_tool_call;
 use crate::types::{
     AgentEvent, ChatMessage, ModelEvent, ModelOptions, ModuleId, Role, RunOverrides, SessionId,
@@ -112,7 +113,7 @@ impl TurnRunner {
     pub fn cancel(&self, session_id: &SessionId) -> bool {
         if let Ok(turns) = self.turns.lock() {
             if let Some(handle) = turns.get(session_id)
-                && let Some(tx) = handle.cancel_tx.lock().unwrap().take()
+                && let Some(tx) = lock_or_recover(&handle.cancel_tx).take()
             {
                 let _ = tx.send(());
                 return true;
@@ -124,7 +125,7 @@ impl TurnRunner {
     pub fn shutdown(&self) {
         if let Ok(mut turns) = self.turns.lock() {
             for (_, handle) in turns.drain() {
-                if let Some(tx) = handle.cancel_tx.lock().unwrap().take() {
+                if let Some(tx) = lock_or_recover(&handle.cancel_tx).take() {
                     let _ = tx.send(());
                 }
             }
@@ -672,7 +673,7 @@ fn next_todo_revision(revisions: &Mutex<HashMap<String, u64>>, run_id: &str) -> 
 }
 
 fn next_file_change_seq(seqs: &Mutex<HashMap<String, u64>>, run_id: &str) -> u64 {
-    let mut map = seqs.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut map = lock_or_recover(seqs);
     let next = map.entry(run_id.to_string()).or_insert(0);
     *next += 1;
     *next
@@ -701,11 +702,11 @@ mod tests {
             Ok("test-session".into())
         }
         fn append(&self, _sid: &SessionId, msg: ChatMessage) -> Result<(), ModuleError> {
-            self.history.lock().unwrap().push(msg);
+            lock_or_recover(&self.history).push(msg);
             Ok(())
         }
         fn get(&self, _sid: &SessionId) -> Result<Vec<ChatMessage>, ModuleError> {
-            Ok(self.history.lock().unwrap().clone())
+            Ok(lock_or_recover(&self.history).clone())
         }
         fn estimate_tokens(&self, _sid: &SessionId) -> Result<usize, ModuleError> {
             Ok(0)
@@ -854,7 +855,7 @@ mod tests {
                 break;
             }
         }
-        seen.lock().unwrap().clone()
+        lock_or_recover(&seen).clone()
     }
 
     struct MockPipeline;
@@ -952,7 +953,7 @@ mod tests {
         ) -> Result<crate::module::KernelResponse, ModuleError> {
             if let KernelMessage::ToolCallRequest { reply, .. } = msg {
                 let reply = reply.clone();
-                let mut guard = reply.lock().unwrap();
+                let mut guard = lock_or_recover(&reply);
                 if let Some(tx) = guard.take() {
                     let _ = tx.send(Ok(ToolExecutionOutcome {
                         result: serde_json::json!({"result": "ok"}),
@@ -992,7 +993,7 @@ mod tests {
         ) -> Result<crate::module::KernelResponse, ModuleError> {
             if let KernelMessage::ToolCallRequest { reply, .. } = msg {
                 // Take the sender and leak it so tool_rx stays pending forever.
-                if let Some(tx) = reply.lock().unwrap().take() {
+                if let Some(tx) = lock_or_recover(reply).take() {
                     std::mem::forget(tx);
                 }
             }
@@ -1107,7 +1108,7 @@ mod tests {
             _o: ModelOptions,
         ) -> Result<BoxStream<'static, Result<ModelEvent, ModelError>>, ModelError> {
             let n = self.calls.fetch_add(1, Ordering::SeqCst);
-            self.tools_seen.lock().unwrap().push(t.len());
+            lock_or_recover(&self.tools_seen).push(t.len());
             let index = n.min(self.scripts.len().saturating_sub(1));
             let events = self.scripts[index].clone();
             Ok(Box::pin(stream::iter(events.into_iter().map(Ok))))
@@ -1217,7 +1218,7 @@ mod tests {
                 break;
             }
         }
-        let history = session.history.lock().unwrap().clone();
+        let history = lock_or_recover(&session.history).clone();
         kernel.sender().send(KernelMessage::Shutdown).unwrap();
         (events, history, calls, tools_seen)
     }
@@ -1395,7 +1396,7 @@ mod tests {
             "two tool rounds plus one conclusion pass"
         );
         assert_eq!(
-            tools_seen.lock().unwrap().last().copied(),
+            lock_or_recover(&tools_seen).last().copied(),
             Some(0),
             "the conclusion pass must offer no tools: left as-is the model asks for more work"
         );
@@ -1702,7 +1703,7 @@ mod tests {
         let captured = Arc::new(StdMutex::new(None));
         let cap = captured.clone();
         runner.set_on_turn_complete(Arc::new(move |_sid, usage| {
-            *cap.lock().unwrap() = usage;
+            *lock_or_recover(&cap) = usage;
         }));
         let sid = runner.create_session().unwrap();
         let (tx, mut rx) = tokio::sync::mpsc::channel(64);
@@ -1727,11 +1728,11 @@ mod tests {
             })
         );
         let deadline = std::time::Instant::now() + Duration::from_secs(1);
-        while captured.lock().unwrap().is_none() && std::time::Instant::now() < deadline {
+        while lock_or_recover(&captured).is_none() && std::time::Instant::now() < deadline {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
         assert_eq!(
-            *captured.lock().unwrap(),
+            *lock_or_recover(&captured),
             Some(crate::types::TokenUsage {
                 prompt_tokens: 100,
                 completion_tokens: 20
@@ -1777,7 +1778,7 @@ mod tests {
         ) -> Result<crate::module::KernelResponse, ModuleError> {
             if let KernelMessage::ToolCallRequest { reply, .. } = msg {
                 let reply = reply.clone();
-                let mut guard = reply.lock().unwrap();
+                let mut guard = lock_or_recover(&reply);
                 if let Some(tx) = guard.take() {
                     let _ = tx.send(Ok(ToolExecutionOutcome {
                         result: serde_json::json!({"result": "ok"}),
@@ -2187,7 +2188,7 @@ mod tests {
             _t: Vec<ToolDefinition>,
             options: ModelOptions,
         ) -> Result<BoxStream<'static, Result<ModelEvent, ModelError>>, ModelError> {
-            *self.0.lock().unwrap() = Some(options);
+            *lock_or_recover(&self.0) = Some(options);
             Ok(Box::pin(stream::iter(vec![
                 Ok(ModelEvent::Delta("ok".into())),
                 Ok(ModelEvent::Done),
@@ -2378,7 +2379,7 @@ mod tests {
                 _ => {}
             }
         }
-        let out = seen.lock().unwrap().clone();
+        let out = lock_or_recover(&seen).clone();
         kernel.sender().send(KernelMessage::Shutdown).unwrap();
         (out, error)
     }
@@ -2585,7 +2586,7 @@ mod tests {
                         .unwrap_or(serde_json::Value::Null),
                     None => serde_json::Value::Null,
                 };
-                let mut guard = reply.lock().unwrap();
+                let mut guard = lock_or_recover(&reply);
                 if let Some(tx) = guard.take() {
                     let _ = tx.send(Ok(ToolExecutionOutcome {
                         result,
@@ -2626,7 +2627,7 @@ mod tests {
             msgs
         }
         fn reflux(&self, history: &mut Vec<ChatMessage>, tool_call: &ToolCall, result: String) {
-            self.0.lock().unwrap().push(result.clone());
+            lock_or_recover(&self.0).push(result.clone());
             history.push(ChatMessage {
                 role: Role::Assistant,
                 content: String::new(),
@@ -2704,7 +2705,7 @@ mod tests {
                 break;
             }
         }
-        let stored = session.history.lock().unwrap().clone();
+        let stored = lock_or_recover(&session.history).clone();
         kernel.sender().send(KernelMessage::Shutdown).unwrap();
         (events, stored)
     }
@@ -2807,7 +2808,7 @@ mod tests {
                 _ => None,
             })
             .expect("tool result frame");
-        let refluxed = recording.0.lock().unwrap().clone();
+        let refluxed = lock_or_recover(&recording.0).clone();
         assert_eq!(refluxed.len(), 1, "exactly one refluxed result");
         assert_eq!(
             refluxed[0].as_str(),

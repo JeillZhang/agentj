@@ -6,6 +6,8 @@ use crate::module::{
     ModuleRegister,
 };
 use crate::resolver::KernelService;
+#[cfg(test)]
+use crate::sync::lock_or_recover;
 use crate::turn_runner::TurnRunner;
 use crate::types::ModuleId;
 
@@ -125,11 +127,11 @@ mod tests {
             _sid: &crate::types::SessionId,
             msg: ChatMessage,
         ) -> Result<(), ModuleError> {
-            self.history.lock().unwrap().push(msg);
+            lock_or_recover(&self.history).push(msg);
             Ok(())
         }
         fn get(&self, _sid: &crate::types::SessionId) -> Result<Vec<ChatMessage>, ModuleError> {
-            Ok(self.history.lock().unwrap().clone())
+            Ok(lock_or_recover(&self.history).clone())
         }
         fn estimate_tokens(&self, _sid: &crate::types::SessionId) -> Result<usize, ModuleError> {
             Ok(0)
@@ -243,7 +245,7 @@ mod tests {
             msg: &KernelMessage,
         ) -> Result<crate::module::KernelResponse, ModuleError> {
             if let KernelMessage::ToolCallRequest { reply, .. } = msg
-                && let Some(tx) = reply.lock().unwrap().take()
+                && let Some(tx) = lock_or_recover(reply).take()
             {
                 std::mem::forget(tx);
             }

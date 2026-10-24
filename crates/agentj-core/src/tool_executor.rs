@@ -6,6 +6,7 @@ use crate::module::{
     ModuleRegister, ToolExecutionOutcome, ToolSource,
 };
 use crate::permission::PermissionContext;
+use crate::sync::lock_or_recover;
 use crate::tool_paths::rebase_tool_args;
 use crate::types::{ModuleId, ToolCall};
 use std::path::{Path, PathBuf};
@@ -230,7 +231,7 @@ impl KernelModule for ToolExecutorModule {
                 .unwrap_or_else(|| self.workspace_root.clone());
             tokio::spawn(async move {
                 let outcome = execute_tool(&ctx, &tool_call, &session_id, workspace_root).await;
-                if let Some(tx) = reply.lock().unwrap().take() {
+                if let Some(tx) = lock_or_recover(&reply).take() {
                     let _ = tx.send(outcome);
                 }
             });
@@ -349,7 +350,7 @@ mod tests {
     #[async_trait]
     impl PermissionChecker for RecordingChecker {
         fn check(&self, ctx: &PcContext) -> PermissionDecision {
-            self.roots.lock().unwrap().push(ctx.workspace_root.clone());
+            lock_or_recover(&self.roots).push(ctx.workspace_root.clone());
             PermissionDecision::Allow
         }
         async fn await_approval(&self, _rid: &PermissionRequestId) -> PermissionDecision {
@@ -580,7 +581,7 @@ mod tests {
                 .expect("reply must arrive")
                 .expect("sender dropped");
         assert_eq!(reply.unwrap().result["done"], true);
-        let seen = roots.lock().unwrap().clone();
+        let seen = lock_or_recover(&roots).clone();
         assert_eq!(
             seen,
             vec![PathBuf::from("/tmp/proj")],
@@ -631,7 +632,7 @@ mod tests {
         assert_eq!(reply.unwrap().result["done"], true);
         let cwd = std::env::current_dir().expect("process cwd is available");
         assert_eq!(
-            roots.lock().unwrap().clone(),
+            lock_or_recover(&roots).clone(),
             vec![cwd],
             "unset project_root must preserve the process CWD fallback"
         );
@@ -657,7 +658,7 @@ mod tests {
         // Take the sender immediately so executor finds None.
         let reply_slot = Arc::new(std::sync::Mutex::new(Some(tx)));
         // Simulate already-taken by taking before send.
-        reply_slot.lock().unwrap().take();
+        lock_or_recover(&reply_slot).take();
         kernel
             .sender()
             .send(KernelMessage::ToolCallRequest {

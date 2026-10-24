@@ -1,4 +1,5 @@
 // T1 (v0.3 ecosystem): ModuleResolver service location + KernelMessage::ServiceCall.
+use crate::sync::{read_or_recover, write_or_recover};
 use crate::types::ModuleId;
 use async_trait::async_trait;
 use serde_json::Value;
@@ -45,26 +46,26 @@ impl ServiceRegistry {
     }
 
     pub fn register<T: 'static + Send + Sync>(&self, id: ModuleId, service: Arc<T>) {
-        self.services.write().unwrap().insert(id, service);
+        write_or_recover(&self.services).insert(id, service);
     }
 
     pub fn register_kernel_service(&self, id: ModuleId, service: Arc<dyn KernelService>) {
-        self.kernel_services.write().unwrap().insert(id, service);
+        write_or_recover(&self.kernel_services).insert(id, service);
     }
 
     pub fn unregister(&self, id: &ModuleId) {
-        self.services.write().unwrap().remove(id);
-        self.kernel_services.write().unwrap().remove(id);
-        self.kernel_async_services.write().unwrap().remove(id);
+        write_or_recover(&self.services).remove(id);
+        write_or_recover(&self.kernel_services).remove(id);
+        write_or_recover(&self.kernel_async_services).remove(id);
     }
 
     pub fn get<T: 'static + Send + Sync>(&self, id: &ModuleId) -> Option<Arc<T>> {
-        let svc = self.services.read().unwrap().get(id)?.clone();
+        let svc = read_or_recover(&self.services).get(id)?.clone();
         svc.downcast::<T>().ok()
     }
 
     pub fn get_kernel_service(&self, id: &ModuleId) -> Option<Arc<dyn KernelService>> {
-        self.kernel_services.read().unwrap().get(id).cloned()
+        read_or_recover(&self.kernel_services).get(id).cloned()
     }
 
     pub fn register_kernel_async_service(
@@ -79,7 +80,9 @@ impl ServiceRegistry {
     }
 
     pub fn get_kernel_async_service(&self, id: &ModuleId) -> Option<Arc<dyn AsyncKernelService>> {
-        self.kernel_async_services.read().unwrap().get(id).cloned()
+        read_or_recover(&self.kernel_async_services)
+            .get(id)
+            .cloned()
     }
 }
 
