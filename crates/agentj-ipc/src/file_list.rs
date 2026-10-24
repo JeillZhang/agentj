@@ -10,7 +10,7 @@
 //! directories-first then name-ascending.
 
 use std::collections::VecDeque;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 use agentj_core::git_sample::GitSnapshot;
@@ -98,12 +98,50 @@ fn resolve_scope(root: &Path, path: Option<&str>) -> Result<Scope, FileListError
     })
 }
 
-/// Root-relative prefix of the requested directory (`""` for the root itself),
-/// so subdirectory listing entries keep paths relative to the project root.
+/// Prefix used to spell every listed row, relative to the project root.
+///
+/// Rows are advertised under the path the client asked for (BUG-002): clients
+/// derive a row's parent from `entry.path` (`parentPath()` in the SDK, used for
+/// "jump to parent" and for matching rows to the expanded node), so a prefix
+/// that switched to the canonical target whenever the requested directory was a
+/// symlink inside the root stopped matching the node it was rendered under.
+///
+/// Two request shapes deliberately keep the canonical spelling:
+///
+/// - an **absolute** `path` inside the root keeps reporting rows relative to
+///   the root — that is the existing contract, and inventing a spelling for an
+///   absolute request would only trade one confusion for another;
+/// - a request containing `..` also falls back to the canonical prefix, because
+///   a `..` after a symlink pops the *target*'s parent (BUG-001), so the
+///   requested spelling can name a directory that was never read.
+///
+/// Everything else — `src`, `./src`, `src/`, `src_alias` — keeps the requested
+/// spelling with `.`/empty segments normalized away. Containment is unaffected:
+/// `Scope.target` stays the canonical, sandbox-checked directory that is
+/// actually read, and only this display prefix is spelled.
 fn requested_prefix(root: &Path, requested: &str, target: &Path) -> String {
     if requested.is_empty() {
         return String::new();
     }
+    let path = Path::new(requested);
+    let spelled_by_client = !path.is_absolute()
+        && !path
+            .components()
+            .any(|component| component == Component::ParentDir);
+    if !spelled_by_client {
+        return canonical_prefix(root, target);
+    }
+    path.components()
+        .filter_map(|component| match component {
+            Component::Normal(name) => Some(name.to_string_lossy().into_owned()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// Canonical root-relative prefix of an already-resolved target (`""` at the root).
+fn canonical_prefix(root: &Path, target: &Path) -> String {
     target
         .strip_prefix(root)
         .map(|rel| rel.to_string_lossy().into_owned())
@@ -684,6 +722,38 @@ mod tests {
             list(&root, Some("link"), Some(1)),
             Err(FileListError::OutsideRoot { .. })
         ));
+    }
+
+    /// Rows listed under a symlinked directory keep the spelling the client
+    /// asked for (BUG-002): clients derive parents from `entry.path`, so a
+    /// canonicalized row under `src/sub` would stop matching the `src_alias`
+    /// node they expanded. Safety is unchanged — the walk still reads the
+    /// canonical target gated by `resolve_within_root`.
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_directory_keeps_requested_spelling() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        fs::create_dir_all(root.join("src/sub")).unwrap();
+        fs::write(root.join("src/sub/a.rs"), "x").unwrap();
+        std::os::unix::fs::symlink(root.join("src"), root.join("src_alias")).unwrap();
+        assert_eq!(
+            paths(&list(&root, Some("src_alias"), Some(2)).unwrap()),
+            ["src_alias/sub", "src_alias/sub/a.rs"],
+            "rows keep the spelling the client expanded"
+        );
+        assert_eq!(
+            paths(&list(&root, Some("src_alias/sub"), Some(1)).unwrap()),
+            ["src_alias/sub/a.rs"],
+            "a nested request keeps its own spelling"
+        );
+        assert!(
+            matches!(
+                list(&root, Some("src_alias/../.."), Some(1)),
+                Err(FileListError::OutsideRoot { .. })
+            ),
+            "the alias must not become an escape hatch"
+        );
     }
 
     /// A path that simply does not exist stays `NotFound` — it must not be
