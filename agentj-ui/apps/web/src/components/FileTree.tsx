@@ -8,6 +8,8 @@ import type { FileNode } from "../demoData";
 import { fileIconFor } from "../fileIcons";
 import { moveSelection, tabIndexFor } from "../hooks/useRovingFocus";
 import { visiblePaths } from "./fileTreeNav";
+import { replyIsCurrent } from "./fileTreeSearch";
+import type { SearchGuard } from "./fileTreeSearch";
 import "./filetree.css";
 
 export type FileTreeProps = {
@@ -545,17 +547,17 @@ const FileTree = forwardRef<FileTreeHandle, FileTreeProps>(function FileTree(
   const runSearch = useCallback(
     async (query: string, seq: number): Promise<void> => {
       if (!client || !sessionId) return;
-      const requestSession = sessionRef.current;
+      const requestGuard: SearchGuard = { seq, session: sessionRef.current };
       try {
         const reply = (await client.request(METHODS.fileList, {
           session_id: sessionId,
           path: null,
           query,
         })) as FileListReply;
-        if (searchSeq.current !== seq || sessionRef.current !== requestSession) return;
+        if (!replyIsCurrent(requestGuard, { seq: searchSeq.current, session: sessionRef.current })) return;
         setSearch((prev) => (prev.active && prev.query === query ? applySearchReply(prev, reply) : prev));
       } catch (e) {
-        if (searchSeq.current !== seq || sessionRef.current !== requestSession) return;
+        if (!replyIsCurrent(requestGuard, { seq: searchSeq.current, session: sessionRef.current })) return;
         const message = e instanceof Error ? e.message : String(e);
         // The rows still on screen belong to the previous query: only the message is current.
         setSearch((prev) =>
