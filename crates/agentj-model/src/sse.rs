@@ -14,6 +14,73 @@ use futures::{StreamExt, stream};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio_util::io::StreamReader;
 
+/// One decoded SSE data line.
+#[derive(Debug, PartialEq)]
+pub(crate) enum SseFrame {
+    /// Comment / `event:` / `id:` / blank `data:` — nothing to emit.
+    Skip,
+    /// The `data: [DONE]` terminator.
+    Done,
+    /// A parsed JSON payload for the provider to interpret.
+    Json(serde_json::Value),
+}
+
+/// Decode one raw SSE line into a frame, shared by every wire-format provider.
+///
+/// The `data:` prefix check, blank-data skip, `[DONE]` sentinel and JSON parse
+/// error all used to be copy-pasted per provider (three times); keeping them
+/// here means the error text and the sentinel handling cannot drift apart.
+pub(crate) fn decode_frame(line: &str) -> Result<SseFrame, ModelError> {
+    let line = line.trim();
+    let Some(data) = line.strip_prefix("data:") else {
+        return Ok(SseFrame::Skip);
+    };
+    let data = data.trim();
+    if data.is_empty() {
+        return Ok(SseFrame::Skip);
+    }
+    if data == "[DONE]" {
+        return Ok(SseFrame::Done);
+    }
+    serde_json::from_str(data)
+        .map(SseFrame::Json)
+        .map_err(|e| ModelError::Stream(e.to_string()))
+}
+
+/// Provider-specific payload interpretation, driven by [`push_line`].
+pub(crate) trait SsePayload {
+    /// Handle one decoded JSON payload (already known not to be `[DONE]`).
+    fn push_payload(
+        &mut self,
+        json: serde_json::Value,
+        out: &mut Vec<Result<ModelEvent, ModelError>>,
+    );
+
+    /// Whether `Done` was already emitted: some wire formats send more than one
+    /// terminator, and the stream must end exactly once.
+    fn done_emitted_mut(&mut self) -> &mut bool;
+}
+
+/// Decode one SSE line and dispatch it through the shared frame rules.
+pub(crate) fn push_line<P: SsePayload + ?Sized>(
+    parser: &mut P,
+    line: &str,
+    out: &mut Vec<Result<ModelEvent, ModelError>>,
+) {
+    match decode_frame(line) {
+        Ok(SseFrame::Skip) => {}
+        Ok(SseFrame::Done) => {
+            let done_emitted = parser.done_emitted_mut();
+            if !*done_emitted {
+                out.push(Ok(ModelEvent::Done));
+                *done_emitted = true;
+            }
+        }
+        Ok(SseFrame::Json(json)) => parser.push_payload(json, out),
+        Err(e) => out.push(Err(e)),
+    }
+}
+
 /// Assemble SSE [`ModelEvent`]s from a raw HTTP byte stream.
 ///
 /// `push_line` receives exactly one complete SSE line per call (line ending
@@ -62,6 +129,76 @@ where
 mod tests {
     use super::*;
     use bytes::Bytes;
+
+    /// Minimal payload parser: records the `type` field of every JSON frame.
+    struct TypeRecorder {
+        seen: Vec<String>,
+        done_emitted: bool,
+    }
+
+    impl SsePayload for TypeRecorder {
+        fn push_payload(
+            &mut self,
+            json: serde_json::Value,
+            out: &mut Vec<Result<ModelEvent, ModelError>>,
+        ) {
+            let kind = json["type"].as_str().unwrap_or("").to_string();
+            self.seen.push(kind.clone());
+            out.push(Ok(ModelEvent::Delta(kind)));
+        }
+
+        fn done_emitted_mut(&mut self) -> &mut bool {
+            &mut self.done_emitted
+        }
+    }
+
+    #[test]
+    fn push_line_dispatches_frames_and_emits_done_once() {
+        let mut parser = TypeRecorder {
+            seen: vec![],
+            done_emitted: false,
+        };
+        let mut out = Vec::new();
+        for line in [
+            "event: message",
+            r#"data: {"type":"a"}"#,
+            "data: [DONE]",
+            "data: [DONE]",
+            "data: {oops}",
+        ] {
+            push_line(&mut parser, line, &mut out);
+        }
+        assert_eq!(parser.seen, vec!["a".to_string()]);
+        assert_eq!(out.len(), 3, "delta + one done + one parse error: {out:?}");
+        assert!(matches!(out[0], Ok(ModelEvent::Delta(_))));
+        assert!(matches!(out[1], Ok(ModelEvent::Done)));
+        assert!(matches!(out[2], Err(ModelError::Stream(_))));
+    }
+
+    #[test]
+    fn decode_frame_skips_non_data_and_blank_lines() {
+        assert_eq!(decode_frame("event: message").unwrap(), SseFrame::Skip);
+        assert_eq!(decode_frame(": keep-alive").unwrap(), SseFrame::Skip);
+        assert_eq!(decode_frame("data:   ").unwrap(), SseFrame::Skip);
+        assert_eq!(decode_frame("data:").unwrap(), SseFrame::Skip);
+        assert_eq!(decode_frame("").unwrap(), SseFrame::Skip);
+    }
+
+    #[test]
+    fn decode_frame_recognises_the_done_sentinel() {
+        assert_eq!(decode_frame("data: [DONE]").unwrap(), SseFrame::Done);
+        assert_eq!(decode_frame("data:[DONE]  ").unwrap(), SseFrame::Done);
+    }
+
+    #[test]
+    fn decode_frame_parses_json_and_reports_parse_errors() {
+        assert_eq!(
+            decode_frame(r#"data: {"type":"ping"}"#).unwrap(),
+            SseFrame::Json(serde_json::json!({"type": "ping"}))
+        );
+        let err = decode_frame("data: {not json}").unwrap_err();
+        assert!(matches!(err, ModelError::Stream(_)), "got {err:?}");
+    }
 
     /// Parse `data:` SSE lines of shape {"text":"..."} into Delta events,
     /// `[DONE]` into Done. Mirrors provider parser semantics closely enough
