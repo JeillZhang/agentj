@@ -302,15 +302,39 @@ check_lockfile_locked() {
   ok "$name"
 }
 
+# Print the diagnostically useful lines of a fn-length failure report: offender
+# lines and probe failures first, then the tail. Bounded, but never so tight that
+# the `file:line: fn = N lines` line is amputated behind a wall of `ok:` lines
+# (the repository scan is the LAST step of the self-check, so its finding arrives
+# after ~16 passing probes).
+fn_length_report() {
+  local out=$1 detail
+  detail=$(printf '%s\n' "$out" \
+    | grep -E 'repository has long functions|probe |drifted|must (exit|report)|functions > 50' \
+    | head -n 6)
+  if [ -z "$detail" ]; then
+    detail=$(printf '%s\n' "$out" | grep -vE '^ok: |^$' | tail -n 6)
+  fi
+  [ -n "$detail" ] || detail=$out
+  printf '%s' "$detail" | tr '\n' ' ' | cut -c1-900
+}
+
 check_fn_length() {
   local name=fn-length
   local out
   if ! out=$(sh "$ROOT/scripts/test-fn-length.sh" 2>&1); then
-    bad "$name" "self-check failed: $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-400)"
+    # A long function in the repo makes the self-check fail too (it scans the
+    # repository as its last step); report it as the finding it is instead of
+    # burying it under "self-check failed".
+    if printf '%s' "$out" | grep -q 'repository has long functions'; then
+      bad "$name" "$(fn_length_report "$out")"
+    else
+      bad "$name" "self-check failed: $(fn_length_report "$out")"
+    fi
     return 1
   fi
   if ! out=$(python3 "$ROOT/scripts/tests/fn-length.py" "$ROOT/crates" 2>&1); then
-    bad "$name" "$(printf '%s' "$out" | tr '\n' ' ' | cut -c1-400)"
+    bad "$name" "$(fn_length_report "$out")"
     return 1
   fi
   ok "$name: $(printf '%s\n' "$out" | tail -n 1)"
