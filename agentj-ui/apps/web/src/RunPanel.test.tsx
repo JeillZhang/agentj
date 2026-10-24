@@ -1,11 +1,11 @@
 import "@testing-library/jest-dom/vitest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, fireEvent, within, act, waitFor } from "@testing-library/react";
-import RunPanel, { ConversationFeed, failRun, fmtDuration, reduceRunFeed, toolSummary, type RunEntry } from "./RunPanel.tsx";
+import RunPanel, { ConversationFeed, failRun, fmtDuration, reduceRunFeed, type RunEntry } from "./RunPanel.tsx";
 import { createProject, setCurrentProject } from "./projectStore";
 import { setDemoEnabled } from "./demoData";
 import { formatUsageTitle } from "./tokenUsage";
-import { METHODS, type ProgressFrame } from "@agentj/sdk";
+import { METHODS, toolSummary, type ProgressFrame } from "@agentj/sdk";
 import type { ModelEntry } from "./components/ComposerOptions";
 
 beforeEach(() => localStorage.clear());
@@ -255,17 +255,26 @@ describe("ConversationFeed rendering", () => {
     expect(summaries.map((s) => s.textContent)).toEqual(["src/App.tsx", "src/RunPanel.tsx"]);
   });
   it("summarizes grep as pattern + include and glob as pattern", () => {
-    expect(toolSummary({ kind: "tool", id: "c", name: "grep", args: { pattern: "TODO", include: "*.ts" }, state: "running" })).toBe("TODO · *.ts");
-    expect(toolSummary({ kind: "tool", id: "c", name: "grep", args: { pattern: "TODO" }, state: "running" })).toBe("TODO");
-    expect(toolSummary({ kind: "tool", id: "c", name: "grep", args: { pattern: "TODO", include: "*" }, state: "running" })).toBe("TODO");
-    expect(toolSummary({ kind: "tool", id: "c", name: "glob", args: { pattern: "src/**/*.tsx" }, state: "running" })).toBe("src/**/*.tsx");
-    expect(toolSummary({ kind: "tool", id: "c", name: "todo", args: { items: [{}, {}] }, state: "running" })).toBe("2 项");
+    // A full tool RunEntry structurally satisfies `{ name, args }` — no adapter needed.
+    const entry: RunEntry = {
+      kind: "tool",
+      id: "c",
+      name: "bash",
+      args: { command: "ls" },
+      state: "running",
+    };
+    expect(toolSummary(entry)).toBe("ls");
+    expect(toolSummary({ name: "grep", args: { pattern: "TODO", include: "*.ts" } })).toBe("TODO · *.ts");
+    expect(toolSummary({ name: "grep", args: { pattern: "TODO" } })).toBe("TODO");
+    expect(toolSummary({ name: "grep", args: { pattern: "TODO", include: "*" } })).toBe("TODO");
+    expect(toolSummary({ name: "glob", args: { pattern: "src/**/*.tsx" } })).toBe("src/**/*.tsx");
+    expect(toolSummary({ name: "todo", args: { items: [{}, {}] } })).toBe("2 项");
   });
   it("omits the summary when args are absent or the tool is unknown", () => {
-    expect(toolSummary({ kind: "tool", id: "c", name: "bash", args: null, state: "running" })).toBe("");
-    expect(toolSummary({ kind: "tool", id: "c", name: "bash", args: [1, 2], state: "running" })).toBe("");
-    expect(toolSummary({ kind: "tool", id: "c", name: "bash", args: 42, state: "running" })).toBe("");
-    expect(toolSummary({ kind: "tool", id: "c", name: "mystery", args: { x: 1 }, state: "running" })).toBe("");
+    expect(toolSummary({ name: "bash", args: null })).toBe("");
+    expect(toolSummary({ name: "bash", args: [1, 2] })).toBe("");
+    expect(toolSummary({ name: "bash", args: 42 })).toBe("");
+    expect(toolSummary({ name: "mystery", args: { x: 1 } })).toBe("");
     const { container } = render(<ConversationFeed entries={[user("go"), tool("c1", "bash")] as RunEntry[]} />);
     expect(container.querySelector(".aj-tool-summary")).toBeNull();
   });
@@ -1151,5 +1160,19 @@ describe("RunPanel session busy hint", () => {
   it("passes other failures through unchanged", async () => {
     await submit(failingClient("API error (500): upstream broke"));
     expect(await screen.findByText(/API error \(500\): upstream broke/)).toBeInTheDocument();
+  });
+});
+
+// --- T46: shared toolSummary from @agentj/sdk ---------------------------------
+
+describe("shared tool summary chip", () => {
+  it("shows the shared tool summary chip", () => {
+    const entries = [
+      user("go"),
+      { kind: "tool", id: "c1", name: "bash", args: { command: "ls" }, state: "ok", output: "" },
+    ] as RunEntry[];
+    const { container } = render(<ConversationFeed entries={entries} />);
+    const summary = container.querySelector<HTMLElement>(".aj-tool-summary");
+    expect(summary?.textContent).toBe("ls");
   });
 });
