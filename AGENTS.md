@@ -55,9 +55,10 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
   + `protocol/methods.json` + `agentj-ui/package.json` / `apps/web` / `apps/tui` / `apps/desktop`
   + `agentj-ui/package-lock.json` 根条目；失败打印出错文件与命中字面量。
   `AGENTJ_ROOT=<路径>` 可对任意目录跑同一套断言，`scripts/test-check-version.sh` 是其正/负样例）
-- `bash scripts/tests/assert-{ui,cargo,ci}.sh all` — 仓库不变量断言（16 个 check：UI 清单 /
+- `bash scripts/tests/assert-{ui,cargo,ci}.sh all` — 仓库不变量断言（17 个 check：UI 清单 /
   单一 lockfile / Cargo 工作区策略 / 15 crate 继承 / LICENSE / deny.toml / lockfile 一致性 /
-  CI 作业契约 / 覆盖率棘轮 / 治理文件 / 卫生 / summary / 文档基线）。`<check>` 单跑、
+  函数长度 / CI 作业契约 / 覆盖率棘轮 / 治理文件 / 卫生 / summary / 文档基线 —— 文档基线一项
+  同时断言这里的 check 数与三个脚本实际注册的一致）。`<check>` 单跑、
   `--list` 列出、`--strict` 把未实现项（SKIP）视为失败 —— **收尾门禁用 `--strict`**
 
 > 各门禁的当前测试数量与最近一次结果见 `.agents/summary/summary_and_next_{se,fe}.md`；

@@ -767,6 +767,45 @@ PY2
     failed=1
   fi
 
+  # The check count AGENTS.md advertises must equal what the three harnesses
+  # actually register, so "one check landed" cannot leave the docs behind.
+  local count_out
+  if ! count_out=$(python3 - "$ROOT" <<'PY3'
+import pathlib
+import re
+import subprocess
+import sys
+
+root = pathlib.Path(sys.argv[1])
+agents = (root / "AGENTS.md").read_text()
+match = re.search(r"(\d+) 个 check", agents)
+if match is None:
+    print("AGENTS.md must advertise the harness size as 'N 个 check'")
+    sys.exit(1)
+claimed = int(match.group(1))
+counts = []
+for script in ("assert-ui.sh", "assert-cargo.sh", "assert-ci.sh"):
+    listing = subprocess.run(
+        ["bash", str(root / "scripts/tests" / script), "--list"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    names = [line for line in listing.splitlines() if line.strip()]
+    counts.append(len(names))
+if claimed != sum(counts):
+    print(
+        f"AGENTS.md advertises {claimed} checks, the harnesses register "
+        f"{sum(counts)} ({counts[0]} ui + {counts[1]} cargo + {counts[2]} ci)"
+    )
+    sys.exit(1)
+print("ok")
+PY3
+  ); then
+    bad "$name" "$count_out"
+    failed=1
+  fi
+
   require "$readme" 'CONTRIBUTING.md' 'the contributing guide pointer'
   if ! grep -qE 'MIT OR Apache-2\.0|Apache-2\.0' "$readme"; then
     bad "$name" "README.md: missing the MIT OR Apache-2.0 licence statement"
