@@ -56,11 +56,13 @@ const MOVED_OUT_OF_ROOT: [&str; 42] = [
 /// covered by the per-area tests.
 ///
 /// The destination modules (`dispatch.rs`, `handlers/*`, `frames.rs`,
-/// `stdio.rs`, `rpc.rs`, `registry.rs`, `tests/*`) are deliberately NOT scanned:
-/// they are where these symbols are *supposed* to live, so scanning them would
-/// assert the opposite of the intent. A symbol leaking into `rpc.rs` or
-/// `registry.rs` is still compiled and reachable, it just lives somewhere
-/// unexpected, which the `fn-length` / module-size budgets surface instead.
+/// `stdio.rs`, `rpc.rs`, `registry.rs`, `tests/*`) and the other narrow root
+/// modules (`file_list.rs`, `login_limiter.rs`, `metrics_state.rs`, `secure.rs`,
+/// `trajectory.rs`, `client_ip.rs`) are deliberately NOT scanned: they are where
+/// these symbols are *supposed* to live, or they would only re-assert the same
+/// absence. A symbol leaking into `rpc.rs` or `registry.rs` still compiles and
+/// stays reachable, so no gate catches it today — this test only protects the
+/// thin-`lib.rs` invariant that the refactor was for.
 /// Needles are built at runtime, so this assertion's own text cannot satisfy it.
 #[test]
 fn moved_symbols_absent_from_sibling_root_modules() {
