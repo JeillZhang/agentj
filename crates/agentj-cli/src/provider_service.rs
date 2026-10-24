@@ -557,32 +557,9 @@ impl CliProviderService {
         account: Option<Vec<String>>,
     ) -> Result<AuthSetApiKeyResult, DispatchError> {
         let (catalog, source) = self.link_catalog(cfg, account).await;
-        let now = now_epoch();
-        self.store
-            .set(
-                &cfg.name,
-                Credential::ApiKey {
-                    key: key.to_string(),
-                    label,
-                    created_at: Some(now.to_string()),
-                },
-            )
-            .map_err(credential_error)?;
+        let now = self.write_link_file(cfg, key, label)?;
         lock_or_recover(&self.usage_cache).remove(&cfg.name);
-        // D3/G7: the runtime instance must carry the same credential the read side reports.
-        // A non-blank `api_key_env` shadows the key just stored, so activation uses the
-        // *resolved* credential (env wins) rather than the submitted value — otherwise the
-        // kernel silently sends the just-stored key under an `env` banner.
-        let (effective_key, effective_source) = self.key_read_only(cfg)?;
-        let effective_key = effective_key.unwrap_or_else(|| key.to_string());
-        activation::activate_opencode_go(
-            &self.registry,
-            cfg,
-            &effective_key,
-            catalog.clone(),
-            None,
-        )
-        .map_err(activation_failed)?;
+        let (effective_key, effective_source) = self.activate_link(cfg, &catalog, key)?;
         let models = entries_of(&catalog.ids(), &catalog);
         let cached = ModelListResult {
             provider: cfg.name.clone(),
@@ -600,6 +577,45 @@ impl CliProviderService {
             models,
             now,
         ))
+    }
+
+    /// Write the api-key credential to the auth file, stamped with the current epoch.
+    /// A persistence failure is reported as a dispatch error and leaves nothing activated.
+    fn write_link_file(
+        &self,
+        cfg: &ProviderCfg,
+        key: &str,
+        label: Option<String>,
+    ) -> Result<i64, DispatchError> {
+        let now = now_epoch();
+        self.store
+            .set(
+                &cfg.name,
+                Credential::ApiKey {
+                    key: key.to_string(),
+                    label,
+                    created_at: Some(now.to_string()),
+                },
+            )
+            .map_err(credential_error)?;
+        Ok(now)
+    }
+
+    /// Activate the freshly linked provider and report the credential the runtime now uses
+    /// (D3/G7). A non-blank `api_key_env` shadows the key just stored, so activation uses the
+    /// *resolved* credential (env wins) rather than the submitted value — otherwise the kernel
+    /// silently sends the just-stored key under an `env` banner.
+    fn activate_link(
+        &self,
+        cfg: &ProviderCfg,
+        catalog: &ModelCatalog,
+        key: &str,
+    ) -> Result<(String, CredentialSource), DispatchError> {
+        let (resolved, source) = self.key_read_only(cfg)?;
+        let effective = resolved.unwrap_or_else(|| key.to_string());
+        activation::activate_opencode_go(&self.registry, cfg, &effective, catalog.clone(), None)
+            .map_err(activation_failed)?;
+        Ok((effective, source))
     }
 
     /// The catalog a link reports (design D2): the verified account ids, else the live probe,

@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use agentj_auth::credential::Credential;
-use agentj_auth::{AuthStore, resolve_credential};
+use agentj_auth::{AuthStore, ResolvedKey, resolve_credential};
 use agentj_config::{AgentJConfig, ModelProviderConfig};
 use agentj_core::module::ModelProvider;
 use agentj_model::catalog::ModelCatalog;
@@ -53,6 +53,21 @@ pub struct Assembly {
     pub warnings: Vec<String>,
 }
 
+/// One provider's assembly outcome: the registry entry (absent when the provider was
+/// skipped) plus every warning it produced, in emission order.
+struct ProviderBuild {
+    provider: Option<Arc<dyn ModelProvider>>,
+    warnings: Vec<String>,
+}
+
+/// A successful build with no warnings of its own.
+fn built(provider: Arc<dyn ModelProvider>) -> ProviderBuild {
+    ProviderBuild {
+        provider: Some(provider),
+        warnings: vec![],
+    }
+}
+
 /// Build the provider registry entries, skipping keyless real providers with a warning.
 ///
 /// A provider that needs a key but cannot resolve one is never registered, so no
@@ -74,102 +89,11 @@ where
     let mut providers: Vec<(String, Arc<dyn ModelProvider>)> = vec![];
     let mut warnings: Vec<String> = vec![];
     for pcfg in &effective_provider_cfgs(config) {
-        if !KEY_REQUIRED_KINDS.contains(&pcfg.kind.as_str()) {
-            let provider =
-                ProviderFactory::create(&pcfg.kind, &pcfg.name, &pcfg.base_url, String::new())
-                    .map_err(|e| e.to_string())?;
-            providers.push((pcfg.name.clone(), provider));
-            continue;
-        }
-        let resolved =
-            match resolve_credential(&pcfg.name, flag, pcfg.api_key_env.as_deref(), store)
-                .map_err(|e| e.to_string())?
-            {
-                Some(r) => r,
-                None => {
-                    let mut warning = format!(
-                        "provider {} 无可用密钥（api_key_env={:?}），已跳过",
-                        pcfg.name, pcfg.api_key_env
-                    );
-                    if pcfg.kind == "opencode-go" {
-                        warning.push_str("；可在设置 · 订阅中链接 API Key");
-                    }
-                    warnings.push(warning);
-                    continue;
-                }
-            };
-        if pcfg.kind == "opencode-go" {
-            let live_ids = match live().await {
-                Ok(v) => v,
-                Err(e) => {
-                    warnings.push(format!(
-                        "opencode-go：live 目录不可用（{e}），回退提交件 overlay"
-                    ));
-                    None
-                }
-            };
-            let catalog = ModelCatalog::from_overlay_and_live(ModelCatalog::builtin(), live_ids);
-            warnings.extend(
-                catalog
-                    .unverified_ids()
-                    .into_iter()
-                    .map(|id| format!("opencode-go：模型路由未验证：{id}")),
-            );
-            let provider: Arc<dyn ModelProvider> = match store.get(&pcfg.name).ok().flatten() {
-                // OAuth (design D8): keep the 600s access token fresh before every chat call.
-                Some(Credential::OAuth { .. }) => {
-                    let build: RefreshingBuilder = {
-                        let catalog = catalog.clone();
-                        let name = pcfg.name.clone();
-                        let base = pcfg.base_url.clone();
-                        Arc::new(move |key: &str| {
-                            ProviderFactory::create_with_catalog(
-                                "opencode-go",
-                                &name,
-                                &base,
-                                key.to_string(),
-                                catalog.clone(),
-                            )
-                            .expect("opencode-go provider")
-                        })
-                    };
-                    Arc::new(RefreshingProvider::oauth(
-                        build,
-                        store.clone(),
-                        &pcfg.name,
-                        console_base,
-                        resolved.key.clone(),
-                    ))
-                }
-                _ => Arc::new(RefreshingProvider::r#static(
-                    ProviderFactory::create_with_catalog(
-                        "opencode-go",
-                        &pcfg.name,
-                        &pcfg.base_url,
-                        resolved.key.clone(),
-                        catalog,
-                    )
-                    .map_err(|e| e.to_string())?,
-                )),
-            };
-            providers.push((pcfg.name.clone(), provider));
-        } else {
-            let provider = ProviderFactory::create(
-                &pcfg.kind,
-                &pcfg.name,
-                &pcfg.base_url,
-                resolved.key.clone(),
-            )
-            .map_err(|e| e.to_string())?;
+        let build = assemble(pcfg, flag, store, &live, console_base).await?;
+        warnings.extend(build.warnings);
+        if let Some(provider) = build.provider {
             providers.push((pcfg.name.clone(), provider));
         }
-        // Provenance line: source + last 4 only; `redact` is the single redaction point.
-        tracing::info!(
-            "provider {} 密钥来源 {:?} {}",
-            pcfg.name,
-            resolved.source,
-            agentj_auth::redact(&resolved.key)
-        );
     }
     if providers.is_empty() {
         warnings.push(NO_USABLE_PROVIDER.to_string());
@@ -178,6 +102,147 @@ where
         providers,
         warnings,
     })
+}
+
+/// Assemble one provider entry: key-free kinds are created directly, key-requiring kinds
+/// resolve their credential first and are skipped (with a warning) when none exists.
+async fn assemble<F, Fut>(
+    pcfg: &ModelProviderConfig,
+    flag: Option<&str>,
+    store: &AuthStore,
+    live: &F,
+    console_base: &str,
+) -> Result<ProviderBuild, String>
+where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = Result<Option<Vec<String>>, String>>,
+{
+    if !KEY_REQUIRED_KINDS.contains(&pcfg.kind.as_str()) {
+        return Ok(built(create_provider(pcfg, String::new())?));
+    }
+    let resolved = match resolve_credential(&pcfg.name, flag, pcfg.api_key_env.as_deref(), store)
+        .map_err(|e| e.to_string())?
+    {
+        Some(r) => r,
+        None => return Ok(skipped(pcfg)),
+    };
+    let build = if pcfg.kind == "opencode-go" {
+        opencode_go(pcfg, store, live, console_base, &resolved).await?
+    } else {
+        built(create_provider(pcfg, resolved.key.clone())?)
+    };
+    // Provenance line: source + last 4 only; `redact` is the single redaction point.
+    tracing::info!(
+        "provider {} 密钥来源 {:?} {}",
+        pcfg.name,
+        resolved.source,
+        agentj_auth::redact(&resolved.key)
+    );
+    Ok(build)
+}
+
+/// A plain provider instance for `pcfg` built around an already-resolved key.
+fn create_provider(
+    pcfg: &ModelProviderConfig,
+    key: String,
+) -> Result<Arc<dyn ModelProvider>, String> {
+    ProviderFactory::create(&pcfg.kind, &pcfg.name, &pcfg.base_url, key).map_err(|e| e.to_string())
+}
+
+/// The outcome for a provider that needs a key and resolved none: no entry, one warning.
+fn skipped(pcfg: &ModelProviderConfig) -> ProviderBuild {
+    let mut warning = format!(
+        "provider {} 无可用密钥（api_key_env={:?}），已跳过",
+        pcfg.name, pcfg.api_key_env
+    );
+    if pcfg.kind == "opencode-go" {
+        warning.push_str("；可在设置 · 订阅中链接 API Key");
+    }
+    ProviderBuild {
+        provider: None,
+        warnings: vec![warning],
+    }
+}
+
+/// `opencode-go` (design D5/D8): catalog from overlay+live, entry wrapped for OAuth
+/// refresh. Live-catalog failures are reported, never fatal.
+async fn opencode_go<F, Fut>(
+    pcfg: &ModelProviderConfig,
+    store: &AuthStore,
+    live: &F,
+    console_base: &str,
+    resolved: &ResolvedKey,
+) -> Result<ProviderBuild, String>
+where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = Result<Option<Vec<String>>, String>>,
+{
+    let mut warnings: Vec<String> = vec![];
+    let live_ids = match live().await {
+        Ok(v) => v,
+        Err(e) => {
+            warnings.push(format!(
+                "opencode-go：live 目录不可用（{e}），回退提交件 overlay"
+            ));
+            None
+        }
+    };
+    let catalog = ModelCatalog::from_overlay_and_live(ModelCatalog::builtin(), live_ids);
+    warnings.extend(
+        catalog
+            .unverified_ids()
+            .into_iter()
+            .map(|id| format!("opencode-go：模型路由未验证：{id}")),
+    );
+    let provider = opencode_go_provider(pcfg, store, console_base, catalog, &resolved.key)?;
+    Ok(ProviderBuild {
+        provider: Some(provider),
+        warnings,
+    })
+}
+
+/// The `opencode-go` entry: an OAuth credential keeps its 600s access token fresh before
+/// every chat call, an api-key gets the same catalog behind a static instance.
+fn opencode_go_provider(
+    pcfg: &ModelProviderConfig,
+    store: &AuthStore,
+    console_base: &str,
+    catalog: ModelCatalog,
+    key: &str,
+) -> Result<Arc<dyn ModelProvider>, String> {
+    if let Some(Credential::OAuth { .. }) = store.get(&pcfg.name).ok().flatten() {
+        let build: RefreshingBuilder = {
+            let catalog = catalog.clone();
+            let name = pcfg.name.clone();
+            let base = pcfg.base_url.clone();
+            Arc::new(move |key: &str| {
+                ProviderFactory::create_with_catalog(
+                    "opencode-go",
+                    &name,
+                    &base,
+                    key.to_string(),
+                    catalog.clone(),
+                )
+                .expect("opencode-go provider")
+            })
+        };
+        return Ok(Arc::new(RefreshingProvider::oauth(
+            build,
+            store.clone(),
+            &pcfg.name,
+            console_base,
+            key.to_string(),
+        )));
+    }
+    let provider = ProviderFactory::create_with_catalog(
+        "opencode-go",
+        &pcfg.name,
+        &pcfg.base_url,
+        key.to_string(),
+        catalog,
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(Arc::new(RefreshingProvider::r#static(provider)))
 }
 
 #[cfg(test)]

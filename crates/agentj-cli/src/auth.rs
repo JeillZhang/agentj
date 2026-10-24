@@ -2,6 +2,9 @@
 
 use std::path::Path;
 
+use agentj_auth::oauth::{
+    DeviceCode, PollOutcome, Tokens, device_poll, device_start, now_epoch as oauth_now_epoch,
+};
 use agentj_auth::{AuthStore, Credential, ResolvedKey, redact, resolve_credential};
 #[cfg(test)]
 use agentj_core::sync::lock_or_recover;
@@ -173,54 +176,74 @@ where
     F: Fn(u64) -> Fut,
     Fut: std::future::Future<Output = ()>,
 {
-    use agentj_auth::oauth::{PollOutcome, device_poll, device_start, now_epoch};
+    let code = start_device(console_base).await?;
+    let deadline = oauth_now_epoch() + code.expires_in as i64;
+    let tokens = poll_until_authorized(console_base, &code, deadline, &sleep).await?;
+    persist_credential(store, args, tokens)
+}
 
+/// Ask the console for a device code and show the user what to do with it.
+async fn start_device(console_base: &str) -> Result<DeviceCode, String> {
     let code = device_start(console_base)
         .await
         .map_err(|e| e.to_string())?;
     println!("在浏览器中打开：{}", code.verification_uri);
     println!("设备码：{}", code.user_code);
-    let deadline = now_epoch() + code.expires_in as i64;
+    Ok(code)
+}
+
+/// Poll until the user authorizes; the interval only ever grows (`SlowDown`) and the
+/// upstream deadline is the sole exit for a code nobody confirms.
+async fn poll_until_authorized<F, Fut>(
+    console_base: &str,
+    code: &DeviceCode,
+    deadline: i64,
+    sleep: &F,
+) -> Result<Tokens, String>
+where
+    F: Fn(u64) -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
     let mut interval = code.interval;
     loop {
-        if now_epoch() > deadline {
+        if oauth_now_epoch() > deadline {
             return Err("设备码已过期，请重新运行 agentj auth login --device".into());
         }
         sleep(interval).await;
-        match device_poll(console_base, &code.device_code, interval)
+        let outcome = device_poll(console_base, &code.device_code, interval)
             .await
-            .map_err(|e| e.to_string())?
-        {
+            .map_err(|e| e.to_string())?;
+        match outcome {
             PollOutcome::Pending => continue,
-            PollOutcome::SlowDown { interval: next } => {
-                interval = next;
-                continue;
-            }
+            PollOutcome::SlowDown { interval: next } => interval = next,
             PollOutcome::Denied => return Err("授权被拒绝".into()),
             PollOutcome::Expired => return Err("设备码已过期".into()),
             PollOutcome::Error(msg) => return Err(format!("设备授权失败：{msg}")),
-            PollOutcome::Authorized(t) => {
-                store
-                    .set(
-                        &args.provider,
-                        Credential::OAuth {
-                            access: t.access,
-                            refresh: t.refresh,
-                            expires: t.expires_at,
-                            account_id: None,
-                            org_id: t.org_id.clone(),
-                        },
-                    )
-                    .map_err(|e| e.to_string())?;
-                println!(
-                    "已登录 {}（已替换原有凭据；{}）",
-                    args.provider,
-                    t.org_id.unwrap_or_else(|| "无 org 信息".into())
-                );
-                return Ok(());
-            }
+            PollOutcome::Authorized(t) => return Ok(t),
         }
     }
+}
+
+/// Store the OAuth credential (replacing any previous one) and report the login.
+fn persist_credential(store: &AuthStore, args: &LoginArgs, t: Tokens) -> Result<(), String> {
+    store
+        .set(
+            &args.provider,
+            Credential::OAuth {
+                access: t.access,
+                refresh: t.refresh,
+                expires: t.expires_at,
+                account_id: None,
+                org_id: t.org_id.clone(),
+            },
+        )
+        .map_err(|e| e.to_string())?;
+    println!(
+        "已登录 {}（已替换原有凭据；{}）",
+        args.provider,
+        t.org_id.unwrap_or_else(|| "无 org 信息".into())
+    );
+    Ok(())
 }
 
 /// Print the live catalog size after a successful non-offline login (never the credential).
