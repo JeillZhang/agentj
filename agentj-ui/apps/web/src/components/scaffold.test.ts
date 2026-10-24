@@ -10,7 +10,7 @@ describe("T1 scaffold", () => {
       dependencies?: Record<string, string>;
     };
     expect(pkg.dependencies?.["lucide-react"]).toBeDefined();
-    expect(pkg.dependencies?.["lucide-react"]).toMatch(/^\^0\./);
+    expect(pkg.dependencies?.["lucide-react"]).toMatch(/^\^1\./);
     const compDir = join(webRoot, "src/components");
     for (const f of [
       "layout.css",

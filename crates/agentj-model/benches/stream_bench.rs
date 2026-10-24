@@ -3,7 +3,8 @@ use agentj_core::error::ModelError;
 use agentj_core::module::ModelProvider;
 use agentj_core::types::*;
 use agentj_model::mock::MockModelProvider;
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use criterion::{Criterion, criterion_group, criterion_main};
+use std::hint::black_box;
 
 fn bench_mock_stream(c: &mut Criterion) {
     c.bench_function("mock_stream_10_events", |b| {

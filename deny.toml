@@ -49,12 +49,26 @@ skip = [
   # ed25519-dalek 2.2.0 is the last consumer of rand_core 0.6 (agentj-license /
   # agentj-cli); rand 0.9.5 already uses rand_core 0.9.5.
   { name = "rand_core", version = "=0.6.4" },
-  # macOS/iOS TLS stack: hyper-util 0.1.20 -> system-configuration 0.7.0 ->
-  # core-foundation 0.9.4, while native-tls 0.2.18 -> security-framework 3.7.0
-  # -> core-foundation 0.10.1.
-  { name = "core-foundation", version = "=0.9.4" },
   # async-trait 0.1.92 is the only proc-macro crate on syn 3 so far.
   { name = "syn", version = "=3.0.4" },
+  # sha2 0.11 / digest 0.11 (agentj-ipc, agentj-cli) rides the RustCrypto 0.11
+  # wave, but ed25519-dalek 2.2.0 and sha1 0.10.7 (axum / tungstenite) still pin
+  # digest 0.10. Once ed25519-dalek and tungstenite move to digest 0.11 the
+  # whole block collapses back into a single version each.
+  { name = "digest", version = "=0.10.7" },
+  { name = "block-buffer", version = "=0.10.4" },
+  { name = "crypto-common", version = "=0.1.7" },
+  { name = "cpufeatures", version = "=0.2.17" },
+  { name = "sha2", version = "=0.10.9" },
+  # base64 0.23.1 comes from reqwest 0.13, while axum 0.8 / hyper-util 0.1 still
+  # ask for 0.22.1. Pure transitional overlap until axum bumps its own pin.
+  { name = "base64", version = "=0.22.1" },
+  # toml 1.1 (agentj-config, agentj-plugin) parses through toml_datetime 1.1 and
+  # winnow 1.0, whereas toml_edit 0.22 (comment-preserving writes) is still on
+  # toml_datetime 0.6 / winnow 0.7. Upstream has not released a toml_edit on the
+  # 1.x parser yet.
+  { name = "toml_datetime", version = "=0.6.11" },
+  { name = "winnow", version = "=0.7.15" },
 ]
 
 [sources]
