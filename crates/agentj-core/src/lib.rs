@@ -19,8 +19,10 @@ pub mod tool_executor;
 pub mod tool_paths;
 pub mod turn_runner;
 pub mod types;
+pub mod usage_stats;
 
 pub use resolver::{KernelService, ModuleResolver, ServiceRegistry};
+pub use usage_stats::{SessionUsage, UsageCollector};
 
 pub fn add(left: u64, right: u64) -> u64 {
     left + right

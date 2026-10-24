@@ -297,7 +297,7 @@ fn metrics_state_warning(dir: Option<&Path>) -> Option<String> {
 }
 
 fn record_completed_turn(
-    collector: &agentj_stats::UsageCollector,
+    collector: &agentj_core::UsageCollector,
     sid: String,
     usage: Option<TokenUsage>,
 ) {
@@ -987,7 +987,7 @@ fn register_modules(
         Arc::clone(&ctx.providers),
         kernel.services(),
     );
-    let usage = Arc::new(agentj_stats::UsageCollector::new());
+    let usage = Arc::new(agentj_core::UsageCollector::new());
     kernel.register_module(
         Box::new(ToolExecutorModule::new(ctx.clone())),
         ctx,
@@ -1021,7 +1021,7 @@ fn register_modules(
 fn build_turn_runner(
     ctx: &KernelContext,
     sender: agentj_core::kernel::KernelSender,
-    usage: &Arc<agentj_stats::UsageCollector>,
+    usage: &Arc<agentj_core::UsageCollector>,
 ) -> TurnRunner {
     let mut runner = TurnRunner::new(
         ctx.clone(),
@@ -1554,7 +1554,7 @@ mod tests {
 
     #[test]
     fn record_completed_turn_with_usage_records_tokens() {
-        let c = agentj_stats::UsageCollector::new();
+        let c = agentj_core::UsageCollector::new();
         record_completed_turn(
             &c,
             "s1".into(),
@@ -1572,7 +1572,7 @@ mod tests {
 
     #[test]
     fn record_completed_turn_with_zero_usage_falls_back_to_turn() {
-        let c = agentj_stats::UsageCollector::new();
+        let c = agentj_core::UsageCollector::new();
         record_completed_turn(&c, "s1".into(), Some(TokenUsage::default()));
         let t = c.get_session_totals("s1").unwrap();
         assert_eq!((t.prompt_tokens, t.completion_tokens, t.turns), (0, 0, 1));
@@ -1580,7 +1580,7 @@ mod tests {
 
     #[test]
     fn record_completed_turn_with_none_falls_back_to_turn() {
-        let c = agentj_stats::UsageCollector::new();
+        let c = agentj_core::UsageCollector::new();
         record_completed_turn(&c, "s1".into(), None);
         let t = c.get_session_totals("s1").unwrap();
         assert_eq!((t.prompt_tokens, t.completion_tokens, t.turns), (0, 0, 1));
