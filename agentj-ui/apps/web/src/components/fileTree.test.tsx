@@ -568,6 +568,49 @@ test("restores the tree on Escape and keeps the box after a row click", async ()
   expect(screen.queryAllByRole("treeitem")).toHaveLength(2);
 });
 
+test("moves the active search result with ArrowDown and ArrowUp", async () => {
+  vi.useFakeTimers();
+  const client = searchClient(() => ({ entries: SEARCH_HITS, total: 3, truncated: false }));
+  render(<FileTree client={client} sessionId="s1" demo={false} />);
+  await flush();
+  await typeSearch("main");
+  await advanceDebounce();
+
+  const rows = screen.getAllByRole("treeitem");
+  expect(rows).toHaveLength(3);
+  expect(rows[0]).toHaveAttribute("tabindex", "0");
+  rows[0].focus();
+
+  fireEvent.keyDown(rows[0], { key: "ArrowDown" });
+  expect(document.activeElement).toBe(rows[1]);
+  expect(rows[1]).toHaveAttribute("aria-selected", "true");
+  expect(rows[1]).toHaveAttribute("tabindex", "0");
+
+  fireEvent.keyDown(rows[1], { key: "ArrowUp" });
+  expect(document.activeElement).toBe(rows[0]);
+  // Clamped: ArrowUp on the first row stays put.
+  fireEvent.keyDown(rows[0], { key: "ArrowUp" });
+  expect(document.activeElement).toBe(rows[0]);
+});
+
+test("Escape from a focused search result row restores the tree", async () => {
+  vi.useFakeTimers();
+  const client = searchClient(() => ({ entries: SEARCH_HITS, total: 3, truncated: false }));
+  render(<FileTree client={client} sessionId="s1" demo={false} />);
+  await flush();
+  await typeSearch("main");
+  await advanceDebounce();
+
+  const row = screen.getAllByRole("treeitem")[1];
+  row.focus();
+  expect(document.activeElement).toBe(row);
+  fireEvent.keyDown(row, { key: "Escape" });
+  await flush();
+
+  expect(screen.getByText("README.md")).toBeInTheDocument();
+  expect(screen.queryByRole("tree", { name: "搜索结果" })).toBeNull();
+});
+
 test("marks a truncated reply as partial", async () => {
   vi.useFakeTimers();
   const client = searchClient(() => ({ entries: SEARCH_HITS, total: 500, truncated: true }));

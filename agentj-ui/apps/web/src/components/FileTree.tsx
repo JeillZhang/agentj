@@ -351,17 +351,60 @@ function SearchBar({ query, onChange, onEscape }: SearchBarProps) {
   );
 }
 
-/** Result rows: server order, `name` then the dimmed parent dir, git letter last. */
-function SearchResults({ state, onPick }: { state: SearchState; onPick: (path: string) => void }) {
+type SearchResultsProps = {
+  state: SearchState;
+  onPick: (path: string) => void;
+  onEscape: () => void;
+};
+
+/**
+ * Result rows: server order, `name` then the dimmed parent dir, git letter last.
+ * Rows follow the tree's roving-tabindex contract (one `0`, the rest `-1`);
+ * Escape and the arrows sit on the container so they also fire while a result
+ * row has focus.
+ */
+function SearchResults({ state, onPick, onEscape }: SearchResultsProps) {
+  /** Roving index tagged with its query: a new query restarts at row 0 without an effect. */
+  const [roving, setRoving] = useState({ query: state.query, index: 0 });
+  const rowRefs = useRef(new Map<string, HTMLButtonElement>());
+
+  const active = roving.query === state.query ? roving.index : 0;
+  const activeIndex = state.rows.length === 0 ? -1 : Math.min(active, state.rows.length - 1);
+
+  const setActive = (index: number): void => {
+    setRoving({ query: state.query, index });
+  };
+
+  const moveActive = (delta: number): void => {
+    if (state.rows.length === 0) return;
+    const next = moveSelection(Math.max(activeIndex, 0), delta, state.rows.length);
+    setActive(next);
+    const el = rowRefs.current.get(state.rows[next].path);
+    el?.focus();
+    if (el && typeof el.scrollIntoView === "function") el.scrollIntoView({ block: "nearest" });
+  };
+
+  const handleKey = (event: ReactKeyboardEvent<HTMLDivElement>): void => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      onEscape();
+      return;
+    }
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+    event.preventDefault();
+    moveActive(event.key === "ArrowDown" ? 1 : -1);
+  };
+
   return (
     <>
       <p className="ft-search-head" data-empty={state.rows.length === 0 ? "true" : undefined}>
         {searchHead(state)}
       </p>
       {state.error ? <p className="ft-search-error">{`搜索失败：${state.error}`}</p> : null}
-      <div className="tree" role="tree" aria-label="搜索结果">
-        {state.rows.map((row) => {
+      <div className="tree" role="tree" aria-label="搜索结果" tabIndex={-1} onKeyDown={handleKey}>
+        {state.rows.map((row, index) => {
           const parent = parentPath(row.path);
+          const isActive = index === activeIndex;
           const { Icon, category } = fileIconFor(row.name);
           return (
             <button
@@ -369,9 +412,14 @@ function SearchResults({ state, onPick }: { state: SearchState; onPick: (path: s
               role="treeitem"
               className="trow trow-search"
               key={row.path}
-              aria-selected={false}
-              tabIndex={-1}
+              aria-selected={isActive}
+              tabIndex={isActive ? 0 : -1}
               data-path={row.path}
+              ref={(el) => {
+                if (el) rowRefs.current.set(row.path, el);
+                else rowRefs.current.delete(row.path);
+              }}
+              onFocus={() => setActive(index)}
               onClick={() => onPick(row.path)}
             >
               <span className="chev" aria-hidden="true" />
@@ -675,7 +723,7 @@ const FileTree = forwardRef<FileTreeHandle, FileTreeProps>(function FileTree(
   // Search mode replaces the tree body but never unmounts its state, so Escape restores
   // the fetched/expanded tree exactly as it was.
   const pane = search.active ? (
-    <SearchResults state={search} onPick={(path) => onFileSelect?.(path)} />
+    <SearchResults state={search} onPick={(path) => onFileSelect?.(path)} onEscape={exitSearch} />
   ) : (
     body
   );
