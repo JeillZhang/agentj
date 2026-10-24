@@ -1,17 +1,20 @@
 //! `file/list` — sandboxed directory enumeration (design 2026-09-13, contract item 1).
 //!
-//! Requests resolve against the session `project_root`: the requested path is
-//! lexically normalized, canonicalized, and must stay under the canonicalized
-//! root (`-32807` otherwise). Enumeration is a BFS capped at [`MAX_DEPTH`]
+//! Requests resolve against the session `project_root` through
+//! `agentj_core::paths::resolve_within_root` — the same primitive the permission
+//! engine uses, so `file/list` cannot disagree with it about symlinks or about
+//! paths whose parents do not exist yet (`-32807` when it reports an escape).
+//! Enumeration is a BFS capped at [`MAX_DEPTH`]
 //! levels and [`ENTRY_LIMIT`] entries; `.git` is never returned or descended,
 //! escaping symlink entries are silently skipped, and per-level ordering is
 //! directories-first then name-ascending.
 
 use std::collections::VecDeque;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 use agentj_core::git_sample::GitSnapshot;
+use agentj_core::paths::{Resolved, resolve_within_root};
 use agentj_protocol::file::{FileEntry, FileKind, FileListResult, GitFileStatus};
 
 /// Enumeration depth cap (design contract item 1: `depth` 1..=8, default 1).
@@ -98,57 +101,24 @@ fn requested_prefix(root: &Path, requested: &str, target: &Path) -> String {
     if requested.is_empty() {
         return String::new();
     }
-    let relative = if Path::new(requested).is_absolute() {
-        target.strip_prefix(root).ok().map(Path::to_path_buf)
-    } else {
-        lexical_join(root, Path::new(requested))
-            .and_then(|joined| joined.strip_prefix(root).ok().map(Path::to_path_buf))
-    };
-    relative
+    target
+        .strip_prefix(root)
         .map(|rel| rel.to_string_lossy().into_owned())
         .unwrap_or_default()
 }
 
-/// Resolve the requested path against `root`: lexical normalization rejects
-/// `..` escapes before canonicalization; the canonical result must stay under
-/// the canonical root.
+/// Resolve the requested path against the canonical `root`. The verdict comes
+/// from the shared primitive: an escape (lexical or via symlink) is
+/// `OutsideRoot`, and a nonexistent path is still returned so the caller maps
+/// it to `NotFound`.
 fn resolve_target(root: &Path, requested: &str) -> Result<PathBuf, FileListError> {
     if requested.is_empty() {
         return Ok(root.to_path_buf());
     }
-    let raw = Path::new(requested);
-    let candidate = if raw.is_absolute() {
-        raw.to_path_buf()
-    } else {
-        lexical_join(root, raw).ok_or_else(|| outside_root(requested))?
-    };
-    let canonical = candidate
-        .canonicalize()
-        .map_err(|e| io_or_not_found(requested, &e))?;
-    if canonical.starts_with(root) {
-        Ok(canonical)
-    } else {
-        Err(outside_root(requested))
+    match resolve_within_root(root, requested) {
+        Resolved::Inside(target) => Ok(target),
+        Resolved::Outside { .. } => Err(outside_root(requested)),
     }
-}
-
-/// Join `requested` onto `root` after removing `.` and resolving `..`;
-/// `None` when the path climbs above the root (sandbox escape).
-fn lexical_join(root: &Path, requested: &Path) -> Option<PathBuf> {
-    let mut relative = PathBuf::new();
-    for component in requested.components() {
-        match component {
-            Component::Normal(part) => relative.push(part),
-            Component::CurDir => {}
-            Component::ParentDir => {
-                if !relative.pop() {
-                    return None;
-                }
-            }
-            Component::RootDir | Component::Prefix(_) => return None,
-        }
-    }
-    Some(root.join(relative))
 }
 
 /// Map a metadata/canonicalization failure: missing → `NotFound`, else `Io`.
@@ -694,6 +664,34 @@ mod tests {
             Err(FileListError::NotFound)
         ));
         fs::remove_dir_all(&root).ok();
+    }
+
+    /// A symlink inside the root that points outside it is still an escape.
+    /// Pinned as a characterization test before `resolve_scope` switched to
+    /// `agentj_core::paths::resolve_within_root`.
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_scope_escape_is_outside_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.join("link")).unwrap();
+        assert!(matches!(
+            list(&root, Some("link"), Some(1)),
+            Err(FileListError::OutsideRoot { .. })
+        ));
+    }
+
+    /// A path that simply does not exist stays `NotFound` — it must not be
+    /// promoted to `OutsideRoot` by the shared resolver.
+    #[test]
+    fn missing_scope_is_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        assert!(matches!(
+            list(&root, Some("missing"), Some(1)),
+            Err(FileListError::NotFound)
+        ));
     }
 
     #[test]
