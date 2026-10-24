@@ -9,6 +9,7 @@ export type { TransportStatus } from "./transports/websocket.js";
 
 export { PROTOCOL_VERSION, VERSION, resolveWsUrl } from "./config.js";
 export type { WsLocation } from "./config.js";
+export { BLANK_CHARS, isBlankText } from "./blankText.js";
 export { METHODS } from "./methods.js";
 export { parseProgress } from "./progress.js";
 export type { ProgressFrame, UsageInfo, TodoFrame, TodoItemFrame, FileChangeFrame } from "./progress.js";

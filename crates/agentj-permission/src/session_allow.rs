@@ -1,6 +1,7 @@
 //! allow_always session state (design #17 — in-memory, session-scoped,
 //! never written back to config).
 
+use agentj_core::sync::lock_or_recover;
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 
@@ -27,9 +28,7 @@ impl SessionAllowState {
 
     /// Record an allow_always grant for a session.
     pub fn grant(&self, session_id: &str, fingerprint: RuleFingerprint) {
-        self.grants
-            .lock()
-            .unwrap()
+        lock_or_recover(&self.grants)
             .entry(session_id.into())
             .or_default()
             .insert(fingerprint);
@@ -37,9 +36,7 @@ impl SessionAllowState {
 
     /// Whether this session previously granted the fingerprint.
     pub fn allows(&self, session_id: &str, fingerprint: &RuleFingerprint) -> bool {
-        self.grants
-            .lock()
-            .unwrap()
+        lock_or_recover(&self.grants)
             .get(session_id)
             .map(|set| set.contains(fingerprint))
             .unwrap_or(false)
@@ -47,12 +44,12 @@ impl SessionAllowState {
 
     /// Clear all grants for a session (session termination).
     pub fn clear_session(&self, session_id: &str) {
-        self.grants.lock().unwrap().remove(session_id);
+        lock_or_recover(&self.grants).remove(session_id);
     }
 
     /// Clear every session's grants (kernel shutdown).
     pub fn clear_all(&self) {
-        self.grants.lock().unwrap().clear();
+        lock_or_recover(&self.grants).clear();
     }
 }
 

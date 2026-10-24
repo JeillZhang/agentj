@@ -10,6 +10,8 @@ use crate::catalog::{ModelCatalog, WireFormat};
 use crate::catalog_source::bare_id;
 use crate::openai_compat::OpenAICompatibleProvider;
 use crate::responses::ResponsesProvider;
+#[cfg(test)]
+use agentj_core::sync::lock_or_recover;
 
 /// Facade for the opencode-go subscription (design 4.1): one base_url + one api_key
 /// covering all models. Routes `opencode-go/<model>` to the transport matching the
@@ -140,8 +142,8 @@ mod tests {
             _t: Vec<ToolDefinition>,
             o: ModelOptions,
         ) -> Result<BoxStream<'static, Result<ModelEvent, ModelError>>, ModelError> {
-            self.hits.lock().unwrap().push(self.label);
-            self.models.lock().unwrap().push(o.model);
+            lock_or_recover(&self.hits).push(self.label);
+            lock_or_recover(&self.models).push(o.model);
             Ok(Box::pin(stream::iter(vec![Ok(ModelEvent::Done)])))
         }
         async fn chat(
@@ -149,8 +151,8 @@ mod tests {
             _m: Vec<ChatMessage>,
             o: ModelOptions,
         ) -> Result<ChatResponse, ModelError> {
-            self.hits.lock().unwrap().push(self.label);
-            self.models.lock().unwrap().push(o.model);
+            lock_or_recover(&self.hits).push(self.label);
+            lock_or_recover(&self.models).push(o.model);
             Ok(ChatResponse {
                 content: String::new(),
                 tool_calls: vec![],
@@ -255,7 +257,7 @@ mod tests {
             .await
             .unwrap();
 
-        let recorded = hits.lock().unwrap().clone();
+        let recorded = lock_or_recover(&hits).clone();
         assert_eq!(
             recorded,
             vec![
@@ -294,7 +296,7 @@ mod tests {
                 .unwrap();
         }
         assert_eq!(
-            models.lock().unwrap().clone(),
+            lock_or_recover(&models).clone(),
             vec!["kimi-k3", "grok-4.5", "minimax-m3"]
         );
     }

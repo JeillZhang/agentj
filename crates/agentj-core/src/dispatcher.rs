@@ -1,6 +1,8 @@
 use crate::kernel::KernelSender;
 use crate::module::KernelMessage;
 use crate::resolver::AsyncKernelService;
+#[cfg(test)]
+use crate::sync::lock_or_recover;
 use crate::turn_runner::TurnRunner;
 use crate::types::{AgentEvent, RunOverrides, SessionId};
 use std::sync::Arc;
@@ -172,11 +174,11 @@ mod tests {
             Ok("s-test".into())
         }
         fn append(&self, _s: &SessionId, m: ChatMessage) -> Result<(), ModuleError> {
-            self.history.lock().unwrap().push(m);
+            lock_or_recover(&self.history).push(m);
             Ok(())
         }
         fn get(&self, _s: &SessionId) -> Result<Vec<ChatMessage>, ModuleError> {
-            Ok(self.history.lock().unwrap().clone())
+            Ok(lock_or_recover(&self.history).clone())
         }
         fn estimate_tokens(&self, _s: &SessionId) -> Result<usize, ModuleError> {
             Ok(0)
@@ -262,7 +264,7 @@ mod tests {
         ) -> Result<crate::module::KernelResponse, ModuleError> {
             if let crate::module::KernelMessage::ToolCallRequest { reply, .. } = msg {
                 let reply = reply.clone();
-                let mut guard = reply.lock().unwrap();
+                let mut guard = lock_or_recover(&reply);
                 if let Some(tx) = guard.take() {
                     let _ = tx.send(Ok(ToolExecutionOutcome {
                         result: serde_json::json!({"result": "ok"}),
@@ -427,7 +429,7 @@ mod tests {
             if let crate::module::KernelMessage::ToolCallRequest { reply, .. } = msg {
                 self.count.fetch_add(1, Ordering::SeqCst);
                 let reply = reply.clone();
-                let mut guard = reply.lock().unwrap();
+                let mut guard = lock_or_recover(&reply);
                 if let Some(tx) = guard.take() {
                     let _ = tx.send(Ok(ToolExecutionOutcome {
                         result: serde_json::json!("ok"),

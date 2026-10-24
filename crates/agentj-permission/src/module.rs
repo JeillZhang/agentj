@@ -30,6 +30,7 @@ use crate::engine::{EvalOutcome, PermissionEngine};
 use crate::error::PermissionError;
 use crate::policy::{PermissionMode, ToolPolicy, builtin_default_mode};
 use crate::session_allow::{RuleFingerprint, SessionAllowState};
+use agentj_core::sync::lock_or_recover;
 
 /// Decision delivered by the client via permission/respond.
 #[derive(Debug, Clone, PartialEq)]
@@ -100,7 +101,7 @@ impl PermissionModule {
 
     /// Register the notification sink (IPC layer). Called once at startup.
     pub fn set_notifier(&self, f: Notifier) {
-        *self.notifier.lock().unwrap() = Some(f);
+        *lock_or_recover(&self.notifier) = Some(f);
     }
 
     /// Read-only peek of the session owning a pending approval. Does NOT
@@ -108,15 +109,13 @@ impl PermissionModule {
     /// layer to gate `permission/respond` by the resolved session's owner
     /// (G2 design D4).
     pub fn session_of(&self, request_id: &PermissionRequestId) -> Option<String> {
-        self.pending
-            .lock()
-            .unwrap()
+        lock_or_recover(&self.pending)
             .get(request_id)
             .map(|req| req.session_id.clone())
     }
 
     pub fn view(&self, request_id: &str) -> Option<PendingView> {
-        let pending = self.pending.lock().unwrap();
+        let pending = lock_or_recover(&self.pending);
         let key = PermissionRequestId(request_id.to_string());
         pending.get(&key).map(|entry| PendingView {
             tool: entry.tool.clone(),
@@ -137,7 +136,7 @@ impl PermissionModule {
     /// false for an unknown id or an already-settled request (a second decision
     /// must not silently override the first).
     pub fn respond(&self, request_id: &PermissionRequestId, decision: ApprovalDecision) -> bool {
-        let map = self.pending.lock().unwrap();
+        let map = lock_or_recover(&self.pending);
         let Some(req) = map.get(request_id) else {
             return false; // unknown (or already consumed/pruned) request id
         };
@@ -170,7 +169,7 @@ impl PermissionModule {
     /// until their tool loop consumes the decision, so the waiter reports the
     /// real reason instead of a missing request.
     pub fn cancel_session(&self, session_id: &str, reason: &str) -> usize {
-        let map = self.pending.lock().unwrap();
+        let map = lock_or_recover(&self.pending);
         let mut n = 0;
         for req in map.values() {
             if req.session_id == session_id && req._keepalive.borrow().is_none() {
@@ -260,7 +259,7 @@ impl PermissionModule {
         let request_id = PermissionRequestId(Uuid::new_v4().to_string());
         let (tx, rx) = watch::channel(None);
         {
-            let mut map = self.pending.lock().unwrap();
+            let mut map = lock_or_recover(&self.pending);
             prune_pending(&mut map, PENDING_TTL);
             map.insert(
                 request_id.clone(),
@@ -355,7 +354,7 @@ impl PermissionChecker for PermissionModule {
     }
 
     async fn await_approval(&self, request_id: &PermissionRequestId) -> PermissionDecision {
-        let Some(req) = self.pending.lock().unwrap().get(request_id).cloned() else {
+        let Some(req) = lock_or_recover(&self.pending).get(request_id).cloned() else {
             return PermissionDecision::Deny {
                 reason: "unknown or expired approval request".into(),
             };
@@ -438,7 +437,7 @@ impl PermissionModule {
     /// Clear session grants and resolve every pending approval to Deny.
     pub fn clear_all(&self) {
         self.session_state.clear_all();
-        let map = self.pending.lock().unwrap();
+        let map = lock_or_recover(&self.pending);
         for req in map.values() {
             let _ = req.decision.send(Some(PermissionDecision::Deny {
                 reason: "shutdown".into(),
@@ -450,18 +449,18 @@ impl PermissionModule {
     /// waiting for their tool loop to consume the decision. (test/observability)
     #[cfg(test)]
     fn pending_len(&self) -> usize {
-        self.pending.lock().unwrap().len()
+        lock_or_recover(&self.pending).len()
     }
 
     /// Drop entries older than `ttl` (called on every registration).
     #[cfg(test)]
     fn prune_pending(&self, ttl: Duration) {
-        prune_pending(&mut self.pending.lock().unwrap(), ttl);
+        prune_pending(&mut lock_or_recover(&self.pending), ttl);
     }
 
     /// Remove the entry a waiter just consumed (exactly-once delivery).
     fn prune_consumed(&self, request_id: &PermissionRequestId) {
-        let mut map = self.pending.lock().unwrap();
+        let mut map = lock_or_recover(&self.pending);
         if map
             .get(request_id)
             .is_some_and(|req| req._keepalive.borrow().is_some())
@@ -1200,7 +1199,7 @@ mod tests {
         let seen = Arc::new(Mutex::new(None::<String>));
         let seen2 = Arc::clone(&seen);
         module.set_notifier(Arc::new(move |p: &PermissionRequestParams, _sid: &str| {
-            *seen2.lock().unwrap() = p.session_id.clone();
+            *lock_or_recover(&seen2) = p.session_id.clone();
         }));
         let ctx = PermissionContext {
             session_id: "s-9".into(),
@@ -1210,7 +1209,7 @@ mod tests {
             workspace_root: PathBuf::from("/ws"),
         };
         module.check(&ctx);
-        assert_eq!(seen.lock().unwrap().as_deref(), Some("s-9"));
+        assert_eq!(lock_or_recover(&seen).as_deref(), Some("s-9"));
     }
 
     #[tokio::test]

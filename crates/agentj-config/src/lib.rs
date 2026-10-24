@@ -246,6 +246,8 @@ pub struct McpConfig {
 #[serde(default)]
 pub struct WebSection {
     pub trust_proxy_headers: bool,
+    /// Mark session cookies `Secure` (set when TLS terminates in front of the kernel).
+    pub secure_cookies: bool,
     /// Overrides `$XDG_DATA_HOME/agentj`; `None` means "resolve from the environment".
     pub state_dir: Option<PathBuf>,
     /// Runtime spot-check cadence in seconds (clamped to 5..=3600).
@@ -262,6 +264,7 @@ impl Default for WebSection {
     fn default() -> Self {
         Self {
             trust_proxy_headers: false,
+            secure_cookies: false,
             state_dir: None,
             spot_interval_secs: default_spot_interval_secs(),
             spot_sample: default_spot_sample(),
@@ -418,10 +421,7 @@ mod tests {
 
     static ENV_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
     fn env_lock() -> std::sync::MutexGuard<'static, ()> {
-        ENV_LOCK
-            .get_or_init(|| std::sync::Mutex::new(()))
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
+        agentj_core::sync::lock_or_recover(ENV_LOCK.get_or_init(|| std::sync::Mutex::new(())))
     }
 
     #[test]

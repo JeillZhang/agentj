@@ -99,6 +99,26 @@ npm --prefix agentj-ui run generate --workspace=@agentj/protocol
 - Secrets, tokens or credentials of any kind. Configuration examples belong in
   `docs/guide/`, never in a committed `auth.json`.
 
+## Panics, locks and swallowed errors
+
+Three rules keep a single failure from taking down a long-lived kernel:
+
+- **Locks**: never `.lock().unwrap()` / `.read().unwrap()` / `.write().unwrap()`.
+  Use `agentj_core::sync::{lock_or_recover, read_or_recover, write_or_recover}`;
+  a poisoned lock is logged and recovered instead of propagating the panic
+  (`crates/agentj-session/src/file_store.rs` keeps a local equivalent helper).
+- **Panic isolation**: code that runs inside a long-lived task (kernel message
+  loop, request dispatch, a turn) wraps its body in `catch_unwind`, reports the
+  payload via `agentj_core::sync::panic_payload_message`, and finishes the
+  protocol contract (an error event / `-32603` / releasing the turn slot) —
+  a panic must never leave a session busy forever or silently drop a request.
+- **`let _ = …`** is allowed only for results that carry no actionable outcome:
+  channel sends whose receiver may be gone, `abort()` handles, writing into a
+  `String`. Anywhere else, log the error (`tracing::error!`) or propagate it —
+  a discarded `Result` must never hide a failed write, a failed flush or a
+  failed serialization. `serde_json` response serialization goes through the
+  `to_wire` helper, which turns the impossible failure into an error code.
+
 ## Protocol changes
 
 `PROTOCOL_VERSION`, `protocol/methods.json` and `schemas/*.json` move together.

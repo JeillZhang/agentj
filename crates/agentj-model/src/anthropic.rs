@@ -138,28 +138,12 @@ impl AnthropicChunkParser {
     }
 
     fn push_line(&mut self, line: &str, out: &mut Vec<Result<ModelEvent, ModelError>>) {
-        let line = line.trim();
-        if !line.starts_with("data:") {
-            return;
-        }
-        let data = line[5..].trim();
-        if data == "[DONE]" {
-            if !self.done_emitted {
-                out.push(Ok(ModelEvent::Done));
-                self.done_emitted = true;
-            }
-            return;
-        }
-        if data.is_empty() {
-            return;
-        }
-        let json: Value = match serde_json::from_str(data) {
-            Ok(v) => v,
-            Err(e) => {
-                out.push(Err(ModelError::Stream(e.to_string())));
-                return;
-            }
-        };
+        crate::sse::push_line(self, line, out);
+    }
+}
+
+impl crate::sse::SsePayload for AnthropicChunkParser {
+    fn push_payload(&mut self, json: Value, out: &mut Vec<Result<ModelEvent, ModelError>>) {
         match json["type"].as_str().unwrap_or("") {
             "content_block_start" => {
                 if json["content_block"]["type"].as_str() == Some("tool_use") {
@@ -234,6 +218,10 @@ impl AnthropicChunkParser {
             }
             _ => {} // message_start / ping etc — ignorable protocol events
         }
+    }
+
+    fn done_emitted_mut(&mut self) -> &mut bool {
+        &mut self.done_emitted
     }
 }
 

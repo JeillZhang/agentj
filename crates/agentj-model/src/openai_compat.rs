@@ -186,28 +186,12 @@ impl OpenAiChunkParser {
     /// The whole response body may arrive as ONE bytes chunk (wiremock), so this
     /// must handle multiple `data:` lines per call and multi-chunk splits.
     fn push_line(&mut self, line: &str, out: &mut Vec<Result<ModelEvent, ModelError>>) {
-        let line = line.trim();
-        if !line.starts_with("data:") {
-            return;
-        }
-        let data = line[5..].trim();
-        if data == "[DONE]" {
-            if !self.done_emitted {
-                out.push(Ok(ModelEvent::Done));
-                self.done_emitted = true;
-            }
-            return;
-        }
-        if data.is_empty() {
-            return;
-        }
-        let json: Value = match serde_json::from_str(data) {
-            Ok(v) => v,
-            Err(e) => {
-                out.push(Err(ModelError::Stream(e.to_string())));
-                return;
-            }
-        };
+        crate::sse::push_line(self, line, out);
+    }
+}
+
+impl crate::sse::SsePayload for OpenAiChunkParser {
+    fn push_payload(&mut self, json: Value, out: &mut Vec<Result<ModelEvent, ModelError>>) {
         if let Some(u) = json.get("usage").and_then(|u| u.as_object())
             && let (Some(p), Some(c)) = (
                 u.get("prompt_tokens").and_then(|v| v.as_u64()),
@@ -280,6 +264,10 @@ impl OpenAiChunkParser {
             }
             self.pending.clear();
         }
+    }
+
+    fn done_emitted_mut(&mut self) -> &mut bool {
+        &mut self.done_emitted
     }
 }
 

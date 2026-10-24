@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isBlankText } from "./blankText.ts";
+import { isBlankText } from "../blankText.js";
 
 describe("isBlankText (BUG-017)", () => {
   it("treats the empty string and plain whitespace as blank", () => {

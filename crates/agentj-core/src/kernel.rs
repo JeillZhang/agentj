@@ -101,13 +101,11 @@ impl Kernel {
 
     /// Query a module's lifecycle state (None if never registered).
     pub fn module_state(&self, id: &str) -> Option<ModuleState> {
-        self.states.lock().unwrap().get(id).copied()
+        crate::sync::lock_or_recover(&self.states).get(id).copied()
     }
 
     pub fn modules(&self) -> Vec<(ModuleId, ModuleState)> {
-        self.states
-            .lock()
-            .unwrap()
+        crate::sync::lock_or_recover(&self.states)
             .iter()
             .map(|(id, st)| (id.clone(), *st))
             .collect()
@@ -133,8 +131,8 @@ impl Kernel {
                 for (evt, handler) in register.events.drain(..) {
                     self.events.register(evt, Arc::from(handler));
                 }
-                self.modules.lock().unwrap().insert(id.clone(), module);
-                self.order.lock().unwrap().push(id.clone());
+                crate::sync::lock_or_recover(&self.modules).insert(id.clone(), module);
+                crate::sync::lock_or_recover(&self.order).push(id.clone());
                 self.set_state(&id, ModuleState::Ready);
                 self.publish(&EventType::ModuleLoaded(id.clone()));
                 Ok(())
@@ -156,7 +154,7 @@ impl Kernel {
     }
 
     fn set_state(&self, id: &str, state: ModuleState) {
-        self.states.lock().unwrap().insert(id.to_string(), state);
+        crate::sync::lock_or_recover(&self.states).insert(id.to_string(), state);
     }
 
     /// Start the event loop. Shutdown is checked BEFORE broadcast (so a blocked
@@ -179,59 +177,14 @@ impl Kernel {
                 if matches!(msg, KernelMessage::Shutdown) {
                     break; // graceful shutdown handled below — NOT broadcast via handle()
                 }
-                // v0.3 service routing (design §7 #1): ServiceCall is served by the
-                // registry BEFORE module broadcast; unknown services get an error
-                // reply so the caller never hangs.
-                if let KernelMessage::ServiceCall {
-                    service,
-                    method,
-                    params,
-                    reply,
-                } = &msg
-                {
-                    if let Some(svc) = services.get_kernel_service(service) {
-                        let out = svc.call(method, params.clone());
-                        if let Some(tx) = reply.lock().unwrap().take() {
-                            let _ = tx.send(out);
-                        }
-                        continue;
-                    }
-                    if let Some(svc) = services.get_kernel_async_service(service) {
-                        let svc = svc.clone();
-                        let method = method.clone();
-                        let params = params.clone();
-                        let reply = reply.clone();
-                        tokio::spawn(async move {
-                            let out = svc.call(&method, params).await;
-                            if let Some(tx) = reply.lock().unwrap().take() {
-                                let _ = tx.send(out);
-                            }
-                        });
-                        continue;
-                    }
-                    let out: Result<serde_json::Value, String> =
-                        Err(format!("service '{service}' not found"));
-                    if let Some(tx) = reply.lock().unwrap().take() {
-                        let _ = tx.send(out);
-                    }
-                    continue;
-                }
-                if let KernelMessage::ToolCallRequest { target, .. } = &msg {
-                    let mut guard = modules.lock().unwrap();
-                    if let Some(module) = guard.get_mut(target) {
-                        if let Err(e) = module.handle(&msg) {
-                            tracing::error!(?e, "module handler error");
-                        }
-                    } else {
-                        tracing::warn!(%target, "ToolCallRequest to unregistered module");
-                    }
-                    continue;
-                }
-                let mut guard = modules.lock().unwrap();
-                for module in guard.values_mut() {
-                    if let Err(e) = module.handle(&msg) {
-                        tracing::error!(?e, "module handler error");
-                    }
+                // A module handler is third-party code: a panic there must cost one
+                // message, not the resident kernel (every later client would hang).
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    route_message(&msg, &services, &modules);
+                }));
+                if let Err(payload) = outcome {
+                    let reason = crate::sync::panic_payload_message(payload.as_ref());
+                    tracing::error!(%reason, "kernel message handler panicked; loop continues");
                 }
             }
             // design #13: overall budget for the whole chain — a hung module shutdown
@@ -254,15 +207,16 @@ impl Kernel {
         timeout: Duration,
         events: &Arc<EventBus>,
     ) -> Result<(), KernelError> {
-        let ids: Vec<String> = order.lock().unwrap().iter().rev().cloned().collect();
+        let ids: Vec<String> = crate::sync::lock_or_recover(order)
+            .iter()
+            .rev()
+            .cloned()
+            .collect();
         let mut first_error: Option<KernelError> = None;
         for id in &ids {
-            states
-                .lock()
-                .unwrap()
-                .insert(id.clone(), ModuleState::Stopping);
+            crate::sync::lock_or_recover(states).insert(id.clone(), ModuleState::Stopping);
             let module = {
-                let mut guard = modules.lock().unwrap();
+                let mut guard = crate::sync::lock_or_recover(modules);
                 guard.remove(id) // remove while shutting down: no more messages after this
             };
             let Some(mut module) = module else { continue };
@@ -300,7 +254,7 @@ impl Kernel {
                     )
                 }
             };
-            states.lock().unwrap().insert(id.clone(), state);
+            crate::sync::lock_or_recover(states).insert(id.clone(), state);
             match state {
                 ModuleState::Stopped => {
                     events.publish(&EventType::ModuleStopped(id.clone()));
@@ -317,6 +271,73 @@ impl Kernel {
         match first_error {
             Some(e) => Err(e),
             None => Ok(()),
+        }
+    }
+}
+
+/// Route one kernel message: service calls are answered by the registry, module
+/// messages go to the addressed module (or broadcast to all). Extracted from the
+/// event loop so the whole dispatch can sit behind one `catch_unwind` guard.
+///
+/// Panics inside a handler propagate to that guard; the caller logs and keeps
+/// looping, and the registry lock stays usable thanks to
+/// [`crate::sync::lock_or_recover`].
+fn route_message(
+    msg: &KernelMessage,
+    services: &ServiceRegistry,
+    modules: &Mutex<HashMap<String, Box<dyn KernelModule>>>,
+) {
+    // v0.3 service routing (design §7 #1): ServiceCall is served by the
+    // registry BEFORE module broadcast; unknown services get an error
+    // reply so the caller never hangs.
+    if let KernelMessage::ServiceCall {
+        service,
+        method,
+        params,
+        reply,
+    } = msg
+    {
+        if let Some(svc) = services.get_kernel_service(service) {
+            let out = svc.call(method, params.clone());
+            if let Some(tx) = crate::sync::lock_or_recover(reply).take() {
+                let _ = tx.send(out);
+            }
+            return;
+        }
+        if let Some(svc) = services.get_kernel_async_service(service) {
+            let svc = svc.clone();
+            let method = method.clone();
+            let params = params.clone();
+            let reply = reply.clone();
+            tokio::spawn(async move {
+                let out = svc.call(&method, params).await;
+                if let Some(tx) = crate::sync::lock_or_recover(&reply).take() {
+                    let _ = tx.send(out);
+                }
+            });
+            return;
+        }
+        let out: Result<serde_json::Value, String> = Err(format!("service '{service}' not found"));
+        if let Some(tx) = crate::sync::lock_or_recover(reply).take() {
+            let _ = tx.send(out);
+        }
+        return;
+    }
+    if let KernelMessage::ToolCallRequest { target, .. } = msg {
+        let mut guard = crate::sync::lock_or_recover(modules);
+        if let Some(module) = guard.get_mut(target) {
+            if let Err(e) = module.handle(msg) {
+                tracing::error!(?e, "module handler error");
+            }
+        } else {
+            tracing::warn!(%target, "ToolCallRequest to unregistered module");
+        }
+        return;
+    }
+    let mut guard = crate::sync::lock_or_recover(modules);
+    for module in guard.values_mut() {
+        if let Err(e) = module.handle(msg) {
+            tracing::error!(?e, "module handler error");
         }
     }
 }
@@ -407,7 +428,7 @@ mod tests {
             }
         }
         fn shutdown(&mut self) -> Result<(), ModuleError> {
-            self.shutdowns.lock().unwrap().push(self.id.to_string());
+            crate::sync::lock_or_recover(&self.shutdowns).push(self.id.to_string());
             if let Some(d) = self.shutdown_delay {
                 std::thread::sleep(d);
             }
@@ -417,7 +438,7 @@ mod tests {
 
     impl KernelModule for SpyModule {
         fn handle(&mut self, msg: &KernelMessage) -> Result<KernelResponse, ModuleError> {
-            self.handled.lock().unwrap().push(msg.clone());
+            crate::sync::lock_or_recover(&self.handled).push(msg.clone());
             Ok(KernelResponse::Handled)
         }
     }
@@ -464,11 +485,14 @@ mod tests {
             .unwrap();
 
         tokio::time::sleep(Duration::from_millis(50)).await;
-        assert_eq!(handled.lock().unwrap().len(), 1);
+        assert_eq!(crate::sync::lock_or_recover(&handled).len(), 1);
 
         kernel.sender().send(KernelMessage::Shutdown).unwrap();
         handle.await.unwrap().unwrap();
-        assert_eq!(*shutdowns.lock().unwrap(), vec!["spy".to_string()]);
+        assert_eq!(
+            *crate::sync::lock_or_recover(&shutdowns),
+            vec!["spy".to_string()]
+        );
         assert_eq!(kernel.module_state("spy"), Some(ModuleState::Stopped));
     }
 
@@ -523,9 +547,9 @@ mod tests {
             })
             .unwrap();
         tokio::time::sleep(Duration::from_millis(50)).await;
-        assert_eq!(handled_a.lock().unwrap().len(), 1);
+        assert_eq!(crate::sync::lock_or_recover(&handled_a).len(), 1);
         assert_eq!(
-            handled_b.lock().unwrap().len(),
+            crate::sync::lock_or_recover(&handled_b).len(),
             0,
             "target routing must not broadcast"
         );
@@ -638,7 +662,7 @@ mod tests {
         kernel.sender().send(KernelMessage::Shutdown).unwrap();
         handle.await.unwrap().unwrap();
         assert_eq!(
-            *shutdowns.lock().unwrap(),
+            *crate::sync::lock_or_recover(&shutdowns),
             vec!["b".to_string(), "a".to_string()]
         );
     }
@@ -764,5 +788,111 @@ mod tests {
         let ctx = kernel.ctx().expect("ctx is set once a module registered");
         assert!(ctx.config().get_str("model.default_model").is_none());
         assert!(ctx.config().providers().is_empty());
+    }
+
+    /// A module whose handler always panics — the kernel must survive it.
+    struct BoomModule;
+
+    impl Module for BoomModule {
+        fn id(&self) -> ModuleId {
+            "boom".to_string()
+        }
+        fn metadata(&self) -> ModuleMetadata {
+            ModuleMetadata {
+                id: "boom".to_string(),
+                name: "boom".to_string(),
+                version: "0.1".into(),
+                description: String::new(),
+                author: String::new(),
+            }
+        }
+        fn init(
+            &mut self,
+            _ctx: &KernelContext,
+            _r: &mut ModuleRegister,
+        ) -> Result<(), ModuleError> {
+            Ok(())
+        }
+        fn shutdown(&mut self) -> Result<(), ModuleError> {
+            Ok(())
+        }
+    }
+
+    impl KernelModule for BoomModule {
+        fn handle(&mut self, _msg: &KernelMessage) -> Result<KernelResponse, ModuleError> {
+            panic!("handler boom")
+        }
+    }
+
+    #[tokio::test]
+    async fn a_panicking_module_handler_does_not_stop_the_loop() {
+        let handled = Arc::new(StdMutex::new(vec![]));
+        let shutdowns = Arc::new(StdMutex::new(vec![]));
+        let mut register = ModuleRegister::new(
+            Arc::new(ToolRegistry::new()),
+            Arc::new(ProviderRegistry::new()),
+        );
+        let mut kernel = Kernel::new();
+        kernel
+            .register_module(Box::new(BoomModule), &dummy_kernel_context(), &mut register)
+            .unwrap();
+        kernel
+            .register_module(
+                Box::new(spy("spy", handled.clone(), shutdowns.clone(), None, false)),
+                &dummy_kernel_context(),
+                &mut register,
+            )
+            .unwrap();
+
+        let handle = kernel.start();
+        // Target the panicking module only, so the panic is deterministic and the
+        // next message proves the loop (and its poisoned modules lock) still works.
+        send_tool_call(&kernel, "boom");
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        send_tool_call(&kernel, "spy");
+        tokio::time::sleep(Duration::from_millis(40)).await;
+
+        assert_eq!(
+            crate::sync::lock_or_recover(&handled).len(),
+            1,
+            "the kernel loop must keep routing after a handler panic"
+        );
+
+        // Shutdown still completes: the modules lock was never left unusable.
+        kernel.sender().send(KernelMessage::Shutdown).unwrap();
+        handle.await.unwrap().unwrap();
+    }
+
+    /// Send a targeted `ToolCallRequest` at `target` (used to make panics deterministic).
+    fn send_tool_call(kernel: &Kernel, target: &str) {
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        kernel
+            .sender()
+            .send(KernelMessage::ToolCallRequest {
+                session_id: "s1".into(),
+                tool_call: ToolCall {
+                    id: "c1".into(),
+                    name: "dummy".into(),
+                    arguments: serde_json::json!({}),
+                },
+                target: target.into(),
+                reply: Arc::new(std::sync::Mutex::new(Some(tx))),
+            })
+            .unwrap();
+    }
+
+    /// A poisoned state map must not turn `modules()` into a permanent panic: the
+    /// recover helper reuses the inner value instead of unwrapping the poison
+    /// (BUG-001 lock convergence).
+    #[test]
+    fn modules_survive_a_poisoned_state_mutex() {
+        let kernel = Kernel::new();
+        let states = kernel.states.clone();
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = states.lock().unwrap();
+            panic!("poison the state map");
+        }));
+        assert!(states.is_poisoned(), "the panic must poison the mutex");
+        assert!(kernel.modules().is_empty());
     }
 }

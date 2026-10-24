@@ -67,8 +67,14 @@ IP，须在内核侧显式开启代理头信任：
 ```toml
 [web]
 trust_proxy_headers = true          # 默认 false；仅当直接 peer 是回环时生效
+secure_cookies = true               # 默认 false；TLS 终止在代理上时开启
 state_dir = "/var/lib/agentj"       # 可选；默认 $XDG_DATA_HOME/agentj
 ```
+
+- **`secure_cookies`**：为登录会话 cookie 追加 `Secure`（`HttpOnly` / `SameSite=Lax` /
+  `Path=/` 恒定存在）。前置代理以 HTTPS 对外提供服务时务必开启，否则浏览器可能把 cookie
+  发到明文回退路径；登录与登出共用同一套属性，登出的 `Max-Age=0` 不会因属性不一致而失效。
+- 登录令牌比较为**常量时间**（不因首字节不同而提前返回），失败仍按来源 IP 逐次升级锁定。
 
 代理须把客户端 IP 写进请求头（nginx）：
 

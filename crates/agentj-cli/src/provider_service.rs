@@ -19,6 +19,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use crate::activation;
+use agentj_core::sync::lock_or_recover;
 
 const USAGE_TTL_SECS: i64 = 300;
 const MODEL_TTL_SECS: i64 = 60;
@@ -161,18 +162,14 @@ impl CliProviderService {
         if refresh {
             return None;
         }
-        self.usage_cache
-            .lock()
-            .unwrap()
+        lock_or_recover(&self.usage_cache)
             .get(provider)
             .filter(|(_, at)| now - at < USAGE_TTL_SECS)
             .map(|(v, _)| v.clone())
     }
 
     fn stale_usage(&self, provider: &str) -> Option<ProviderUsageResult> {
-        self.usage_cache
-            .lock()
-            .unwrap()
+        lock_or_recover(&self.usage_cache)
             .get(provider)
             .map(|(v, _)| v.clone())
     }
@@ -245,10 +242,7 @@ impl CliProviderService {
                 ),
             },
         };
-        self.usage_cache
-            .lock()
-            .unwrap()
-            .insert(cfg.name.clone(), (result.clone(), now));
+        lock_or_recover(&self.usage_cache).insert(cfg.name.clone(), (result.clone(), now));
         Ok(result)
     }
 
@@ -315,7 +309,7 @@ impl CliProviderService {
         let cfg = self.cfg(p.provider.as_deref())?.clone();
         let now = now_epoch();
         if p.refresh != Some(true)
-            && let Some((cached, at)) = self.model_cache.lock().unwrap().get(&cfg.name)
+            && let Some((cached, at)) = lock_or_recover(&self.model_cache).get(&cfg.name)
             && now - at < MODEL_TTL_SECS
         {
             return Ok(cached.clone());
@@ -339,10 +333,7 @@ impl CliProviderService {
         } else {
             self.go_model_list(&cfg, now).await
         };
-        self.model_cache
-            .lock()
-            .unwrap()
-            .insert(cfg.name.clone(), (out.clone(), now));
+        lock_or_recover(&self.model_cache).insert(cfg.name.clone(), (out.clone(), now));
         Ok(out)
     }
 
@@ -500,10 +491,10 @@ impl CliProviderService {
             }),
         )
         .map_err(activation_failed)?;
-        self.model_cache.lock().unwrap().remove(&cfg.name);
+        lock_or_recover(&self.model_cache).remove(&cfg.name);
         // Protocol 8.28: the device-poll activation shares the link path, so both per-provider
         // caches are dropped (a pre-login `no_credential` usage snapshot must not survive).
-        self.usage_cache.lock().unwrap().remove(&cfg.name);
+        lock_or_recover(&self.usage_cache).remove(&cfg.name);
         Ok(state(
             DeviceAuthState::Authorized,
             None,
@@ -577,7 +568,7 @@ impl CliProviderService {
                 },
             )
             .map_err(credential_error)?;
-        self.usage_cache.lock().unwrap().remove(&cfg.name);
+        lock_or_recover(&self.usage_cache).remove(&cfg.name);
         // D3/G7: the runtime instance must carry the same credential the read side reports.
         // A non-blank `api_key_env` shadows the key just stored, so activation uses the
         // *resolved* credential (env wins) rather than the submitted value — otherwise the
@@ -600,10 +591,7 @@ impl CliProviderService {
             fetched_at: now,
             models: models.clone(),
         };
-        self.model_cache
-            .lock()
-            .unwrap()
-            .insert(cfg.name.clone(), (cached, now));
+        lock_or_recover(&self.model_cache).insert(cfg.name.clone(), (cached, now));
         Ok(link_result(
             cfg,
             &effective_key,
@@ -654,8 +642,8 @@ impl CliProviderService {
         let cfg = self.cfg(p.provider.as_deref())?.clone();
         self.require_kind(&cfg, "api_key")?;
         let cleared = self.store.remove(&cfg.name).map_err(credential_error)?;
-        self.usage_cache.lock().unwrap().remove(&cfg.name);
-        self.model_cache.lock().unwrap().remove(&cfg.name);
+        lock_or_recover(&self.usage_cache).remove(&cfg.name);
+        lock_or_recover(&self.model_cache).remove(&cfg.name);
         activation::deactivate_opencode_go(&self.registry, &cfg, &self.store, None)
             .map_err(activation_failed)?;
         Ok(AuthClearCredentialResult {
@@ -2117,22 +2105,22 @@ mod tests {
         let server = wiremock::MockServer::start().await;
         mount_token_success(&server, "access-1").await;
         let (svc, _dir, _reg) = svc_with_device_flow(&server.uri());
-        svc.model_cache
-            .lock()
-            .unwrap()
+        lock_or_recover(&svc.model_cache)
             .insert("opencode-go".into(), seeded_model_list("opencode-go"));
-        svc.usage_cache
-            .lock()
-            .unwrap()
+        lock_or_recover(&svc.usage_cache)
             .insert("opencode-go".into(), (seeded_usage("opencode-go"), 0));
         let out = svc.device_poll(poll_params("dev-code")).await.unwrap();
         assert_eq!(out.state, DeviceAuthState::Authorized);
         assert!(
-            svc.model_cache.lock().unwrap().get("opencode-go").is_none(),
+            lock_or_recover(&svc.model_cache)
+                .get("opencode-go")
+                .is_none(),
             "a completed login must drop the pre-login catalog"
         );
         assert!(
-            svc.usage_cache.lock().unwrap().get("opencode-go").is_none(),
+            lock_or_recover(&svc.usage_cache)
+                .get("opencode-go")
+                .is_none(),
             "a completed login must drop the pre-login usage snapshot (protocol 8.28: both caches)"
         );
     }

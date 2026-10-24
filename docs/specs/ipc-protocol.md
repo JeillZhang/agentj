@@ -201,6 +201,12 @@ WebSocket 与 raw TCP 同端口共存，通过连接分类器按首字节区分 
 
 协议扩展（`0.18.0`）同样**不新增错误码**：`auth/setApiKey` / `auth/clearCredential` 复用既有码——`-32602 InvalidParams` 的三种 `reason`（`invalid_params` / `unknown_provider` / `unsupported_provider`，其中不支持该能力的 `capability` 为 `"api_key"`）与 `-32603 Internal error` 的 `provider_service_unavailable`，语义与 0.17.0 逐字相同；`-32603` 另新增一个 `reason`：**凭据已落盘但运行期注册 / 注销失败** → `-32603` + `error.data = { "reason": "activation_failed", "detail": "<自产原因>" }`（凭据保留在盘上，重试有意义）。链接的三种校验结果（`verified` / `unverified` / `rejected`）与「无凭据可清除」同样是**领域失败即结果数据**，不占错误码（见 §8.28 / §8.29）。
 
+协议加固（不改变任何既有码的语义）：**请求处理中的 panic 不升级为断连**。任一方法的 dispatch
+抛出 panic 时，服务端捕获并以 `-32603 Internal error` 应答，`error.data =
+{ "method": "<方法名>", "reason": "<panic 负载文本，已按 200 字符截断>" }`，`message` 为
+`"InternalPanic"`；该连接的其它请求不受影响，同一会话随后可继续 `session/run`（turn 内部的
+panic 以 `AgentEvent::Error` 结算并释放会话，不再长期 `-32805 SessionBusy`）。
+
 错误码是**稳定的协议契约**，一旦发布不可更改含义。新增错误码 SHOULD 从 `-32800` 段向下或 `-32000 … -32099` 段内加性分配。
 
 ### 3.5 方法命名规范

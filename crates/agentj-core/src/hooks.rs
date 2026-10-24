@@ -2,6 +2,8 @@
 //! implementation is added in the follow-up commit.
 
 use crate::module::{EventHandler, EventType, KernelContext};
+#[cfg(test)]
+use crate::sync::lock_or_recover;
 use std::sync::{Arc, Mutex, RwLock};
 
 /// Event bus: publish(event) fans out to every handler whose subscribed event matches.
@@ -147,7 +149,7 @@ mod tests {
     }
     impl EventHandler for SpyHandler {
         fn on_event(&self, event: &EventType, _ctx: &KernelContext) {
-            self.events.lock().unwrap().push(event.clone());
+            lock_or_recover(&self.events).push(event.clone());
         }
     }
 
@@ -229,7 +231,7 @@ mod tests {
         bus.register(EventType::ModuleStopped("m".into()), spy.clone());
         bus.publish(&EventType::ModuleLoaded("m".into()));
         bus.publish(&EventType::ModuleStopped("m".into()));
-        assert_eq!(spy.events.lock().unwrap().len(), 2);
+        assert_eq!(lock_or_recover(&spy.events).len(), 2);
     }
 
     #[test]
@@ -240,7 +242,7 @@ mod tests {
         });
         bus.register(EventType::ModuleLoaded("m".into()), spy.clone());
         bus.publish(&EventType::ModuleFailed("m".into()));
-        assert!(spy.events.lock().unwrap().is_empty());
+        assert!(lock_or_recover(&spy.events).is_empty());
     }
 
     #[test]
@@ -251,7 +253,7 @@ mod tests {
         });
         bus.register(EventType::ModuleLoaded("m".into()), spy.clone());
         bus.publish(&EventType::ModuleLoaded("m".into()));
-        assert!(spy.events.lock().unwrap().is_empty());
+        assert!(lock_or_recover(&spy.events).is_empty());
     }
 
     /// Handler that re-enters the bus (register + publish) from inside on_event.
@@ -270,7 +272,7 @@ mod tests {
                 }),
             );
             self.bus.publish(&EventType::ModuleFailed("m".into()));
-            if let Some(tx) = self.tx.lock().unwrap().take() {
+            if let Some(tx) = lock_or_recover(&self.tx).take() {
                 tx.send(()).unwrap();
             }
         }
@@ -316,7 +318,7 @@ mod tests {
         bus.register(EventType::ModuleLoaded("m".into()), spy.clone());
         bus.publish(&EventType::ModuleLoaded("m".into()));
         bus.publish(&EventType::ModuleLoaded("m".into()));
-        assert_eq!(spy.events.lock().unwrap().len(), 2);
+        assert_eq!(lock_or_recover(&spy.events).len(), 2);
     }
 
     #[tokio::test]
@@ -345,7 +347,7 @@ mod tests {
         kernel.sender().send(KernelMessage::Shutdown).unwrap();
         handle.await.unwrap().unwrap();
 
-        let events = spy.events.lock().unwrap();
+        let events = lock_or_recover(&spy.events);
         assert!(
             events.contains(&EventType::ModuleLoaded("lm".into())),
             "ModuleLoaded must be published on register"
@@ -407,9 +409,7 @@ mod tests {
                 .is_err()
         );
         assert!(
-            spy.events
-                .lock()
-                .unwrap()
+            crate::sync::lock_or_recover(&spy.events)
                 .contains(&EventType::ModuleFailed("fm".into()))
         );
     }
@@ -521,7 +521,7 @@ mod tests {
         });
         bus.register(EventType::ModuleLoaded("m".into()), spy.clone());
         bus.publish(&EventType::ModuleLoaded("m".into()));
-        assert_eq!(spy.events.lock().unwrap().len(), 1);
+        assert_eq!(lock_or_recover(&spy.events).len(), 1);
     }
 
     #[test]

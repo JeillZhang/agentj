@@ -25,6 +25,7 @@ use agentj_core::module::{
     KernelContext, KernelMessage, KernelModule, KernelResponse, Module, ModuleMetadata,
     ModuleRegister,
 };
+use agentj_core::sync::{lock_or_recover, read_or_recover, write_or_recover};
 use agentj_core::types::ModuleId;
 use agentj_protocol::question::{AskOption, AskQuestionParams};
 use uuid::Uuid;
@@ -147,12 +148,12 @@ impl QuestionModule {
 
     /// Install the owner-delivery notifier (IPC layer, once at startup).
     pub fn set_notifier(&self, f: QuestionNotifier) {
-        *self.notifier.write().unwrap() = Some(f);
+        *write_or_recover(&self.notifier) = Some(f);
     }
 
     /// Install the settle hook (IPC layer, once at startup).
     pub fn set_settle_hook(&self, f: SettleHook) {
-        *self.settle_hook.write().unwrap() = Some(f);
+        *write_or_recover(&self.settle_hook) = Some(f);
     }
 
     /// Set the default timeout applied when a request omits `timeout_s`.
@@ -189,7 +190,7 @@ impl QuestionModule {
         let mut wire = params.clone();
         wire.question_id = question_id.clone();
         let (sender, receiver) = mpsc::channel();
-        self.pending.lock().unwrap().insert(
+        lock_or_recover(&self.pending).insert(
             question_id.clone(),
             PendingQuestion {
                 sender,
@@ -221,7 +222,7 @@ impl QuestionModule {
         answers: Vec<String>,
         skipped: bool,
     ) -> Result<RespondOutcome, RespondError> {
-        let Some(pending) = self.pending.lock().unwrap().get(question_id).cloned() else {
+        let Some(pending) = lock_or_recover(&self.pending).get(question_id).cloned() else {
             return Ok(RespondOutcome::Accepted(false));
         };
         if !skipped {
@@ -247,9 +248,7 @@ impl QuestionModule {
     /// Session owning a PENDING question. Settled or unknown ids return `None`
     /// so callers can answer `accepted:false` without an owner check.
     pub fn session_of(&self, question_id: &str) -> Option<String> {
-        self.pending
-            .lock()
-            .unwrap()
+        lock_or_recover(&self.pending)
             .get(question_id)
             .map(|q| q.session_id.clone())
     }
@@ -258,10 +257,7 @@ impl QuestionModule {
     /// owner disconnect) and drop the session's settled records (决策 #4).
     /// Returns how many pending questions were settled.
     pub fn cancel_session(&self, session_id: &str) -> usize {
-        let ids: Vec<String> = self
-            .pending
-            .lock()
-            .unwrap()
+        let ids: Vec<String> = lock_or_recover(&self.pending)
             .iter()
             .filter(|(_, q)| q.session_id == session_id)
             .map(|(id, _)| id.clone())
@@ -270,19 +266,13 @@ impl QuestionModule {
             .iter()
             .filter(|id| self.settle_skipped(id, session_id))
             .count();
-        self.settled
-            .lock()
-            .unwrap()
-            .retain(|_, s| s.session_id != session_id);
+        lock_or_recover(&self.settled).retain(|_, s| s.session_id != session_id);
         settled
     }
 
     /// Settle every pending question (module shutdown).
     pub fn clear_all(&self) -> usize {
-        let ids: Vec<(String, String)> = self
-            .pending
-            .lock()
-            .unwrap()
+        let ids: Vec<(String, String)> = lock_or_recover(&self.pending)
             .iter()
             .map(|(id, q)| (id.clone(), q.session_id.clone()))
             .collect();
@@ -292,15 +282,13 @@ impl QuestionModule {
     }
 
     pub fn pending_count(&self) -> usize {
-        self.pending.lock().unwrap().len()
+        lock_or_recover(&self.pending).len()
     }
 
     /// Terminal outcome of an already-settled question (diagnostics; `None`
     /// for pending/unknown ids).
     pub fn settled_of(&self, question_id: &str) -> Option<QuestionOutcome> {
-        self.settled
-            .lock()
-            .unwrap()
+        lock_or_recover(&self.settled)
             .get(question_id)
             .map(|s| s.outcome.clone())
     }
@@ -309,10 +297,10 @@ impl QuestionModule {
     /// The winner records the terminal state, fires the settle hook exactly
     /// once and delivers the outcome to the blocked asker.
     fn settle_once(&self, question_id: &str, settlement: &QuestionSettlement) -> bool {
-        let Some(entry) = self.pending.lock().unwrap().remove(question_id) else {
+        let Some(entry) = lock_or_recover(&self.pending).remove(question_id) else {
             return false;
         };
-        self.settled.lock().unwrap().insert(
+        lock_or_recover(&self.settled).insert(
             question_id.to_string(),
             SettledQuestion {
                 session_id: settlement.session_id.clone(),
@@ -325,7 +313,7 @@ impl QuestionModule {
     }
 
     fn deliver(&self, params: &AskQuestionParams, session_id: &str) -> bool {
-        let notifier = self.notifier.read().unwrap().clone();
+        let notifier = read_or_recover(&self.notifier).clone();
         match notifier {
             Some(f) => f(params, session_id),
             None => false,
@@ -382,7 +370,7 @@ impl QuestionModule {
     /// Fire the settle hook with panic isolation: a panicking callback must
     /// not propagate into ask_blocking/respond nor poison the module.
     fn fire_settle_hook(&self, settlement: &QuestionSettlement) {
-        let hook = self.settle_hook.read().unwrap().clone();
+        let hook = read_or_recover(&self.settle_hook).clone();
         if let Some(f) = hook {
             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 f(&settlement.session_id, &settlement.question_id, settlement);
@@ -521,7 +509,7 @@ mod tests {
         let seen2 = Arc::clone(&seen);
         let hook: SettleHook = Arc::new(
             move |_session_id: &str, _question_id: &str, s: &QuestionSettlement| {
-                seen2.lock().unwrap().push(s.clone());
+                lock_or_recover(&seen2).push(s.clone());
             },
         );
         (seen, hook)
@@ -677,7 +665,7 @@ mod tests {
         let seen2 = Arc::clone(&seen);
         m.set_settle_hook(Arc::new(
             move |_session_id: &str, _question_id: &str, s: &QuestionSettlement| {
-                seen2.lock().unwrap().push(s.clone());
+                lock_or_recover(&seen2).push(s.clone());
             },
         ));
         let m2 = Arc::clone(&m);
@@ -690,7 +678,7 @@ mod tests {
         // A duplicate response must not fire the hook again.
         let _ = m.respond(&qid, vec!["b".into()], false);
         h.join().unwrap();
-        let hook = seen.lock().unwrap();
+        let hook = lock_or_recover(&seen);
         assert_eq!(hook.len(), 1, "hook must fire exactly once");
         assert_eq!(hook[0].question_id, qid);
         assert_eq!(hook[0].session_id, "s1");
@@ -733,7 +721,7 @@ mod tests {
         );
         assert_eq!(m.pending_count(), 0);
         assert_eq!(m.settled_of(&qid), Some(QuestionOutcome::Skipped));
-        let seen = seen.lock().unwrap();
+        let seen = lock_or_recover(&seen);
         assert_eq!(seen.len(), 1, "hook must fire exactly once on timeout");
         assert_eq!(seen[0].question_id, qid);
         assert_eq!(seen[0].session_id, "s1");
@@ -824,7 +812,7 @@ mod tests {
             "a late response must be rejected idempotently, not resurrect the question"
         );
         assert_eq!(module.pending_count(), 0);
-        let seen = seen.lock().unwrap();
+        let seen = lock_or_recover(&seen);
         assert_eq!(
             seen.len(),
             1,
@@ -874,7 +862,7 @@ mod tests {
             m.respond(&id1, vec!["a".into()], false).unwrap(),
             RespondOutcome::Accepted(false)
         );
-        let seen = seen.lock().unwrap();
+        let seen = lock_or_recover(&seen);
         assert_eq!(seen.len(), 2, "one hook fire per settled question");
         for recorded in seen.iter() {
             assert_eq!(recorded.session_id, "s1");
@@ -895,7 +883,7 @@ mod tests {
         assert_eq!(m.cancel_session("s-missing"), 0);
         assert_eq!(m.pending_count(), 0);
         assert!(
-            seen.lock().unwrap().is_empty(),
+            lock_or_recover(&seen).is_empty(),
             "no-op cancel must not fire hooks"
         );
         let asker = Arc::clone(&m);
@@ -916,7 +904,7 @@ mod tests {
                 answers: vec!["a".into()]
             }
         );
-        assert_eq!(seen.lock().unwrap().len(), 1);
+        assert_eq!(lock_or_recover(&seen).len(), 1);
     }
 
     #[test]
@@ -929,7 +917,7 @@ mod tests {
         for i in 0..6 {
             // 950ms: respond usually wins; 1000ms: true race; 1050ms: timeout wins.
             let (qid, response, outcome) = race_once(&m, 950 + (i as u64 % 3) * 50);
-            let seen = seen.lock().unwrap();
+            let seen = lock_or_recover(&seen);
             assert_eq!(seen.len(), i + 1, "exactly one settlement per question");
             assert_eq!(seen[i].question_id, qid);
             assert_eq!(
@@ -1034,7 +1022,7 @@ mod tests {
                 answers: vec!["b".into()]
             }
         );
-        assert_eq!(seen.lock().unwrap().len(), 1);
+        assert_eq!(lock_or_recover(&seen).len(), 1);
     }
 
     #[test]

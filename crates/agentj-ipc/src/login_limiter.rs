@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use tracing::{debug, info, warn};
 
 use crate::metrics_state::{self, CountersSnapshot, IpState, MetricsState, STATE_VERSION};
+use agentj_core::sync::lock_or_recover;
 
 #[derive(Clone, Debug)]
 pub(crate) struct Policy {
@@ -97,7 +98,7 @@ impl LoginLimiter {
     pub(crate) fn check(&self, ip: IpAddr, now: Instant) -> Throttle {
         self.counters.attempts.fetch_add(1, Ordering::Relaxed);
         let throttle = {
-            let mut entries = self.entries.lock().expect("login limiter");
+            let mut entries = lock_or_recover(&self.entries);
             Self::prune_idle(&mut entries, ip, self.policy.idle_ttl, now);
             entries
                 .get(&ip)
@@ -115,7 +116,7 @@ impl LoginLimiter {
     }
 
     pub(crate) fn record_failure(&self, ip: IpAddr, now: Instant) -> Throttle {
-        let mut entries = self.entries.lock().expect("login limiter");
+        let mut entries = lock_or_recover(&self.entries);
         Self::prune_idle(&mut entries, ip, self.policy.idle_ttl, now);
         if !entries.contains_key(&ip) {
             Self::evict_oldest(&mut entries, self.policy.max_tracked);
@@ -159,10 +160,7 @@ impl LoginLimiter {
     }
 
     pub(crate) fn record_success(&self, ip: IpAddr) {
-        let prior_failures = self
-            .entries
-            .lock()
-            .expect("login limiter")
+        let prior_failures = lock_or_recover(&self.entries)
             .remove(&ip)
             .map_or(0, |entry| entry.failures);
         info!(ip = %ip, prior_failures, "login ok");
@@ -170,7 +168,7 @@ impl LoginLimiter {
     }
 
     pub(crate) fn counters(&self, now: Instant) -> Counters {
-        let entries = self.entries.lock().expect("login limiter");
+        let entries = lock_or_recover(&self.entries);
         let locked_now = entries
             .values()
             .filter(|e| matches!(Self::status(e, now), Throttle::Locked { .. }))
@@ -187,7 +185,7 @@ impl LoginLimiter {
 
     /// Read-only projection under the existing entries lock (≤ max_tracked, no await).
     pub(crate) fn snapshot(&self, now: Instant) -> Vec<IpSnapshot> {
-        let entries = self.entries.lock().expect("limiter lock");
+        let entries = lock_or_recover(&self.entries);
         let mut out: Vec<IpSnapshot> = entries
             .iter()
             .map(|(ip, entry)| {
@@ -231,7 +229,7 @@ impl LoginLimiter {
     /// `Instant`s are converted against the caller's `now_unix` reading.
     pub(crate) fn to_state(&self, now: Instant, now_unix: u64) -> MetricsState {
         let ips = {
-            let entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+            let entries = lock_or_recover(&self.entries);
             entries
                 .iter()
                 .map(|(ip, entry)| IpState {
@@ -281,7 +279,7 @@ impl LoginLimiter {
             self.policy.max_tracked,
         );
         let restored = seeds.len();
-        let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        let mut entries = lock_or_recover(&self.entries);
         entries.clear();
         for (ip, seed) in seeds {
             entries.insert(
@@ -669,7 +667,7 @@ mod tests {
 
     impl std::io::Write for CaptureWriter {
         fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            self.0.lock().unwrap().extend_from_slice(buf);
+            lock_or_recover(&self.0).extend_from_slice(buf);
             Ok(buf.len())
         }
 
@@ -723,7 +721,7 @@ mod tests {
                 buf
             })
             .clone();
-        buf.0.lock().unwrap_or_else(|p| p.into_inner()).clear();
+        lock_or_recover(&buf.0).clear();
         Capture {
             buf,
             _serial: serial,
@@ -731,7 +729,7 @@ mod tests {
     }
 
     fn captured(buf: &CaptureWriter) -> String {
-        String::from_utf8(buf.0.lock().unwrap().clone()).unwrap()
+        String::from_utf8(lock_or_recover(&buf.0).clone()).unwrap()
     }
 
     #[test]

@@ -14,6 +14,8 @@ use agentj_protocol::question::{AskOption, AskQuestionParams};
 use serde::Deserialize;
 
 use crate::module::{QuestionModule, QuestionOutcome};
+#[cfg(test)]
+use agentj_core::sync::lock_or_recover;
 
 /// Model-facing `ask` tool: presents 2–8 options to the session owner and
 /// blocks until they answer, skip, time out or the run is cancelled.
@@ -249,7 +251,7 @@ mod tests {
         let responder = Arc::clone(&module);
         let seen2 = Arc::clone(&seen);
         module.set_notifier(Arc::new(move |p: &AskQuestionParams, session_id: &str| {
-            *seen2.lock().unwrap() = Some((session_id.to_string(), p.question_id.clone()));
+            *lock_or_recover(&seen2) = Some((session_id.to_string(), p.question_id.clone()));
             let question_id = p.question_id.clone();
             let module = Arc::clone(&responder);
             std::thread::spawn(move || {
@@ -269,7 +271,7 @@ mod tests {
         );
         assert_eq!(v["answers"], json!(["a"]));
         assert_eq!(v["skipped"], false);
-        let seen = seen.lock().unwrap();
+        let seen = lock_or_recover(&seen);
         let (session_id, delivered_id) = seen.as_ref().expect("notifier must fire");
         assert_eq!(
             session_id, "s1",
@@ -301,7 +303,7 @@ mod tests {
         let seen = Arc::new(Mutex::new(None::<(String, AskQuestionParams)>));
         let seen2 = Arc::clone(&seen);
         module.set_notifier(Arc::new(move |p: &AskQuestionParams, session_id: &str| {
-            *seen2.lock().unwrap() = Some((session_id.to_string(), p.clone()));
+            *lock_or_recover(&seen2) = Some((session_id.to_string(), p.clone()));
             false // no owner: settle skipped immediately, no blocking
         }));
         let tool = AskTool::new(module);
@@ -314,7 +316,7 @@ mod tests {
             "timeout_s": 7
         });
         let _ = tool.execute_with_context(input, &test_ctx()).unwrap();
-        let seen = seen.lock().unwrap();
+        let seen = lock_or_recover(&seen);
         let (session_id, params) = seen.as_ref().expect("notifier must fire");
         assert_eq!(session_id, "s1");
         assert_eq!(params.session_id, "s1");
