@@ -36,7 +36,10 @@ pub enum FileListError {
     NotFound,
     /// Requested path exists but is not a directory (→ `-32602`, `not_a_directory`).
     NotADirectory,
-    /// Requested path escapes the session project root (→ `-32807`).
+    /// Requested path is unresolvable inside the session project root — either
+    /// it escapes the root (lexically or via a symlink) or an ancestor cannot be
+    /// stat'ed/canonicalized (e.g. EACCES), so the sandbox cannot prove it is
+    /// inside (→ `-32807`).
     OutsideRoot { path: String },
     /// `depth` outside 1..=8 (→ `-32602`, `invalid_depth`).
     InvalidDepth,
@@ -108,9 +111,10 @@ fn requested_prefix(root: &Path, requested: &str, target: &Path) -> String {
 }
 
 /// Resolve the requested path against the canonical `root`. The verdict comes
-/// from the shared primitive: an escape (lexical or via symlink) is
-/// `OutsideRoot`, and a nonexistent path is still returned so the caller maps
-/// it to `NotFound`.
+/// from the shared fail-closed primitive: a path that is *unresolvable* inside
+/// the root — an escape (lexical or via symlink), or a trail under an ancestor
+/// that cannot be stat'ed (EACCES) — is `OutsideRoot`, and a nonexistent path is
+/// still returned so the caller maps it to `NotFound`.
 fn resolve_target(root: &Path, requested: &str) -> Result<PathBuf, FileListError> {
     if requested.is_empty() {
         return Ok(root.to_path_buf());
