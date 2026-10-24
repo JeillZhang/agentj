@@ -1,7 +1,12 @@
 //! Stdio transport: `StdioConnection` and the `IpcServer::serve_stdio` entry.
 //!
-//! Verbatim move out of `lib.rs`: the serve loop, its graceful-teardown order and
-//! the sync stdout writer are unchanged; only the struct stays crate-internal.
+//! Split out of `lib.rs`. `serve_stdio` drives the transport-agnostic loop; each
+//! iteration is one `stdio_step` (`Continue` / `Eof` / `Shutdown` / `KernelFinished`)
+//! that detaches the connection around `recv`, so no std guard is held across an
+//! await, then re-attaches it for the response write. The graceful teardown after
+//! the loop keeps its fixed order: skip re-awaiting the kernel handle when the
+//! kernel already finished, otherwise signal shutdown and await the module chain.
+//! Only the connection struct stays crate-internal.
 
 use crate::{Connection, ConnectionWriter, IpcServer, TransportKind};
 use agentj_core::error::IpcError;
@@ -12,11 +17,6 @@ use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
 impl IpcServer {
-    /// Run the server in stdio mode via the unified Connection serve loop (design 决策 #2).
-    /// On EOF or after a shutdown request, signal the kernel and await its graceful shutdown.
-    /// The read loop is interrupted when the kernel finishes (design #13: SIGINT/SIGTERM
-    /// from the CLI sends Shutdown → kernel exits → serve loop returns even though stdin
-    /// is still open).
     /// Register the single stdio connection and subscribe the two notifiers:
     /// `$/permissionRequest` and `$/askQuestion` route to the session owner through
     /// the registry (决策 #5).
@@ -31,6 +31,11 @@ impl IpcServer {
         conn_id
     }
 
+    /// Run the server in stdio mode via the unified Connection serve loop (design 决策 #2).
+    /// On EOF or after a shutdown request, signal the kernel and await its graceful shutdown.
+    /// The read loop is interrupted when the kernel finishes (design #13: SIGINT/SIGTERM
+    /// from the CLI sends Shutdown → kernel exits → serve loop returns even though stdin
+    /// is still open).
     pub async fn serve_stdio(&mut self) -> Result<(), IpcError> {
         // v0.1: a single StdioConnection implements the Connection trait; the serve loop
         // is transport-agnostic so v0.3's TcpConnection slots in with zero rework.

@@ -1275,13 +1275,6 @@ fn static_surface(
         .fallback_service(gate_spa.layer(verify_spa.layer(spa)))
 }
 
-/// Unauthenticated version probe: reports this server's product/protocol
-/// versions, the optional facts read from the mounted dist, the aggregate
-/// login-limiter counters, the startup integrity summary and the runtime
-/// spot-check block, so a remote client or operator can detect a stale UI and
-/// observe throttling without holding a session cookie. Registered as an
-/// explicit route (like `/login`), so the login gate and the SPA fallback never
-/// answer it.
 /// Runtime spot-check block: rounds/checked/mismatched/missing plus the age of the
 /// last sweep when one has run.
 fn runtime_json(web: &WebConfig) -> serde_json::Value {
@@ -1347,6 +1340,13 @@ fn version_payload(web: &WebConfig) -> serde_json::Value {
     })
 }
 
+/// Unauthenticated version probe: reports this server's product/protocol
+/// versions, the optional facts read from the mounted dist, the aggregate
+/// login-limiter counters, the startup integrity summary and the runtime
+/// spot-check block, so a remote client or operator can detect a stale UI and
+/// observe throttling without holding a session cookie. Registered as an
+/// explicit route (like `/login`), so the login gate and the SPA fallback never
+/// answer it.
 async fn version_handler(web: std::sync::Arc<WebConfig>) -> axum::response::Response {
     let mut res = axum::Json(version_payload(&web)).into_response();
     res.headers_mut().insert(
