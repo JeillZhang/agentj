@@ -72,21 +72,24 @@ pub async fn ensure_access(
         return Ok(None);
     };
     if let Some(key) = usable(&cred, now_epoch()) {
-        return Ok(Some(ResolvedKey {
-            key,
-            source: KeySource::File,
-        }));
+        return Ok(Some(file_key(key)));
     }
     let _lock = FileLock::acquire(store).await?;
+    rotate_locked(store, provider, console_base).await
+}
+
+/// Rotate while holding the lock: re-read first, since another process may have won.
+async fn rotate_locked(
+    store: &AuthStore,
+    provider: &str,
+    console_base: &str,
+) -> Result<Option<ResolvedKey>, AuthError> {
     // Re-read after acquiring: another process may have rotated already.
     let Some(cred) = store.get(provider)? else {
         return Ok(None);
     };
     if let Some(key) = usable(&cred, now_epoch()) {
-        return Ok(Some(ResolvedKey {
-            key,
-            source: KeySource::File,
-        }));
+        return Ok(Some(file_key(key)));
     }
     let Credential::OAuth { refresh, .. } = cred else {
         return Ok(None);
@@ -108,14 +111,19 @@ pub async fn ensure_access(
                     org_id: t.org_id,
                 },
             )?;
-            Ok(Some(ResolvedKey {
-                key: t.access,
-                source: KeySource::File,
-            }))
+            Ok(Some(file_key(t.access)))
         }
         other => Err(AuthError::RefreshRejected {
             reason: format!("{other:?}"),
         }),
+    }
+}
+
+/// A key that came out of the credential file.
+fn file_key(key: String) -> ResolvedKey {
+    ResolvedKey {
+        key,
+        source: KeySource::File,
     }
 }
 
