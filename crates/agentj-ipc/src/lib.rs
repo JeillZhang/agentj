@@ -2,6 +2,7 @@
 pub(crate) mod client_ip;
 mod dispatch;
 pub mod file_list;
+mod handlers;
 pub(crate) mod login_limiter;
 pub(crate) mod metrics_state;
 pub mod secure;
@@ -22,7 +23,6 @@ use agentj_core::types::{AgentEvent, RunOverrides, SessionId};
 use agentj_permission::{ApprovalDecision, PermissionModule};
 use agentj_protocol::base::error_codes;
 use agentj_protocol::file::{FileKind, FileListParams, FileListResult};
-use agentj_protocol::lifecycle::InitializeParams;
 use agentj_protocol::permission::{PermissionRequestParams, PermissionRespondParams};
 use agentj_protocol::provider::{
     AuthClearCredentialParams, AuthClearCredentialResult, AuthDevicePollParams,
@@ -32,8 +32,7 @@ use agentj_protocol::provider::{
 };
 use agentj_protocol::question::{AskQuestionParams, QuestionRespondParams, QuestionRespondResult};
 use agentj_protocol::session::{
-    SessionIdParams, SessionNewParams, SessionRunResult, SessionStatusResult,
-    SessionSubscribeParams, UsageInfo,
+    SessionIdParams, SessionNewParams, SessionRunResult, SessionStatusResult, UsageInfo,
 };
 use agentj_protocol::streaming::CancelParams;
 use agentj_question::{
@@ -643,81 +642,6 @@ impl IpcServer {
         Ok(())
     }
 
-    fn dispatch_initialize(
-        &self,
-        req: &JsonRpcRequest,
-        conn_id: &str,
-    ) -> Result<Value, DispatchError> {
-        let params: InitializeParams =
-            serde_json::from_value(req.params.clone().unwrap_or(serde_json::json!({})))
-                .map_err(|e| DispatchError::invalid_params(e.to_string()))?;
-        if let Ok(expected) = self.token.lock()
-            && let Some(expected) = expected.as_deref()
-            && params.token.as_deref().unwrap_or("") != expected
-        {
-            return Err(DispatchError {
-                code: error_codes::NOT_AUTHORIZED,
-                message: "NotAuthorized".into(),
-                data: None,
-            });
-        }
-        // Successful auth: the connection may now issue business methods on a
-        // token-gated server (the non-initialize gate checks this registry).
-        if let Ok(mut reg) = self.registry.write() {
-            reg.mark_authorized(conn_id);
-        }
-        let product_version = env!("CARGO_PKG_VERSION");
-        Ok(serde_json::json!({
-            "protocol_version": agentj_protocol::PROTOCOL_VERSION,
-            "capabilities": { "multi_client": true },
-            "server_info": { "name": "agentj", "version": product_version },
-            "connection_id": conn_id,
-        }))
-    }
-
-    fn dispatch_subscribe(
-        &self,
-        req: &JsonRpcRequest,
-        conn_id: &str,
-    ) -> Result<Value, DispatchError> {
-        let params: SessionSubscribeParams = serde_json::from_value(
-            req.params
-                .clone()
-                .ok_or_else(|| DispatchError::invalid_params("missing params"))?,
-        )
-        .map_err(|e| DispatchError::invalid_params(e.to_string()))?;
-        if let Ok(mut reg) = self.registry.write() {
-            // A run outlives a client disconnect (spec 8.11): ownership is dropped
-            // when the owning connection ends, so the first connection to
-            // re-attach to a session nobody owns becomes its owner again — only an
-            // owner may answer approvals, otherwise every subsequent tool approval
-            // in the still-running turn would be denied for lack of a responder.
-            // An existing owner is never stolen from.
-            if reg.session_owner(&params.session_id).is_none() {
-                reg.set_session_owner(&params.session_id, conn_id);
-            }
-            reg.subscribe(&params.session_id, conn_id);
-        }
-        Ok(serde_json::json!({}))
-    }
-
-    fn dispatch_unsubscribe(
-        &self,
-        req: &JsonRpcRequest,
-        conn_id: &str,
-    ) -> Result<Value, DispatchError> {
-        let params: SessionIdParams = serde_json::from_value(
-            req.params
-                .clone()
-                .ok_or_else(|| DispatchError::invalid_params("missing params"))?,
-        )
-        .map_err(|e| DispatchError::invalid_params(e.to_string()))?;
-        if let Ok(mut reg) = self.registry.write() {
-            reg.unsubscribe(&params.session_id, conn_id);
-        }
-        Ok(serde_json::json!({}))
-    }
-
     fn dispatch_session_new(
         &self,
         req: &JsonRpcRequest,
@@ -1097,39 +1021,6 @@ impl IpcServer {
             model: result_model,
         };
         Ok(build_run_reply(&result))
-    }
-
-    fn dispatch_shutdown(&self) -> Result<Value, DispatchError> {
-        self.signal_shutdown()
-            .map_err(|e| DispatchError::internal(e.to_string()))?;
-        self.shutdown_requested.store(true, Ordering::SeqCst);
-        Ok(serde_json::json!({ "status": "ok" }))
-    }
-
-    fn dispatch_kernel_status(&self) -> Result<Value, DispatchError> {
-        let modules: Vec<Value> = self
-            .kernel
-            .modules()
-            .iter()
-            .map(|(id, state)| {
-                serde_json::json!({
-                    "id": id,
-                    "state": format!("{state:?}").to_lowercase()
-                })
-            })
-            .collect();
-        let (default_model, providers) = kernel_model_info(self.kernel.ctx().as_ref());
-        let mut body = serde_json::json!({
-            "version": env!("CARGO_PKG_VERSION"),
-            "modules": modules,
-        });
-        if let Some(model) = default_model {
-            body["default_model"] = serde_json::json!(model);
-        }
-        if let Some(ps) = providers {
-            body["providers"] = to_wire(ps)?;
-        }
-        Ok(body)
     }
 
     fn dispatch_session_list(&self) -> Result<Value, DispatchError> {
@@ -7428,6 +7319,29 @@ mod tests {
             assert!(
                 include_str!("dispatch.rs").contains(&needle),
                 "{name} missing"
+            );
+        }
+    }
+
+    /// Lifecycle handlers (initialize / subscribe / unsubscribe / shutdown /
+    /// kernel status) live in `handlers/lifecycle.rs`.
+    #[test]
+    fn lifecycle_handlers_moved_out_of_lib() {
+        for name in [
+            "dispatch_initialize",
+            "dispatch_subscribe",
+            "dispatch_unsubscribe",
+            "dispatch_shutdown",
+            "dispatch_kernel_status",
+        ] {
+            let needle = fn_needle(name);
+            assert!(
+                !include_str!("lib.rs").contains(&needle),
+                "{name} still in lib.rs"
+            );
+            assert!(
+                include_str!("handlers/lifecycle.rs").contains(&needle),
+                "{name} missing from lifecycle.rs"
             );
         }
     }
