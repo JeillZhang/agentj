@@ -36,7 +36,7 @@ def cut_tests(code):
 
 def offenders(path):
     code = cut_tests(strip(path.read_text(encoding='utf-8', errors='replace')))
-    for m in re.finditer(r'(?m)^\s*(?:pub )?(?:async )?(?:unsafe )?fn\s+(\w+)', code):
+    for m in re.finditer(r'(?m)^\s*(?:pub(?:\([^)]*\))? )?(?:async )?(?:unsafe )?fn\s+(\w+)', code):
         i, depth, seen = m.end(), 0, False
         while i < len(code):
             ch = code[i]
