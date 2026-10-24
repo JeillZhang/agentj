@@ -10,7 +10,8 @@
 本文件当前记录**健壮性与去重批次**（锁中毒 / panic 隔离 / 安全细节 / SSE 去重，wire 面零变更）。
 
 > 当前功能：**健壮性与去重批次** —— 分支 `chore/hardening-dedup-batch`（自 `b1edc78` 起）。
-> 对应待实施 **⑫ ㉗ ㉘ ㉚** 的实施落地（后端侧）；前端 ㉓ 见 `summary_and_next_fe.md`。
+> 实施落地的是「锁中毒与 panic 隔离」「错误处理约定与生产 `expect`」「Web 登录门与 cookie 安全
+> 细节」「SSE 事件分派三份重复」四项后端待实施（前端对应的空白帧项见 `summary_and_next_fe.md`）。
 > `PROTOCOL_VERSION` 仍 **0.19.0**（28 方法 / 78 schemas）、工作区仍 **0.1.0**，无 wire 变更。
 
 ## 健壮性与去重批次 ✅

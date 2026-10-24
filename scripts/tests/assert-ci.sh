@@ -650,8 +650,8 @@ for name, path in (("se", SE), ("fe", FE)):
         if stale in section:
             fail(f"{name} 下一步 still lists finished work as pending: {stale}")
 
-se_keep = ["⑥", "⑩", "⑪", "⑫", "⑬", "⑯", "⑰", "㉗", "㉘", "㉙", "㉚"]
-se_drop = ["⑮", "⑳", "㉛", "㉜"]
+se_keep = ["⑥", "⑩", "⑪", "⑬", "⑯", "⑰", "㉙"]
+se_drop = ["⑮", "⑳", "㉛", "㉜", "⑫", "㉗", "㉘", "㉚"]
 for symbol in se_keep:
     if symbol not in se:
         fail(f"se 待实施 must keep row {symbol}")
@@ -662,8 +662,8 @@ for token in ("dmg", "msi"):
     if token not in se.lower():
         fail(f"se 待实施 must carry the desktop packaging row ({token})")
 
-fe_keep = ["③", "㉓", "㉔"]
-fe_drop = ["㉑", "㉒", "㉕", "㉝", "㉞"]
+fe_keep = ["③", "㉔"]
+fe_drop = ["㉑", "㉒", "㉕", "㉝", "㉞", "㉓"]
 for symbol in fe_keep:
     if symbol not in fe:
         fail(f"fe 待实施 must keep row {symbol}")

@@ -11,14 +11,15 @@
 本文件当前记录**健壮性与去重批次（前端侧）**（视觉空白判定上提共享包，wire 面零变更）。
 
 > 当前功能：**健壮性与去重批次（前端侧）** —— 分支 `chore/hardening-dedup-batch`（自 `b1edc78` 起）。
-> 本轮前端只落地待实施 **㉓**：`isBlankText` 上提 `@agentj/sdk` + TUI 运行视图丢弃空白帧。
+> 本轮前端只落地「`isBlankText` 上提共享包 + TUI 空白帧」一项：过滤实现从 Web 应用移到
+> `@agentj/sdk`，TUI 运行视图同样丢弃零宽保活帧。
 > `PROTOCOL_VERSION` 仍 0.19.0，`VERSION` 仍 0.1.0。
 
 ## 健壮性与去重批次（前端）✅
 
 ### 交付
 
-- **`isBlankText` 上提 `@agentj/sdk`**（待实施 ㉓）：新增
+- **`isBlankText` 上提 `@agentj/sdk`**：新增
   `agentj-ui/packages/sdk/src/blankText.ts`（`BLANK_CHARS` 正则 + `isBlankText`），从
   `index.ts` 导出；Web 的 `Trajectory.tsx` / `RunPanel.tsx` 改为从 `@agentj/sdk` 引入并删除
   `apps/web/src/blankText.ts`（测试随实现迁到 `packages/sdk/src/__tests__/blankText.test.ts`）。
@@ -185,7 +186,7 @@
 | # | 特性 | 内容 | 依赖 | 状态 |
 |---|------|------|------|------|
 | ③ | Web 接入服务端搜索 | Web Files 搜索态打通（消费服务端 `query`/`total`；提示行搜索态可达） | 无（基于服务端搜索） | 待实施 |
-| ㉔ | 【债】三端共享逻辑收敛 | Web 19,930 行 / TUI 7,939 行各自重写会话、运行视图、文件树、搜索（`toolSummary`、files 懒加载、空文本过滤等均为双份实现）；评估把无 UI 依赖的纯函数上提 `@agentj/sdk`，避免同一缺陷修两次 | 与 ㉓ 同向 | 待实施 |
+| ㉔ | 【债】三端共享逻辑收敛 | Web 19,930 行 / TUI 7,939 行各自重写会话、运行视图、文件树、搜索（`toolSummary`、files 懒加载、空文本过滤等均为双份实现）；评估把无 UI 依赖的纯函数上提 `@agentj/sdk`，避免同一缺陷修两次 | 与本轮空白过滤上提同向 | 待实施 |
 
 > 类型标记：`【债】` = 工程债 / 质量门禁，`【修复】` = 已确认缺陷或元数据不一致；无标记 = 特性。
 > 规则：本表条目在未实施时必须**跨阶段保留**（不得随内容替换删除）；实施完成后从本表移除，
