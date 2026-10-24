@@ -68,6 +68,14 @@ Web 文件树接入服务端搜索，wire 面零变更。
 | `bash scripts/tests/assert-ui.sh all` | 3 passed |
 | `./scripts/check-version.sh` | `version-ok` |
 
+### 测试验收（`jskill-test-acceptance`，2 轮）
+
+独立 tester 复验前端侧全部行为，**零前端 Bug**：旧内核 `file/list`（无 `total`）⇒ 提示「内核不支持服务端搜索」
+且 0 行结果、不本地重排；错误保留既有行；`· 部分结果` 截断提示；Esc 恢复树（含结果行聚焦态）；
+三次击键仅发 1 次请求且参数为 `{ session_id, path: null, query }`；`total:0` 不被误判为旧内核；
+迟到回复代际守卫；SDK/TUI 共享纯函数行为一致。6 个验收 Bug 全在后端（见 `_se.md`），
+前端只需在修复后复跑：sdk 75 / web 701 / tui 193 全绿。
+
 ### 决策与偏差（本批次）
 
 - **Web 搜索逻辑留在 `FileTree.tsx`**（计划只列该文件）：内部已按函数拆分（`applySearchReply` /

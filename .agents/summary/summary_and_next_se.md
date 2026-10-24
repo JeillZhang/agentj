@@ -98,6 +98,23 @@
 | `./scripts/check-version.sh` | `version-ok`（版本未动，仍 0.1.0） |
 | `cargo deny check advisories licenses bans sources -D unmatched-skip` | 全 ok |
 
+### 测试验收（`jskill-test-acceptance`，2 轮）
+
+独立 tester 对 47 任务的对外行为做探索式验收，发现 6 个 Bug（1 medium / 5 low），全部修复并回归验证：
+
+| id | 级别 | 问题 | 修复 |
+|----|------|------|------|
+| BUG-001 | medium | 符号链接叠加 `..` 绕过越界判定（`link -> /` 时 `link/../etc/passwd` ⇒ `Ask`，绝对形态下工具会真写出根外） | `9636682`：`resolve_within_root` 改为逐分量前进，已存在分量一律 `canonicalize`（跟随链接）、`..` 从已解析前缀回退，越过根即 `Outside` |
+| BUG-002 | low | `file/list` 列根内符号链接目录时行 path 变成 canonical 前缀（`src/sub` 而非 `src_alias/sub`），客户端 `parentPath` 对不上 | `34ef3f8`：安全判定仍用 canonical target，报告前缀回到客户端拼写 |
+| BUG-003 | low | `README.md/sub` 错误码由 `-32603 io` 变 `-32807 outside_root` | `8d6c2a4`：只在 `Outside` 分支上做一次 `metadata` 消歧，真 `ENOTDIR` ⇒ `Io` |
+| BUG-004 | low | `fn-length` 门禁真出现超长函数时只报 `self-check failed:` + 通过的 `ok:` 行，违规位置被截断 | `594c57c`：优先提取违规/失败行（≤900 字符），直接报 `repository has long functions: <位置>` |
+| BUG-005 | low | `tests/pins.rs` 文档声称覆盖「every sibling root module」，实际只扫 3 个文件；还引用了不存在的 module-size 门禁 | `3a79bdc` + `facfb52`：如实描述实际覆盖与排除理由 |
+| BUG-006 | low | 回归轮 1 发现 BUG-003 的消歧又引回 `..` 词法折叠，`link/../a.txt/sub` 这条确实越界的拼写被判为 `Io` | `303565e`：请求拼写含 `ParentDir` 时拒绝 ENOTDIR 映射（fail closed），删掉重复的 `lexical_scope` |
+
+回归轮 2 全项 PASS：BUG-001/002/003/006 行为逐条复验（含 `link/secret`、`link/../etc/passwd`、`link/./../`、绝对形态、删根词法回退、
+`a.txt/sub`⇒`Io`、`link/../a.txt/sub`⇒`OutsideRoot`、`src_alias` 行拼写），BUG-004/005 复验门禁输出与 pin 覆盖面；
+全量门禁在同一 HEAD 复跑全绿。**版本不 bump**（`0.1.0`，按 AGENTS.md「版本号不随特性/修复自动递增」）。
+
 ### 决策与偏差（本批次）
 
 - **单一文档同步提交**：四个阶段的门禁都在各自提交里跑，但 `docs/changelog` + 两份 summary +
@@ -105,7 +122,8 @@
 - **纯重构不改行为**：`dispatch_session_run` 仅 `acc.usage` 赋值位置从分支内移到 `emit_usage`
   （acc 为循环局部，不可观测）；新增 `turn_broadcast_order_is_progress_todo_usage_then_done_settlement`
   把帧序 `text → tool_call → tool_result → todo → text → usage` 与 `Done` 载荷顺序钉住（原为「仅看似正确」）。
-- **path 解析**：`resolve_within_root` 对根内符号链接别名返回 **canonical 前缀**的路径（已入 changelog）。
+- **path 解析**：`resolve_within_root` 返回的 `Inside` 携带 **canonical 绝对路径**（工具参数重定基用），
+  但 `file/list` 报告给客户端的行 path 仍用**客户端拼写**（BUG-002 回归修复后的最终语义）。
 - **fn-length 度量规则**：从 `fn` 关键字到右花括号（多行签名会计入），已写进脚本 docstring；
   `/tests/` 路径段整体豁免（测试夹具多行构造），脚本会打印 `scanned N / skipped M` 使其可见。
 - **tcp 绑定时的一次 `local_addr()`** 保留（为 metrics 路径服务；做成懒值需 `Option<u16>`，反而易读出静默 0）。
