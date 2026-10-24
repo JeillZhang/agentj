@@ -16,7 +16,7 @@
     "@agentj/protocol": "*",
     "@agentj/sdk": "*",
     "@agentj/tokens": "*",
-    "lucide-react": "^0.462.0",
+    "lucide-react": "^1.60.0",
     "react-markdown": "^10.0.0",
     "rehype-highlight": "^7.0.0",
     "remark-gfm": "^4.0.0"
