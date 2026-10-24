@@ -1213,6 +1213,17 @@ async fn verify_asset(
     next.run(req).await
 }
 
+/// The `Cache-Control` override both static mounts wrap around their service —
+/// the only difference between the SPA and the hashed-asset mount.
+fn cache_layer(
+    value: &'static str,
+) -> tower_http::set_header::SetResponseHeaderLayer<axum::http::HeaderValue> {
+    tower_http::set_header::SetResponseHeaderLayer::overriding(
+        axum::http::header::CACHE_CONTROL,
+        axum::http::HeaderValue::from_static(value),
+    )
+}
+
 /// Mount the static SPA surface (D6: cache headers + login gate wrapped around
 /// each service individually — `Router::layer` would leak onto `/ws`). The root
 /// mount is `fallback_service` (unknown paths -> index.html, 200) because
@@ -1227,16 +1238,9 @@ fn static_surface(
     let spa = tower_http::services::ServeDir::new(dist).fallback(
         tower_http::services::ServeFile::new(dist.join("index.html")),
     );
-    let spa = tower_http::set_header::SetResponseHeaderLayer::overriding(
-        axum::http::header::CACHE_CONTROL,
-        axum::http::HeaderValue::from_static("no-cache"),
-    )
-    .layer(spa);
-    let assets = tower_http::set_header::SetResponseHeaderLayer::overriding(
-        axum::http::header::CACHE_CONTROL,
-        axum::http::HeaderValue::from_static("public, max-age=31536000, immutable"),
-    )
-    .layer(tower_http::services::ServeDir::new(dist.join("assets")));
+    let spa = cache_layer("no-cache").layer(spa);
+    let assets = cache_layer("public, max-age=31536000, immutable")
+        .layer(tower_http::services::ServeDir::new(dist.join("assets")));
     let gate_assets = {
         let web = web.clone();
         axum::middleware::from_fn(move |req, next| {
