@@ -4,6 +4,7 @@ pub use file_store::FileBackedStore;
 use agentj_core::error::{ModuleError, SessionError};
 use agentj_core::hooks::EventBus;
 use agentj_core::module::{EventType, SessionStatus, SessionStore};
+use agentj_core::sync::lock_or_recover;
 use agentj_core::types::{ChatMessage, SessionId, SessionSnapshot, now_epoch_secs};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -43,7 +44,7 @@ impl InMemoryStore {
     }
 
     fn require_active(&self, session: &SessionId) -> Result<(), ModuleError> {
-        let statuses = self.statuses.lock().unwrap();
+        let statuses = lock_or_recover(&self.statuses);
         match statuses.get(session) {
             Some(SessionStatus::Active) | None => Ok(()),
             _ => Err(ModuleError::Session(SessionError::InactiveSession(
@@ -62,7 +63,7 @@ impl Default for InMemoryStore {
 impl SessionStore for InMemoryStore {
     fn create(&self) -> Result<SessionId, ModuleError> {
         let id = uuid::Uuid::new_v4().to_string();
-        self.sessions.lock().unwrap().insert(id.clone(), vec![]);
+        lock_or_recover(&self.sessions).insert(id.clone(), vec![]);
         self.statuses
             .lock()
             .unwrap()
@@ -76,7 +77,7 @@ impl SessionStore for InMemoryStore {
 
     fn append(&self, session: &SessionId, message: ChatMessage) -> Result<(), ModuleError> {
         self.require_active(session)?; // inactive → SessionError::InactiveSession
-        let mut map = self.sessions.lock().unwrap();
+        let mut map = lock_or_recover(&self.sessions);
         map.entry(session.clone()).or_default().push(message);
         self.last_activity
             .lock()
@@ -122,7 +123,7 @@ impl SessionStore for InMemoryStore {
     // ---- v0.1 lifecycle contract (design §Session 生命周期契约) ----
 
     fn status(&self, session: &SessionId) -> Result<SessionStatus, ModuleError> {
-        let statuses = self.statuses.lock().unwrap();
+        let statuses = lock_or_recover(&self.statuses);
         statuses
             .get(session)
             .copied()
@@ -132,7 +133,7 @@ impl SessionStore for InMemoryStore {
     }
 
     fn archive(&self, session: &SessionId) -> Result<(), ModuleError> {
-        let mut statuses = self.statuses.lock().unwrap();
+        let mut statuses = lock_or_recover(&self.statuses);
         if !statuses.contains_key(session) {
             return Err(ModuleError::Session(SessionError::NotFound(
                 session.clone(),
@@ -143,21 +144,21 @@ impl SessionStore for InMemoryStore {
     }
 
     fn delete(&self, session: &SessionId) -> Result<(), ModuleError> {
-        let mut statuses = self.statuses.lock().unwrap();
+        let mut statuses = lock_or_recover(&self.statuses);
         if !statuses.contains_key(session) {
             return Err(ModuleError::Session(SessionError::NotFound(
                 session.clone(),
             )));
         }
         statuses.insert(session.clone(), SessionStatus::Deleted);
-        self.sessions.lock().unwrap().remove(session); // hard delete: data gone
+        lock_or_recover(&self.sessions).remove(session); // hard delete: data gone
         Ok(())
     }
 
     // ---- v0.1 recovery contract (design §会话持久化与恢复, decision #16) ----
 
     fn snapshot(&self, session: &SessionId) -> Result<SessionSnapshot, ModuleError> {
-        let statuses = self.statuses.lock().unwrap();
+        let statuses = lock_or_recover(&self.statuses);
         let status = statuses
             .get(session)
             .copied()
@@ -186,8 +187,8 @@ impl SessionStore for InMemoryStore {
     }
 
     fn restore(&self, snapshot: &SessionSnapshot) -> Result<(), ModuleError> {
-        let mut statuses = self.statuses.lock().unwrap();
-        let mut sessions = self.sessions.lock().unwrap();
+        let mut statuses = lock_or_recover(&self.statuses);
+        let mut sessions = lock_or_recover(&self.sessions);
         statuses.insert(snapshot.session_id.clone(), snapshot.status);
         sessions.insert(snapshot.session_id.clone(), snapshot.messages.clone());
         Ok(())
@@ -473,7 +474,7 @@ mod tests {
 
     impl EventHandler for ExpirySpy {
         fn on_event(&self, event: &EventType, _ctx: &KernelContext) {
-            self.events.lock().unwrap().push(event.clone());
+            lock_or_recover(&self.events).push(event.clone());
         }
     }
 
@@ -517,7 +518,7 @@ mod tests {
         assert_eq!(count, 1);
         assert_eq!(store.status(&sid)?, SessionStatus::Archived);
         assert!(matches!(
-            spy.events.lock().unwrap()[0],
+            lock_or_recover(&spy.events)[0],
             EventType::SessionExpired(ref s) if *s == sid
         ));
         Ok(())
