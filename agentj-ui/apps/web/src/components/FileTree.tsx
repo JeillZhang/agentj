@@ -1,4 +1,4 @@
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, ReactNode } from "react";
 import { ChevronRight, Folder, FolderOpen } from "lucide-react";
 import { METHODS, buildSearchIndex, parentPath, toGitLetter } from "@agentj/sdk";
@@ -455,12 +455,15 @@ const FileTree = forwardRef<FileTreeHandle, FileTreeProps>(function FileTree(
   /** Monotonic request id: any reply whose id is stale (query moved on, session changed) is dropped. */
   const searchSeq = useRef(0);
   /**
-   * Session a reply must still belong to. Written during render, not in the reset
-   * effect below: a reply can resolve in the microtask window before effects flush,
-   * and it must not paint the previous session's rows for a frame.
+   * Session every in-flight reply must still belong to. Assigned before paint (layout
+   * effect) instead of in the reset effect below: a reply can resolve in the microtask
+   * window before passive effects flush and would otherwise paint the previous session's
+   * rows for one frame. Microtasks never run inside a commit, so this is always current.
    */
   const sessionRef = useRef(sessionId);
-  sessionRef.current = sessionId;
+  useLayoutEffect(() => {
+    sessionRef.current = sessionId;
+  }, [sessionId]);
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const demoEntries = useMemo(() => flattenDemo(DEMO_FILE_TREE), []);
