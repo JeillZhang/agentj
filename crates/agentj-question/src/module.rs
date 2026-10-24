@@ -902,6 +902,55 @@ mod tests {
         assert_eq!(recorded_ids, expected);
     }
 
+    /// Settle-once bookkeeping on both sweep paths: every pending question is
+    /// recorded exactly once and fires the settle hook exactly once, whether it
+    /// is swept session-scoped by `cancel_session` or wholesale by `clear_all`.
+    #[test]
+    fn sweeps_settle_each_question_exactly_once() {
+        let m = delivering_module();
+        let (seen, hook) = recording_hook();
+        m.set_settle_hook(hook);
+        let askers: Vec<_> = ["s1", "s1", "s2"]
+            .into_iter()
+            .map(|session| {
+                let asker = Arc::clone(&m);
+                std::thread::spawn(move || asker.ask_blocking(session, &params_with_options()))
+            })
+            .collect();
+        let ids = wait_for_pending_count(&m, 3);
+        let s2_id = ids
+            .iter()
+            .find(|id| m.session_of(id).as_deref() == Some("s2"))
+            .cloned()
+            .expect("one question belongs to s2");
+        assert_eq!(m.cancel_session("s1"), 2, "cancel sweeps exactly s1's two");
+        assert_eq!(
+            lock_or_recover(&m.settled).len(),
+            0,
+            "cancel_session drops the swept session's terminal records"
+        );
+        assert_eq!(m.clear_all(), 1, "shutdown sweeps what is left");
+        assert_eq!(m.pending_count(), 0);
+        {
+            let settled = lock_or_recover(&m.settled);
+            assert_eq!(settled.len(), 1, "one terminal record per settled question");
+            assert_eq!(
+                settled.get(&s2_id).map(|s| s.outcome.clone()),
+                Some(QuestionOutcome::Skipped)
+            );
+        }
+        for (id, outcome) in askers.into_iter().map(|h| h.join().unwrap()) {
+            assert!(ids.contains(&id));
+            assert_eq!(outcome, QuestionOutcome::Skipped, "{id} settles skipped");
+        }
+        let seen = lock_or_recover(&seen);
+        assert_eq!(seen.len(), 3, "exactly one hook fire per question");
+        for id in &ids {
+            let fires = seen.iter().filter(|s| &s.question_id == id).count();
+            assert_eq!(fires, 1, "question {id} settled exactly once");
+        }
+    }
+
     #[test]
     fn cancel_session_without_pending_is_noop() {
         let m = delivering_module();
