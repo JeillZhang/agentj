@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef } from "react";
-import { METHODS } from "@agentj/sdk";
+import { METHODS, isBlankText } from "@agentj/sdk";
 import type { RpcClient } from "@agentj/sdk";
 import type { ProgressFrame, TodoItemFrame } from "@agentj/sdk";
 import type { TodoState as TodoStateFromHelper } from "./todo.ts";
@@ -124,7 +124,11 @@ export function rowsFromFrame(rows: TranscriptRow[], frame: ProgressFrame): Tran
   const key = nextKey(rows);
   switch (frame.kind) {
     case "text":
-      next.push({ key, kind: "text", text: frame.text });
+      // Gateways stream zero-width keep-alives between tool calls; a blank frame
+      // must not create a transcript row (it would render as an empty gap).
+      if (!isBlankText(frame.text)) {
+        next.push({ key, kind: "text", text: frame.text });
+      }
       break;
     case "tool_call": {
       next.push({ key, kind: "tool", text: frame.name, toolId: frame.id, state: "running" });

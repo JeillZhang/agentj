@@ -23,6 +23,13 @@ describe("rowsFromFrame", () => {
     expect(rows).toEqual([{ key: 1, kind: "text", text: "hello" }]);
     expect(nextKey(rows)).toBe(2);
   });
+  test("blank text frames never create a row (keep-alive deltas)", () => {
+    let rows = rowsFromFrame([], { kind: "text", text: "hi" });
+    for (const blank of ["", "   ", "\n", "\u200b", " \u200b \ufeff "]) {
+      rows = rowsFromFrame(rows, { kind: "text", text: blank });
+    }
+    expect(rows).toEqual([{ key: 1, kind: "text", text: "hi" }]);
+  });
   test("pairs tool_call with its tool_result into one ok row", () => {
     let rows = rowsFromFrame([], {
       kind: "tool_call",

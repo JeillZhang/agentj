@@ -4,7 +4,9 @@
 // zero-width space (U+200B). It is NOT Unicode White_Space, so neither
 // `String.prototype.trim()` nor `/^\s*$/` removes it — it has to be listed.
 //
-// Anything that survives this strip is real content.
+// Anything that survives this strip is real content. Lives in the SDK (not in
+// one app) so Web and TUI agree on what "blank" means: a keep-alive frame must
+// never create an empty transcript row or an empty message bubble.
 
 export const BLANK_CHARS = /[\s\u200b-\u200f\u2060\ufeff]/g;
 

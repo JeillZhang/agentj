@@ -131,6 +131,10 @@ vi.mock("@agentj/sdk", () => {
     RpcClient,
     ResponseRouter,
     WebSocketTransport,
+    // DRIFT WARNING: mirror of @agentj/sdk src/blankText.ts (T14 moved it there);
+    // the mock replaces the whole module, so the export must exist here too.
+    BLANK_CHARS: /[\s\u200b-\u200f\u2060\ufeff]/g,
+    isBlankText: (text: string) => text.replace(/[\s\u200b-\u200f\u2060\ufeff]/g, "") === "",
     // DRIFT WARNING: keep in step with resolveWsUrl in @agentj/sdk src/config.ts (page-location host/scheme).
     resolveWsUrl: vi.fn(
       (o?: {

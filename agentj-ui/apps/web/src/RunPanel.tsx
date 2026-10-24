@@ -12,7 +12,7 @@ import AskQuestionCard, { type AskAnswer, type AskQuestionView } from "./compone
 import ProjectEditDialog from "./components/ProjectEditDialog";
 import { DEMO_QA_RECORD, DEMO_QUESTION, isDemoEnabled, subscribeDemo } from "./demoData";
 import { loadAskCollapsed, saveAskCollapsed } from "./layoutStore";
-import { isBlankText } from "./blankText";
+import { isBlankText } from "@agentj/sdk";
 import { notifySessionsUpdated } from "./sessionEvents";
 import { createProject, loadCurrentProject, loadProjects, setCurrentProject } from "./projectStore";
 import type { Project } from "./projectStore";

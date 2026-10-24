@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Pause, Play } from "lucide-react";
 import type { RunEntry } from "./RunPanel.tsx";
 import { getProjectForSession, loadProjects } from "./projectStore.ts";
-import { isBlankText } from "./blankText.ts";
+import { isBlankText } from "@agentj/sdk";
 
 export type RawEvent = {
   session_id: string;
