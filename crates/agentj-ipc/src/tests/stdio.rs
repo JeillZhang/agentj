@@ -31,6 +31,7 @@ async fn kernel_completion_is_observable_for_signal_interrupt() {
         .unwrap();
 }
 
+/// The stdio transport (`serve_stdio` + `StdioConnection`) lives in `stdio.rs`.
 #[test]
 fn stdio_serving_moved_out_of_lib() {
     let struct_needle = format!("struct {} {{", "StdioConnection");
