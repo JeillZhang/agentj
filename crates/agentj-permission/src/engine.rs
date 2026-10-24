@@ -268,6 +268,32 @@ mod tests {
         );
     }
 
+    /// BUG-001: `..` after a symlink resolves against the link TARGET, so
+    /// `link/../secret` leaves the root even though it lexically stays inside.
+    #[cfg(unix)]
+    #[test]
+    fn symlink_then_dotdot_escape_is_denied() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        std::fs::write(outside.path().join("secret"), b"x").unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.join("link")).unwrap();
+        let engine = PermissionEngine::new();
+        for shape in ["link/../secret", "link/./../secret"] {
+            assert_eq!(
+                engine.eval_path(&ask_policy(), &root, shape),
+                EvalOutcome::Deny,
+                "{shape} escapes through the symlink"
+            );
+        }
+        let absolute = format!("{}/link/../secret", root.display());
+        assert_eq!(
+            engine.eval_path(&ask_policy(), &root, &absolute),
+            EvalOutcome::Deny,
+            "{absolute} escapes through the symlink"
+        );
+    }
+
     /// Writing a path whose parents do not exist yet is legitimate: existence
     /// is the write tool's business, not the escape check's (Review Focus #2).
     #[test]

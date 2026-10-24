@@ -10,6 +10,11 @@
 //! Contract:
 //! - `canonicalize` whenever the filesystem can answer; `Inside` carries the
 //!   canonical absolute path so callers get link resolution for free.
+//! - The path is walked **component by component**, canonicalizing every
+//!   component that exists. That matters for `..`: it must pop the parent of
+//!   what the link points AT, not the link component itself (`link/../x` is
+//!   `<link target>/../x`, i.e. usually outside the root — BUG-001). A lexical
+//!   pre-pass turns it into a plausible-looking root-relative path instead.
 //! - A nonexistent target is *not* an escape: canonicalize the nearest existing
 //!   ancestor and append the missing tail lexically.
 //! - Any other canonicalize failure (`EACCES`, `ELOOP`, ...) fails **closed**:
@@ -39,77 +44,87 @@ pub fn resolve_within_root(root: &Path, requested: &str) -> Resolved {
         tracing::debug!(root = %root.display(), "root not resolvable; lexical fallback");
         return lexical_verdict(root, requested);
     };
-    let raw = if requested.is_empty() {
-        root_canon.clone()
+    if requested.is_empty() {
+        return Resolved::Inside(root_canon);
+    }
+    let requested_path = Path::new(requested);
+    // Relative args walk FROM the canonical root, so `..` can never pop above
+    // it; absolute args walk from the filesystem root and the containment
+    // check below decides.
+    let walked = if requested_path.is_absolute() {
+        walk(Path::new(""), requested_path, None)
     } else {
-        root_canon.join(requested)
+        walk(&root_canon, requested_path, Some(&root_canon))
     };
-    let joined = lexical_normalize(&raw);
-    let resolved = match canonical_target(&joined) {
-        Some(resolved) => resolved,
-        None => {
-            return Resolved::Outside {
-                requested: requested.to_string(),
-            };
-        }
-    };
-    if resolved.starts_with(&root_canon) {
-        Resolved::Inside(resolved)
-    } else {
-        Resolved::Outside {
+    match walked {
+        Some(path) if path.starts_with(&root_canon) => Resolved::Inside(path),
+        _ => Resolved::Outside {
             requested: requested.to_string(),
-        }
+        },
     }
 }
 
-/// Canonical form of `joined`, resolving a not-yet-existing tail lexically.
-/// Returns `None` when the path cannot be verified (fail closed).
-fn canonical_target(joined: &Path) -> Option<PathBuf> {
-    match joined.canonicalize() {
-        Ok(path) => Some(path),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => resolve_missing_tail(joined),
-        Err(error) => {
-            tracing::debug!(target = %joined.display(), error = %error, "target not canonicalizable");
-            None
-        }
-    }
-}
-
-/// Canonicalize the nearest existing ancestor of a nonexistent path and append
-/// the missing components. `None` when no ancestor can be canonicalized.
-fn resolve_missing_tail(joined: &Path) -> Option<PathBuf> {
-    let (anchor, mut tail) = split_existing_ancestor(joined)?;
-    let base = match anchor.canonicalize() {
-        Ok(base) => base,
-        Err(error) => {
-            tracing::debug!(ancestor = %anchor.display(), error = %error, "ancestor not canonicalizable");
-            return None;
-        }
-    };
-    tail.reverse();
-    Some(tail.iter().fold(base, |acc, name| acc.join(name)))
-}
-
-/// Walk up from `path` to the nearest component the filesystem knows about.
-/// Returns that ancestor plus the missing names (deepest last), or `None` when
-/// the parent chain looks up with an error other than "not found" (fail closed).
-fn split_existing_ancestor(path: &Path) -> Option<(PathBuf, Vec<OsString>)> {
-    let mut tail: Vec<OsString> = Vec::new();
-    let mut current = path.to_path_buf();
-    loop {
-        match std::fs::symlink_metadata(&current) {
-            Ok(_) => return Some((current, tail)),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => {
-                tracing::debug!(ancestor = %current.display(), error = %error, "ancestor not statable");
-                return None;
+/// Walk `requested` from `start` (already canonical), canonicalizing every
+/// component that exists so symlinks are followed *before* a later `..` is
+/// applied. Once a component is missing the rest of the tail is appended
+/// lexically (a nonexistent target is not an escape). `floor` is the directory
+/// the walk must not pop above (the workspace root for relative args). `None`
+/// means the path cannot be verified (fail closed).
+fn walk(start: &Path, requested: &Path, floor: Option<&Path>) -> Option<PathBuf> {
+    let mut acc = start.to_path_buf();
+    let mut missing: Option<Vec<OsString>> = None;
+    for component in requested.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !pop_component(&mut acc, &mut missing, floor) {
+                    return None;
+                }
+            }
+            Component::Normal(name) => match missing.as_mut() {
+                Some(tail) => tail.push(name.to_os_string()),
+                None => match acc.join(name).canonicalize() {
+                    Ok(target) => acc = target,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        missing = Some(vec![name.to_os_string()]);
+                    }
+                    Err(error) => {
+                        tracing::debug!(component = %name.to_string_lossy(), %error, "component not canonicalizable");
+                        return None;
+                    }
+                },
+            },
+            // Only reachable for absolute args: (re)seed the filesystem root.
+            Component::Prefix(_) | Component::RootDir => {
+                acc.push(component.as_os_str());
+                missing = None;
             }
         }
-        let name = current.file_name()?.to_os_string();
-        let parent = current.parent()?.to_path_buf();
-        tail.push(name);
-        current = parent;
     }
+    let tail = missing.unwrap_or_default();
+    Some(tail.iter().fold(acc, |base, name| base.join(name)))
+}
+
+/// Undo one path component: drop the deepest missing name, else pop `acc`.
+/// `false` when the walk would leave `floor` (or pop past the filesystem root).
+fn pop_component(
+    acc: &mut PathBuf,
+    missing: &mut Option<Vec<OsString>>,
+    floor: Option<&Path>,
+) -> bool {
+    if let Some(tail) = missing.as_mut() {
+        if tail.pop().is_some() {
+            if tail.is_empty() {
+                *missing = None;
+            }
+            return true;
+        }
+        *missing = None;
+    }
+    if floor.is_some_and(|floor| acc == floor) {
+        return false;
+    }
+    acc.pop()
 }
 
 /// Verdict when the root itself cannot be canonicalized: compare lexically so a
@@ -201,6 +216,36 @@ mod tests {
             resolve_within_root(&root, "link/secret"),
             Resolved::Outside { .. }
         ));
+    }
+
+    /// BUG-001: `..` after a symlink must pop the LINK TARGET's directory, not
+    /// the link component — `<root>/link/../secret` names `/tmp/secret` for the
+    /// OS, so a lexical pre-pass reported it as `<root>/secret` (inside).
+    #[cfg(unix)]
+    #[test]
+    fn symlink_then_dotdot_escape_is_outside() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        std::fs::write(outside.path().join("secret"), b"x").unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.join("link")).unwrap();
+        for shape in ["link/../secret", "link/./../secret"] {
+            assert_eq!(
+                resolve_within_root(&root, shape),
+                Resolved::Outside {
+                    requested: shape.to_string()
+                },
+                "{shape} escapes through the symlink"
+            );
+        }
+        let absolute = format!("{}/link/../secret", root.display());
+        assert_eq!(
+            resolve_within_root(&root, &absolute),
+            Resolved::Outside {
+                requested: absolute.clone()
+            },
+            "{absolute} escapes through the symlink"
+        );
     }
 
     #[test]
