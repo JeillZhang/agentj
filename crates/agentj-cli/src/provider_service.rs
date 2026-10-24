@@ -19,6 +19,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use crate::activation;
+use agentj_core::sync::lock_or_recover;
 
 const USAGE_TTL_SECS: i64 = 300;
 const MODEL_TTL_SECS: i64 = 60;
@@ -315,7 +316,7 @@ impl CliProviderService {
         let cfg = self.cfg(p.provider.as_deref())?.clone();
         let now = now_epoch();
         if p.refresh != Some(true)
-            && let Some((cached, at)) = self.model_cache.lock().unwrap().get(&cfg.name)
+            && let Some((cached, at)) = lock_or_recover(&self.model_cache).get(&cfg.name)
             && now - at < MODEL_TTL_SECS
         {
             return Ok(cached.clone());
@@ -500,10 +501,10 @@ impl CliProviderService {
             }),
         )
         .map_err(activation_failed)?;
-        self.model_cache.lock().unwrap().remove(&cfg.name);
+        lock_or_recover(&self.model_cache).remove(&cfg.name);
         // Protocol 8.28: the device-poll activation shares the link path, so both per-provider
         // caches are dropped (a pre-login `no_credential` usage snapshot must not survive).
-        self.usage_cache.lock().unwrap().remove(&cfg.name);
+        lock_or_recover(&self.usage_cache).remove(&cfg.name);
         Ok(state(
             DeviceAuthState::Authorized,
             None,
@@ -577,7 +578,7 @@ impl CliProviderService {
                 },
             )
             .map_err(credential_error)?;
-        self.usage_cache.lock().unwrap().remove(&cfg.name);
+        lock_or_recover(&self.usage_cache).remove(&cfg.name);
         // D3/G7: the runtime instance must carry the same credential the read side reports.
         // A non-blank `api_key_env` shadows the key just stored, so activation uses the
         // *resolved* credential (env wins) rather than the submitted value — otherwise the
@@ -654,8 +655,8 @@ impl CliProviderService {
         let cfg = self.cfg(p.provider.as_deref())?.clone();
         self.require_kind(&cfg, "api_key")?;
         let cleared = self.store.remove(&cfg.name).map_err(credential_error)?;
-        self.usage_cache.lock().unwrap().remove(&cfg.name);
-        self.model_cache.lock().unwrap().remove(&cfg.name);
+        lock_or_recover(&self.usage_cache).remove(&cfg.name);
+        lock_or_recover(&self.model_cache).remove(&cfg.name);
         activation::deactivate_opencode_go(&self.registry, &cfg, &self.store, None)
             .map_err(activation_failed)?;
         Ok(AuthClearCredentialResult {
@@ -2128,11 +2129,15 @@ mod tests {
         let out = svc.device_poll(poll_params("dev-code")).await.unwrap();
         assert_eq!(out.state, DeviceAuthState::Authorized);
         assert!(
-            svc.model_cache.lock().unwrap().get("opencode-go").is_none(),
+            lock_or_recover(&svc.model_cache)
+                .get("opencode-go")
+                .is_none(),
             "a completed login must drop the pre-login catalog"
         );
         assert!(
-            svc.usage_cache.lock().unwrap().get("opencode-go").is_none(),
+            lock_or_recover(&svc.usage_cache)
+                .get("opencode-go")
+                .is_none(),
             "a completed login must drop the pre-login usage snapshot (protocol 8.28: both caches)"
         );
     }

@@ -3,6 +3,8 @@
 use std::path::Path;
 
 use agentj_auth::{AuthStore, Credential, ResolvedKey, redact, resolve_credential};
+#[cfg(test)]
+use agentj_core::sync::lock_or_recover;
 use clap::Subcommand;
 
 pub const OPENCODE_GO_BASE: &str = agentj_model::catalog::OPENCODE_GO_BASE;
@@ -528,14 +530,14 @@ mod tests {
         run_login_device_with(&store, &args, &server.uri(), |secs| {
             let sleeps = sleeps.clone();
             async move {
-                sleeps.lock().unwrap().push(secs);
+                lock_or_recover(&sleeps).push(secs);
             }
         })
         .await
         .unwrap();
 
         assert_eq!(
-            sleeps.lock().unwrap().as_slice(),
+            lock_or_recover(&sleeps).as_slice(),
             [5, 10],
             "slow_down bumps the interval"
         );

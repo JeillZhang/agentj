@@ -10,6 +10,9 @@ use agentj_auth::ensure_access;
 use agentj_auth::store::AuthStore;
 use agentj_core::error::ModelError;
 use agentj_core::module::ModelProvider;
+use agentj_core::sync::{read_or_recover, write_or_recover};
+#[cfg(test)]
+use agentj_core::sync::lock_or_recover;
 use agentj_core::types::{ChatMessage, ChatResponse, ModelEvent, ModelOptions, ToolDefinition};
 use futures::stream::BoxStream;
 use std::sync::{Arc, RwLock};
@@ -64,11 +67,11 @@ impl RefreshingProvider {
 
     /// The inner provider, built lazily from the current key on first use.
     fn inner(&self) -> Arc<dyn ModelProvider> {
-        if let Some(p) = self.inner.read().unwrap().clone() {
+        if let Some(p) = read_or_recover(&self.inner).clone() {
             return p;
         }
-        let built = (self.builder)(&self.current_key.read().unwrap());
-        *self.inner.write().unwrap() = Some(built.clone());
+        let built = (self.builder)(&read_or_recover(&self.current_key));
+        *write_or_recover(&self.inner) = Some(built.clone());
         built
     }
 
@@ -87,10 +90,10 @@ impl RefreshingProvider {
                 status: 401,
                 message: "订阅凭据缺失（请运行 agentj auth login --device）".into(),
             })?;
-        if resolved.key != *self.current_key.read().unwrap() {
+        if resolved.key != *read_or_recover(&self.current_key) {
             let rebuilt = (self.builder)(&resolved.key);
-            *self.inner.write().unwrap() = Some(rebuilt);
-            *self.current_key.write().unwrap() = resolved.key;
+            *write_or_recover(&self.inner) = Some(rebuilt);
+            *write_or_recover(&self.current_key) = resolved.key;
         }
         Ok(())
     }
@@ -143,7 +146,7 @@ mod tests {
             _t: Vec<ToolDefinition>,
             _o: ModelOptions,
         ) -> Result<BoxStream<'static, Result<ModelEvent, ModelError>>, ModelError> {
-            self.hits.lock().unwrap().push("chat".into());
+            lock_or_recover(&self.hits).push("chat".into());
             Ok(Box::pin(futures::stream::empty()))
         }
         async fn chat(
@@ -151,7 +154,7 @@ mod tests {
             _m: Vec<ChatMessage>,
             _o: ModelOptions,
         ) -> Result<ChatResponse, ModelError> {
-            self.hits.lock().unwrap().push("chat".into());
+            lock_or_recover(&self.hits).push("chat".into());
             Ok(ChatResponse {
                 content: String::new(),
                 tool_calls: vec![],
@@ -200,9 +203,9 @@ mod tests {
             let built = built.clone();
             let last = last.clone();
             Arc::new(move |key: &str| {
-                built.lock().unwrap().push(key.to_string());
+                lock_or_recover(&built).push(key.to_string());
                 let p = Arc::new(Counting::default());
-                *last.lock().unwrap() = Some(p.clone());
+                *lock_or_recover(&last) = Some(p.clone());
                 p as Arc<dyn ModelProvider>
             })
         };
@@ -220,7 +223,7 @@ mod tests {
                 .is_ok()
         );
 
-        assert_eq!(built.lock().unwrap().as_slice(), ["new-access"]);
+        assert_eq!(lock_or_recover(&built).as_slice(), ["new-access"]);
         assert_eq!(
             server.received_requests().await.unwrap().len(),
             1,
@@ -256,7 +259,7 @@ mod tests {
         let builder: Builder = {
             let built = built.clone();
             Arc::new(move |k: &str| {
-                built.lock().unwrap().push(k.to_string());
+                lock_or_recover(&built).push(k.to_string());
                 Arc::new(Counting::default()) as Arc<dyn ModelProvider>
             })
         };
@@ -269,7 +272,7 @@ mod tests {
         };
         assert!(err.to_string().contains("auth login --device"), "got {err}");
         assert!(
-            built.lock().unwrap().is_empty(),
+            lock_or_recover(&built).is_empty(),
             "no provider may be built on a failed refresh"
         );
     }
@@ -289,7 +292,7 @@ mod tests {
         );
         let _ = p.chat(vec![], ModelOptions::default()).await.unwrap();
         assert_eq!(p.models(), vec!["m1".to_string()]);
-        assert_eq!(inner.hits.lock().unwrap().len(), 2);
+        assert_eq!(lock_or_recover(&inner.hits).len(), 2);
         assert!(server.received_requests().await.unwrap().is_empty());
     }
 }
