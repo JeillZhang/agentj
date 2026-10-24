@@ -850,24 +850,39 @@ mod tests {
             .unwrap();
 
         let handle = kernel.start();
-        for content in ["first", "second", "third"] {
-            let (tx, _rx) = tokio::sync::mpsc::channel(4);
-            kernel
-                .sender()
-                .send(KernelMessage::user_request("s1", content, tx))
-                .unwrap();
-            tokio::time::sleep(Duration::from_millis(40)).await;
-        }
+        // Target the panicking module only, so the panic is deterministic and the
+        // next message proves the loop (and its poisoned modules lock) still works.
+        send_tool_call(&kernel, "boom");
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        send_tool_call(&kernel, "spy");
+        tokio::time::sleep(Duration::from_millis(40)).await;
 
-        // The panicking broadcast may or may not reach `spy` depending on map order,
-        // but the loop must still be alive: at least one later message must arrive.
-        assert!(
-            !crate::sync::lock_or_recover(&handled).is_empty(),
-            "kernel loop must keep routing after a handler panic"
+        assert_eq!(
+            crate::sync::lock_or_recover(&handled).len(),
+            1,
+            "the kernel loop must keep routing after a handler panic"
         );
 
         // Shutdown still completes: the modules lock was never left unusable.
         kernel.sender().send(KernelMessage::Shutdown).unwrap();
         handle.await.unwrap().unwrap();
+    }
+
+    /// Send a targeted `ToolCallRequest` at `target` (used to make panics deterministic).
+    fn send_tool_call(kernel: &Kernel, target: &str) {
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        kernel
+            .sender()
+            .send(KernelMessage::ToolCallRequest {
+                session_id: "s1".into(),
+                tool_call: ToolCall {
+                    id: "c1".into(),
+                    name: "dummy".into(),
+                    arguments: serde_json::json!({}),
+                },
+                target: target.into(),
+                reply: Arc::new(std::sync::Mutex::new(Some(tx))),
+            })
+            .unwrap();
     }
 }

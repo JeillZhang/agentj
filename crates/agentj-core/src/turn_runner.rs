@@ -165,7 +165,10 @@ impl TurnRunner {
             );
         }
         tokio::spawn(async move {
-            let result = Self::run_turn(
+            // A panic anywhere in the turn (provider adapter, pipeline, tool plumbing)
+            // must still terminate the client's stream and release the session's turn
+            // slot — otherwise the client waits forever with no terminal event.
+            let future = std::panic::AssertUnwindSafe(Self::run_turn(
                 ctx,
                 pipeline,
                 session_id.clone(),
@@ -182,8 +185,15 @@ impl TurnRunner {
                 file_change_seqs,
                 cancel_rx,
                 on_done.clone(),
-            )
-            .await;
+            ));
+            let result = match futures::FutureExt::catch_unwind(future).await {
+                Ok(result) => result,
+                Err(payload) => {
+                    let reason = crate::sync::panic_payload_message(payload.as_ref());
+                    tracing::error!(%reason, "turn panicked");
+                    Err(format!("turn panicked: {reason}"))
+                }
+            };
             if let Err(e) = &result {
                 let _ = reply.send(AgentEvent::Error(e.clone())).await;
             }
@@ -2803,6 +2813,75 @@ mod tests {
             refluxed[0].as_str(),
             frame.as_str(),
             "reflux must see the same truncated string the event carries"
+        );
+    }
+
+    /// Pipeline that panics on the first assemble — models a bug in context assembly.
+    struct PanicPipeline;
+    impl ContextPipeline for PanicPipeline {
+        fn assemble(
+            &self,
+            _system: &str,
+            _history: &[ChatMessage],
+            _tool_results: &[(ToolCall, String)],
+        ) -> Vec<ChatMessage> {
+            panic!("pipeline boom")
+        }
+        fn reflux(&self, _history: &mut Vec<ChatMessage>, _tool_call: &ToolCall, _result: String) {}
+    }
+
+    #[tokio::test]
+    async fn a_panicking_turn_reports_an_error_and_releases_the_turn_slot() {
+        let (_kernel, sender) = spy_kernel_with(ToolSpy);
+        let ctx = loop_test_ctx();
+        ctx.providers.register(
+            "mock".into(),
+            Arc::new(ScriptedProvider {
+                calls: Arc::new(AtomicUsize::new(0)),
+                tool: tc(),
+            }),
+        );
+        let runner = TurnRunner::new(
+            ctx.clone(),
+            Arc::new(PanicPipeline),
+            "sys".into(),
+            sender,
+            "tool_spy".into(),
+        );
+        let sid = runner.create_session().unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+        runner
+            .spawn_turn(sid.clone(), "hi".into(), None, RunOverrides::default(), tx)
+            .unwrap();
+
+        let mut error_text = None;
+        while let Some(ev) = rx.recv().await {
+            match ev {
+                AgentEvent::Error(e) => {
+                    error_text = Some(e);
+                    break;
+                }
+                AgentEvent::Done { .. } => break,
+                _ => {}
+            }
+        }
+        let error_text = error_text.expect("a panicking turn must end with an Error event");
+        assert!(
+            error_text.contains("turn panicked"),
+            "unexpected error text: {error_text}"
+        );
+
+        // The slot must be released: a stale entry would make cancel/shutdown act on a
+        // dead turn and leak one map entry per panicking session.
+        for _ in 0..20 {
+            if crate::sync::lock_or_recover(&runner.turns).is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(
+            crate::sync::lock_or_recover(&runner.turns).is_empty(),
+            "the panicked turn must be removed from the active-turn map"
         );
     }
 }
