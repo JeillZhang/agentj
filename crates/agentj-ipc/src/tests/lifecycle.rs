@@ -136,7 +136,7 @@ fn registry_unregister_releases_owner_and_subscriptions() {
     reg.subscribe(&"s1".to_string(), &a);
     reg.unregister(&a);
     assert!(
-        reg.session_owner(&"s1".to_string()).is_none(),
+        reg.session_owner("s1").is_none(),
         "owner released on disconnect"
     );
     // broadcast after unregister is a no-op (no panic, no delivery)

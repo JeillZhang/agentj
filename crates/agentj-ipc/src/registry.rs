@@ -121,7 +121,9 @@ impl ConnectionRegistry {
     pub fn set_session_owner(&mut self, session: &SessionId, conn: &str) {
         self.session_owner.insert(session.clone(), conn.to_string());
     }
-    pub fn session_owner(&self, session: &SessionId) -> Option<&String> {
+    /// Owner of a session, or `None` when nobody claimed it. Takes `&str` so the
+    /// lookup borrows the caller's id instead of allocating a `SessionId`.
+    pub fn session_owner(&self, session: &str) -> Option<&String> {
         self.session_owner.get(session)
     }
     /// Sessions owned by a connection (owner-disconnect question settlement).

@@ -29,7 +29,7 @@ impl IpcServer {
             .registry
             .read()
             .ok()
-            .and_then(|r| r.session_owner(&sid.to_string()).cloned())
+            .and_then(|r| r.session_owner(sid).cloned())
             .map(|owner| owner == conn_id)
             .unwrap_or(false);
         if is_owner {
@@ -233,7 +233,7 @@ impl IpcServer {
             let owner = registry
                 .read()
                 .ok()
-                .and_then(|r| r.session_owner(&session_id.to_string()).cloned());
+                .and_then(|r| r.session_owner(session_id).cloned());
             let delivered = owner.is_some();
             if let Some(owner_id) = owner {
                 let msg = serde_json::json!({
