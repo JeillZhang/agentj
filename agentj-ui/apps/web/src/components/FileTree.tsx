@@ -30,9 +30,6 @@ const ROOT = "";
 /** Wait before asking the kernel so a fast typist issues one search, not one per key. */
 const SEARCH_DEBOUNCE_MS = 150;
 
-/** Search walks deeper than the lazy tree (`depth: 1` per expand) in one round trip. */
-const SEARCH_DEPTH = 8;
-
 /** Shown when the reply carries no `total`: the kernel predates `file/list { query }`. */
 const SEARCH_UNSUPPORTED_HINT = "内核不支持服务端搜索";
 
@@ -515,7 +512,6 @@ const FileTree = forwardRef<FileTreeHandle, FileTreeProps>(function FileTree(
         const reply = (await client.request(METHODS.fileList, {
           session_id: sessionId,
           path: null,
-          depth: SEARCH_DEPTH,
           query,
         })) as FileListReply;
         if (searchSeq.current !== seq || sessionRef.current !== requestSession) return;

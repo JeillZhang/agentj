@@ -457,7 +457,7 @@ test("debounces into one server-side search request", async () => {
   const searches = searchCalls(calls);
   expect(searches).toHaveLength(1);
   expect(searches[0].method).toBe("file/list");
-  expect(searches[0].params).toEqual({ session_id: "s1", path: null, depth: 8, query: "main" });
+  expect(searches[0].params).toEqual({ session_id: "s1", path: null, query: "main" });
   expect(screen.getByText(/42/)).toBeInTheDocument();
 });
 
