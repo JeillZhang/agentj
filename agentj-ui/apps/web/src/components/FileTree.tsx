@@ -88,14 +88,30 @@ type FileTreeStats = {
   changes: number;
 };
 
-function toView(entry: RawFileEntry): ViewEntry {
+/** One wire entry with the shared string/kind fallbacks applied; `git` is still raw. */
+type NormalizedEntry = {
+  name: string;
+  path: string;
+  kind: "file" | "dir";
+  git: string | null;
+};
+
+/**
+ * Single normalizer for wire entries: the tree rows and the search rows differ only in how
+ * they narrow `git_status` (`toGitLetter` vs. the SDK's own re-narrowing), never in parsing.
+ */
+function normalizeEntry(entry: RawFileEntry): NormalizedEntry {
   return {
     name: String(entry.name ?? ""),
     path: String(entry.path ?? ""),
     kind: entry.kind === "dir" ? "dir" : "file",
-    // Wire `git_status` is untyped JSON: narrow to string before the shared letter map.
-    git: toGitLetter(typeof entry.git_status === "string" ? entry.git_status : null),
+    git: typeof entry.git_status === "string" ? entry.git_status : null,
   };
+}
+
+function toView(entry: RawFileEntry): ViewEntry {
+  const { git, ...rest } = normalizeEntry(entry);
+  return { ...rest, git: toGitLetter(git) };
 }
 
 /** Flattens the nested demo fixture into the same parent-path map the fetched tree uses. */
@@ -161,14 +177,10 @@ function StatusCell({ git }: { git: GitLetter }) {
   return <span className={`status-txt status-${git}`}>{git}</span>;
 }
 
-/** Narrows one wire entry into the shared search-entry shape. */
+/** Narrows one wire entry into the shared search-entry shape via [`normalizeEntry`]. */
 function toSearchEntry(entry: RawFileEntry): SharedRawFileEntry {
-  return {
-    name: String(entry.name ?? ""),
-    path: String(entry.path ?? ""),
-    kind: entry.kind === "dir" ? "dir" : "file",
-    git_status: typeof entry.git_status === "string" ? entry.git_status : null,
-  };
+  const { git, ...rest } = normalizeEntry(entry);
+  return { ...rest, git_status: git };
 }
 
 /**
