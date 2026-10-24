@@ -77,6 +77,10 @@ describe("files", () => {
     expect(moveSelection(1, 1, 2)).toBe(1);
     expect(moveSelection(0, -1, 3)).toBe(0);
     expect(moveSelection(2, 1, 3)).toBe(2);
+    // Non-boundary moves land exactly where the delta says (clamped only at the ends).
+    expect(moveSelection(1, 1, 3)).toBe(2);
+    expect(moveSelection(1, -1, 3)).toBe(0);
+    expect(moveSelection(1, 0, 3)).toBe(1);
     expect(clampSelection(5, 0)).toBe(0);
   });
 
