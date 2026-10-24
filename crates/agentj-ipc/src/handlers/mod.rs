@@ -5,5 +5,6 @@
 
 pub(crate) mod lifecycle;
 pub(crate) mod pending;
+pub(crate) mod provider;
 pub(crate) mod run;
 pub(crate) mod session;
