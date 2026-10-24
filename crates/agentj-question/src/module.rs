@@ -203,8 +203,16 @@ impl QuestionModule {
             },
         );
         // A colliding id would silently answer the previous asker's channel
-        // (insert never overwrites); enforce the unique-id invariant.
+        // (insert never overwrites); enforce the unique-id invariant in debug
+        // builds and leave a release-build trace of the silent collision.
         debug_assert!(inserted, "duplicate question id {question_id}");
+        if !inserted {
+            tracing::error!(
+                question_id = %question_id,
+                "duplicate question id: the registry kept the earlier asker, so this \
+                 ask's answer channel is unreachable"
+            );
+        }
         if !self.deliver(&wire, session_id) {
             self.settle_skipped(&question_id, session_id);
             return (question_id, QuestionOutcome::Skipped);

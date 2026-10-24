@@ -322,8 +322,15 @@ impl PermissionModule {
         );
         // The registry never overwrites, so a colliding id would hand this ask
         // the previous request's waiter channel. Enforce the invariant loudly in
-        // debug builds instead of dropping the bool on the floor.
+        // debug builds, and leave a release-build trace of the silent collision.
         debug_assert!(inserted, "duplicate approval request id {}", request_id.0);
+        if !inserted {
+            tracing::error!(
+                request_id = %request_id.0,
+                "duplicate approval request id: the registry kept the earlier asker, \
+                 so this request's decision channel is unreachable"
+            );
+        }
         let params = PermissionRequestParams {
             request_id: request_id.0.clone(),
             tool: ctx.tool.clone(),
