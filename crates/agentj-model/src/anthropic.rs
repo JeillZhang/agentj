@@ -68,52 +68,74 @@ impl AnthropicProvider {
         options: &ModelOptions,
         stream: bool,
     ) -> Value {
-        // Anthropic: system is a top-level field, NOT a message role (design 4.1 wire mapping)
-        let system: String = messages
-            .iter()
-            .filter(|m| m.role == Role::System)
-            .map(|m| m.content.clone())
-            .collect::<Vec<_>>()
-            .join("\n");
-        let msgs: Vec<Value> = messages
-            .iter()
-            .filter(|m| m.role != Role::System)
-            .map(|m| match m.role {
-                Role::Tool => serde_json::json!({
-                    "role": "user",
-                    "content": [{
-                        "type": "tool_result",
-                        "tool_use_id": m.tool_call_id.clone().unwrap_or_default(),
-                        "content": m.content,
-                    }],
-                }),
-                Role::Assistant if !m.tool_calls.is_empty() => serde_json::json!({
-                    "role": "assistant",
-                    "content": m.tool_calls.iter().map(|tc| serde_json::json!({
-                        "type": "tool_use",
-                        "id": tc.id,
-                        "name": tc.name,
-                        "input": tc.arguments,
-                    })).collect::<Vec<_>>(),
-                }),
-                Role::Assistant => serde_json::json!({ "role": "assistant", "content": m.content }),
-                _ => serde_json::json!({ "role": "user", "content": m.content }),
-            })
-            .collect();
         serde_json::json!({
             "model": options.model,
-            "system": system,
-            "messages": msgs,
-            "tools": tools.iter().map(|t| serde_json::json!({
-                "name": t.name,
-                "description": t.description,
-                "input_schema": t.input_schema,
-            })).collect::<Vec<_>>(),
+            "system": body_system(messages),
+            "messages": body_messages(messages),
+            "tools": body_tools(tools),
             "max_tokens": options.max_tokens.unwrap_or(4096),
             "stream": stream,
             "temperature": options.temperature.unwrap_or(0.7),
         })
     }
+}
+
+/// Anthropic: system is a top-level field, NOT a message role (design 4.1 wire mapping).
+fn body_system(messages: &[ChatMessage]) -> String {
+    messages
+        .iter()
+        .filter(|m| m.role == Role::System)
+        .map(|m| m.content.clone())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Map the non-system history to `/v1/messages` `messages` entries.
+fn body_messages(messages: &[ChatMessage]) -> Vec<Value> {
+    messages
+        .iter()
+        .filter(|m| m.role != Role::System)
+        .map(body_message)
+        .collect()
+}
+
+/// Map one non-system message to its `/v1/messages` wire shape.
+fn body_message(m: &ChatMessage) -> Value {
+    match m.role {
+        Role::Tool => serde_json::json!({
+            "role": "user",
+            "content": [{
+                "type": "tool_result",
+                "tool_use_id": m.tool_call_id.clone().unwrap_or_default(),
+                "content": m.content,
+            }],
+        }),
+        Role::Assistant if !m.tool_calls.is_empty() => serde_json::json!({
+            "role": "assistant",
+            "content": m.tool_calls.iter().map(|tc| serde_json::json!({
+                "type": "tool_use",
+                "id": tc.id,
+                "name": tc.name,
+                "input": tc.arguments,
+            })).collect::<Vec<_>>(),
+        }),
+        Role::Assistant => serde_json::json!({ "role": "assistant", "content": m.content }),
+        _ => serde_json::json!({ "role": "user", "content": m.content }),
+    }
+}
+
+/// Map agentj tool definitions to `/v1/messages` `tools` entries.
+fn body_tools(tools: &[ToolDefinition]) -> Vec<Value> {
+    tools
+        .iter()
+        .map(|t| {
+            serde_json::json!({
+                "name": t.name,
+                "description": t.description,
+                "input_schema": t.input_schema,
+            })
+        })
+        .collect()
 }
 
 /// Accumulates a streaming tool_use block by content-block index (design 4.2).
