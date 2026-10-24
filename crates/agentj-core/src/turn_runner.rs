@@ -771,10 +771,7 @@ mod tests {
             _o: ModelOptions,
         ) -> Result<BoxStream<'static, Result<ModelEvent, ModelError>>, ModelError> {
             let call = self.calls.fetch_add(1, Ordering::SeqCst);
-            self.seen
-                .lock()
-                .unwrap()
-                .push(crate::budget::request_tokens(&m));
+            crate::sync::lock_or_recover(&self.seen).push(crate::budget::request_tokens(&m));
             if let Some(err) = &self.overflow
                 && (self.always_overflow || call == 0)
             {
@@ -2229,9 +2226,7 @@ mod tests {
                 _ => {}
             }
         }
-        let seen = seen
-            .lock()
-            .unwrap()
+        let seen = crate::sync::lock_or_recover(&seen)
             .clone()
             .expect("chat_stream must be called");
         assert_eq!(seen.session_id.as_deref(), Some(sid.as_str()));
@@ -2275,9 +2270,7 @@ mod tests {
                 _ => {}
             }
         }
-        let captured = seen
-            .lock()
-            .unwrap()
+        let captured = crate::sync::lock_or_recover(&seen)
             .clone()
             .expect("chat_stream must be called");
         assert_eq!(captured.model, "custom-model");
@@ -2313,9 +2306,7 @@ mod tests {
             _t: Vec<ToolDefinition>,
             options: ModelOptions,
         ) -> Result<BoxStream<'static, Result<ModelEvent, ModelError>>, ModelError> {
-            self.seen
-                .lock()
-                .unwrap()
+            crate::sync::lock_or_recover(&self.seen)
                 .push(format!("{}:{}", self.name, options.model));
             Ok(Box::pin(stream::iter(vec![
                 Ok(ModelEvent::Delta("ok".into())),

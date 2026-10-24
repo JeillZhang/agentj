@@ -16,7 +16,7 @@ use agentj_core::error::{IpcError, KernelError, ModuleError};
 use agentj_core::kernel::Kernel;
 use agentj_core::module::{KernelMessage, SessionStore};
 #[cfg(test)]
-use agentj_core::sync::{lock_or_recover, read_or_recover};
+use agentj_core::sync::{lock_or_recover, read_or_recover, write_or_recover};
 use agentj_core::types::{AgentEvent, RunOverrides, SessionId};
 use agentj_permission::{ApprovalDecision, PermissionModule};
 use agentj_protocol::base::error_codes;
@@ -2651,10 +2651,7 @@ mod tests {
             p: AuthClearCredentialParams,
         ) -> Result<AuthClearCredentialResult, DispatchError> {
             lock_or_recover(&self.calls).push("clear_credential".into());
-            self.clear_credential_params
-                .lock()
-                .unwrap()
-                .push(p.provider.clone());
+            lock_or_recover(&self.clear_credential_params).push(p.provider.clone());
             Ok(AuthClearCredentialResult {
                 provider: p.provider.unwrap_or_else(|| "opencode-go".into()),
                 cleared: true,
@@ -2925,16 +2922,8 @@ mod tests {
     #[tokio::test]
     async fn permission_respond_owner_gate_is_per_session() {
         let (server, module) = permission_server();
-        server
-            .registry
-            .write()
-            .unwrap()
-            .set_session_owner(&"s1".to_string(), "conn-a");
-        server
-            .registry
-            .write()
-            .unwrap()
-            .set_session_owner(&"s2".to_string(), "conn-b");
+        write_or_recover(&server.registry).set_session_owner(&"s1".to_string(), "conn-a");
+        write_or_recover(&server.registry).set_session_owner(&"s2".to_string(), "conn-b");
         let ctx1 = PermissionContext {
             session_id: "s1".into(),
             tool: "bash".into(),
@@ -2979,11 +2968,7 @@ mod tests {
     #[tokio::test]
     async fn permission_respond_resolves_pending_approval() {
         let (server, module) = permission_server();
-        server
-            .registry
-            .write()
-            .unwrap()
-            .set_session_owner(&"s1".to_string(), "stdio");
+        write_or_recover(&server.registry).set_session_owner(&"s1".to_string(), "stdio");
         let ctx = PermissionContext {
             session_id: "s1".into(),
             tool: "bash".into(),
@@ -3072,18 +3057,8 @@ mod tests {
             args: serde_json::json!({"command": "curl x"}),
             workspace_root: std::path::PathBuf::from("/ws"),
         };
-        assert!(
-            server
-                .registry
-                .write()
-                .unwrap()
-                .try_acquire_run(&"s1".to_string())
-        );
-        server
-            .registry
-            .write()
-            .unwrap()
-            .set_session_owner(&"s1".to_string(), "conn-a");
+        assert!(write_or_recover(&server.registry).try_acquire_run(&"s1".to_string()));
+        write_or_recover(&server.registry).set_session_owner(&"s1".to_string(), "conn-a");
         let PermissionDecision::Ask { request_id } = module.check(&ctx) else {
             panic!("expected Ask");
         };
@@ -3177,11 +3152,7 @@ mod tests {
         server.attach_question_notifier();
         let a = register_fake_conn(&server);
         let b = register_fake_conn(&server);
-        server
-            .registry
-            .write()
-            .unwrap()
-            .set_session_owner(&"s1".to_string(), &a);
+        write_or_recover(&server.registry).set_session_owner(&"s1".to_string(), &a);
         let m = module.clone();
         let params = ask_params("s1");
         let handle = std::thread::spawn(move || m.ask_blocking("s1", &params));
@@ -3230,11 +3201,7 @@ mod tests {
         let server = Arc::new(server);
         server.attach_question_notifier();
         let a = register_fake_conn(&server);
-        server
-            .registry
-            .write()
-            .unwrap()
-            .set_session_owner(&"s1".to_string(), &a);
+        write_or_recover(&server.registry).set_session_owner(&"s1".to_string(), &a);
         let m = module.clone();
         let params = ask_params("s1");
         let handle = std::thread::spawn(move || m.ask_blocking("s1", &params));
@@ -3260,11 +3227,7 @@ mod tests {
         server.attach_question_notifier();
         let a = register_fake_conn(&server);
         let b = register_fake_conn(&server);
-        server
-            .registry
-            .write()
-            .unwrap()
-            .set_session_owner(&"s1".to_string(), &a);
+        write_or_recover(&server.registry).set_session_owner(&"s1".to_string(), &a);
         let m = module.clone();
         let params = ask_params("s1");
         let handle = std::thread::spawn(move || m.ask_blocking("s1", &params));
@@ -3297,11 +3260,7 @@ mod tests {
         let server = Arc::new(server);
         server.attach_question_notifier();
         let a = register_fake_conn(&server);
-        server
-            .registry
-            .write()
-            .unwrap()
-            .set_session_owner(&"s1".to_string(), &a);
+        write_or_recover(&server.registry).set_session_owner(&"s1".to_string(), &a);
         let m = module.clone();
         let params = ask_params("s1");
         let handle = std::thread::spawn(move || m.ask_blocking("s1", &params));
@@ -3364,11 +3323,7 @@ mod tests {
         let server = Arc::new(server);
         server.attach_question_notifier();
         let a = register_fake_conn(&server);
-        server
-            .registry
-            .write()
-            .unwrap()
-            .set_session_owner(&"s1".to_string(), &a);
+        write_or_recover(&server.registry).set_session_owner(&"s1".to_string(), &a);
         let m = module.clone();
         let params = ask_params("s1");
         let handle = std::thread::spawn(move || m.ask_blocking("s1", &params));
@@ -3975,13 +3930,7 @@ mod tests {
     #[tokio::test]
     async fn cancel_request_without_session_id_single_inflight_falls_back() {
         let (server, module) = blocking_run_server();
-        assert!(
-            server
-                .registry
-                .write()
-                .unwrap()
-                .try_acquire_run(&"s1".to_string())
-        );
+        assert!(write_or_recover(&server.registry).try_acquire_run(&"s1".to_string()));
         let ctx = PermissionContext {
             session_id: "s1".into(),
             tool: "bash".into(),
@@ -4010,20 +3959,8 @@ mod tests {
     #[tokio::test]
     async fn cancel_request_without_session_id_multiple_inflight_is_noop() {
         let (server, module) = blocking_run_server();
-        assert!(
-            server
-                .registry
-                .write()
-                .unwrap()
-                .try_acquire_run(&"s1".to_string())
-        );
-        assert!(
-            server
-                .registry
-                .write()
-                .unwrap()
-                .try_acquire_run(&"s2".to_string())
-        );
+        assert!(write_or_recover(&server.registry).try_acquire_run(&"s1".to_string()));
+        assert!(write_or_recover(&server.registry).try_acquire_run(&"s2".to_string()));
         let ctx = PermissionContext {
             session_id: "s1".into(),
             tool: "bash".into(),
@@ -5890,10 +5827,7 @@ mod tests {
         // The owner connection ends: ownership is dropped (design 决策 #5).
         server.cleanup_connection(&a);
         assert!(
-            server
-                .registry
-                .read()
-                .unwrap()
+            read_or_recover(&server.registry)
                 .session_owner(&sid)
                 .is_none(),
             "a disconnect drops ownership"
@@ -6471,11 +6405,7 @@ mod tests {
         let dir = temp_dir_traj("cancel");
         let (mut server, _module) = blocking_run_server();
         server.trajectory_store = Some(wired_store(&dir));
-        server
-            .registry
-            .write()
-            .unwrap()
-            .set_session_owner(&"s1".to_string(), "stdio");
+        write_or_recover(&server.registry).set_session_owner(&"s1".to_string(), "stdio");
         let server = Arc::new(server);
         let run = tokio::spawn({
             let s = Arc::clone(&server);
@@ -6542,11 +6472,7 @@ mod tests {
         let dir = temp_dir_traj("settle");
         let (mut server, module) = blocking_run_server();
         server.trajectory_store = Some(wired_store(&dir));
-        server
-            .registry
-            .write()
-            .unwrap()
-            .set_session_owner(&"s1".to_string(), "stdio");
+        write_or_recover(&server.registry).set_session_owner(&"s1".to_string(), "stdio");
         let server = Arc::new(server);
         let (ask_tx, mut ask_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
         module.set_notifier(Arc::new(
@@ -6615,11 +6541,7 @@ mod tests {
         let dir = temp_dir_traj("deny");
         let (mut server, module) = blocking_run_server();
         server.trajectory_store = Some(wired_store(&dir));
-        server
-            .registry
-            .write()
-            .unwrap()
-            .set_session_owner(&"s1".to_string(), "stdio");
+        write_or_recover(&server.registry).set_session_owner(&"s1".to_string(), "stdio");
         let server = Arc::new(server);
         let (ask_tx, mut ask_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
         module.set_notifier(Arc::new(

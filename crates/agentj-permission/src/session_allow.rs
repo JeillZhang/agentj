@@ -28,9 +28,7 @@ impl SessionAllowState {
 
     /// Record an allow_always grant for a session.
     pub fn grant(&self, session_id: &str, fingerprint: RuleFingerprint) {
-        self.grants
-            .lock()
-            .unwrap()
+        lock_or_recover(&self.grants)
             .entry(session_id.into())
             .or_default()
             .insert(fingerprint);
@@ -38,9 +36,7 @@ impl SessionAllowState {
 
     /// Whether this session previously granted the fingerprint.
     pub fn allows(&self, session_id: &str, fingerprint: &RuleFingerprint) -> bool {
-        self.grants
-            .lock()
-            .unwrap()
+        lock_or_recover(&self.grants)
             .get(session_id)
             .map(|set| set.contains(fingerprint))
             .unwrap_or(false)

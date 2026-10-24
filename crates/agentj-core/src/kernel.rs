@@ -105,9 +105,7 @@ impl Kernel {
     }
 
     pub fn modules(&self) -> Vec<(ModuleId, ModuleState)> {
-        self.states
-            .lock()
-            .unwrap()
+        crate::sync::lock_or_recover(&self.states)
             .iter()
             .map(|(id, st)| (id.clone(), *st))
             .collect()
@@ -216,10 +214,7 @@ impl Kernel {
             .collect();
         let mut first_error: Option<KernelError> = None;
         for id in &ids {
-            states
-                .lock()
-                .unwrap()
-                .insert(id.clone(), ModuleState::Stopping);
+            crate::sync::lock_or_recover(states).insert(id.clone(), ModuleState::Stopping);
             let module = {
                 let mut guard = crate::sync::lock_or_recover(modules);
                 guard.remove(id) // remove while shutting down: no more messages after this
@@ -884,5 +879,20 @@ mod tests {
                 reply: Arc::new(std::sync::Mutex::new(Some(tx))),
             })
             .unwrap();
+    }
+
+    /// A poisoned state map must not turn `modules()` into a permanent panic: the
+    /// recover helper reuses the inner value instead of unwrapping the poison
+    /// (BUG-001 lock convergence).
+    #[test]
+    fn modules_survive_a_poisoned_state_mutex() {
+        let kernel = Kernel::new();
+        let states = kernel.states.clone();
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = states.lock().unwrap();
+            panic!("poison the state map");
+        }));
+        assert!(states.is_poisoned(), "the panic must poison the mutex");
+        assert!(kernel.modules().is_empty());
     }
 }

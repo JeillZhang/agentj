@@ -73,10 +73,7 @@ impl ServiceRegistry {
         id: ModuleId,
         service: Arc<dyn AsyncKernelService>,
     ) {
-        self.kernel_async_services
-            .write()
-            .unwrap()
-            .insert(id, service);
+        crate::sync::write_or_recover(&self.kernel_async_services).insert(id, service);
     }
 
     pub fn get_kernel_async_service(&self, id: &ModuleId) -> Option<Arc<dyn AsyncKernelService>> {

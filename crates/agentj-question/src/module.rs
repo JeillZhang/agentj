@@ -248,9 +248,7 @@ impl QuestionModule {
     /// Session owning a PENDING question. Settled or unknown ids return `None`
     /// so callers can answer `accepted:false` without an owner check.
     pub fn session_of(&self, question_id: &str) -> Option<String> {
-        self.pending
-            .lock()
-            .unwrap()
+        lock_or_recover(&self.pending)
             .get(question_id)
             .map(|q| q.session_id.clone())
     }
@@ -259,10 +257,7 @@ impl QuestionModule {
     /// owner disconnect) and drop the session's settled records (决策 #4).
     /// Returns how many pending questions were settled.
     pub fn cancel_session(&self, session_id: &str) -> usize {
-        let ids: Vec<String> = self
-            .pending
-            .lock()
-            .unwrap()
+        let ids: Vec<String> = lock_or_recover(&self.pending)
             .iter()
             .filter(|(_, q)| q.session_id == session_id)
             .map(|(id, _)| id.clone())
@@ -271,19 +266,13 @@ impl QuestionModule {
             .iter()
             .filter(|id| self.settle_skipped(id, session_id))
             .count();
-        self.settled
-            .lock()
-            .unwrap()
-            .retain(|_, s| s.session_id != session_id);
+        lock_or_recover(&self.settled).retain(|_, s| s.session_id != session_id);
         settled
     }
 
     /// Settle every pending question (module shutdown).
     pub fn clear_all(&self) -> usize {
-        let ids: Vec<(String, String)> = self
-            .pending
-            .lock()
-            .unwrap()
+        let ids: Vec<(String, String)> = lock_or_recover(&self.pending)
             .iter()
             .map(|(id, q)| (id.clone(), q.session_id.clone()))
             .collect();
@@ -299,9 +288,7 @@ impl QuestionModule {
     /// Terminal outcome of an already-settled question (diagnostics; `None`
     /// for pending/unknown ids).
     pub fn settled_of(&self, question_id: &str) -> Option<QuestionOutcome> {
-        self.settled
-            .lock()
-            .unwrap()
+        lock_or_recover(&self.settled)
             .get(question_id)
             .map(|s| s.outcome.clone())
     }

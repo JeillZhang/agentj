@@ -64,10 +64,7 @@ impl SessionStore for InMemoryStore {
     fn create(&self) -> Result<SessionId, ModuleError> {
         let id = uuid::Uuid::new_v4().to_string();
         lock_or_recover(&self.sessions).insert(id.clone(), vec![]);
-        self.statuses
-            .lock()
-            .unwrap()
-            .insert(id.clone(), SessionStatus::Active);
+        lock_or_recover(&self.statuses).insert(id.clone(), SessionStatus::Active);
         self.last_activity
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -88,10 +85,7 @@ impl SessionStore for InMemoryStore {
 
     fn get(&self, session: &SessionId) -> Result<Vec<ChatMessage>, ModuleError> {
         self.require_active(session)?;
-        Ok(self
-            .sessions
-            .lock()
-            .unwrap()
+        Ok(lock_or_recover(&self.sessions)
             .get(session)
             .cloned()
             .unwrap_or_default())
@@ -168,10 +162,7 @@ impl SessionStore for InMemoryStore {
                 session.clone(),
             )));
         }
-        let messages = self
-            .sessions
-            .lock()
-            .unwrap()
+        let messages = lock_or_recover(&self.sessions)
             .get(session)
             .cloned()
             .unwrap_or_default();

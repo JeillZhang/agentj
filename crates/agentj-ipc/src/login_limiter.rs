@@ -160,10 +160,7 @@ impl LoginLimiter {
     }
 
     pub(crate) fn record_success(&self, ip: IpAddr) {
-        let prior_failures = self
-            .entries
-            .lock()
-            .expect("login limiter")
+        let prior_failures = lock_or_recover(&self.entries)
             .remove(&ip)
             .map_or(0, |entry| entry.failures);
         info!(ip = %ip, prior_failures, "login ok");

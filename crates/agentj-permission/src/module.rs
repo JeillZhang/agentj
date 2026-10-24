@@ -109,9 +109,7 @@ impl PermissionModule {
     /// layer to gate `permission/respond` by the resolved session's owner
     /// (G2 design D4).
     pub fn session_of(&self, request_id: &PermissionRequestId) -> Option<String> {
-        self.pending
-            .lock()
-            .unwrap()
+        lock_or_recover(&self.pending)
             .get(request_id)
             .map(|req| req.session_id.clone())
     }

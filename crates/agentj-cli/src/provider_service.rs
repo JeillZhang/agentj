@@ -162,18 +162,14 @@ impl CliProviderService {
         if refresh {
             return None;
         }
-        self.usage_cache
-            .lock()
-            .unwrap()
+        lock_or_recover(&self.usage_cache)
             .get(provider)
             .filter(|(_, at)| now - at < USAGE_TTL_SECS)
             .map(|(v, _)| v.clone())
     }
 
     fn stale_usage(&self, provider: &str) -> Option<ProviderUsageResult> {
-        self.usage_cache
-            .lock()
-            .unwrap()
+        lock_or_recover(&self.usage_cache)
             .get(provider)
             .map(|(v, _)| v.clone())
     }
@@ -246,10 +242,7 @@ impl CliProviderService {
                 ),
             },
         };
-        self.usage_cache
-            .lock()
-            .unwrap()
-            .insert(cfg.name.clone(), (result.clone(), now));
+        lock_or_recover(&self.usage_cache).insert(cfg.name.clone(), (result.clone(), now));
         Ok(result)
     }
 
@@ -340,10 +333,7 @@ impl CliProviderService {
         } else {
             self.go_model_list(&cfg, now).await
         };
-        self.model_cache
-            .lock()
-            .unwrap()
-            .insert(cfg.name.clone(), (out.clone(), now));
+        lock_or_recover(&self.model_cache).insert(cfg.name.clone(), (out.clone(), now));
         Ok(out)
     }
 
@@ -601,10 +591,7 @@ impl CliProviderService {
             fetched_at: now,
             models: models.clone(),
         };
-        self.model_cache
-            .lock()
-            .unwrap()
-            .insert(cfg.name.clone(), (cached, now));
+        lock_or_recover(&self.model_cache).insert(cfg.name.clone(), (cached, now));
         Ok(link_result(
             cfg,
             &effective_key,
@@ -2118,13 +2105,9 @@ mod tests {
         let server = wiremock::MockServer::start().await;
         mount_token_success(&server, "access-1").await;
         let (svc, _dir, _reg) = svc_with_device_flow(&server.uri());
-        svc.model_cache
-            .lock()
-            .unwrap()
+        lock_or_recover(&svc.model_cache)
             .insert("opencode-go".into(), seeded_model_list("opencode-go"));
-        svc.usage_cache
-            .lock()
-            .unwrap()
+        lock_or_recover(&svc.usage_cache)
             .insert("opencode-go".into(), (seeded_usage("opencode-go"), 0));
         let out = svc.device_poll(poll_params("dev-code")).await.unwrap();
         assert_eq!(out.state, DeviceAuthState::Authorized);

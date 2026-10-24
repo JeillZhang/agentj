@@ -2777,10 +2777,7 @@ mod tests {
         let text = prometheus_text(&web);
         assert!(has_metric_line(&text, "agentj_web_spot_rounds_total 4"));
         assert!(has_metric_line(&text, "agentj_web_spot_checked_total 3"));
-        web.warned
-            .lock()
-            .unwrap()
-            .insert("/assets/b.js".to_string());
+        lock_or_recover(&web.warned).insert("/assets/b.js".to_string());
         let repeated = web.run_spot_round(); // /assets/b.js again
         assert_eq!(repeated.mismatched, 1);
         assert!(repeated.offenses.is_empty());
@@ -3840,9 +3837,7 @@ mod tests {
             "the second attempt is still not restored"
         );
         assert_eq!(
-            web.warned
-                .lock()
-                .unwrap()
+            lock_or_recover(&web.warned)
                 .iter()
                 .filter(|k| k.starts_with("metrics-state"))
                 .count(),

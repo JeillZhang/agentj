@@ -409,9 +409,7 @@ mod tests {
                 .is_err()
         );
         assert!(
-            spy.events
-                .lock()
-                .unwrap()
+            crate::sync::lock_or_recover(&spy.events)
                 .contains(&EventType::ModuleFailed("fm".into()))
         );
     }

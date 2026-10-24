@@ -229,15 +229,9 @@ mod tests {
             1,
             "one refresh only"
         );
+        let counting = lock_or_recover(&last).as_ref().cloned().expect("counting");
         assert_eq!(
-            last.lock()
-                .unwrap()
-                .as_ref()
-                .unwrap()
-                .hits
-                .lock()
-                .unwrap()
-                .len(),
+            lock_or_recover(&counting.hits).len(),
             2,
             "both chat calls are served by the rebuilt instance"
         );
