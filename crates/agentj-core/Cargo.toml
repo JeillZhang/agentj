@@ -23,6 +23,7 @@ agentj-session = { path = "../agentj-session", version = "0.1.0" }
 agentj-model = { path = "../agentj-model", version = "0.1.0" }
 agentj-tools = { path = "../agentj-tools", version = "0.1.0" }
 agentj-context = { path = "../agentj-context", version = "0.1.0" }
+tempfile.workspace = true
 
 [lints]
 workspace = true

@@ -9,6 +9,7 @@ pub mod git_sample;
 pub mod hooks;
 pub mod kernel;
 pub mod module;
+pub mod paths;
 pub mod pending;
 pub mod permission;
 pub mod resolver;
