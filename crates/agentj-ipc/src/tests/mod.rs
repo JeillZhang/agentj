@@ -13,7 +13,7 @@ mod stdio;
 
 use super::*;
 use crate::test_support::{MockConfig, stub_session};
-use agentj_context::ContextPipeline;
+use agentj_core::DefaultContextPipeline;
 use agentj_core::agent_loop_module::AgentLoopModule;
 use agentj_core::kernel::Kernel;
 use agentj_core::module::*;
@@ -26,7 +26,7 @@ use std::sync::Arc;
 
 /// Crate-internal fixtures shared by lib and tcp test modules.
 pub(crate) mod test_support {
-    use agentj_context::ContextPipeline;
+    use agentj_core::DefaultContextPipeline;
     use agentj_core::agent_loop_module::AgentLoopModule;
     use agentj_core::module::*;
     use agentj_core::tool_executor::ToolExecutorModule;
@@ -91,7 +91,7 @@ pub(crate) mod test_support {
             .unwrap();
         let runner = TurnRunner::new(
             ctx.clone(),
-            Arc::new(ContextPipeline::new()),
+            Arc::new(DefaultContextPipeline::new()),
             "You are helpful.".into(),
             kernel.sender(),
             "tool_executor".into(),
@@ -137,7 +137,7 @@ pub(crate) mod test_support {
             .unwrap();
         let runner = TurnRunner::new(
             ctx.clone(),
-            Arc::new(ContextPipeline::new()),
+            Arc::new(DefaultContextPipeline::new()),
             "You are helpful.".into(),
             kernel.sender(),
             "tool_executor".into(),
@@ -170,7 +170,7 @@ pub(crate) mod test_support {
         let kernel = agentj_core::kernel::Kernel::new();
         TurnRunner::new(
             ctx,
-            Arc::new(ContextPipeline::new()),
+            Arc::new(DefaultContextPipeline::new()),
             "You are helpful.".into(),
             kernel.sender(),
             "tool_executor".into(),
@@ -264,7 +264,7 @@ fn blocking_run_server_with(
         .unwrap();
     let runner = TurnRunner::new(
         ctx.clone(),
-        Arc::new(ContextPipeline::new()),
+        Arc::new(DefaultContextPipeline::new()),
         "You are helpful.".into(),
         kernel.sender(),
         "tool_executor".into(),
@@ -718,7 +718,7 @@ fn run_server_with_provider(
         .unwrap();
     let runner = TurnRunner::new(
         ctx.clone(),
-        Arc::new(ContextPipeline::new()),
+        Arc::new(DefaultContextPipeline::new()),
         "You are helpful.".into(),
         kernel.sender(),
         "tool_executor".into(),

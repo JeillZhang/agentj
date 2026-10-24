@@ -3,7 +3,7 @@
 use super::*;
 use crate::test_support::{MockConfig, stub_session};
 use crate::*;
-use agentj_context::ContextPipeline;
+use agentj_core::DefaultContextPipeline;
 use agentj_core::agent_loop_module::AgentLoopModule;
 use agentj_core::kernel::Kernel;
 use agentj_core::module::*;
@@ -573,7 +573,7 @@ async fn cancel_returns_minus_32800_when_tool_never_replies() {
         .unwrap();
     let runner = TurnRunner::new(
         ctx.clone(),
-        Arc::new(ContextPipeline::new()),
+        Arc::new(DefaultContextPipeline::new()),
         "sys".into(),
         kernel.sender(),
         "tool_executor".into(),

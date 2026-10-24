@@ -4,7 +4,7 @@ use super::*;
 use crate::handlers::run::build_run_reply;
 use crate::test_support::{MockConfig, stub_bus_server, stub_bus_server_with_usage, stub_session};
 use crate::*;
-use agentj_context::ContextPipeline;
+use agentj_core::DefaultContextPipeline;
 use agentj_core::agent_loop_module::AgentLoopModule;
 use agentj_core::kernel::Kernel;
 use agentj_core::module::*;
@@ -89,7 +89,7 @@ fn repeating_run_server() -> (IpcServer, Arc<agentj_permission::PermissionModule
         .unwrap();
     let runner = TurnRunner::new(
         ctx.clone(),
-        Arc::new(ContextPipeline::new()),
+        Arc::new(DefaultContextPipeline::new()),
         "You are helpful.".into(),
         kernel.sender(),
         "tool_executor".into(),
@@ -175,7 +175,7 @@ fn capturing_run_server() -> (IpcServer, CapturedRuns) {
         .unwrap();
     let runner = TurnRunner::new(
         ctx.clone(),
-        Arc::new(ContextPipeline::new()),
+        Arc::new(DefaultContextPipeline::new()),
         "You are helpful.".into(),
         kernel.sender(),
         "tool_executor".into(),

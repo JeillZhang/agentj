@@ -10,13 +10,14 @@ use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 
-use agentj_context::ContextPipeline;
+use agentj_core::DefaultContextPipeline;
 use agentj_core::dispatcher::SubAgentService;
 use agentj_core::kernel::Kernel;
 use agentj_core::module::{
     ConfigProvider, KernelContext, KernelMessage, ModuleRegister, ProviderRegistry, SessionStore,
     ToolRegistry,
 };
+use agentj_core::skills::load_skills;
 use agentj_core::tool_executor::ToolExecutorModule;
 use agentj_core::turn_runner::TurnRunner;
 use agentj_core::types::TokenUsage;
@@ -24,7 +25,6 @@ use agentj_ipc::IpcServer;
 use agentj_mcp::McpConnectionManager;
 use agentj_question::{AskTool, QuestionModule};
 use agentj_session::FileBackedStore;
-use agentj_skills::load_skills;
 use agentj_tools::builtins::register_builtins;
 
 // Runtime (de)registration of the opencode-go provider, shared by startup and the
@@ -1025,7 +1025,7 @@ fn build_turn_runner(
 ) -> TurnRunner {
     let mut runner = TurnRunner::new(
         ctx.clone(),
-        Arc::new(ContextPipeline::new()),
+        Arc::new(DefaultContextPipeline::new()),
         "你是 AgentJ，一位专业的 AI 编程助手。请始终使用中文回答，代码注释和解释均使用中文，保持专业、简洁。".into(),
         sender,
         "tool_executor".into(),
