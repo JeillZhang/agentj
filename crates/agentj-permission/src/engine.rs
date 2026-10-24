@@ -1,9 +1,10 @@
-//! Decision engine: pure rule evaluation (design #17 — Deny > Allow > Mode).
+//! Decision engine: rule evaluation over a fail-closed path resolver
+//! (design #17 — Deny > Allow > Mode).
 //! Path rules match RELATIVE glob patterns (user-specified relative to the
 //! workspace root). Escapes are decided by `agentj_core::paths::resolve_within_root`
-//! — the same primitive the tool-argument rebaser and `file/list` use, so one
-//! verdict covers all of them (symlinks followed, nonexistent tails allowed,
-//! unverifiable paths denied).
+//! — the same fail-closed primitive the tool-argument rebaser and `file/list`
+//! use, so one verdict covers all of them (symlinks followed by real
+//! canonicalization, nonexistent tails allowed, unverifiable paths denied).
 
 use globset::{Glob, GlobSetBuilder};
 use std::path::Path;
@@ -21,8 +22,11 @@ pub enum EvalOutcome {
     Mode(PermissionMode),
 }
 
-/// Stateless rule evaluator. (Design keeps it pure so it is trivially testable;
+/// Stateless rule evaluator. (Kept stateless so it is trivially testable;
 /// PermissionModule owns state like pending approvals and session allow-lists.)
+/// `eval_path` is the one exception to "pure": it asks the filesystem to
+/// canonicalize the target (fail closed), so verdicts match what the tools
+/// actually touch.
 #[derive(Debug, Default)]
 pub struct PermissionEngine;
 
@@ -51,8 +55,10 @@ impl PermissionEngine {
     }
 
     /// Evaluate a file tool path argument against path rules.
-    /// 1. Lexically resolve against workspace_root; if the result escapes the
-    ///    root → Deny (unconditional — outside the workspace is never allowed).
+    /// 1. Resolve the argument against `workspace_root` through the fail-closed
+    ///    `resolve_within_root` (real canonicalization, symlinks followed,
+    ///    nonexistent tails allowed). Anything it cannot prove is inside the
+    ///    root → Deny (unconditional — unverifiable or outside is never allowed).
     /// 2. Match the RELATIVE argument against relative glob patterns.
     ///    Deny > Allow > Mode.
     pub fn eval_path(&self, policy: &ToolPolicy, workspace_root: &Path, path: &str) -> EvalOutcome {
@@ -217,7 +223,8 @@ mod tests {
     fn dotdot_escape_rejected_by_deny() {
         let engine = PermissionEngine::new();
         let root = std::path::Path::new("/ws");
-        // Lexically escapes the workspace root — denied regardless of rules.
+        // Escapes the workspace root (lexically or via symlink) — denied
+        // regardless of rules, because the resolver cannot prove it is inside.
         let path = "../secret.key";
         assert_eq!(
             engine.eval_path(&write_policy(), root, path),
@@ -277,7 +284,8 @@ mod tests {
     #[test]
     fn path_escapes_workspace_detected() {
         let engine = PermissionEngine::new();
-        // Even with no deny rule, an escape must be Deny (lexical, no fs access).
+        // Even with no deny rule, an escape must be Deny. `/ws` does not exist,
+        // so this also pins the lexical fallback of the resolver.
         let p = ToolPolicy::default(); // no rules, mode=Ask
         assert_eq!(
             engine.eval_path(&p, std::path::Path::new("/ws"), "../x"),
