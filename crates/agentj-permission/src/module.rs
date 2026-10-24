@@ -10,7 +10,7 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::sync::watch;
 
 use agentj_core::error::ModuleError;
@@ -18,6 +18,7 @@ use agentj_core::module::{
     KernelContext, KernelMessage, KernelModule, KernelResponse, Module, ModuleMetadata,
     ModuleRegister, ToolSource,
 };
+use agentj_core::pending::PendingRegistry;
 use agentj_core::permission::{
     PermissionChecker, PermissionContext, PermissionDecision, PermissionRequestId,
 };
@@ -40,9 +41,9 @@ pub enum ApprovalDecision {
     AllowAlways,
 }
 
-/// How long a settled-but-unconsumed pending entry may linger before
-/// `prune_pending` drops it. Far above the approval timeout (60s default), so no
-/// live waiter can lose its decision to pruning.
+/// How long a settled-but-unconsumed pending entry may linger before the
+/// registry sweeps it. Far above the approval timeout (60s default), so no live
+/// waiter can lose its decision to pruning.
 const PENDING_TTL: Duration = Duration::from_secs(300);
 
 /// Pending approval entry. `decision` is None while awaiting, Some(resolved)
@@ -62,9 +63,6 @@ struct PendingRequest {
     _keepalive: watch::Receiver<Option<PermissionDecision>>,
     tool: String,
     args: serde_json::Value,
-    session_id: String,
-    /// Registration instant; drives `prune_pending` (bounded pending map).
-    created_at: Instant,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -81,7 +79,9 @@ pub struct PermissionModule {
     engine: Arc<PermissionEngine>,
     policies: Arc<HashMap<String, ToolPolicy>>,
     session_state: Arc<SessionAllowState>,
-    pending: Arc<Mutex<HashMap<PermissionRequestId, PendingRequest>>>,
+    /// Session-tagged pending table (shared via `Arc`: the registry is itself
+    /// interior-mutable, and clones of this module must see one table).
+    pending: Arc<PendingRegistry<PermissionRequestId, PendingRequest>>,
     timeout: Duration,
     /// Emitted when an Ask request is registered (IPC layer subscribes).
     notifier: Arc<Mutex<Option<Notifier>>>,
@@ -93,7 +93,7 @@ impl PermissionModule {
             engine: Arc::new(PermissionEngine::new()),
             policies: Arc::new(policies),
             session_state: Arc::new(SessionAllowState::new()),
-            pending: Arc::new(Mutex::new(HashMap::new())),
+            pending: Arc::new(PendingRegistry::new(Some(PENDING_TTL))),
             timeout,
             notifier: Arc::new(Mutex::new(None)),
         }
@@ -109,17 +109,15 @@ impl PermissionModule {
     /// layer to gate `permission/respond` by the resolved session's owner
     /// (G2 design D4).
     pub fn session_of(&self, request_id: &PermissionRequestId) -> Option<String> {
-        lock_or_recover(&self.pending)
-            .get(request_id)
-            .map(|req| req.session_id.clone())
+        self.pending.session_of(request_id)
     }
 
     pub fn view(&self, request_id: &str) -> Option<PendingView> {
-        let pending = lock_or_recover(&self.pending);
         let key = PermissionRequestId(request_id.to_string());
-        pending.get(&key).map(|entry| PendingView {
-            tool: entry.tool.clone(),
-            session_id: entry.session_id.clone(),
+        let entry = self.pending.get(&key)?;
+        Some(PendingView {
+            tool: entry.tool,
+            session_id: self.pending.session_of(&key)?,
         })
     }
 
@@ -136,13 +134,15 @@ impl PermissionModule {
     /// false for an unknown id or an already-settled request (a second decision
     /// must not silently override the first).
     pub fn respond(&self, request_id: &PermissionRequestId, decision: ApprovalDecision) -> bool {
-        let map = lock_or_recover(&self.pending);
-        let Some(req) = map.get(request_id) else {
+        let Some(req) = self.pending.get(request_id) else {
             return false; // unknown (or already consumed/pruned) request id
         };
         if req._keepalive.borrow().is_some() {
             return false; // already settled (respond / cancel_session / shutdown)
         }
+        let Some(session_id) = self.pending.session_of(request_id) else {
+            return false;
+        };
         let resolved = match decision {
             ApprovalDecision::Allow => PermissionDecision::Allow,
             ApprovalDecision::Deny => PermissionDecision::Deny {
@@ -151,7 +151,7 @@ impl PermissionModule {
             ApprovalDecision::AllowAlways => {
                 let key = rule_key_for(&req.tool, &req.args);
                 self.session_state.grant(
-                    &req.session_id,
+                    &session_id,
                     RuleFingerprint {
                         tool: req.tool.clone(),
                         rule_key: key,
@@ -169,16 +169,15 @@ impl PermissionModule {
     /// until their tool loop consumes the decision, so the waiter reports the
     /// real reason instead of a missing request.
     pub fn cancel_session(&self, session_id: &str, reason: &str) -> usize {
-        let map = lock_or_recover(&self.pending);
         let mut n = 0;
-        for req in map.values() {
-            if req.session_id == session_id && req._keepalive.borrow().is_none() {
+        self.pending.for_session(session_id, |_, req| {
+            if req._keepalive.borrow().is_none() {
                 let _ = req.decision.send(Some(PermissionDecision::Deny {
                     reason: reason.to_string(),
                 }));
                 n += 1;
             }
-        }
+        });
         n
     }
 
@@ -258,23 +257,18 @@ impl PermissionModule {
     fn register_ask(&self, ctx: &PermissionContext) -> PermissionDecision {
         let request_id = PermissionRequestId(Uuid::new_v4().to_string());
         let (tx, rx) = watch::channel(None);
-        {
-            let mut map = lock_or_recover(&self.pending);
-            prune_pending(&mut map, PENDING_TTL);
-            map.insert(
-                request_id.clone(),
-                PendingRequest {
-                    decision: Arc::new(tx),
-                    // Keep the initial receiver alive so an early respond() (before
-                    // await_approval subscribes) is stored, not silently dropped.
-                    _keepalive: rx,
-                    tool: ctx.tool.clone(),
-                    args: ctx.args.clone(),
-                    session_id: ctx.session_id.clone(),
-                    created_at: std::time::Instant::now(),
-                },
-            );
-        }
+        self.pending.insert(
+            request_id.clone(),
+            &ctx.session_id,
+            PendingRequest {
+                decision: Arc::new(tx),
+                // Keep the initial receiver alive so an early respond() (before
+                // await_approval subscribes) is stored, not silently dropped.
+                _keepalive: rx,
+                tool: ctx.tool.clone(),
+                args: ctx.args.clone(),
+            },
+        );
         let params = PermissionRequestParams {
             request_id: request_id.0.clone(),
             tool: ctx.tool.clone(),
@@ -354,7 +348,7 @@ impl PermissionChecker for PermissionModule {
     }
 
     async fn await_approval(&self, request_id: &PermissionRequestId) -> PermissionDecision {
-        let Some(req) = lock_or_recover(&self.pending).get(request_id).cloned() else {
+        let Some(req) = self.pending.get(request_id) else {
             return PermissionDecision::Deny {
                 reason: "unknown or expired approval request".into(),
             };
@@ -437,47 +431,36 @@ impl PermissionModule {
     /// Clear session grants and resolve every pending approval to Deny.
     pub fn clear_all(&self) {
         self.session_state.clear_all();
-        let map = lock_or_recover(&self.pending);
-        for req in map.values() {
+        // `false` = never prune: entries stay readable until their tool loop
+        // consumes them (same contract as `cancel_session`).
+        self.pending.prune_where(|_, req| {
             let _ = req.decision.send(Some(PermissionDecision::Deny {
                 reason: "shutdown".into(),
             }));
-        }
+            false
+        });
     }
 
     /// Entries currently registered: awaiting a decision, or settled and still
     /// waiting for their tool loop to consume the decision. (test/observability)
     #[cfg(test)]
     fn pending_len(&self) -> usize {
-        lock_or_recover(&self.pending).len()
+        self.pending.len()
     }
 
-    /// Drop entries older than `ttl` (called on every registration).
+    /// Rebuild the pending table with a short TTL so a test can exercise the
+    /// registry's expiry sweep without waiting 300s.
     #[cfg(test)]
-    fn prune_pending(&self, ttl: Duration) {
-        prune_pending(&mut lock_or_recover(&self.pending), ttl);
+    fn with_pending_ttl(mut self, ttl: Duration) -> Self {
+        self.pending = Arc::new(PendingRegistry::new(Some(ttl)));
+        self
     }
 
     /// Remove the entry a waiter just consumed (exactly-once delivery).
     fn prune_consumed(&self, request_id: &PermissionRequestId) {
-        let mut map = lock_or_recover(&self.pending);
-        if map
-            .get(request_id)
-            .is_some_and(|req| req._keepalive.borrow().is_some())
-        {
-            map.remove(request_id);
-        }
+        self.pending
+            .prune_where(|key, req| key == request_id && req._keepalive.borrow().is_some());
     }
-}
-
-/// Drop pending entries older than `ttl`. The awaiting tool loop removes the
-/// entry it consumed, so a leftover is a settled-but-unconsumed request (a
-/// respond that arrived after the approval timeout) or one nobody ever awaited;
-/// either way it can no longer be legitimately awaited, because an approval wait
-/// is bounded by the (much shorter) approval timeout.
-fn prune_pending(map: &mut HashMap<PermissionRequestId, PendingRequest>, ttl: Duration) {
-    let now = Instant::now();
-    map.retain(|_, req| now.duration_since(req.created_at) < ttl);
 }
 
 #[cfg(test)]
@@ -700,8 +683,20 @@ mod tests {
             panic!("expected Ask");
         };
         assert!(m.respond(&request_id, ApprovalDecision::Allow));
-        m.prune_pending(Duration::ZERO); // test hook: every entry counts as stale
-        assert_eq!(m.pending_len(), 0);
+
+        // TTL sweep: the registry drops a settled-but-unconsumed entry on the
+        // next registration (a 1ms TTL keeps the test instantaneous).
+        let m = module().with_pending_ttl(Duration::from_millis(1));
+        let c3 = ctx(&m, "curl http://example.com");
+        let PermissionDecision::Ask { request_id } = m.check(&c3) else {
+            panic!("expected Ask");
+        };
+        assert!(m.respond(&request_id, ApprovalDecision::Allow));
+        assert_eq!(m.pending_len(), 1);
+        std::thread::sleep(Duration::from_millis(5));
+        let c4 = ctx(&m, "curl http://example.com");
+        assert!(matches!(m.check(&c4), PermissionDecision::Ask { .. }));
+        assert_eq!(m.pending_len(), 1, "the stale entry was swept on insert");
     }
 
     #[test]
@@ -1188,6 +1183,39 @@ mod tests {
             panic!("expected Ask");
         }
     }
+    /// The table is shared with `PendingRegistry`: a settled entry is still
+    /// readable by its waiter, and consumption is exactly-once.
+    #[test]
+    fn settled_entries_are_pruned_only_after_the_waiter_consumes() {
+        let m = module();
+        let id = pending_id(&m, "s1", "rm -rf /");
+        assert!(m.respond(&id, ApprovalDecision::Allow));
+        assert_eq!(m.pending_len(), 1, "still readable by the waiter");
+        m.prune_consumed(&id);
+        assert_eq!(m.pending_len(), 0);
+        m.prune_consumed(&id);
+        assert_eq!(m.pending_len(), 0, "consumption is idempotent");
+    }
+
+    #[test]
+    fn cancel_session_keeps_the_entry_for_the_waiter() {
+        let m = module();
+        let id = pending_id(&m, "s1", "rm -rf /");
+        assert_eq!(m.cancel_session("s1", "disconnected"), 1);
+        assert_eq!(m.pending_len(), 1);
+        m.prune_consumed(&id);
+        assert_eq!(m.pending_len(), 0);
+    }
+
+    fn pending_id(m: &PermissionModule, session: &str, cmd: &str) -> PermissionRequestId {
+        let mut c = ctx(m, cmd);
+        c.session_id = session.to_string();
+        match m.eval(&c) {
+            PermissionDecision::Ask { request_id } => request_id,
+            other => panic!("expected Ask, got {other:?}"),
+        }
+    }
+
     #[test]
     fn session_of_unknown_request_is_none() {
         let module = PermissionModule::new(HashMap::new(), Duration::from_secs(1));
