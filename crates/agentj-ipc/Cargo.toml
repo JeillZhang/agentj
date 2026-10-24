@@ -3,32 +3,36 @@ name = "agentj-ipc"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 
 [dependencies]
-agentj-core = { path = "../agentj-core" }
-agentj-permission = { path = "../agentj-permission" }
-agentj-protocol = { path = "../agentj-protocol" }
-agentj-question = { path = "../agentj-question" }
-async-trait = "0.1"
+agentj-core = { path = "../agentj-core", version = "0.1.0" }
+agentj-permission = { path = "../agentj-permission", version = "0.1.0" }
+agentj-protocol = { path = "../agentj-protocol", version = "0.1.0" }
+agentj-question = { path = "../agentj-question", version = "0.1.0" }
+async-trait.workspace = true
 axum = { version = "0.8", features = ["ws"] }
-base64 = "0.22"
-futures = "0.3"
+base64.workspace = true
+futures.workspace = true
 hyper = { version = "1", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["server-auto", "service", "tokio"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
 sha2 = "0.10"
-tokio = { version = "1", features = ["sync", "rt", "macros", "io-util", "io-std", "net"] }
+tokio = { workspace = true, features = ["sync", "rt", "macros", "io-util", "io-std", "net"] }
 tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", features = ["fs", "set-header"] }
-tracing = "0.1"
-uuid = { version = "1", features = ["v4"] }
+tracing.workspace = true
+uuid = { workspace = true, features = ["v4"] }
 
 [dev-dependencies]
-agentj-session = { path = "../agentj-session" }
-agentj-model = { path = "../agentj-model" }
-agentj-context = { path = "../agentj-context" }
-futures = "0.3"
-tempfile = "3"
+agentj-session = { path = "../agentj-session", version = "0.1.0" }
+agentj-model = { path = "../agentj-model", version = "0.1.0" }
+agentj-context = { path = "../agentj-context", version = "0.1.0" }
+futures.workspace = true
+tempfile.workspace = true
 tokio-tungstenite = "0.26"
 tracing-subscriber = "0.3"
+
+[lints]
+workspace = true

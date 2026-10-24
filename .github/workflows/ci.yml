@@ -11,7 +11,10 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 env:
-  COVERAGE_THRESHOLD: 50
+  # Coverage ratchet: measured 2026-10-23 at 93.67% line coverage, so the gate
+  # is max(50, floor(93.67) - 1) = 92. Only ever raise this value (in the PR
+  # that lifts coverage); never lower it to make a red build green.
+  COVERAGE_THRESHOLD: 92
 jobs:
   lint:
     runs-on: ubuntu-latest
@@ -22,8 +25,18 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      # The assert scripts need cargo-deny themselves (deny-config would otherwise
+      # report SKIP), and every invocation below runs with --strict so a SKIP is
+      # a failure instead of a silent green.
+      - uses: taiki-e/install-action@cargo-deny
       - run: cargo fmt --all --check
-      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Repo invariants
+        run: |
+          python3 -m pip install --user pyyaml
+          bash scripts/tests/assert-ui.sh --strict
+          bash scripts/tests/assert-cargo.sh --strict
+          bash scripts/tests/assert-ci.sh --strict
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -37,6 +50,31 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo build -p agentj-plugin-fixture
       - run: cargo test --workspace --locked
+  deny:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@cargo-deny
+      - uses: Swatinem/rust-cache@v2
+      # `-D unmatched-skip`: a stale bans.skip entry is only a warning by default,
+      # so the guard would silently rot instead of failing the build.
+      - run: cargo deny check advisories licenses bans sources -D unmatched-skip
+  cross-platform:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: cargo build --workspace --locked
   coverage:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -49,10 +87,43 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: cargo build -p agentj-plugin-fixture
-      - run: cargo llvm-cov --workspace --fail-under-lines ${{ env.COVERAGE_THRESHOLD }} --lcov --output-path lcov.info
+      - run: cargo build --locked -p agentj-plugin-fixture
+      - run: cargo llvm-cov --workspace --fail-under-lines ${{ env.COVERAGE_THRESHOLD }} --lcov --output-path lcov.info --locked
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: coverage-lcov
           path: lcov.info
+  frontend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: agentj-ui/package-lock.json
+      - run: npm --prefix agentj-ui ci
+      - run: npm --prefix agentj-ui run generate --workspace=@agentj/protocol
+      - run: git diff --exit-code -- agentj-ui/packages/protocol/types.d.ts
+      - run: npm --prefix agentj-ui run build --workspace=@agentj/protocol
+      - run: npm --prefix agentj-ui test --workspace=@agentj/protocol
+      - run: npm --prefix agentj-ui run generate --workspace=@agentj/sdk
+      - run: git diff --exit-code -- agentj-ui/packages/sdk/src/methods.ts
+      - run: npm --prefix agentj-ui test --workspace=@agentj/sdk
+      - run: npm --prefix agentj-ui test --workspace=@agentj/tokens
+      - run: npm --prefix agentj-ui test --workspace=@agentj/web
+      - run: npm --prefix agentj-ui run build --workspace=@agentj/web
+      - name: dist <-> protocol version
+        run: |
+          node -e "const fs=require('fs');const v=JSON.parse(fs.readFileSync('agentj-ui/apps/web/dist/version.json'));const m=JSON.parse(fs.readFileSync('protocol/methods.json'));if(v.protocol_version!==m.protocol_version){console.error('dist',v.protocol_version,'!= methods',m.protocol_version);process.exit(1)}"
+      # oxlint: errors gate the build, warnings stay visible in the log.
+      - run: npm --prefix agentj-ui run lint --workspace=@agentj/web
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - run: bun --cwd agentj-ui/apps/tui test
+      - run: node agentj-ui/apps/desktop/check-desktop-ui.mjs
+      - run: ./scripts/check-version.sh
+      - run: node scripts/check-relocate.mjs

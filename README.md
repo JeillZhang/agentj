@@ -215,5 +215,9 @@ bun --cwd agentj-ui/apps/tui test
 node agentj-ui/apps/desktop/check-desktop-ui.mjs
 ```
 
+贡献流程、评审与门禁清单见 [CONTRIBUTING.md](CONTRIBUTING.md)；安全问题请走
+[SECURITY.md](SECURITY.md) 的私密上报通道。源码以 **MIT OR Apache-2.0** 双许可发布
+（[LICENSE](LICENSE) / [LICENSE-MIT](LICENSE-MIT) / [LICENSE-APACHE](LICENSE-APACHE)）。
+
 > 注意：Vite dev server 不监听 root 之外的 `packages/sdk` 源（alias 直连源码）；
 > 改动 SDK 后须重启 dev server，否则运行陈旧的 `METHODS`。

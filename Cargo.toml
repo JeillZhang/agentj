@@ -6,3 +6,33 @@ members = ["crates/*"]
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.96"
+license = "MIT OR Apache-2.0"
+
+# Single source of truth for third-party dependency versions. Crate-level
+# manifests inherit with `dep = { workspace = true, features = [...] }`;
+# feature sets stay local on purpose (they are per-crate intent).
+[workspace.dependencies]
+serde = "1"
+serde_json = "1"
+tokio = "1"
+thiserror = "2"
+tracing = "0.1"
+uuid = "1"
+async-trait = "0.1"
+futures = "0.3"
+tempfile = "3"
+base64 = "0.22"
+wiremock = "0.6"
+libloading = "0.8"
+
+# Lint policy lives in the repository, not only in the CI command line.
+# `-D warnings` in CI decides "warn means fail"; this table decides which
+# lints exist at all. Stay on clippy::all (equivalent to today) — pedantic and
+# nursery are deliberately out of scope.
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+
+# No `panic = "abort"`: the request entry points must stay able to catch_unwind.
+[profile.release]
+lto = "thin"
+codegen-units = 1

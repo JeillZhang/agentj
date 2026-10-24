@@ -1,0 +1,65 @@
+# cargo-deny policy. Run with `cargo deny check advisories licenses bans sources`
+# from the repository root. The licence allowlist, the duplicate-skip rules and the
+# rationale for every setting below are documented in CONTRIBUTING.md; this file is
+# the enforcement, not the discussion.
+
+[advisories]
+# `yanked` is left at cargo-deny's default (deny): a yanked release must block,
+# never be silently downgraded to a warning.
+ignore = []
+
+[licenses]
+# Unlisted licences are denied by default (cargo-deny >= 0.19 dropped the
+# explicit `default` key); the allowlist below is therefore an exhaustive
+# statement of what may enter the dependency graph.
+confidence-threshold = 0.9
+# Workspace members are unpublished; their licence comes from
+# [workspace.package] license = "MIT OR Apache-2.0".
+private = { ignore = true }
+allow = [
+  "MIT",
+  "MIT-0",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Zlib",
+  "BSL-1.0",
+  "CC0-1.0",
+  "Unicode-3.0",
+  "Unlicense",
+  "MPL-2.0",
+]
+
+[bans]
+multiple-versions = "deny"
+wildcards = "deny"
+# Duplicates that cannot be removed without upstream work. Keep this list
+# short and explain each entry — an unexplained skip is a silent blind spot.
+skip = [
+  # getrandom 0.3.4 rides rand 0.9.5 -> rand_core 0.9.5 (via tokio-tungstenite
+  # 0.26/0.29); getrandom 0.4.3 comes from uuid 1.26 and fastrand 2.5 (tempfile
+  # 3.27). getrandom 0.2 is lockfile-only: rand_core 0.6.4's `getrandom` feature
+  # stays off here, so nothing pulls 0.2 into the built graph.
+  { name = "getrandom", version = "=0.3.4" },
+  # getrandom 0.3.4's UEFI backend (visible only under `cargo tree --target
+  # all`); getrandom 0.4.3 ships r-efi 6.0.0 instead, hence the duplicate.
+  { name = "r-efi", version = "=5.3.0" },
+  # ed25519-dalek 2.2.0 is the last consumer of rand_core 0.6 (agentj-license /
+  # agentj-cli); rand 0.9.5 already uses rand_core 0.9.5.
+  { name = "rand_core", version = "=0.6.4" },
+  # macOS/iOS TLS stack: hyper-util 0.1.20 -> system-configuration 0.7.0 ->
+  # core-foundation 0.9.4, while native-tls 0.2.18 -> security-framework 3.7.0
+  # -> core-foundation 0.10.1.
+  { name = "core-foundation", version = "=0.9.4" },
+  # async-trait 0.1.92 is the only proc-macro crate on syn 3 so far.
+  { name = "syn", version = "=3.0.4" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+# crates.io only. `allow-registry` (not the older `allow`) is the key that
+# cargo-deny >=0.20 accepts.
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

@@ -5,7 +5,7 @@ import path from 'node:path';
 const root = path.resolve(import.meta.dirname, '..');
 const pkgPath = path.join(root, 'agentj-ui', 'package.json');
 const appPath = path.join(root, 'agentj-ui', 'apps', 'web', 'src', 'App.tsx');
-const testPath = path.join(root, 'agentj-ui', 'apps', 'web', 'src', 'jsonrpc.test.ts');
+const srcDir = path.join(root, 'agentj-ui', 'apps', 'web', 'src');
 
 function fail(msg) {
   console.error(`check-relocate FAIL: ${msg}`);
@@ -26,7 +26,12 @@ if (!ws.includes('apps/*')) fail('workspaces missing apps/*');
 if (!ws.includes('packages/*')) fail('workspaces missing packages/*');
 
 if (!fs.existsSync(appPath)) fail(`missing ${appPath}`);
-if (!fs.existsSync(testPath)) fail(`missing ${testPath}`);
+// Any web test file proves the relocated suite lives in the monorepo; pinning a
+// single filename rots as soon as that file is renamed.
+const webTests = fs
+  .readdirSync(srcDir)
+  .filter((f) => f.endsWith('.test.ts') || f.endsWith('.test.tsx'));
+if (webTests.length === 0) fail(`no web tests under ${srcDir}`);
 
 const packagesDir = path.join(root, 'agentj-ui', 'packages');
 if (!fs.existsSync(packagesDir) || !fs.statSync(packagesDir).isDirectory()) {

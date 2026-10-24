@@ -47,17 +47,40 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
 - `bun --cwd agentj-ui/apps/tui test` — TUI 单测（含 mock WS e2e）
 - `./agentj-ui/apps/desktop/check-artifacts.sh linux` — Desktop 产物校验
 - `node agentj-ui/apps/desktop/check-desktop-ui.mjs` — Desktop 前端产物/配置一致性校验
-- `./scripts/check-version.sh` — 版本一致性（Cargo + sdk `VERSION` + desktop 同步，
-  `PROTOCOL_VERSION` 与 `protocol/methods.json` 版本一致）
+- `cargo deny check advisories licenses bans sources -D unmatched-skip` — 依赖漏洞 / 许可 / 重复版本 / 源门禁
+  （策略见 `deny.toml`；本机未装时先 `cargo install cargo-deny --locked`）
+- `npm --prefix agentj-ui run lint --workspace=@agentj/web` — Web oxlint（errors 阻断，
+  warnings 仅打印）
+- `./scripts/check-version.sh` — 版本一致性（Cargo 工作区 + sdk `VERSION` + `PROTOCOL_VERSION`
+  + `protocol/methods.json` + `agentj-ui/package.json` / `apps/web` / `apps/tui` / `apps/desktop`
+  + `agentj-ui/package-lock.json` 根条目；失败打印出错文件与命中字面量。
+  `AGENTJ_ROOT=<路径>` 可对任意目录跑同一套断言，`scripts/test-check-version.sh` 是其正/负样例）
+- `bash scripts/tests/assert-{ui,cargo,ci}.sh all` — 仓库不变量断言（16 个 check：UI 清单 /
+  单一 lockfile / Cargo 工作区策略 / 18 crate 继承 / LICENSE / deny.toml / lockfile 一致性 /
+  CI 作业契约 / 覆盖率棘轮 / 治理文件 / 卫生 / summary / 文档基线）。`<check>` 单跑、
+  `--list` 列出、`--strict` 把未实现项（SKIP）视为失败 —— **收尾门禁用 `--strict`**
 
 > 各门禁的当前测试数量与最近一次结果见 `.agents/summary/summary_and_next_{se,fe}.md`；
 > 本文件不写死数字（会漂移）。
 
 ### CI Pipelines (GitHub Actions)
 
-- `.github/workflows/ci.yml` — 单元测试（PR + push main + 手动）：
-  `cargo fmt`、`cargo clippy`、`cargo test --workspace --locked`、
-  `cargo llvm-cov --workspace --fail-under-lines 50`
+- `.github/workflows/ci.yml` — 单元测试与全部门禁（PR + push main + 手动），作业：
+  - `lint`：`cargo fmt --all --check`、`cargo clippy --workspace --all-targets --locked -- -D warnings`，
+    再跑「Repo invariants」（`python3 -m pip install --user pyyaml` + `taiki-e/install-action@cargo-deny`
+    + 三份 `scripts/tests/assert-*.sh --strict`；`--strict` 让 `SKIP` 直接失败，未实现的检查
+    不能伪装成绿）
+  - `test`：先 `cargo build -p agentj-plugin-fixture`，再 `cargo test --workspace --locked`
+  - `coverage`：`cargo llvm-cov --workspace --fail-under-lines <COVERAGE_THRESHOLD> --locked`
+    （**棘轮**：实测 2026-10-23 行覆盖 `93.67%` → 门限 `max(50, floor(X) - 1)` = **92**，
+    只升不降，改基线须同时改注释里的日期与实测值）
+  - `deny`：`cargo deny check advisories licenses bans sources -D unmatched-skip`（`deny.toml`）
+  - `cross-platform`：matrix `ubuntu-latest` / `macos-latest` / `windows-latest`，仅
+    `cargo build --workspace --locked`（验证可编译；**不含**打包）
+  - `frontend`：17 步 —— `npm ci` → protocol 生成 + 漂移门禁 → protocol 构建 →
+    protocol 测试 → SDK 生成 + 漂移门禁 → sdk / tokens / web 测试 → web 构建 →
+    `dist/version.json` 与 `protocol/methods.json` 协议版本一致 → oxlint → TUI（bun）测试 →
+    `check-desktop-ui.mjs` → `check-version.sh` → `check-relocate.mjs`
 - `.github/workflows/smoke.yml` — 冒烟（PR + push main + 手动）：
   `cargo build --release` + `agentj --version/--help` 断言 + `cargo test -p agentj-core -- smoke`
 - `.github/workflows/e2e.yml` — E2E（main 合并后 + 手动）：

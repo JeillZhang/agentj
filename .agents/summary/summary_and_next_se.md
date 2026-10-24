@@ -7,12 +7,113 @@
 > 待实施），不得随内容替换而删除；仅当该特性实际实施完成后才能移除（移入功能记录）。
 > 前端总结独立存放于 `summary_and_next_fe.md`；两文件内容隔离，互不写入对方文件。
 
-> 当前功能：**run 可靠性批次** —— 分支 `feature/run-reliability-batch`。工具结果落库上限 +
-> `session/run` 回显生效 provider/model + `glob` 路径语义（进程内执行）+ `ask` 默认超时 +
-> CLI 审批 / 配置健壮性 + e2e 测试环境隔离。协议 wire 面**加性变更**：`PROTOCOL_VERSION` 升为
-> **0.19.0**（仍 28 方法 / 78 schemas；工作区仍 **0.1.0**）。下方 search-rank 单一真源化等前序章节为归档记录。
+本文件当前记录**工程治理批次**（配置 / 门禁 / 元数据 / 卫生，wire 面零变更）。
 
-## run 可靠性批次 ✅
+> 当前功能：**工程治理批次** —— 分支 `chore/engineering-governance-batch`（自 `5062736` 起）。
+> 仓库断言 harness + CI 补全（deny / cross-platform / frontend）+ 覆盖率棘轮 + 依赖与许可治理 +
+> 社区治理文件 + Cargo 工作区策略 + 版本元数据 + 工作区卫生 + 远端命名对齐。
+> `crates/*` 运行期逻辑零改动，`PROTOCOL_VERSION` 仍 **0.19.0**、工作区仍 **0.1.0**。
+
+## 工程治理批次 ✅
+
+分支 `chore/engineering-governance-batch`。对应待实施 ⑮ ⑳ ㉛ ㉜ 的实施落地（本侧）；
+㉑ ㉒ ㉕ ㉝ ㉞ 属前端侧，见 `summary_and_next_fe.md`。
+
+### 交付
+
+- **仓库断言 harness**（`scripts/tests/assert-ui.sh` / `assert-cargo.sh` / `assert-ci.sh`）：
+  `--list` / `<check>` / `all` / `--strict` 四种入口，未实现项以 `SKIP`（exit 3）显式暴露、
+  `--strict` 视为失败。16 个检查覆盖 UI 清单与单一 lockfile、workspace Cargo 策略与 18 crate
+  继承、LICENSE 三件套、`deny.toml`、lockfile 一致性（`cargo metadata --locked`）、CI 作业契约、
+  覆盖率棘轮、frontend 作业、治理文件、工作区卫生、两份 summary 与文档基线。
+- **CI 作业补全**（`.github/workflows/ci.yml`）：新增 `deny`（cargo-deny 四类检查）、
+  `cross-platform`（ubuntu / macOS / Windows，仅 `cargo build --workspace --locked`）、
+  `frontend`（17 步：`npm ci` → protocol/sdk 生成漂移 → protocol 构建/测试 →
+  sdk/tokens/web 测试 → web 构建 →
+  `dist/version.json` ↔ `protocol/methods.json` 协议版本一致性 → oxlint → TUI 测试 →
+  desktop UI 校验 → `check-version.sh` → `check-relocate.mjs`）；`lint` 追加「Repo invariants」
+  （`python3 -m pip install --user pyyaml` + `taiki-e/install-action@cargo-deny`
+  + 三份断言脚本 `--strict`，`SKIP` 即失败）；`deny` 作业命令带 `-D unmatched-skip`
+  （cargo-deny 默认只对陈旧 `bans.skip` 告警且 `exit 0`）。
+- **覆盖率棘轮**：实测行覆盖 **93.67%**（`cargo llvm-cov report`，2026-10-23：lines 36671/2321、
+  regions 93.45%、functions 86.95%），`COVERAGE_THRESHOLD` 由 `50` → **92**
+  （`max(50, floor(X) - 1)`，注释记录日期与基线）；`cargo llvm-cov` 与
+  `cargo build -p agentj-plugin-fixture` 均加 `--locked`。
+- **依赖 / 许可治理**：`deny.toml` —— advisories / licences / bans / sources 四类；licence 白名单
+  14 项（MIT、Apache-2.0、BSD、ISC、Zlib、BSL-1.0、CC0-1.0、Unicode-3.0、Unlicense、MPL-2.0 等）；
+  `multiple-versions = "deny"` + 6 条带来源注释的 `skip`（`getrandom` 0.2/0.3、`r-efi`、
+  `rand_core` 0.6、`core-foundation` 0.9、`syn` 3）；`[sources]` 用 `allow-registry` 只放
+  crates.io。`LICENSE` / `LICENSE-MIT` / `LICENSE-APACHE` 落地 **MIT OR Apache-2.0** 双许可。
+- **社区治理**：`CONTRIBUTING.md`（本地门禁清单 + 不可提交项）、`SECURITY.md`
+  （GitHub Security Advisories 上报通道、7 天响应）、`.github/dependabot.yml`
+  （cargo / npm / github-actions，minor+patch 各聚合成一个 PR）。
+- **Cargo 工作区策略**：`[workspace.dependencies]` 收敛 12 个三方依赖、`[workspace.lints.clippy]
+  all = { level = "warn", priority = -1 }`、`[profile.release]` `lto = "thin"` +
+  `codegen-units = 1`（**不设** `panic = "abort"`，保留 `catch_unwind`）、
+  `[workspace.package] license = "MIT OR Apache-2.0"`、`clippy.toml` `msrv = "1.96"`；
+  18 个 crate 全部改为继承式清单（依赖 `workspace = true`、`license.workspace = true`、
+  `[lints] workspace = true`），42 处内部 path 依赖补 `version = "0.1.0"`（消除 wildcard 告警）。
+- **版本元数据**：`scripts/check-version.sh` 新增 `AGENTJ_ROOT` 覆盖、`agentj-ui/package.json` /
+  `apps/web` / `apps/tui` / lockfile 根条目断言、通用 `0.2x` 字面量守卫；失败打印出错文件、
+  期望值与命中字面量（不再静默 `exit 1`）。`scripts/test-check-version.sh` 用临时目录夹具覆盖
+  正/负样例。
+- **工作区卫生**：删除 `agentj-ui/node_modules/.old_modules-*` 迁移残留、仓库根空 `node_modules/`、
+  `.playwright-mcp/`；`.gitignore` 补 `.opencode/`（AI 工具运行时状态，机器本地）。
+- **远端命名**：`origin` → GitHub（唯一权威）、`gitcode` → 只读镜像，与 `AGENTS.md`
+  「Remote & Merge Policy」一致；分支按纪律推送两个远端，只在 `origin` 合并。
+
+### 验证
+
+| 命令 | 结果 |
+|------|------|
+| `cargo fmt --all --check` | FMT_OK |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings` | 0 警告 |
+| `cargo test --workspace --locked` | 48 组 `test result: ok`，无失败 |
+| `cargo deny check advisories licenses bans sources -D unmatched-skip` | advisories / bans / licenses / sources 全 ok，无 `unmatched-skip` |
+| `cargo metadata --locked --format-version 1` | 通过（307 packages，`Cargo.lock` 无漂移） |
+| `bash scripts/tests/assert-{ui,cargo,ci}.sh --strict` | 全部 PASS，0 SKIP |
+| `sh scripts/test-check-version.sh` / `./scripts/check-version.sh` | `check-version-tests-ok` / `version-ok` |
+| 前端：sdk 55、protocol 4、tokens、web 681、TUI 192 + oxlint + `check-desktop-ui.mjs` + `check-relocate.mjs` | 全绿 |
+
+### 测试验收（两轮 + 修复轮）
+
+`jskill-test-acceptance`：第 1 轮测试 8 个缺陷（2 high / 4 medium / 2 low）、第 1 轮回归再报
+5 个 low/nit、第 2 轮回归报 1 个 medium（阻塞）+ 6 个 low/nit，合计 **20 条，19 修复 + 1 有理由
+不修**（`allowlist` 里 4 个许可为预审批名额，`license-not-encountered` 仅 warning），每缺陷一个提交。
+
+- **安全**：`tokio` 1.53.1 命中 `RUSTSEC-2026-0386`（unsound，`AsyncFd::new` I/O safety）→ 升
+  `1.53.3`（仅 `Cargo.lock`）；否则 `deny` 作业首跑即红。
+- **失效门禁**（本轮主要收获，均为「断言恒真 / 检查没跑」类）：
+  - `check_coverage_gate` 先 `join` 再 `splitlines()`，两条 `--locked` 断言恒真；
+  - `assert-ci.sh` 的 check 清单无自检——删一个 check 仍 `7 passed` exit 0；
+  - `unmatched-skip` 守卫在 CI 恒 `SKIP`（`lint` 未装 cargo-deny，且脚本用 `all` 不失败）→
+    `lint` 装 cargo-deny + `--strict`、`deny` 作业加 `-D unmatched-skip`；
+  - `CONTRIBUTING.md` 的「CI runs the same commands」不成立（漏 tokens 测试 / oxlint / 三份断言
+    脚本 / `check-desktop-ui.mjs` / `check-relocate.mjs`）→ 清单改为从 `ci.yml` 派生并强制全覆盖。
+- **死指针 / 漂移**：`deny.toml` 曾指向 gitignore 的 `docs/superpowers/`；改用
+  `CONTRIBUTING.md` 新增的「Dependency and licence policy」章节（白名单、`yanked` 默认 deny、
+  skip 必须命中真实重复、wildcard、sources、dependabot），断言校验指针被 git 跟踪、文档含关键词、
+  文档白名单与 `deny.toml` 集合相等；失效的 `getrandom =0.2.17` skip 删除；`yanked = "warn"`
+  撤销（回到工具默认 deny）。
+- **文档失真**：两份 summary 归档段残留「origin=GitCode / 命名相反」、`## 下一步` 仍把 T21/T22
+  当待办——已改写并加禁用短语断言；`@agentj/protocol` 测试此前从未在 CI 执行（现在会）。
+
+### 遗留问题 / 已知限制（本批次）
+
+- `cargo-deny` 不在开发机默认工具链（需 `cargo install cargo-deny --locked`，实测 0.20.2）；
+  CI 走 `taiki-e/install-action@cargo-deny`。
+- `frontend` 作业的 CI 首次运行尚未观测；本地已逐步跑通同一 17 步序列。
+- 覆盖率基线 93.67% 为单次实测——后续若测试减少，棘轮会立即转红（预期行为，需重新基线化）。
+- `cross-platform` 只做 `cargo build`，不做打包（dmg/msi 见待实施 ㉟）。
+- **T22 远端收敛 BLOCKED**：`git push origin main` 被 GitHub 拒绝（非快进）——远端 `main` @
+  `d883a79`（PR #90 合并）与本地 `main` @ `5062736`（!67 合并）是同一份内容的**两个 merge
+  commit**，三端 tree 完全相同（`4e72b5a6b47df679d70489244abe70a3c59b5ed1`）。按纪律**未使用
+  `--force`**、未改写任何远端历史。重命名已生效：`origin` = GitHub（权威）、`gitcode` = GitCode
+  （只读镜像），`main` 已 `--set-upstream-to=origin/main`，`gitcode/main` 与本地 `main` 一致。
+  收敛方式待用户决定：① 在 `main` 上 `git merge origin/main`（生成一个内容零变化的合并提交，
+  之后 `git push origin main` 即为快进，不改写历史）；② 重置镜像或权威端的 `main`。
+
+## 归档：run 可靠性批次 ✅
 
 分支 `feature/run-reliability-batch`（自 `e924473` merge 后起）。六项特性 + 协议加性变更一次收尾，
 对应待实施 ⑦⑧⑨⑭⑱⑲ 的实施落地；`PROTOCOL_VERSION` 升 **0.19.0**、工作区仍 0.1.0。
@@ -164,10 +265,10 @@
 - **fixture 基线重复**：`web_verify_off.toml` / `web_fast_spot.toml` 各自复制了
   `permission_deny.toml` 的完整基线（含 `timeout_ms = 800`），基线变更时需同步三处。
 - **计划文本笔误（抽检扩展 T2）**：计划 AC4 写 `mismatched is 2`，正确值为 1（代码与测试是对的）。
-- **远端命名修正（本工作副本实测）**：`github` = `git@github.com:JeillZhang/agentj.git`（**权威**）、
-  `origin` = `git@gitcode.com:jeill/agentj.git`（GitCode **镜像**）——与 `AGENTS.md`「Remote & Merge
-  Policy」的命名**相反**；feature 分支须推 `github` + `origin` 两个远端，PR 开在 `github`（待实施 ⑳
-  的主题，本阶段不改文档，仅记录实测事实）。
+- **远端命名（已由工程治理批次解决）**：当时实测 `origin` 指向 GitCode、`github` 指向 GitHub，
+  与 `AGENTS.md`「Remote & Merge Policy」相反；现 `origin` = `git@github.com:JeillZhang/agentj.git`
+  （唯一权威）、`gitcode` = `git@gitcode.com:jeill/agentj.git`（只读镜像）。feature 分支仍推
+  两个远端，PR 开在 `origin`。
 - **文档滞后（本阶段有意未动 `AGENTS.md`）**：`AGENTS.md` 的 `agentj-config` 条目尚未列新增 `[web]`
   配置节，`agentj-ipc` 条目尚未提 `client_ip` / `metrics_state` 两个新模块（本阶段文档落在
   `docs/specs/ipc-protocol.md` + `docs/guide/http-and-auth.md` + `docs/changelog/v0.1.md`）；下次
@@ -243,16 +344,13 @@
 | ⑪ | 【债】超长函数治理 | 实测 lib 代码 831 个函数中 **26 个 >50 行**（违反 `AGENTS.md` 「function ≤50 lines」）：`crates/agentj-cli/src/main.rs:466 fn main`（**379 行**）、`crates/agentj-core/src/turn_runner.rs:189 fn run_turn`（**362 行**）、`crates/agentj-ipc/src/lib.rs:861 fn dispatch_session_run`（**252 行**）、`crates/agentj-ipc/src/lib.rs:1420 fn dispatch_permission_respond`（80 行）——按域抽子函数 | 与 ⑩ 同批执行 | 待实施 |
 | ⑫ | 【债】锁中毒与 panic 隔离 | 非测试代码 **170 处 `.lock().unwrap()`**：内核是常驻多客户端守护进程，任一线程持锁 panic → mutex 中毒 → 后续每次取锁全部 panic（单会话 bug 可升级为整内核不可用）。改 `unwrap_or_else(|e| e.into_inner())` 或统一封装；请求入口（`agentj-ipc` dispatch / `turn_runner`）补 `catch_unwind` + 错误响应（现全仓仅 `agentj-core/src/hooks.rs:117`、`agentj-question/src/module.rs:356` 两处隔离；另 `crates/agentj-ipc/src/web.rs:257` 的 `std::sync::RwLock` 用 `web.rs:453/457/460` 的 `.read()/.write().expect("sessions")`，是同类中毒路径） | 无 | 待实施 |
 | ⑬ | 【债】permission / question 待决机制收敛 | `crates/agentj-permission/src/module.rs` 与 `crates/agentj-question/src/module.rs` 是同一套 pending / owner / settle 的双份镜像（`new` / `set_notifier` / `respond` / `session_of` / `cancel_session` / `clear_all` + `PENDING_TTL` 一一对应）；抽出共用 `PendingRegistry`，消除「修一处漏一处」（BUG-017 已证明代价） | 无 | 待实施 |
-| ⑮ | 【债】Rust 门禁硬化 | ① `[workspace.lints]` 落仓（现 lint 策略只存在于 `ci.yml` 命令行，本地 `cargo build` 不继承；仓内 13 处 `#[allow]`，其中 5 处 `type_complexity` 说明长签名已开始堆积）；② 覆盖率棘轮（`ci.yml:15` `COVERAGE_THRESHOLD: 50` 只有下界、无基线，覆盖率可一路退化到 50% 仍绿） | 无 | 待实施 |
 | ⑯ | 【债】crate 粒度收敛 | `agentj-context` 87 行 / `agentj-stats` 133 / `agentj-skills` 132 / `agentj-license` 149 均为 <150 行的独立 crate，而 `agentj-ipc` 单 crate 12,514 行；评估合并或降级为模块（触及 `agentj-cli` 装配与 CI） | 无 | 待实施 |
 | ⑰ | 模型元数据与 token 预算 | `schemas/ModelEntry.json` 补 `context_window`（加性 wire），把 `estimate_tokens` 的「ASCII/4 + 非 ASCII×1」字符启发式换成真 tokenizer，或至少按模型真实窗口裁剪（现默认 128k 是保守假设） | 取决于上游目录是否提供窗口字段 | 待实施 |
-| ⑳ | 【修复】远端命名与 `AGENTS.md` 对齐 | 实测 `git remote -v`：`origin` = `git@gitcode.com:jeill/agentj.git`（镜像）、`github` = `git@github.com:JeillZhang/agentj.git`（权威），与 `AGENTS.md`「Remote & Merge Policy」**完全相反**——照文档执行 `git pull --ff-only origin main` / `git push -u origin <branch>` 会打到镜像。二者必须一致（改文档或改 remote 名，重命名方向需用户定夺） | 无（需用户决策） | 待实施 |
 | ㉗ | 【债】错误处理约定与生产 `expect` | lib 代码 `let _ =` **58 处**（已剔除 `#[cfg(test)]`；报告所称 222 含测试），多数是合理「尽力而为」却无统一约定与注释，审计成本高；生产路径 `crates/agentj-ipc/src/web.rs:595/642 .expect("valid cookie header")`、`web.rs:627 .expect("retry-after")` 本可 `if let` 处理 | 无 | 待实施 |
 | ㉘ | 【修复】Web 登录门与 cookie 安全细节 | ① `crates/agentj-ipc/src/web.rs:587 if !expected.is_empty() && form.token == expected` 非常量时间比较（低成本可换 `subtle::ConstantTimeEq`，限流已缓解但非等价）；② `web.rs:593/640` 会话 cookie 仅 `HttpOnly; SameSite=Lax; Path=/`，**缺 `Secure`**（https 部署下明文回放） | 无 | 待实施 |
 | ㉙ | 【债】工具侧路径校验弱于 IPC 侧 | `crates/agentj-ipc/src/file_list.rs:71/126/331` 用 `canonicalize` + 前缀比对（真沙箱），而 `crates/agentj-permission/src/engine.rs:76 escapes_root` = `lexical_normalize` + `starts_with`、`crates/agentj-core/src/tool_paths.rs:16 rebase_tool_args` 亦纯词法归一化 → **符号链接可绕过**；bash 只设 `current_dir`，模型可 `cd /` 后任意操作（无 seccomp/namespace 硬隔离，安全性完全押在权限系统 + 用户审批上）→ 统一到 canonicalize 或明确文档化该边界 | 无 | 待实施 |
 | ㉚ | 【债】SSE 事件分派三份重复 | `crates/agentj-model/src/responses.rs:141`、`anthropic.rs:140`、`openai_compat.rs:188` 各一份 ~96–101 行 `push_line`（字节流→行的组装已抽到 `sse.rs`，**事件分派层未抽**）→ 新增 provider 需再抄一遍 | 无 | 待实施 |
-| ㉛ | 【债】构建与依赖治理配置 | ① 无 `[profile.release]`（未开 LTO / `codegen-units`）；② **无 `[workspace.dependencies]`**——实测 18 个 crate 共 108 处显式 `version`，`workspace = true` 的 54 处是 `edition/version/rust-version` 继承字段（非依赖统一），三方依赖版本分散易漂移；③ 无 `clippy.toml` / `deny.toml` | 无 | 待实施 |
-| ㉜ | 【合规】开源与安全治理文件缺失 | 仓库**无 `LICENSE`**（却有 Ed25519 license 校验的商业功能）、无 `CONTRIBUTING.md`、无 `SECURITY.md`、无 `.github/dependabot.yml`、无 cargo-audit / cargo-deny 依赖漏洞门禁（Cargo.lock 数百依赖无扫描）、无 `.cargo/config.toml` | 许可证选型需用户决策 | 待实施 |
+| ㉟ | 【债】Desktop 安装包构建验证 | `cross-platform` 作业目前只做 `cargo build --workspace --locked`；`agentj-ui/apps/desktop` 声称 deb/AppImage/dmg/msi 四件套，但 `tauri build` 与 `check-artifacts.sh` 从未在 CI 执行（macOS/Windows 打包链路无回归保护） | 需 macOS/Windows runner + 签名/公证策略决策 | 待实施 |
 
 > 类型标记：`【债】` = 工程债 / 质量门禁，`【修复】` = 已确认缺陷或元数据不一致；无标记 = 特性。
 > 规则：本表条目在未实施时必须**跨阶段保留**（不得随内容替换删除）；实施完成后从本表移除，
@@ -260,12 +358,15 @@
 
 ## 下一步
 
-- run 可靠性批次代码 / 测试 / 文档 / summary(se/fe) 已全部收尾；剩余文档任务：**T19**（同步
-  `AGENTS.md` / `README.md` 的协议版本基线 + `scripts/check-version.sh`，当前该脚本保持红）+ 推送
-  **两个远端**（本工作副本 `github` = GitHub 权威、`origin` = GitCode 镜像；与 `AGENTS.md` 远端
-  命名相反）→ 开 GitHub PR（用户负责合并）→ 进入测试验收。
-- 下一特性候选：待实施 ⑥「用量历史服务端持久化」（特性）；或上表 ⑩–⑯、⑳、㉗–㉜（工程债 /
-  修复 / 合规）；或前端跟进见 `summary_and_next_fe.md`（含 ③ Web 接入服务端搜索 + ㉑–㉕、㉝–㉞）。
-- 可选跟进（本批次遗留，非阻塞）：非 TTY 未加 `--yes` 改为**立即**拒绝（现等 `timeout_ms` 预算）；
-  `glob` 超时由文本结果改为结构化 Err；把「工具结果已截断」作为可观测事件透出（当前仅内核内
-  `AgentEvent::ToolResultTruncated`）。
+- 工程治理批次代码 / 门禁 / 文档 / summary(se/fe) 已收尾，`AGENTS.md` / `README.md` 已同步门禁清单，
+  远端已重命名（`origin` = GitHub 唯一权威、`gitcode` = 只读镜像），分支已推送两个远端；
+  当前处于**测试验收**循环（缺陷清单在 `.superpowers/acceptance/bugs.md`，本地产物不入库）。
+- **待用户决策（唯一阻塞项）**：`origin/main`（GitHub，`d883a79`）与本地 `main`（`5062736`）是
+  同一份内容的两个 merge commit，`git push origin main` 非快进 → 二选一：① 在 `main` 上
+  `git merge origin/main` 生成零内容变化的合并提交后再 `git push origin main`（不改写历史）；
+  ② 重置镜像 / 权威端的 `main`。验收 PASS 后在 `origin` 开 PR（用户负责合并）。
+- 下一特性候选：待实施 ⑥「用量历史服务端持久化」（特性）；或上表 ⑩–⑬、⑯、⑰、㉗–㉚、㉟
+  （工程债 / 修复）；或前端跟进见 `summary_and_next_fe.md`（含 ③ Web 接入服务端搜索 + ㉓ ㉔）。
+- 可选跟进（run 可靠性批次遗留，非阻塞）：非 TTY 未加 `--yes` 改为**立即**拒绝（现等
+  `timeout_ms` 预算）；`glob` 超时由文本结果改为结构化 Err；把「工具结果已截断」作为可观测事件
+  透出（当前仅内核内 `AgentEvent::ToolResultTruncated`）。
