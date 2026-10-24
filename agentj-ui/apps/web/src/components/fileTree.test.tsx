@@ -651,6 +651,42 @@ test("Escape from a focused search result row restores the tree", async () => {
   expect(screen.queryByRole("tree", { name: "搜索结果" })).toBeNull();
 });
 
+test("shows 搜索中… while a query is in flight and drops stale counts on error", async () => {
+  vi.useFakeTimers();
+  let rejectMain: (error: Error) => void = () => {};
+  const client = {
+    request: (_method: string, params: Record<string, unknown> = {}) => {
+      if (params.query === "main") {
+        return new Promise((_resolve, reject) => { rejectMain = reject; });
+      }
+      if (params.query === "ma") {
+        return Promise.resolve({ entries: SEARCH_HITS, total: 3, truncated: false });
+      }
+      return Promise.resolve({ entries: ROOT, truncated: false });
+    },
+  } as unknown as RpcClient;
+  const { container } = render(<FileTree client={client} sessionId="s1" demo={false} />);
+  await flush();
+
+  await typeSearch("ma");
+  await advanceDebounce();
+  expect(screen.getByText("搜索到 3 / 3 项")).toBeInTheDocument();
+
+  await typeSearch("main");
+  await advanceDebounce();
+  // The previous query's counts must not be attributed to the one still loading.
+  expect(screen.getByText("搜索中…")).toBeInTheDocument();
+  expect(screen.queryByText(/搜索到/)).toBeNull();
+
+  await act(async () => {
+    rejectMain(new Error("boom"));
+  });
+  await flush();
+  expect(screen.getByText("搜索失败：boom")).toBeInTheDocument();
+  expect(screen.queryByText(/搜索到/)).toBeNull();
+  expect(container.querySelectorAll(".trow-search")).toHaveLength(3);
+});
+
 test("marks a truncated reply as partial", async () => {
   vi.useFakeTimers();
   const client = searchClient(() => ({ entries: SEARCH_HITS, total: 500, truncated: true }));

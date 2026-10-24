@@ -65,6 +65,8 @@ type SearchState = {
   rows: SearchEntry[];
   total: number;
   truncated: boolean;
+  /** A request for the current query is scheduled or in flight; counts are not final yet. */
+  loading: boolean;
   error: string | null;
   /** Old-kernel notice; mutually exclusive with `error`. */
   notice: string | null;
@@ -76,6 +78,7 @@ const IDLE_SEARCH: SearchState = {
   rows: [],
   total: 0,
   truncated: false,
+  loading: false,
   error: null,
   notice: null,
 };
@@ -175,13 +178,22 @@ function toSearchEntry(entry: RawFileEntry): SharedRawFileEntry {
  */
 function applySearchReply(prev: SearchState, reply: FileListReply): SearchState {
   if (typeof reply?.total !== "number") {
-    return { ...prev, rows: [], total: 0, truncated: false, error: null, notice: SEARCH_UNSUPPORTED_HINT };
+    return {
+      ...prev,
+      rows: [],
+      total: 0,
+      truncated: false,
+      loading: false,
+      error: null,
+      notice: SEARCH_UNSUPPORTED_HINT,
+    };
   }
   return {
     ...prev,
     rows: buildSearchIndex((reply.entries ?? []).map(toSearchEntry)),
     total: reply.total,
     truncated: Boolean(reply.truncated),
+    loading: false,
     error: null,
     notice: null,
   };
@@ -190,6 +202,7 @@ function applySearchReply(prev: SearchState, reply: FileListReply): SearchState 
 /** Header line above the result rows. */
 function searchHead(state: SearchState): string {
   if (state.notice) return state.notice;
+  if (state.loading) return "搜索中…";
   if (state.query.trim().length === 0) return "输入关键字搜索文件名";
   return `搜索到 ${state.rows.length} / ${state.total} 项${state.truncated ? " · 部分结果" : ""}`;
 }
@@ -394,10 +407,13 @@ function SearchResults({ state, onPick, onEscape }: SearchResultsProps) {
 
   return (
     <>
-      <p className="ft-search-head" data-empty={state.rows.length === 0 ? "true" : undefined}>
-        {searchHead(state)}
-      </p>
-      {state.error ? <p className="ft-search-error">{`搜索失败：${state.error}`}</p> : null}
+      {state.error ? (
+        <p className="ft-search-error">{`搜索失败：${state.error}`}</p>
+      ) : (
+        <p className="ft-search-head" data-empty={state.rows.length === 0 ? "true" : undefined}>
+          {searchHead(state)}
+        </p>
+      )}
       <div className="tree" role="tree" aria-label="搜索结果" tabIndex={-1} onKeyDown={handleKey}>
         {state.rows.map((row, index) => {
           const parent = parentPath(row.path);
@@ -519,8 +535,11 @@ const FileTree = forwardRef<FileTreeHandle, FileTreeProps>(function FileTree(
       } catch (e) {
         if (searchSeq.current !== seq || sessionRef.current !== requestSession) return;
         const message = e instanceof Error ? e.message : String(e);
+        // The rows still on screen belong to the previous query: only the message is current.
         setSearch((prev) =>
-          prev.active && prev.query === query ? { ...prev, error: message, notice: null } : prev,
+          prev.active && prev.query === query
+            ? { ...prev, total: 0, truncated: false, loading: false, error: message, notice: null }
+            : prev,
         );
       }
     },
@@ -537,6 +556,7 @@ const FileTree = forwardRef<FileTreeHandle, FileTreeProps>(function FileTree(
         ...prev,
         active: true,
         query: value,
+        loading: !blank,
         error: null,
         notice: null,
         ...(blank ? { rows: [], total: 0, truncated: false } : {}),
