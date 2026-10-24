@@ -1,11 +1,14 @@
 //! Decision engine: pure rule evaluation (design #17 — Deny > Allow > Mode).
 //! Path rules match RELATIVE glob patterns (user-specified relative to the
-//! workspace root). Escapes are detected lexically (no filesystem access):
-//! resolve the argument against workspace_root, strip `..` segments, and if
-//! the result leaves the root — Deny.
+//! workspace root). Escapes are decided by `agentj_core::paths::resolve_within_root`
+//! — the same primitive the tool-argument rebaser and `file/list` use, so one
+//! verdict covers all of them (symlinks followed, nonexistent tails allowed,
+//! unverifiable paths denied).
 
 use globset::{Glob, GlobSetBuilder};
-use std::path::{Component, Path, PathBuf};
+use std::path::Path;
+
+use agentj_core::paths::{Resolved, resolve_within_root};
 
 use crate::policy::{PermissionEffect, PermissionMode, ToolPolicy};
 
@@ -53,7 +56,10 @@ impl PermissionEngine {
     /// 2. Match the RELATIVE argument against relative glob patterns.
     ///    Deny > Allow > Mode.
     pub fn eval_path(&self, policy: &ToolPolicy, workspace_root: &Path, path: &str) -> EvalOutcome {
-        if self.escapes_root(workspace_root, path) {
+        if matches!(
+            resolve_within_root(workspace_root, path),
+            Resolved::Outside { .. }
+        ) {
             return EvalOutcome::Deny;
         }
         let mut any_allow = false;
@@ -72,13 +78,6 @@ impl PermissionEngine {
         }
     }
 
-    /// Lexical (no filesystem) check: does `arg` resolve outside `root`?
-    fn escapes_root(&self, root: &Path, arg: &str) -> bool {
-        let joined = root.join(arg);
-        let normalized = lexical_normalize(&joined);
-        !normalized.starts_with(root)
-    }
-
     fn glob_matches(&self, pattern: &str, relative_path: &str) -> bool {
         // Patterns are relative globs (e.g. "src/**", ".env"); match against
         // the relative argument. Build a set per rule — rules are few.
@@ -91,23 +90,6 @@ impl PermissionEngine {
             .map(|set| set.is_match(relative_path))
             .unwrap_or(false)
     }
-}
-
-/// Lexically strip `.`/`..` components without touching the filesystem.
-/// `/ws/a/../../x` → `/x`; `a/b/c` stays under `/ws`. (`..` at the root is
-/// kept — the caller compares against `root` to decide escape.)
-fn lexical_normalize(path: &Path) -> PathBuf {
-    let mut out = PathBuf::new();
-    for comp in path.components() {
-        match comp {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                out.pop();
-            }
-            other => out.push(other.as_os_str()),
-        }
-    }
-    out
 }
 
 #[cfg(test)]
@@ -191,6 +173,14 @@ mod tests {
         );
     }
 
+    fn ask_policy() -> ToolPolicy {
+        ToolPolicy {
+            mode: PermissionMode::Ask,
+            path_rules: vec![],
+            command_rules: vec![],
+        }
+    }
+
     fn write_policy() -> ToolPolicy {
         ToolPolicy {
             mode: PermissionMode::Ask,
@@ -251,6 +241,35 @@ mod tests {
         let root = std::path::Path::new("/ws");
         assert_eq!(
             engine.eval_path(&write_policy(), root, "docs/x.md"),
+            EvalOutcome::Mode(PermissionMode::Ask)
+        );
+    }
+
+    /// A symlink inside the root that points outside it must be Deny: the
+    /// lexical `starts_with` check let it through (Review Focus #1).
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_escape_is_denied() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.join("link")).unwrap();
+        let engine = PermissionEngine::new();
+        assert_eq!(
+            engine.eval_path(&ask_policy(), &root, "link/secret"),
+            EvalOutcome::Deny
+        );
+    }
+
+    /// Writing a path whose parents do not exist yet is legitimate: existence
+    /// is the write tool's business, not the escape check's (Review Focus #2).
+    #[test]
+    fn nonexistent_write_target_is_not_denied() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let engine = PermissionEngine::new();
+        assert_eq!(
+            engine.eval_path(&ask_policy(), &root, "new/dir/file.rs"),
             EvalOutcome::Mode(PermissionMode::Ask)
         );
     }
