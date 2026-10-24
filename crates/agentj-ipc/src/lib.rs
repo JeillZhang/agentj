@@ -2,7 +2,10 @@
 pub(crate) mod client_ip;
 mod dispatch;
 mod frames;
-pub(crate) use frames::{attach_git_statuses, build_progress_frame, todo_items_into_wire};
+pub(crate) use frames::{
+    attach_git_statuses, build_progress_frame, file_change_into_wire, history_events_filtered,
+    todo_items_into_wire,
+};
 pub mod file_list;
 mod handlers;
 mod registry;
@@ -25,7 +28,6 @@ pub mod trajectory;
 pub mod web;
 pub mod ws;
 
-use agentj_core::artifacts::{FileChangeArtifact, FileChangeOp};
 use agentj_core::error::{IpcError, KernelError, ModuleError};
 use agentj_core::kernel::Kernel;
 use agentj_core::module::{KernelMessage, SessionStore};
@@ -443,78 +445,6 @@ fn sanitize_run_id(opt: Option<String>) -> Option<String> {
         Some(s) if is_valid_run_id(&s) => Some(s),
         _ => None,
     }
-}
-
-/// Map a core file-change artifact to the wire shape (design contract item 3).
-/// `diff_truncated` is `Some(true)` only when truncated; `false` stays omitted
-/// per the field's `skip_serializing_if`.
-fn file_change_into_wire(change: FileChangeArtifact) -> agentj_protocol::streaming::FileChange {
-    agentj_protocol::streaming::FileChange {
-        path: change.path,
-        op: file_change_op_into_wire(change.op),
-        additions: change.additions,
-        deletions: change.deletions,
-        tool_call_id: change.tool_call_id,
-        diff: change.diff,
-        diff_truncated: change.diff_truncated.then_some(true),
-        run_id: sanitize_run_id(change.run_id),
-        seq: change.seq,
-        source: change.source,
-        total_bytes: change.total_bytes,
-    }
-}
-
-/// 1:1 file-change op mapping (artifact ops are a closed set).
-fn file_change_op_into_wire(op: FileChangeOp) -> agentj_protocol::streaming::FileChangeKind {
-    match op {
-        FileChangeOp::Add => agentj_protocol::streaming::FileChangeKind::Add,
-        FileChangeOp::Modify => agentj_protocol::streaming::FileChangeKind::Modify,
-        FileChangeOp::Delete => agentj_protocol::streaming::FileChangeKind::Delete,
-    }
-}
-
-fn history_events_filtered(
-    store: &trajectory::TrajectoryStore,
-    sid: &str,
-    run_id: Option<&str>,
-    cursor: Option<u64>,
-    limit: usize,
-) -> std::io::Result<(
-    Vec<agentj_protocol::trajectory::TrajectoryEvent>,
-    Option<u64>,
-)> {
-    let (all, _) = store.read_paged(&sid.to_string(), None, usize::MAX)?;
-    let filtered: Vec<_> = if let Some(rid) = run_id {
-        all.into_iter()
-            .filter(|ev| match &ev.value {
-                agentj_protocol::trajectory::TrajectoryValue::Todo { run_id, .. }
-                | agentj_protocol::trajectory::TrajectoryValue::FileChange { run_id, .. } => {
-                    run_id.as_deref() == Some(rid)
-                }
-                _ => true,
-            })
-            .collect()
-    } else {
-        all
-    };
-    let mut out = Vec::new();
-    let mut seen: Option<u64> = None;
-    for ev in filtered {
-        if ev.seq < cursor.unwrap_or(0) {
-            continue;
-        }
-        seen = Some(ev.seq);
-        out.push(ev);
-        if out.len() == limit {
-            break;
-        }
-    }
-    let nxt = if out.len() == limit {
-        seen.map(|s| s + 1)
-    } else {
-        None
-    };
-    Ok((out, nxt))
 }
 
 #[cfg(test)]

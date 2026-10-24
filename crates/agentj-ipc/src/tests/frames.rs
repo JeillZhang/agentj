@@ -518,13 +518,16 @@ async fn progress_broadcast_notification_without_id_keeps_token_valid() {
     );
 }
 
-/// The `$/progress` frame builders and `attach_git_statuses` live in `frames.rs`.
+/// The `$/progress` frame builders, the artifact wire mappers and
+/// `attach_git_statuses` live in `frames.rs`.
 #[test]
 fn frame_builders_moved_out_of_lib() {
     for name in [
         "build_progress_frame",
         "todo_items_into_wire",
         "attach_git_statuses",
+        "file_change_into_wire",
+        "history_events_filtered",
     ] {
         let needle = fn_needle(name);
         assert!(

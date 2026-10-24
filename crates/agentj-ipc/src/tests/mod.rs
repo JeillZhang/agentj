@@ -751,13 +751,15 @@ fn fn_needle(name: &str) -> String {
 }
 
 /// Every symbol moved out of the root file, for the cross-module leak pin.
-const MOVED_OUT_OF_ROOT: [&str; 40] = [
+const MOVED_OUT_OF_ROOT: [&str; 42] = [
     "dispatch_request",
     "handle_request_from",
     "auth_gate",
     "build_progress_frame",
     "todo_items_into_wire",
     "attach_git_statuses",
+    "file_change_into_wire",
+    "history_events_filtered",
     "dispatch_file_list",
     "map_file_list_error",
     "dispatch_initialize",
