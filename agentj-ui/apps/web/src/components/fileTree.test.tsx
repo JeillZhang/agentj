@@ -501,6 +501,43 @@ test("drops a stale reply when the query moves on", async () => {
   expect(screen.getByText("main.ts")).toBeInTheDocument();
 });
 
+test("drops a late reply for the same query retyped after clearing", async () => {
+  vi.useFakeTimers();
+  let resolveStale: (value: unknown) => void = () => {};
+  let firstMain = true;
+  const client = {
+    request: (_method: string, params: Record<string, unknown> = {}) => {
+      if (params.query === "main") {
+        if (firstMain) {
+          firstMain = false;
+          return new Promise((resolve) => { resolveStale = resolve; });
+        }
+        return Promise.resolve({ entries: SEARCH_HITS, total: 3, truncated: false });
+      }
+      return Promise.resolve({ entries: ROOT, truncated: false });
+    },
+  } as unknown as RpcClient;
+  render(<FileTree client={client} sessionId="s1" demo={false} />);
+  await flush();
+
+  // A -> "" -> A: the retyped query equals the in-flight one, so only the seq guard
+  // can tell the two requests apart.
+  await typeSearch("main");
+  await advanceDebounce();
+  await typeSearch("");
+  await typeSearch("main");
+  await advanceDebounce();
+  expect(screen.getByText("main.ts")).toBeInTheDocument();
+
+  await act(async () => {
+    resolveStale({ entries: [{ name: "first.ts", path: "first.ts", kind: "file" }], total: 1 });
+  });
+  await flush();
+  expect(screen.queryByText("first.ts")).toBeNull();
+  expect(screen.getByText("main.ts")).toBeInTheDocument();
+  expect(screen.getByText(/搜索到 3 \/ 3 项/)).toBeInTheDocument();
+});
+
 test("drops a stale reply when the session changes", async () => {
   vi.useFakeTimers();
   let resolveStale: (value: unknown) => void = () => {};
