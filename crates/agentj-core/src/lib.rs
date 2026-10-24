@@ -13,6 +13,7 @@ pub mod paths;
 pub mod pending;
 pub mod permission;
 pub mod resolver;
+pub mod skills;
 pub mod sync;
 pub mod text_tool_call;
 pub mod tool_executor;
