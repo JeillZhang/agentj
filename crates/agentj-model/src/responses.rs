@@ -141,85 +141,102 @@ impl ResponsesChunkParser {
     fn push_line(&mut self, line: &str, out: &mut Vec<Result<ModelEvent, ModelError>>) {
         crate::sse::push_line(self, line, out);
     }
+
+    /// `response.output_text.delta` → Delta.
+    fn push_text_delta(&self, json: &Value, out: &mut Vec<Result<ModelEvent, ModelError>>) {
+        // Wire spec: `delta` is a plain string. Tolerate the legacy
+        // `{"text": …}` object form that early fixtures assumed (0.29.4).
+        let text = json["delta"]
+            .as_str()
+            .or_else(|| json["delta"]["text"].as_str());
+        if let Some(text) = text
+            && !text.is_empty()
+        {
+            out.push(Ok(ModelEvent::Delta(text.to_string())));
+        }
+    }
+
+    /// `response.output_item.added` → register a pending function call.
+    fn push_item_added(&mut self, json: &Value) {
+        if json["item"]["type"].as_str() != Some("function_call") {
+            return;
+        }
+        let item_id = json["item"]["id"].as_str().unwrap_or("").to_string();
+        let call_id = json["item"]["call_id"].as_str().unwrap_or("").to_string();
+        let name = json["item"]["name"].as_str().unwrap_or("").to_string();
+        self.pending.insert(
+            item_id,
+            PendingCall {
+                call_id,
+                name,
+                args: String::new(),
+            },
+        );
+    }
+
+    /// `response.function_call_arguments.delta` → append the argument fragment.
+    fn push_args_delta(&mut self, json: &Value) {
+        // Wire spec: `delta` is the raw JSON-fragment string; tolerate the
+        // legacy `{"arguments": …}` object form (0.29.4).
+        let item_id = json["item_id"].as_str().unwrap_or("");
+        let args = json["delta"]
+            .as_str()
+            .or_else(|| json["delta"]["arguments"].as_str());
+        if let Some(pc) = self.pending.get_mut(item_id)
+            && let Some(args) = args
+        {
+            pc.args.push_str(args);
+        }
+    }
+
+    /// `response.output_item.done` → emit the assembled ToolCall.
+    fn push_item_done(&mut self, json: &Value, out: &mut Vec<Result<ModelEvent, ModelError>>) {
+        if json["item"]["type"].as_str() != Some("function_call") {
+            return;
+        }
+        let item_id = json["item"]["id"].as_str().unwrap_or("").to_string();
+        if let Some(pc) = self.pending.remove(&item_id) {
+            let arguments = serde_json::from_str(&pc.args).unwrap_or(Value::Null);
+            out.push(Ok(ModelEvent::ToolCall(ToolCall {
+                id: pc.call_id,
+                name: pc.name,
+                arguments,
+            })));
+        }
+    }
+
+    /// `response.completed` → Usage (when present) then exactly one Done.
+    fn push_completed(&mut self, json: &Value, out: &mut Vec<Result<ModelEvent, ModelError>>) {
+        if let Some(u) = json
+            .get("response")
+            .and_then(|r| r.get("usage"))
+            .or_else(|| json.get("usage"))
+            .and_then(|u| u.as_object())
+            && let (Some(i), Some(o)) = (
+                u.get("input_tokens").and_then(|v| v.as_u64()),
+                u.get("output_tokens").and_then(|v| v.as_u64()),
+            )
+        {
+            out.push(Ok(ModelEvent::Usage(TokenUsage {
+                prompt_tokens: i,
+                completion_tokens: o,
+            })));
+        }
+        out.push(Ok(ModelEvent::Done));
+        self.done_emitted = true;
+    }
 }
 
 impl crate::sse::SsePayload for ResponsesChunkParser {
     fn push_payload(&mut self, json: Value, out: &mut Vec<Result<ModelEvent, ModelError>>) {
         match json["type"].as_str().unwrap_or("") {
-            "response.output_text.delta" => {
-                // Wire spec: `delta` is a plain string. Tolerate the legacy
-                // `{"text": …}` object form that early fixtures assumed (0.29.4).
-                let text = json["delta"]
-                    .as_str()
-                    .or_else(|| json["delta"]["text"].as_str());
-                if let Some(text) = text
-                    && !text.is_empty()
-                {
-                    out.push(Ok(ModelEvent::Delta(text.to_string())));
-                }
-            }
-            "response.output_item.added" => {
-                if json["item"]["type"].as_str() == Some("function_call") {
-                    let item_id = json["item"]["id"].as_str().unwrap_or("").to_string();
-                    let call_id = json["item"]["call_id"].as_str().unwrap_or("").to_string();
-                    let name = json["item"]["name"].as_str().unwrap_or("").to_string();
-                    self.pending.insert(
-                        item_id,
-                        PendingCall {
-                            call_id,
-                            name,
-                            args: String::new(),
-                        },
-                    );
-                }
-            }
-            "response.function_call_arguments.delta" => {
-                // Wire spec: `delta` is the raw JSON-fragment string; tolerate the
-                // legacy `{"arguments": …}` object form (0.29.4).
-                let item_id = json["item_id"].as_str().unwrap_or("");
-                let args = json["delta"]
-                    .as_str()
-                    .or_else(|| json["delta"]["arguments"].as_str());
-                if let Some(pc) = self.pending.get_mut(item_id)
-                    && let Some(args) = args
-                {
-                    pc.args.push_str(args);
-                }
-            }
-            "response.output_item.done" => {
-                if json["item"]["type"].as_str() == Some("function_call") {
-                    let item_id = json["item"]["id"].as_str().unwrap_or("").to_string();
-                    if let Some(pc) = self.pending.remove(&item_id) {
-                        let arguments = serde_json::from_str(&pc.args).unwrap_or(Value::Null);
-                        out.push(Ok(ModelEvent::ToolCall(ToolCall {
-                            id: pc.call_id,
-                            name: pc.name,
-                            arguments,
-                        })));
-                    }
-                }
-            }
+            "response.output_text.delta" => self.push_text_delta(&json, out),
+            "response.output_item.added" => self.push_item_added(&json),
+            "response.function_call_arguments.delta" => self.push_args_delta(&json),
+            "response.output_item.done" => self.push_item_done(&json, out),
             // clippy collapsible_match: arm-body if → match guard (done_emitted true
             // falls through to `_` below, same semantics as the spec's nested if)
-            "response.completed" if !self.done_emitted => {
-                if let Some(u) = json
-                    .get("response")
-                    .and_then(|r| r.get("usage"))
-                    .or_else(|| json.get("usage"))
-                    .and_then(|u| u.as_object())
-                    && let (Some(i), Some(o)) = (
-                        u.get("input_tokens").and_then(|v| v.as_u64()),
-                        u.get("output_tokens").and_then(|v| v.as_u64()),
-                    )
-                {
-                    out.push(Ok(ModelEvent::Usage(TokenUsage {
-                        prompt_tokens: i,
-                        completion_tokens: o,
-                    })));
-                }
-                out.push(Ok(ModelEvent::Done));
-                self.done_emitted = true;
-            }
+            "response.completed" if !self.done_emitted => self.push_completed(&json, out),
             _ => {} // response.created etc — ignorable protocol events
         }
     }
