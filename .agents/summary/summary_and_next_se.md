@@ -7,14 +7,50 @@
 > 待实施），不得随内容替换而删除；仅当该特性实际实施完成后才能移除（移入功能记录）。
 > 前端总结独立存放于 `summary_and_next_fe.md`；两文件内容隔离，互不写入对方文件。
 
-本文件当前记录**健壮性与去重批次**（锁中毒 / panic 隔离 / 安全细节 / SSE 去重，wire 面零变更）。
+本文件当前记录**依赖刷新批次**（一次把 11 个 dependabot PR 落到一个分支，wire 面零变更）。
 
-> 当前功能：**健壮性与去重批次** —— 分支 `chore/hardening-dedup-batch`（自 `b1edc78` 起）。
-> 实施落地的是「锁中毒与 panic 隔离」「错误处理约定与生产 `expect`」「Web 登录门与 cookie 安全
-> 细节」「SSE 事件分派三份重复」四项后端待实施（前端对应的空白帧项见 `summary_and_next_fe.md`）。
-> `PROTOCOL_VERSION` 仍 **0.19.0**（28 方法 / 78 schemas）、工作区仍 **0.1.0**，无 wire 变更。
+> 当前功能：**依赖刷新批次** —— 分支 `chore/dependency-refresh-batch`（自 `c82c679` 起）。
+> 把 11 个 dependabot PR 的更新合并为一次变更：Rust 侧 reqwest / criterion / toml / sha2 /
+> base64 / libloading，前端 react / vite / vitest / jsdom / jest-dom / lucide-react / @opentui /
+> @tauri-apps/cli；不涉及 `PROTOCOL_VERSION`（仍 **0.19.0**，28 方法 / 78 schemas）与工作区版本
+> （仍 **0.1.0**）。
 
-## 健壮性与去重批次 ✅
+## 依赖刷新批次 ✅
+
+分支 `chore/dependency-refresh-batch`（自 `c82c679`）。
+
+### 交付
+
+- **Rust 依赖**：`libloading` 0.9、`base64` 0.23、`toml` 1.1（`agentj-config` / `agentj-plugin`）、
+  `sha2` 0.11（`agentj-ipc` / `agentj-cli`）、`criterion` 0.8（基准改用 `std::hint::black_box`）、
+  `reqwest` 0.13（`agentj-model` + `agentj-auth`）。
+- **TLS 选型**：reqwest 0.13 默认 `rustls` 会引入 `webpki-root-certs`（`CDLA-Permissive-2.0`
+  不在许可白名单）与 5 条 rustls 公告，故 `default-features = false` + `native-tls`；
+  `agentj-auth` 额外开 `form` feature（OAuth 表单提交）。
+- **`deny.toml`**：新增 8 条带理由的 duplicate skip（`digest` / `block-buffer` / `crypto-common` /
+  `cpufeatures` / `sha2` 0.10、`base64` 0.22、`toml_datetime` 0.6 + `winnow` 0.7），删除因 rustls
+  退出依赖图而失效的 `core-foundation` skip。
+- **前端依赖**：react 19.3、vite 8.3、vitest 5（四个 workspace 同一大版本）、jsdom 30、
+  `@testing-library/jest-dom` 7、`lucide-react` 1.60、`@opentui/*` 0.6、`@tauri-apps/cli` 2.12。
+
+### 验证
+
+| 命令 | 结果 |
+|------|------|
+| `cargo test --workspace --locked` | 48 组 `test result: ok`，无失败 |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings` | 0 警告 |
+| `cargo deny check advisories licenses bans sources -D unmatched-skip` | advisories / bans / licenses / sources 全 ok |
+| `bash scripts/tests/assert-{ui,cargo,ci}.sh all` | 3 / 5 / 8 passed，0 failed |
+
+### 遗留问题 / 已知限制（本批次）
+
+- `deny.toml` 的 8 条 duplicate skip 都是上游阻塞（`ed25519-dalek` / `sha1` 钉 `digest` 0.10、
+  `axum` 钉 `base64` 0.22、`toml_edit` 钉旧 `toml_datetime` + `winnow`）；上游同步后应逐条删除，
+  `-D unmatched-skip` 会在删早了或删晚了时直接失败。
+- jsdom 30 声明 `engines.node ^22.22.2 || ^24.15.0 || >=26`，本机 Node v24.14.1 安装时会打印
+  EBADENGINE 警告（非致命）。
+
+## 归档：健壮性与去重批次 ✅
 
 分支 `chore/hardening-dedup-batch`，14 个提交（`d13ebab..808424f`）。
 
