@@ -2090,7 +2090,10 @@ mod tests {
         )
         .unwrap();
         assert!(is_attach_deny_reply(&refused, &[3]));
-        assert!(!is_attach_deny_reply(&refused, &[4]), "a foreign id is a run failure");
+        assert!(
+            !is_attach_deny_reply(&refused, &[4]),
+            "a foreign id is a run failure"
+        );
         assert_eq!(
             frame(refused),
             AttachAction::Fail("error: already settled (code -32001)".into()),

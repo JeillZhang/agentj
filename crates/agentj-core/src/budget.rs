@@ -442,8 +442,14 @@ mod tests {
         // (300 chars) would wave this through and leave the message 28% over budget.
         let blob = "{}[]()<>,;:!?".repeat(20);
         let payload = serde_json::json!({ "q": blob }).to_string();
-        assert!(payload.chars().count() <= 300 + 16, "fixture stays under the char cap");
-        assert!(estimate_tokens(&payload) > 100, "fixture must exceed the token cap");
+        assert!(
+            payload.chars().count() <= 300 + 16,
+            "fixture stays under the char cap"
+        );
+        assert!(
+            estimate_tokens(&payload) > 100,
+            "fixture must exceed the token cap"
+        );
         let mut message = ChatMessage::user("go");
         message.tool_calls = vec![ToolCall {
             id: "c1".into(),

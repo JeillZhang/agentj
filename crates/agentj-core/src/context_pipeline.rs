@@ -100,7 +100,10 @@ mod tests {
         let pipeline = DefaultContextPipeline::new();
         let defs = vec![fat_tool("fat", 1_500)];
         let reserved = crate::budget::definitions_tokens(&defs);
-        assert!(reserved >= 1_500, "fixture must reserve a big chunk: {reserved}");
+        assert!(
+            reserved >= 1_500,
+            "fixture must reserve a big chunk: {reserved}"
+        );
         // Ten ~104-token turns: with the reservation charged the body may keep about four of
         // them, while the generic `fit` floor (1k) would let nine through and overflow.
         let mut messages = vec![ChatMessage::system("sys")];
