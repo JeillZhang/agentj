@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from "react";
-import { METHODS, RpcClient } from "@agentj/sdk";
-import type { AuthSetApiKeyResult } from "@agentj/protocol";
+import { Fragment, useEffect, useRef, useState } from "react";
+import { METHODS, RpcClient, buildTrend } from "@agentj/sdk";
+import type { AuthSetApiKeyResult, ProviderUsageHistoryResult, UsageSample, UsageWindow } from "@agentj/protocol";
+import UsageSparkline from "./UsageSparkline";
 import "./subscriptionPanel.css";
 
 type Props = {
@@ -11,7 +12,6 @@ type Props = {
   onCleared?: () => void;
 };
 
-type UsageWindow = { kind: string; status?: string; percent?: number | null; resets_at?: string | null };
 type ProviderUsage = {
   windows?: UsageWindow[] | null;
   warn_percent?: number | null;
@@ -89,7 +89,7 @@ function CredentialRow({ status }: { status: AuthStatus }) {
   );
 }
 
-function UsageBlock({ usage }: { usage: ProviderUsage }) {
+function UsageBlock({ usage, samples = [] }: { usage: ProviderUsage; samples?: UsageSample[] }) {
   const windows = Array.isArray(usage.windows) ? [...usage.windows] : [];
   windows.sort((a, b) => WINDOW_ORDER.indexOf(a.kind) - WINDOW_ORDER.indexOf(b.kind));
   const kind = usage.error?.kind;
@@ -97,9 +97,16 @@ function UsageBlock({ usage }: { usage: ProviderUsage }) {
   return (
     <div className="aj-sub__usage">
       {usage.stale && <p className="aj-sub__stale">显示的是缓存数据</p>}
-      {windows.map((item) => (
-        <WindowRow key={item.kind} item={item} warnPercent={usage.warn_percent} />
-      ))}
+      {windows.map((item) => {
+        const points = buildTrend(samples, item.kind, Date.now());
+        return (
+          <Fragment key={item.kind}>
+            <WindowRow item={item} warnPercent={usage.warn_percent} />
+            <UsageSparkline points={points} />
+          </Fragment>
+        );
+      })}
+      {samples.length < 2 && <p className="aj-sub__hint">趋势需要至少两次取样</p>}
       {sentence && <p className="aj-sub__error">{sentence}</p>}
     </div>
   );
@@ -108,6 +115,7 @@ function UsageBlock({ usage }: { usage: ProviderUsage }) {
 export default function SubscriptionPanel({ client, onClose, onLinked, onCleared }: Props) {
   const [status, setStatus] = useState<AuthStatus | null>(null);
   const [usage, setUsage] = useState<ProviderUsage | null>(null);
+  const [samples, setSamples] = useState<UsageSample[]>([]);
   const [device, setDevice] = useState<DeviceView | null>(null);
   const [deviceMsg, setDeviceMsg] = useState<string | null>(null);
   const [key, setKey] = useState("");
@@ -130,6 +138,25 @@ export default function SubscriptionPanel({ client, onClose, onLinked, onCleared
     } catch {
       /* keep the previous snapshot on a transport failure */
     }
+  };
+
+  // An empty params object means "default provider, full retention window": the server
+  // defaults `since` from its own retention (T03), so the panel must not hardcode a window.
+  const loadHistory = async () => {
+    let res: ProviderUsageHistoryResult | undefined;
+    try {
+      res = (await client.request(METHODS.providerUsageHistory,
+        {})) as ProviderUsageHistoryResult | undefined;
+    } catch {
+      if (aliveRef.current) setSamples([]);
+      return;
+    }
+    if (aliveRef.current) setSamples(Array.isArray(res?.samples) ? res.samples : []);
+  };
+
+  const refreshUsage = () => {
+    void loadUsage(true);
+    void loadHistory();
   };
 
   const loadStatus = async () => {
@@ -165,7 +192,7 @@ export default function SubscriptionPanel({ client, onClose, onLinked, onCleared
       setDeviceMsg("登录成功");
       void loadStatus();
       void client.request(METHODS.modelList, { refresh: true });
-      void loadUsage(true);
+      refreshUsage();
       return;
     }
     if (res.state === "expired") setDeviceMsg("设备码已过期，请重新登录");
@@ -234,6 +261,7 @@ export default function SubscriptionPanel({ client, onClose, onLinked, onCleared
     aliveRef.current = true;
     void loadStatus();
     void loadUsage(false);
+    void loadHistory();
     return () => {
       aliveRef.current = false;
       clearTimer();
@@ -250,7 +278,11 @@ export default function SubscriptionPanel({ client, onClose, onLinked, onCleared
         </button>
       </div>
       {status && <CredentialRow status={status} />}
-      {usage ? <UsageBlock usage={usage} /> : <p className="aj-sub__hint">正在获取用量…</p>}
+      {usage ? (
+        <UsageBlock usage={usage} samples={samples} />
+      ) : (
+        <p className="aj-sub__hint">正在获取用量…</p>
+      )}
       <div className="aj-sub__link">
         <span className="aj-sub__section">链接方式</span>
         <label className="aj-sub__link-label" htmlFor="aj-sub-api-key">
@@ -293,7 +325,7 @@ export default function SubscriptionPanel({ client, onClose, onLinked, onCleared
         <button type="button" className="aj-sub__btn" onClick={() => void startDevice()}>
           设备码登录
         </button>
-        <button type="button" className="aj-sub__btn" onClick={() => void loadUsage(true)}>
+        <button type="button" className="aj-sub__btn" onClick={refreshUsage}>
           刷新用量
         </button>
       </div>
