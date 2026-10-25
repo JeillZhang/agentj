@@ -722,6 +722,9 @@ fn run_error_line(v: &serde_json::Value) -> Option<String> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum AttachAction {
     DenyApproval { request_id: String, tool: String },
+    /// The kernel is waiting on an `ask` tool; attach is not an interactive client, so it
+    /// settles the question as skipped instead of letting the 600s timeout run.
+    SkipQuestion { question_id: String },
     Reply(String),
     Fail(String),
     Ignore,
@@ -738,6 +741,14 @@ fn decode_attach_frame(v: &serde_json::Value) -> AttachAction {
                     .and_then(|t| t.as_str())
                     .unwrap_or("unknown")
                     .to_string(),
+            },
+            None => AttachAction::Ignore,
+        };
+    }
+    if v.get("method").and_then(|m| m.as_str()) == Some("$/askQuestion") {
+        return match v["params"].get("question_id").and_then(|q| q.as_str()) {
+            Some(question_id) => AttachAction::SkipQuestion {
+                question_id: question_id.to_string(),
             },
             None => AttachAction::Ignore,
         };
@@ -778,6 +789,27 @@ fn attach_deny_request(request_id: &str, id: u64) -> String {
     let body = serde_json::to_string(&params).expect("a deny decision always serializes");
     format!(
         "{{\"jsonrpc\":\"2.0\",\"id\":{id},\"method\":\"permission/respond\",\"params\":{body}}}\n"
+    )
+}
+
+/// `question/respond` body attach writes: the question is settled as skipped, which the
+/// kernel reports to the model honestly instead of blocking until the ask timeout.
+fn attach_skip_question_request(question_id: &str, id: u64) -> String {
+    let params = agentj_protocol::question::QuestionRespondParams {
+        question_id: question_id.to_string(),
+        answers: Vec::new(),
+        skipped: true,
+    };
+    let body = serde_json::to_string(&params).expect("a skipped answer always serializes");
+    format!("{{\"jsonrpc\":\"2.0\",\"id\":{id},\"method\":\"question/respond\",\"params\":{body}}}\n")
+}
+
+/// The line `run --attach` prints when the remote kernel asks a question: attach answers it
+/// as skipped, and says how to answer for real.
+fn attach_skip_question_warning(question_id: &str) -> String {
+    format!(
+        "warning: run --attach cannot answer questions; skipping ({question_id}) — \
+         answer it in an interactive serve client, or run `agentj run` locally"
     )
 }
 
@@ -822,7 +854,9 @@ where
 {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
     let mut next_id = 2u64;
-    let mut deny_ids: Vec<u64> = Vec::new();
+    // Ids of the requests attach itself wrote (a deny or a skip), so their error replies
+    // are not mistaken for the run failing.
+    let mut own_ids: Vec<u64> = Vec::new();
     let mut line = String::new();
     loop {
         line.clear();
@@ -839,17 +873,27 @@ where
                 eprintln!("{}", attach_deny_warning(&tool, &request_id));
                 let id = next_id;
                 next_id += 1;
-                deny_ids.push(id);
+                own_ids.push(id);
                 let body = attach_deny_request(&request_id, id);
                 if let Err(err) = w.write_all(body.as_bytes()).await {
                     tracing::warn!(%err, "attach: failed to send the deny decision");
+                }
+            }
+            AttachAction::SkipQuestion { question_id } => {
+                eprintln!("{}", attach_skip_question_warning(&question_id));
+                let id = next_id;
+                next_id += 1;
+                own_ids.push(id);
+                let body = attach_skip_question_request(&question_id, id);
+                if let Err(err) = w.write_all(body.as_bytes()).await {
+                    tracing::warn!(%err, "attach: failed to settle the question");
                 }
             }
             AttachAction::Fail(failure) => {
                 // A refused deny answers *our* write, not the run: the remote turn is still
                 // going, so report the bookkeeping failure and keep reading instead of
                 // aborting with an error that looks like the run's own.
-                if is_attach_deny_reply(&frame, &deny_ids) {
+                if is_attach_deny_reply(&frame, &own_ids) {
                     eprintln!("warning: attach deny was refused: {failure}");
                     continue;
                 }
@@ -2187,6 +2231,37 @@ mod tests {
         let line = attach_deny_warning("bash", "r1");
         assert!(line.starts_with("warning: run --attach cannot answer approvals"));
         assert!(line.contains("bash") && line.contains("r1"));
+    }
+
+    #[test]
+    fn attach_settles_a_question_as_skipped() {
+        let v = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "$/askQuestion",
+            "params": { "question_id": "q-7", "question": "Which file?", "options": [] }
+        });
+        assert_eq!(
+            frame(v),
+            AttachAction::SkipQuestion {
+                question_id: "q-7".into()
+            }
+        );
+        let body = attach_skip_question_request("q-7", 9);
+        let sent: serde_json::Value = serde_json::from_str(body.trim()).unwrap();
+        assert_eq!(sent["method"], "question/respond");
+        assert_eq!(sent["params"]["question_id"], "q-7");
+        assert_eq!(sent["params"]["skipped"], true);
+        assert_eq!(sent["id"], 9);
+        assert!(
+            attach_skip_question_warning("q-7").contains("cannot answer questions"),
+            "the operator must be told the question was skipped"
+        );
+    }
+
+    #[test]
+    fn attach_ignores_a_malformed_question_notification() {
+        let v = serde_json::json!({"jsonrpc": "2.0", "method": "$/askQuestion", "params": {}});
+        assert_eq!(frame(v), AttachAction::Ignore);
     }
 
     #[test]
