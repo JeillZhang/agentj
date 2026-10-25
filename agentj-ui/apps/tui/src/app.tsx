@@ -278,7 +278,13 @@ type SubSnapshot = {
 function useSubscriptionSuffix(client: RpcClient | null, status: TransportStatus): SubSuffixInput {
   const [snapshot, setSnapshot] = useState<SubSnapshot | null>(null);
   useEffect(() => {
-    if (!client || status !== "open") return;
+    // Dropping the snapshot on close matters: the numbers described the connection that
+    // just went away, and `stale` is recomputed from a render-time clock, so keeping them
+    // would let the line read `kernel unreachable · sub 40%` — and flip arbitrarily.
+    if (!client || status !== "open") {
+      setSnapshot(null);
+      return;
+    }
     let alive = true;
     void (async () => {
       try {

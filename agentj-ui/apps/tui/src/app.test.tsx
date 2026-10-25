@@ -247,8 +247,16 @@ async function repaint(setup: TestRendererSetup): Promise<void> {
   await act(async () => { await setup.flush(); });
 }
 
-async function openFilesSidebar(setup: TestRendererSetup, input: AppInput): Promise<void> {
-  await act(async () => { input.press("down"); await setup.flush(); });
+// `setup.waitFor` only inspects the last painted frame, and state-driven text changes need a
+// flush tick to reach it — poll by flushing until the predicate holds (bounded).
+async function flushUntil(setup: TestRendererSetup, predicate: () => boolean): Promise<void> {
+  for (let i = 0; i < 12; i += 1) {
+    if (predicate()) return;
+    await act(async () => { await setup.flush(); });
+  }
+}
+
+async function openFilesSidebar(setup: TestRendererSetup, input: AppInput): Promise<void> {  await act(async () => { input.press("down"); await setup.flush(); });
   await act(async () => { input.press("enter"); await setup.flush(); });
   await act(async () => { await setup.waitFor(() => setup.captureCharFrame().includes("s1")); });
   await act(async () => { input.press("tab"); await setup.flush(); });
@@ -1127,6 +1135,44 @@ describe("files search mode", () => {
 });
 
 describe("App subscription overlay", () => {
+  test("clears the usage suffix when the connection drops", async () => {
+    // A linked credential plus one usage window, so the status line carries the suffix.
+    const handle: TransportHandle & { send: (line: string) => Promise<string> } = {
+      close() {},
+      async send(line: string): Promise<string> {
+        const req = JSON.parse(line) as { id: number; method: string };
+        let result: unknown = {};
+        if (req.method === METHODS.authStatus) result = { authenticated: true };
+        if (req.method === METHODS.providerUsage) {
+          result = { windows: [{ kind: "rolling", percent: 40 }] };
+        }
+        return JSON.stringify({ jsonrpc: "2.0", id: req.id, result });
+      },
+    };
+    const emit = (next: TransportStatus) => act(() => handle.onStatusChange?.(next));
+    const setup = await testRender(
+      <App
+        createTransport={() => {
+          queueMicrotask(() => emit("open"));
+          return handle;
+        }}
+        backoffBaseMs={60000}
+      />,
+      {},
+    );
+    await flushUntil(setup, () => setup.captureCharFrame().includes("sub 40%"));
+    expect(setup.captureCharFrame()).toContain("sub 40%");
+
+    emit("closed");
+    await flushUntil(setup, () => setup.captureCharFrame().toLowerCase().includes("kernel unreachable"));
+    await repaint(setup);
+    const frame = setup.captureCharFrame();
+    expect(frame.toLowerCase()).toContain("kernel unreachable");
+    // The last numbers described a connection that is gone: the line must not keep them.
+    expect(frame).not.toContain("sub 40%");
+    act(() => setup.renderer.destroy());
+  });
+
   test("opens from the palette and closes with Esc", async () => {
     const setup = await testRender(
       <App url="ws://127.0.0.1:1" createTransport={fakeTransport} backoffBaseMs={60000} />,
