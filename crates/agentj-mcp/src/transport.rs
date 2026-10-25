@@ -12,16 +12,34 @@ pub struct McpTransport {
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
     _child: Child,
+    /// Pid of the spawned child, which is also its process group id (design ㊷).
+    group: Option<u32>,
     next_id: u64,
+}
+
+impl Drop for McpTransport {
+    fn drop(&mut self) {
+        self.reap_group();
+    }
 }
 
 impl McpTransport {
     pub fn new(stdin: ChildStdin, stdout: ChildStdout, child: Child) -> Self {
+        let group = child.id();
         Self {
             stdin,
             stdout: BufReader::new(stdout),
             _child: child,
+            group,
             next_id: 0,
+        }
+    }
+
+    /// Reap everything the server started (`sh -c` grandchildren included). Idempotent:
+    /// `kill` on an already-empty group is a no-op error we discard.
+    fn reap_group(&mut self) {
+        if let Some(pid) = self.group.take() {
+            super::process::kill_group(pid);
         }
     }
 
@@ -57,6 +75,8 @@ impl McpTransport {
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
             if let Ok(Some(_)) = self._child.try_wait() {
+                // The direct child is gone; anything it spawned has to go with it.
+                self.reap_group();
                 return true;
             }
             tokio::time::sleep(Duration::from_millis(20)).await;

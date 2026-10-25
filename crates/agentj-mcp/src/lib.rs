@@ -8,6 +8,8 @@ use agentj_core::error::ToolError;
 use agentj_core::module::{Tool, ToolRegistry};
 use serde_json::Value;
 use std::sync::Arc;
+pub mod process;
+
 use tokio::process::Command;
 
 pub struct McpClient;
@@ -17,14 +19,15 @@ impl McpClient {
         srv_cmd: &str,
         registry: &ToolRegistry,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let mut child = Command::new("sh")
-            .arg("-c")
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c")
             .arg(srv_cmd)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::inherit())
-            .kill_on_drop(true) // lifecycle: kill the server subprocess when transport drops
-            .spawn()?;
+            .kill_on_drop(true); // lifecycle: kill the server subprocess when transport drops
+        process::isolate_group(&mut cmd);
+        let mut child = cmd.spawn()?;
         let stdin = child.stdin.take().unwrap();
         let stdout = child.stdout.take().unwrap();
         let mut transport = McpTransport::new(stdin, stdout, child);
@@ -113,13 +116,15 @@ async fn call_server(command: &str, name: &str, input: Value) -> Result<Value, T
 
 /// Spawn one MCP server over `sh -c <command>` and finish the discovery handshake.
 async fn prepare_call(command: &str, name: &str) -> Result<McpTransport, ToolError> {
-    let mut child = Command::new("sh")
-        .arg("-c")
+    let mut cmd = Command::new("sh");
+    cmd.arg("-c")
         .arg(command)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::inherit())
-        .kill_on_drop(true) // lifecycle: no orphan MCP server processes on drop
+        .kill_on_drop(true); // lifecycle: no orphan MCP server processes on drop
+    process::isolate_group(&mut cmd);
+    let mut child = cmd
         .spawn()
         .map_err(|e| call_failed(name, e.to_string()))?;
     let stdin = child.stdin.take().unwrap();

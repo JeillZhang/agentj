@@ -219,15 +219,15 @@ fn transport_loop(rx: Receiver<TransportOp>) {
 /// Spawn the server subprocess and run the initialize handshake. Must run on the
 /// transport thread's runtime so the process pipes bind to that runtime.
 async fn spawn_and_init(spec: &McpServerSpec) -> Result<McpTransport, String> {
-    let mut child = Command::new(&spec.command)
-        .args(&spec.args)
+    let mut cmd = Command::new(&spec.command);
+    cmd.args(&spec.args)
         .envs(&spec.env)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::inherit())
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|e| e.to_string())?;
+        .kill_on_drop(true);
+    crate::process::isolate_group(&mut cmd);
+    let mut child = cmd.spawn().map_err(|e| e.to_string())?;
     let stdin = child.stdin.take().ok_or_else(|| "no stdin".to_string())?;
     let stdout = child.stdout.take().ok_or_else(|| "no stdout".to_string())?;
     let mut transport = McpTransport::new(stdin, stdout, child);
