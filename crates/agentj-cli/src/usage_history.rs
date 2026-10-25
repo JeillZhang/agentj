@@ -2,9 +2,9 @@
 //! upstream was really contacted (design 4.1.1). Best effort by contract — every failure
 //! warns and returns, never failing the request that triggered the sampling. @since 0.20.0
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use agentj_protocol::provider::{UsageSample, UsageWindowKind};
+use agentj_protocol::provider::{UsageSample, UsageWindow, UsageWindowKind};
 
 /// Default retention window in days (`usage.history_days` mirrors it). @since 0.20.0
 pub const DEFAULT_RETENTION_DAYS: i64 = 30;
@@ -17,6 +17,9 @@ pub const DEDUPE_WINDOW_SECS: i64 = 60;
 
 const SECS_PER_DAY: i64 = 86_400;
 const MAX_PROVIDER_NAME_LEN: usize = 64;
+/// Schema version of `<provider>.json`; a bump means "ignore the old file", never migrate.
+const SAMPLE_FILE_VERSION: u32 = 1;
+const TMP_EXTENSION: &str = "json.tmp";
 
 /// `<provider>.json`-safe name, or `None` when the provider id cannot be a filename.
 /// Only `[a-z0-9._-]`, non-empty, ≤ 64 chars (design 4.1.1).
@@ -118,6 +121,142 @@ impl UsageHistory {
         }
         out
     }
+
+    /// Appends one sampling of `windows` for `provider`: load, skip an unchanged repeat, merge,
+    /// apply retention + cap, then rewrite the file atomically (design 4.1.4).
+    pub fn record(&self, provider: &str, at: i64, windows: &[UsageWindow]) {
+        let Some(path) = self.path(provider) else {
+            tracing::warn!("usage history skipped: {provider:?} is not a safe file name");
+            return;
+        };
+        let sample = UsageSample {
+            at,
+            windows: windows.to_vec(),
+        };
+        let existing = self.load(&path);
+        if is_repeat(existing.iter().max_by_key(|s| s.at), &sample) {
+            return;
+        }
+        let merged = merge(existing, vec![sample]);
+        let keep = self.max_samples;
+        let kept = cap_len(prune(merged, at, self.retention_days), keep);
+        self.store(&path, provider, &kept);
+    }
+
+    /// Persisted samples of `provider` with `kind`, at or after `since`, newest `limit` kept.
+    pub fn query(
+        &self,
+        provider: &str,
+        kind: Option<UsageWindowKind>,
+        since: i64,
+        limit: u32,
+    ) -> Vec<UsageSample> {
+        let Some(path) = self.path(provider) else {
+            return Vec::new();
+        };
+        self.filter(self.load(&path), kind, Some(since), Some(limit))
+    }
+
+    /// `<dir>/<provider>.json`, or `None` when the provider id cannot be a file name.
+    fn path(&self, provider: &str) -> Option<PathBuf> {
+        file_name(provider).map(|name| self.dir.join(format!("{name}.json")))
+    }
+
+    /// Stored samples, or an empty list when the file is missing or unusable — a broken history
+    /// never fails the caller (design 4.1.1).
+    fn load(&self, path: &Path) -> Vec<UsageSample> {
+        let text = match std::fs::read_to_string(path) {
+            Ok(text) => text,
+            Err(error) => {
+                if error.kind() != std::io::ErrorKind::NotFound {
+                    tracing::warn!("usage history unreadable ({path:?}): {error}");
+                }
+                return Vec::new();
+            }
+        };
+        decode(&text).unwrap_or_else(|| {
+            tracing::warn!("usage history unusable ({path:?}): starting from empty");
+            Vec::new()
+        })
+    }
+
+    /// Atomic replace of one provider's file; every failure warns instead of propagating.
+    // Same discipline as agentj-ipc/src/metrics_state.rs::write (0700/0600/tmp+rename); kept
+    // local on purpose — different schema, and that writer is bound to per-port state.
+    fn store(&self, path: &Path, provider: &str, samples: &[UsageSample]) {
+        if let Err(error) = write_history_file(&self.dir, path, provider, samples) {
+            tracing::warn!("usage history write failed ({path:?}): {error}");
+        }
+    }
+}
+
+/// Creates `dir` as `0700`, writes the sample file through `*.json.tmp` + rename as `0600`,
+/// and removes the tmp file whenever anything fails.
+fn write_history_file(
+    dir: &Path,
+    path: &Path,
+    provider: &str,
+    samples: &[UsageSample],
+) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    set_private_dir(dir)?;
+    let body = serde_json::json!({
+        "version": SAMPLE_FILE_VERSION,
+        "provider": provider,
+        "samples": samples,
+    });
+    let tmp = path.with_extension(TMP_EXTENSION);
+    let mut file = open_private(&tmp)?;
+    let written = std::io::Write::write_all(&mut file, body.to_string().as_bytes())
+        .and_then(|()| file.sync_all());
+    drop(file);
+    written.map_err(|error| discard_tmp(&tmp, error))?;
+    std::fs::rename(&tmp, path).map_err(|error| discard_tmp(&tmp, error))
+}
+
+/// `Some(samples)` only for this schema version with a decodable `samples` array.
+fn decode(text: &str) -> Option<Vec<UsageSample>> {
+    let value: serde_json::Value = serde_json::from_str(text).ok()?;
+    if value.get("version")?.as_u64()? != u64::from(SAMPLE_FILE_VERSION) {
+        return None;
+    }
+    serde_json::from_value(value.get("samples")?.clone()).ok()
+}
+
+#[cfg(unix)]
+fn set_private_dir(dir: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+}
+
+#[cfg(not(unix))]
+fn set_private_dir(_dir: &Path) -> std::io::Result<()> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn open_private(tmp: &Path) -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(tmp)
+}
+
+#[cfg(not(unix))]
+fn open_private(tmp: &Path) -> std::io::Result<std::fs::File> {
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(tmp)
+}
+
+fn discard_tmp(tmp: &Path, error: std::io::Error) -> std::io::Error {
+    let _ = std::fs::remove_file(tmp);
+    error
 }
 
 #[cfg(test)]
@@ -246,5 +385,114 @@ mod tests {
         let h = UsageHistory::new(PathBuf::from("/tmp/unused")).with_limits(0, 1);
         assert_eq!(h.retention_days(), 1, "retention days clamp to 1..=365");
         assert_eq!(h.max_samples, 100, "max samples clamp to 100..=100_000");
+    }
+
+    /// Fixed "now" so the retention assertions do not depend on the wall clock.
+    const NOW: i64 = 1_700_000_000;
+
+    /// A per-test directory under the system temp dir; the caller removes it at the end.
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("aj-usage-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    #[test]
+    fn record_then_query_roundtrips_through_disk() {
+        let dir = temp_dir("roundtrip");
+        let h = UsageHistory::new(dir.clone());
+        h.record("opencode-go", 1_000, &[window(10)]);
+        h.record("opencode-go", 1_100, &[window(20)]);
+        let again = UsageHistory::new(dir.clone()); // a fresh instance = a fresh process
+        let out = again.query("opencode-go", None, 0, 100);
+        assert_eq!(
+            out.iter().map(|s| s.at).collect::<Vec<_>>(),
+            vec![1_000, 1_100]
+        );
+        assert_eq!(out[1].windows[0].percent, Some(20));
+        assert_eq!(
+            std::fs::read_dir(&dir).map(|d| d.count()).unwrap_or(0),
+            1,
+            "no tmp file left behind"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn record_writes_a_private_file_inside_a_private_directory() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let dir = temp_dir("perms");
+            let h = UsageHistory::new(dir.clone());
+            h.record("p", 1_000, &[window(10)]);
+            let mode = |path: &std::path::Path| {
+                std::fs::metadata(path)
+                    .map(|m| m.permissions().mode() & 0o777)
+                    .ok()
+            };
+            assert_eq!(mode(&dir), Some(0o700), "history dir is 0700");
+            assert_eq!(
+                mode(&dir.join("p.json")),
+                Some(0o600),
+                "samples file is 0600"
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn record_skips_repeats_within_the_dedupe_window() {
+        let dir = temp_dir("dedupe");
+        let h = UsageHistory::new(dir.clone());
+        h.record("p", 1_000, &[window(10)]);
+        h.record("p", 1_020, &[window(10)]); // same windows, < 60s later
+        h.record("p", 1_100, &[window(10)]); // still the same value, but the window elapsed
+        let out = h.query("p", None, 0, 100);
+        assert_eq!(
+            out.iter().map(|s| s.at).collect::<Vec<_>>(),
+            vec![1_000, 1_100]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn corrupt_file_is_ignored_and_overwritten() {
+        let dir = temp_dir("corrupt");
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        std::fs::write(dir.join("p.json"), b"not json").expect("seed corrupt file");
+        let h = UsageHistory::new(dir.clone());
+        assert!(
+            h.query("p", None, 0, 100).is_empty(),
+            "unusable file reads as empty"
+        );
+        h.record("p", 1_000, &[window(10)]);
+        assert_eq!(h.query("p", None, 0, 100).len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn record_is_a_no_op_for_an_unsafe_provider_name() {
+        let dir = temp_dir("unsafe");
+        let h = UsageHistory::new(dir.clone());
+        h.record("../escape", 1_000, &[window(10)]);
+        let written = std::fs::read_dir(&dir).map(|d| d.count()).unwrap_or(0);
+        assert_eq!(written, 0, "nothing is written outside the history dir");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn retention_and_cap_apply_on_write() {
+        let dir = temp_dir("retention");
+        let h = UsageHistory::new(dir.clone()).with_limits(1, 100);
+        // Vary the reported percent so no write is collapsed as a repeat.
+        for i in 0..150 {
+            h.record("p", NOW - 149 + i, &[window((i % 90) as u8)]);
+        }
+        let out = h.query("p", None, 0, 5_000);
+        assert_eq!(out.len(), 100, "cap_len keeps at most max_samples");
+        assert_eq!(out.last().map(|s| s.at), Some(NOW));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
