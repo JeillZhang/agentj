@@ -161,6 +161,43 @@ describe("useSubscriptionStatus", () => {
     expect(failed.result.current.state).toBe("error");
   });
 
+  it("collapses concurrent focus refetches while one is pending", async () => {
+    let served = 0;
+    const pending: { resolve: (value: unknown) => void } = { resolve: () => {} };
+    const client = makeClient({
+      [METHODS.authStatus]: linked,
+      [METHODS.providerUsage]: () => {
+        served += 1;
+        if (served === 1) return usage([{ kind: "rolling", percent: 12 }]);
+        return new Promise((resolve) => {
+          pending.resolve = resolve;
+        });
+      },
+    });
+    const { result } = renderHook(() => useSubscriptionStatus(client));
+    await settle();
+    expect(client.calls(METHODS.providerUsage)).toBe(1);
+
+    // Two focus bursts land while the refetch is still in flight: the second must join the
+    // pending fetch instead of firing another auth/status + provider/usage pair (the seq
+    // guard keeps the *data* right, but it does not stop the extra request).
+    vi.advanceTimersByTime(SUBSCRIPTION_FRESH_MS + 1_000);
+    await act(async () => {
+      window.dispatchEvent(new Event("focus"));
+      window.dispatchEvent(new Event("focus"));
+      for (let i = 0; i < 6; i += 1) await Promise.resolve();
+    });
+    expect(client.calls(METHODS.providerUsage)).toBe(2);
+    expect(client.calls(METHODS.authStatus)).toBe(2);
+
+    await act(async () => {
+      pending.resolve(usage([{ kind: "rolling", percent: 40 }]));
+      for (let i = 0; i < 6; i += 1) await Promise.resolve();
+    });
+    expect(client.calls(METHODS.providerUsage)).toBe(2);
+    expect(result.current.worstPercent).toBe(40);
+  });
+
   it("grades a failed auth probe as an error instead of a missing credential", async () => {
     const client = makeClient({
       [METHODS.authStatus]: () => {

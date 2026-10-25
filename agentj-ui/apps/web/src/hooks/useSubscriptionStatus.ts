@@ -113,8 +113,9 @@ export function useSubscriptionStatus(client: RpcClient | null): SubscriptionSta
   const fetchedAtRef = useRef(0);
   const seqRef = useRef(0);
   const aliveRef = useRef(true);
+  const inFlightRef = useRef(false);
 
-  const fetchAll = useCallback(async () => {
+  const fetchOnce = useCallback(async () => {
     if (!client) return;
     const seq = (seqRef.current += 1);
     const current = () => aliveRef.current && seqRef.current === seq;
@@ -186,6 +187,22 @@ export function useSubscriptionStatus(client: RpcClient | null): SubscriptionSta
       }));
     }
   }, [client]);
+
+  /**
+   * Collapses concurrent fetches. `fetchedAtRef` only advances on success, so a burst of
+   * focus events during one pending (or previously failed) fetch would otherwise start a
+   * full auth/status + provider/usage round per event; the seq guard keeps the data right
+   * but cannot stop the requests.
+   */
+  const fetchAll = useCallback(async () => {
+    if (!client || inFlightRef.current) return;
+    inFlightRef.current = true;
+    try {
+      await fetchOnce();
+    } finally {
+      inFlightRef.current = false;
+    }
+  }, [client, fetchOnce]);
 
   useEffect(() => {
     aliveRef.current = true;
