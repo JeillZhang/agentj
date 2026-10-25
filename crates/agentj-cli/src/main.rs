@@ -37,6 +37,7 @@ mod logging;
 mod provider_service;
 mod providers;
 mod refreshing_provider;
+mod usage_history;
 
 #[derive(Parser)]
 #[command(name = "agentj", version, about = "AgentJ — AI coding agent")]
