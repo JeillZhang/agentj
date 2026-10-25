@@ -492,6 +492,8 @@ struct TcpServeOptions {
     provider_service: Option<Arc<dyn agentj_ipc::ProviderService>>,
     /// `[web]` spot cadence + per-request verification knobs.
     integrity: agentj_ipc::web::IntegrityOptions,
+    /// `Config::validate()` output: every clamped/ignored knob, printed with the banner.
+    config_warnings: Vec<String>,
 }
 
 /// Whether `host` refers to the loopback interface (the local-trust default).
@@ -605,6 +607,7 @@ async fn serve_tcp(
         &options.host,
         local.port(),
         warnings,
+        &options.config_warnings,
     );
     // Resident mode: exits when the last client disconnects or a shutdown
     // request arrives (design #3, on-demand resident).
@@ -634,6 +637,7 @@ fn emit_serve_banner(
     host: &str,
     port: u16,
     warnings: [Option<String>; 4],
+    config_warnings: &[String],
 ) {
     println!("websocket on ws://{}:{}/ws", bracket_ipv6(host), port);
     match web_dist {
@@ -652,6 +656,10 @@ fn emit_serve_banner(
         eprintln!("{warning}");
     }
     for warning in warnings.into_iter().flatten() {
+        eprintln!("{warning}");
+    }
+    // Last, so an operator reading the banner tail sees every silently adjusted knob.
+    for warning in config_warnings {
         eprintln!("{warning}");
     }
 }
@@ -1125,6 +1133,7 @@ struct WebSettings {
     metrics_state_dir: Option<std::path::PathBuf>,
     usage_history_warning: Option<String>,
     integrity: agentj_ipc::web::IntegrityOptions,
+    config_warnings: Vec<String>,
 }
 
 impl WebSettings {
@@ -1139,6 +1148,7 @@ impl WebSettings {
                 resolve_usage_history_dir(config).as_deref(),
             ),
             integrity: resolve_integrity_options(config),
+            config_warnings: config.validate(),
         }
     }
 }
@@ -1447,6 +1457,7 @@ async fn run_serve(
         usage_history_warning: web.usage_history_warning,
         provider_service: wiring.provider_service,
         integrity: web.integrity,
+        config_warnings: web.config_warnings,
     };
     serve_tcp(
         wiring.kernel,
@@ -2346,6 +2357,21 @@ mod tests {
             ))
         );
         assert_eq!(usage_history_dir_from(&cfg, None, None), None);
+    }
+
+    #[test]
+    fn web_settings_carry_the_config_clamp_warnings() {
+        let cfg = load_test_config("[agent]\nmax_tool_iterations = 9000\n");
+        let web = WebSettings::resolve(&cfg);
+        assert_eq!(
+            web.config_warnings,
+            vec!["warning: agent.max_tool_iterations = 9000 outside 1..=1000; using 1000"],
+            "the serve banner must surface a silently clamped knob"
+        );
+        assert!(
+            WebSettings::resolve(&load_test_config("")).config_warnings.is_empty(),
+            "an in-range config stays quiet"
+        );
     }
 
     #[test]
