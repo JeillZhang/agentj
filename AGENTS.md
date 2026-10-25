@@ -58,7 +58,7 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
 - `python3 scripts/tests/fn-length.py [PATH…]` — 逐个 `fn` 计 body 行数，>50 行即失败并列出
   `file:line: fn name = N lines`（目录参数自动展开；`/tests/` 段跳过并打印
   `scanned N file(s), skipped M test file(s)`；空目标集 `rc=2` 拒绝空过）。
-- `bash scripts/tests/assert-{ui,cargo,ci}.sh all` — 仓库不变量断言（18 个 check：UI 清单 /
+- `bash scripts/tests/assert-{ui,cargo,ci}.sh all` — 仓库不变量断言（19 个 check：UI 清单 /
   单一 lockfile / Cargo 工作区策略 / 15 crate 继承 / LICENSE / deny.toml / lockfile 一致性 /
   函数长度 / CI 作业契约 / 覆盖率棘轮 / 治理文件 / 卫生 / summary / 文档基线 —— 文档基线一项
   同时断言这里的 check 数与三个脚本实际注册的一致）。`<check>` 单跑、
