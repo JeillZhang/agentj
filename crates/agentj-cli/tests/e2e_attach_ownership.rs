@@ -176,6 +176,9 @@ fn second_client_reclaims_ownership_after_the_owner_disconnects() {
     // 第二个客户端先连上：`serve` 在**最后一个**连接断开时收尾（resident 决策 #3），
     // 若只有 A 在线，drop(A) 会让内核直接关机，这里就测不到「归属转移」了。
     let mut b = common::SocketClient::connect(&served.addr);
+    // B 必须先真的被服务端收下（一次往返），否则 A 的 EOF 可能先到：那一刻登记表还是空的，
+    // `serve` 会以为最后一个客户端走了而收尾，B 的后续写入就拿到 BrokenPipe。
+    b.call("session/list", serde_json::json!({}));
     drop(a); // owner 断连：settle_owner_pending 清 owner，但会话本身仍在
     // 不睡固定时长等 A 的 EOF：服务端处理断连与这条请求的先后顺序不确定，睡多久都可能不够
     // （慢 runner 上就是 flake）。owner 若仍指向 A，subscribe 会跳过认领但本身成功；真正的
