@@ -24,14 +24,60 @@ pub const MAX_OVERFLOW_RETRIES: usize = 2;
 pub const TOOL_RESULT_TRUNCATION_NOTICE: &str =
     "\n…[已截断 {dropped} 字符，原文 {total} 字符；请缩小查询范围]…\n";
 
-/// Approximate tokens: ASCII at ~4 chars/token, everything else at ~1 char/token (CJK is
-/// close to one token per character, and under-counting is what breaks the request).
-/// @since 0.29.7
+/// Approximate tokens: ASCII letters/whitespace at ~4 chars/token, dense ASCII punctuation
+/// at ~2.5 chars/token, CJK at ~1.25 chars/token, other BMP characters at ~1 char/token and
+/// astral characters at ~0.5 char/token. Under-counting is what breaks the request, so every
+/// class is charged at least as much as the pre-seam heuristic (ASCII-only 4:1, everything
+/// else 1:1) did. @since 0.29.7
 pub fn estimate_tokens(text: &str) -> usize {
-    let (ascii, wide) = text.chars().fold((0usize, 0usize), |(a, w), c| {
-        if c.is_ascii() { (a + 1, w) } else { (a, w + 1) }
-    });
-    ascii.div_ceil(4) + wide
+    HeuristicTokenizer.count_text(text)
+}
+
+/// The seam every budget calculation goes through, so a provider-specific tokenizer can be
+/// dropped in without touching the trimming logic. @since 0.29.7
+pub trait TokenCounter {
+    fn count_text(&self, text: &str) -> usize;
+}
+
+/// Character-class heuristic used until a real BPE vocabulary is embedded. @since 0.29.7
+#[derive(Debug, Default, Clone, Copy)]
+pub struct HeuristicTokenizer;
+
+impl TokenCounter for HeuristicTokenizer {
+    fn count_text(&self, text: &str) -> usize {
+        if text.is_empty() {
+            return 0;
+        }
+        let (mut word, mut punct, mut cjk, mut bmp, mut astral) =
+            (0usize, 0usize, 0usize, 0usize, 0usize);
+        for c in text.chars() {
+            if c.is_ascii() {
+                if c.is_ascii_alphanumeric() || c.is_ascii_whitespace() {
+                    word += 1;
+                } else {
+                    punct += 1;
+                }
+            } else if is_cjk(c) {
+                cjk += 1;
+            } else if (c as u32) > 0xFFFF {
+                astral += 1;
+            } else {
+                bmp += 1;
+            }
+        }
+        // words 4/token, punctuation 2.5/token, CJK 1.25/token, other BMP 1/token,
+        // astral 0.5/token (`astral * 2`).
+        (word.div_ceil(4) + (punct * 2).div_ceil(5) + (cjk * 5).div_ceil(4) + bmp + astral * 2)
+            .max(1)
+    }
+}
+
+/// Han / Hiragana / Katakana / Hangul / CJK compatibility ideographs. @since 0.29.7
+fn is_cjk(c: char) -> bool {
+    matches!(
+        c as u32,
+        0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0x3040..=0x30FF | 0xAC00..=0xD7AF | 0xF900..=0xFAFF
+    )
 }
 
 /// Tokens one assembled message costs, tool-call payloads included. @since 0.29.7
@@ -179,12 +225,65 @@ mod tests {
     use super::*;
     use crate::types::ToolCall;
 
+    /// The pre-batch formula, kept in the test module as the lower bound every
+    /// input must clear: new estimates may only ever be more conservative.
+    fn legacy_estimate(text: &str) -> usize {
+        let (ascii, wide) = text.chars().fold((0usize, 0usize), |(a, w), c| {
+            if c.is_ascii() { (a + 1, w) } else { (a, w + 1) }
+        });
+        ascii.div_ceil(4) + wide
+    }
+
     #[test]
-    fn estimate_tokens_charges_cjk_per_character() {
+    fn heuristic_never_estimates_below_the_legacy_formula() {
+        let corpus = [
+            "",
+            "abcd",
+            "The quick brown fox jumps over the lazy dog.",
+            r#"{"a": [1, 2, 3], "b": {"c": null}, "d": true}"#,
+            "fn main() { let x = vec![1, 2, 3]; println!(\"{:?}\", x); }",
+            "中文文本",
+            "ab中文",
+            "αβγ",
+            "café au lait",
+            "emoji 🚀🚀 and 中文字 mixed with code `let a = 1;`",
+        ];
+        for text in corpus {
+            assert!(
+                estimate_tokens(text) >= legacy_estimate(text),
+                "estimate must never be more optimistic than the legacy formula: {text:?}"
+            );
+        }
         assert_eq!(estimate_tokens(""), 0);
+    }
+
+    #[test]
+    fn heuristic_charges_dense_punctuation_more_than_prose() {
+        let prose = "aaaa bbbb cccc dddd eeee ffff gggg hhhh";
+        let punctuation = "{}[]()<>,;:!?@#$%^&*_-+=|~`\"'\\/{}[]()<>,;:";
+        assert!(estimate_tokens(punctuation) > estimate_tokens(prose));
+    }
+
+    #[test]
+    fn heuristic_charges_cjk_above_one_token_per_char() {
         assert_eq!(estimate_tokens("abcd"), 1);
-        assert_eq!(estimate_tokens("中文文本"), 4);
-        assert_eq!(estimate_tokens("ab中文"), 3);
+        assert_eq!(estimate_tokens("中文文本"), 5, "CJK costs 1.25 token/char");
+        assert_eq!(estimate_tokens("ab中文"), 4);
+    }
+
+    #[test]
+    fn heuristic_charges_other_bmp_characters_one_token_each() {
+        assert_eq!(estimate_tokens("αβγ"), 3);
+        assert_eq!(estimate_tokens("café"), 1 + 1, "ascii run + one BMP char");
+    }
+
+    #[test]
+    fn heuristic_charges_astral_characters_double() {
+        assert_eq!(estimate_tokens("🚀🚀"), 4);
+        assert!(
+            estimate_tokens("🚀🚀") >= legacy_estimate("🚀🚀"),
+            "the legacy formula charges 1 per astral char; the new one charges 2"
+        );
     }
 
     #[test]
