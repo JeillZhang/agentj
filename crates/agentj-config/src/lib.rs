@@ -37,11 +37,13 @@ pub struct ModelSection {
     /// opencode-go Console base URL (device flow + account catalog). @since 0.27.0
     #[serde(default = "default_console_base_url")]
     pub console_base_url: String,
-    /// Upper bound (approximate tokens) for an assembled request; the kernel trims the
-    /// session history and tool results to fit before calling a provider.
-    /// @since 0.29.7
-    #[serde(default = "default_max_context_tokens")]
-    pub max_context_tokens: i64,
+    /// Optional upper bound (approximate tokens) for an assembled request; the kernel trims
+    /// the session history and tool results to fit before calling a provider. Clamped to
+    /// `MIN_CONTEXT_TOKENS..=MAX_CONTEXT_TOKENS` by the accessor. `None` means the key is
+    /// absent, so the model's own window decides the budget — that is not the same as an
+    /// explicit value. @since 0.29.7
+    #[serde(default)]
+    pub max_context_tokens: Option<i64>,
 }
 
 fn default_model() -> String {
@@ -58,13 +60,6 @@ pub fn default_console_base_url() -> String {
     "https://opencode.ai/console".into()
 }
 
-/// Default per-request context budget (approximate tokens), kept well below every window
-/// in the catalog so a request is almost always accepted. Single source of truth lives in
-/// `agentj_core::budget`. @since 0.29.7
-pub fn default_max_context_tokens() -> i64 {
-    agentj_core::budget::DEFAULT_CONTEXT_TOKENS as i64
-}
-
 impl Default for ModelSection {
     fn default() -> Self {
         Self {
@@ -73,7 +68,7 @@ impl Default for ModelSection {
             default_model: default_model(),
             quota_warn_percent: default_quota_warn_percent(),
             console_base_url: default_console_base_url(),
-            max_context_tokens: default_max_context_tokens(),
+            max_context_tokens: None,
         }
     }
 }
@@ -381,7 +376,7 @@ impl Default for AgentJConfig {
                 default_model: default_model(),
                 quota_warn_percent: default_quota_warn_percent(),
                 console_base_url: default_console_base_url(),
-                max_context_tokens: default_max_context_tokens(),
+                max_context_tokens: None,
             },
             agent: AgentSection::default(),
             permission: None,
@@ -457,10 +452,12 @@ impl ConfigProvider for Config {
             "agent.question_timeout_s" => Some(clamp_question_timeout_s(
                 self.inner.agent.question_timeout_s,
             )),
-            "model.max_context_tokens" => Some(self.inner.model.max_context_tokens.clamp(
-                agentj_core::budget::MIN_CONTEXT_TOKENS as i64,
-                agentj_core::budget::MAX_CONTEXT_TOKENS as i64,
-            )),
+            "model.max_context_tokens" => self.inner.model.max_context_tokens.map(|v| {
+                v.clamp(
+                    agentj_core::budget::MIN_CONTEXT_TOKENS as i64,
+                    agentj_core::budget::MAX_CONTEXT_TOKENS as i64,
+                )
+            }),
             "usage.history_days" => Some(clamp_history_days(
                 self.inner.usage.as_ref().map_or(30, |u| u.history_days),
             )),
@@ -1013,7 +1010,7 @@ mod tests {
             Config::load(Some(p.clone()))
                 .unwrap()
                 .get_int("model.max_context_tokens"),
-            Some(128_000)
+            None
         );
         std::fs::write(
             &p,

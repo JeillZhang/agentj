@@ -15,7 +15,7 @@ pub fn merge_config(base: AgentJConfig, file: AgentJConfig) -> AgentJConfig {
     if file.model.quota_warn_percent != crate::default_quota_warn_percent() {
         config.model.quota_warn_percent = file.model.quota_warn_percent;
     }
-    if file.model.max_context_tokens != crate::default_max_context_tokens() {
+    if file.model.max_context_tokens.is_some() {
         config.model.max_context_tokens = file.model.max_context_tokens;
     }
     if !file.model.console_base_url.is_empty()
@@ -89,7 +89,7 @@ mod tests {
                 default_model: "opencode-go/kimi-k3".into(),
                 quota_warn_percent: crate::default_quota_warn_percent(),
                 console_base_url: crate::default_console_base_url(),
-                max_context_tokens: crate::default_max_context_tokens(),
+                max_context_tokens: None,
             },
             agent: crate::AgentSection::default(),
             permission: None,
@@ -147,7 +147,7 @@ mod tests {
                 default_model: String::new(), // empty → keep base
                 quota_warn_percent: crate::default_quota_warn_percent(),
                 console_base_url: crate::default_console_base_url(),
-                max_context_tokens: crate::default_max_context_tokens(),
+                max_context_tokens: None,
             },
             agent: crate::AgentSection::default(),
             permission: None,
