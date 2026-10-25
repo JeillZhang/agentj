@@ -9,7 +9,7 @@
 mod common;
 
 use std::io::{BufRead, BufReader};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
@@ -80,20 +80,19 @@ fn attach_reports_and_denies_a_remote_approval_request() {
     let cfg = served
         ._env
         .write_config_file(include_str!("fixtures/attach_ask.toml"));
-    let mut attach = Command::new(env!("CARGO_BIN_EXE_agentj"))
-        .args([
-            "--config",
-            cfg.to_str().unwrap(),
-            "run",
-            "--attach",
-            &format!("tcp://{}", served.addr),
-            "please run the tool",
-        ])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn attach");
+    let mut cmd = served._env.command();
+    cmd.args([
+        "--config",
+        cfg.to_str().unwrap(),
+        "run",
+        "--attach",
+        &format!("tcp://{}", served.addr),
+        "please run the tool",
+    ])
+    .stdin(Stdio::null())
+    .stdout(Stdio::null())
+    .stderr(Stdio::piped());
+    let mut attach = cmd.spawn().expect("spawn attach");
     let rx = spawn_line_reader(BufReader::new(attach.stderr.take().expect("attach stderr")));
     let warning = loop {
         match rx.recv_timeout(DEADLINE) {
@@ -110,8 +109,36 @@ fn attach_reports_and_denies_a_remote_approval_request() {
         "the warning names the tool: {warning}"
     );
     assert!(started.elapsed() < DEADLINE);
-    let _ = attach.kill();
-    let _ = attach.wait();
+
+    // The warning is printed *before* the deny is written, so it alone proves nothing: with a
+    // remote `timeout_ms = 30000` the run would still be pending here if the frame never went
+    // out. Wait for attach to come back clean instead — only a landed deny unblocks the run.
+    let status = wait_exit(&mut attach, DEADLINE);
+    let rest: Vec<String> = rx.try_iter().collect();
+    assert!(
+        status.success(),
+        "attach must finish once its deny lands, got {status:?}; stderr tail {rest:?}"
+    );
+    assert!(
+        !rest.iter().any(|line| line.starts_with("error")),
+        "the deny must not be rejected: {rest:?}"
+    );
+}
+
+/// Poll for the child to exit, killing it and failing the test on the deadline.
+fn wait_exit(child: &mut Child, deadline: Duration) -> std::process::ExitStatus {
+    let started = Instant::now();
+    loop {
+        match child.try_wait().expect("poll child") {
+            Some(status) => return status,
+            None if started.elapsed() > deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("child did not exit within {deadline:?}");
+            }
+            None => std::thread::sleep(Duration::from_millis(20)),
+        }
+    }
 }
 
 /// The mock provider scripts one bash call per run; `mode = "ask"` turns it into an approval.
