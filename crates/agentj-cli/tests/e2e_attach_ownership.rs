@@ -94,9 +94,7 @@ fn attach_reports_and_denies_a_remote_approval_request() {
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawn attach");
-    let rx = spawn_line_reader(BufReader::new(
-        attach.stderr.take().expect("attach stderr"),
-    ));
+    let rx = spawn_line_reader(BufReader::new(attach.stderr.take().expect("attach stderr")));
     let warning = loop {
         match rx.recv_timeout(DEADLINE) {
             Ok(line) if line.starts_with(WARNING_PREFIX) => break line,
@@ -127,10 +125,7 @@ fn ask_config(timeout_ms: u32) -> String {
 
 /// Open a run on the served kernel and return `(session_id, run_id, request_id)` once the
 /// approval request has arrived.
-fn run_until_approval(
-    client: &mut common::SocketClient,
-    session_id: &str,
-) -> (u64, String) {
+fn run_until_approval(client: &mut common::SocketClient, session_id: &str) -> (u64, String) {
     let run_id = client.send(
         "session/run",
         serde_json::json!({"session_id": session_id, "content": "run the tool"}),
@@ -151,13 +146,20 @@ fn second_client_reclaims_ownership_after_the_owner_disconnects() {
         .as_str()
         .expect("session id")
         .to_string();
-    drop(a); // owner 断连：settle_owner_pending 清 owner，但会话本身仍在
-
+    // 第二个客户端先连上：`serve` 在**最后一个**连接断开时收尾（resident 决策 #3），
+    // 若只有 A 在线，drop(A) 会让内核直接关机，这里就测不到「归属转移」了。
     let mut b = common::SocketClient::connect(&served.addr);
+    drop(a); // owner 断连：settle_owner_pending 清 owner，但会话本身仍在
+    // 等 A 的 EOF 被服务端消费完，保证下面的 run 真的是一次**重新**认领。
+    std::thread::sleep(Duration::from_millis(300));
+
     // A 的 EOF 可能晚于这条请求被处理：owner 若仍指向 A，subscribe 就跳过认领（但本身成功）。
     // 真正的归属转移由随后 session/run 无条件的 claim_run_owner 完成。
     let sub = b.request("session/subscribe", serde_json::json!({"session_id": sid}));
-    assert!(sub.get("error").is_none(), "subscribe must be accepted: {sub}");
+    assert!(
+        sub.get("error").is_none(),
+        "subscribe must be accepted: {sub}"
+    );
     let (run_id, rid) = run_until_approval(&mut b, &sid);
 
     let answered = b.call(
@@ -174,9 +176,11 @@ fn second_client_reclaims_ownership_after_the_owner_disconnects() {
         done.get("error").is_none(),
         "the run must finish once the new owner approves: {done}"
     );
-    assert!(done["result"]["content"]
-        .as_str()
-        .is_some_and(|c| !c.is_empty()));
+    assert!(
+        done["result"]["content"]
+            .as_str()
+            .is_some_and(|c| !c.is_empty())
+    );
 }
 
 #[test]
