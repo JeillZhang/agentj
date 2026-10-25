@@ -670,6 +670,11 @@ pub trait SessionStore: Send + Sync {
 pub trait ConfigProvider: Send + Sync {
     fn get_str(&self, key: &str) -> Option<String>;
     fn get_int(&self, key: &str) -> Option<i64>;
+    /// Optional boolean lookup. The default returns `None` so existing providers keep
+    /// compiling; an implementation must return `None` for keys it does not model.
+    fn get_bool(&self, _key: &str) -> Option<bool> {
+        None
+    }
     fn providers(&self) -> Vec<(String, String)>; // Vec<(name, base_url)>
 }
 

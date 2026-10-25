@@ -47,6 +47,9 @@ pub fn merge_config(base: AgentJConfig, file: AgentJConfig) -> AgentJConfig {
     if file.web.is_some() {
         config.web = file.web;
     }
+    if file.usage.is_some() {
+        config.usage = file.usage;
+    }
     config
 }
 
@@ -94,6 +97,7 @@ mod tests {
             license: None,
             mcp: None,
             web: None,
+            usage: None,
         };
         let merged = merge_config(base, file);
         assert_eq!(merged.model.providers.len(), 1);
@@ -151,6 +155,7 @@ mod tests {
             license: None,
             mcp: None,
             web: None,
+            usage: None,
         };
         let merged = merge_config(base, file);
         assert_eq!(merged.model.default_model, "deepseek-chat");
