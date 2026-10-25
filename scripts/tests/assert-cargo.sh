@@ -8,7 +8,7 @@
 set -euo pipefail
 
 ROOT="${AGENTJ_ROOT:-$(cd -- "$(dirname "$0")/../.." && pwd)}"
-CHECKS=(cargo-root crate-inheritance licenses deny-config lockfile-locked)
+CHECKS=(cargo-root crate-inheritance licenses deny-config lockfile-locked fn-length)
 
 bad() { printf 'FAIL %s: %s\n' "$1" "$2"; return 1; }
 ok() { printf 'PASS %s\n' "$1"; }
@@ -94,8 +94,21 @@ managed = {
 sections = ("dependencies", "dev-dependencies", "build-dependencies")
 
 manifests = sorted((root / "crates").glob("*/Cargo.toml"))
-if len(manifests) != 18:
-    print(f"expected 18 crate manifests, found {len(manifests)}")
+EXPECTED = {
+    "agentj-protocol", "agentj-core", "agentj-config", "agentj-auth",
+    "agentj-session", "agentj-permission", "agentj-question", "agentj-model",
+    "agentj-tools", "agentj-license", "agentj-mcp", "agentj-plugin",
+    "agentj-ipc", "agentj-cli", "agentj-plugin-fixture",
+}
+actual = set()
+for path in manifests:
+    with open(path, "rb") as fh:
+        actual.add(tomllib.load(fh).get("package", {}).get("name", ""))
+if actual != EXPECTED:
+    for name in sorted(actual - EXPECTED):
+        print(f"unexpected crate in crates/: {name}")
+    for name in sorted(EXPECTED - actual):
+        print(f"missing crate in crates/: {name}")
     sys.exit(1)
 
 for path in manifests:
@@ -287,6 +300,44 @@ check_lockfile_locked() {
     return 1
   fi
   ok "$name"
+}
+
+# Print the diagnostically useful lines of a fn-length failure report: offender
+# lines and probe failures first, then the tail. Bounded, but never so tight that
+# the `file:line: fn = N lines` line is amputated behind a wall of `ok:` lines
+# (the repository scan is the LAST step of the self-check, so its finding arrives
+# after ~16 passing probes).
+fn_length_report() {
+  local out=$1 detail
+  detail=$(printf '%s\n' "$out" \
+    | grep -E 'repository has long functions|probe |drifted|must (exit|report)|functions > 50' \
+    | head -n 6)
+  if [ -z "$detail" ]; then
+    detail=$(printf '%s\n' "$out" | grep -vE '^ok: |^$' | tail -n 6)
+  fi
+  [ -n "$detail" ] || detail=$out
+  printf '%s' "$detail" | tr '\n' ' ' | cut -c1-900
+}
+
+check_fn_length() {
+  local name=fn-length
+  local out
+  if ! out=$(sh "$ROOT/scripts/test-fn-length.sh" 2>&1); then
+    # A long function in the repo makes the self-check fail too (it scans the
+    # repository as its last step); report it as the finding it is instead of
+    # burying it under "self-check failed".
+    if printf '%s' "$out" | grep -q 'repository has long functions'; then
+      bad "$name" "$(fn_length_report "$out")"
+    else
+      bad "$name" "self-check failed: $(fn_length_report "$out")"
+    fi
+    return 1
+  fi
+  if ! out=$(python3 "$ROOT/scripts/tests/fn-length.py" "$ROOT/crates" 2>&1); then
+    bad "$name" "$(fn_length_report "$out")"
+    return 1
+  fi
+  ok "$name: $(printf '%s\n' "$out" | tail -n 1)"
 }
 
 run_check() {

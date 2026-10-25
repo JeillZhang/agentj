@@ -10,13 +10,14 @@ use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 
-use agentj_context::ContextPipeline;
+use agentj_core::DefaultContextPipeline;
 use agentj_core::dispatcher::SubAgentService;
 use agentj_core::kernel::Kernel;
 use agentj_core::module::{
     ConfigProvider, KernelContext, KernelMessage, ModuleRegister, ProviderRegistry, SessionStore,
     ToolRegistry,
 };
+use agentj_core::skills::load_skills;
 use agentj_core::tool_executor::ToolExecutorModule;
 use agentj_core::turn_runner::TurnRunner;
 use agentj_core::types::TokenUsage;
@@ -24,7 +25,6 @@ use agentj_ipc::IpcServer;
 use agentj_mcp::McpConnectionManager;
 use agentj_question::{AskTool, QuestionModule};
 use agentj_session::FileBackedStore;
-use agentj_skills::load_skills;
 use agentj_tools::builtins::register_builtins;
 
 // Runtime (de)registration of the opencode-go provider, shared by startup and the
@@ -297,7 +297,7 @@ fn metrics_state_warning(dir: Option<&Path>) -> Option<String> {
 }
 
 fn record_completed_turn(
-    collector: &agentj_stats::UsageCollector,
+    collector: &agentj_core::UsageCollector,
     sid: String,
     usage: Option<TokenUsage>,
 ) {
@@ -699,24 +699,62 @@ async fn run_attached(
 async fn main() -> anyhow::Result<()> {
     logging::init();
     let cli = Cli::parse();
+    run_command(cli).await
+}
 
-    if let Some(Commands::Auth { action }) = &cli.command {
-        return auth::run_auth(action, &cli.config).await;
-    }
+/// Load `--config` (the load error is surfaced verbatim, as the CLI always has).
+fn load_config(cli: &Cli) -> anyhow::Result<agentj_config::Config> {
+    agentj_config::Config::load(Some(cli.config.clone().into())).map_err(|e| anyhow::anyhow!("{e}"))
+}
 
-    let config =
-        agentj_config::Config::load(Some(cli.config.into())).map_err(|e| anyhow::anyhow!("{e}"))?;
-    let gate: Option<(&str, &str)> = match &cli.command {
+/// Entitlement gate for the parsed subcommand; `None` means "ungated".
+fn license_gate(command: &Option<Commands>) -> Option<(&'static str, &'static str)> {
+    match command {
         Some(Commands::Run { attach: None, .. }) => Some(("run", "run")),
         Some(Commands::Run {
             attach: Some(_), ..
         }) => None,
         Some(Commands::Serve { .. }) => Some(("serve", "serve")),
         Some(Commands::Dashboard { .. }) => Some(("dashboard", "dashboard")),
-        Some(Commands::Auth { .. }) => None,
-        None => None,
-    };
-    if let Some((entitlement, command_name)) = gate {
+        Some(Commands::Auth { .. }) | None => None,
+    }
+}
+
+/// What the chosen subcommand needs from the startup assembly.
+#[derive(Clone, Copy)]
+struct CommandMode {
+    /// `run --attach` talks to a remote kernel, so local providers are not required.
+    attached: bool,
+    /// design D4: only the IPC-serving commands expose the subscription methods.
+    serves_clients: bool,
+}
+
+impl CommandMode {
+    fn classify(command: &Option<Commands>) -> Self {
+        Self {
+            attached: matches!(
+                command,
+                Some(Commands::Run {
+                    attach: Some(_),
+                    ..
+                })
+            ),
+            serves_clients: matches!(
+                command,
+                Some(Commands::Serve { .. }) | Some(Commands::Dashboard { .. })
+            ),
+        }
+    }
+}
+
+/// Everything `main` used to do after `Cli::parse()`: assemble the kernel, then
+/// dispatch to the per-subcommand entry point.
+async fn run_command(cli: Cli) -> anyhow::Result<()> {
+    if let Some(Commands::Auth { action }) = &cli.command {
+        return auth::run_auth(action, &cli.config).await;
+    }
+    let config = load_config(&cli)?;
+    if let Some((entitlement, command_name)) = license_gate(&cli.command) {
         license::check_license_gate(
             &config,
             cli.license_key.as_deref(),
@@ -724,196 +762,294 @@ async fn main() -> anyhow::Result<()> {
             command_name,
         )?;
     }
+    let wiring = wire_kernel(&cli.command, config).await?;
+    dispatch(cli.command, wiring).await?;
+    // The serve loop reads stdin through tokio's blocking pool; dropping the
+    // runtime would wait for that thread while a client keeps stdin open.
+    // Graceful shutdown already ran above — exit directly.
+    std::process::exit(0);
+}
+
+/// Startup state handed from the assembly phase to the dispatch phase.
+struct Wiring {
+    kernel: Kernel,
+    session: Arc<dyn SessionStore>,
+    permission_module: Arc<agentj_permission::PermissionModule>,
+    question_module: Arc<QuestionModule>,
+    trajectory_store: Arc<agentj_ipc::trajectory::TrajectoryStore>,
+    provider_service: Option<Arc<dyn agentj_ipc::ProviderService>>,
+    mcp_manager: Arc<McpConnectionManager>,
+    web: WebSettings,
+}
+
+/// Assemble the kernel in the exact order the CLI has always performed it: every
+/// side effect (stores, licence-warned logs, provider assembly, MCP connects) keeps
+/// its original position so `run`/`serve`/`dashboard` behave identically.
+async fn wire_kernel(
+    command: &Option<Commands>,
+    config: agentj_config::Config,
+) -> anyhow::Result<Wiring> {
+    let mode = CommandMode::classify(command);
     let question_module = Arc::new(QuestionModule::new());
     apply_question_timeout(&question_module, &config);
+    let tools = build_tool_registry(&question_module);
+    let providers = Arc::new(ProviderRegistry::new());
+    let sessions = build_sessions(&config)?;
+    assemble_providers(&config, mode, &providers).await?;
+    let provider_service = build_provider_service(&config, mode, &providers)?;
+    let permission = resolve_permission_config(&config);
+    let mcp_servers = config.inner().mcp.clone();
+    let web = WebSettings::resolve(&config);
+    let ctx = KernelContext {
+        session: sessions.session.clone(),
+        tools,
+        providers,
+        config: Arc::new(config),
+    };
+    let mut kernel = Kernel::new();
+    let permission_module = register_modules(&mut kernel, &ctx, permission)?;
+    let events = kernel.events();
+    let mcp_manager = start_mcp_manager(&ctx.tools, events.clone(), mcp_servers.as_ref()).await;
+    sessions
+        .store
+        .spawn_expiry_loop(events, Duration::from_secs(3600), Duration::from_secs(60));
+    log_loaded_skills();
+    Ok(Wiring {
+        kernel,
+        session: sessions.session,
+        permission_module,
+        question_module,
+        trajectory_store: sessions.trajectory_store,
+        provider_service,
+        mcp_manager,
+        web,
+    })
+}
+
+/// The tool registry: builtins plus the `ask` tool backed by the question module.
+fn build_tool_registry(question_module: &Arc<QuestionModule>) -> Arc<ToolRegistry> {
     let tools = Arc::new(ToolRegistry::new());
     register_builtins(&tools);
-    tools.register(Arc::new(AskTool::new(question_module.clone())));
-    let providers = Arc::new(ProviderRegistry::new());
-    // Keep a concrete Arc before the ctx move: spawn_expiry_loop is NOT
-    // object-safe (self: Arc<Self>) so it must be called on the concrete type.
-    let session_dir = resolve_session_dir(&config);
+    tools.register(Arc::new(AskTool::new(Arc::clone(question_module))));
+    tools
+}
+
+/// The session stack. The concrete `FileBackedStore` handle is kept because
+/// `spawn_expiry_loop` is NOT object-safe (`self: Arc<Self>`).
+struct Sessions {
+    store: Arc<FileBackedStore>,
+    session: Arc<dyn SessionStore>,
+    trajectory_store: Arc<agentj_ipc::trajectory::TrajectoryStore>,
+}
+
+fn build_sessions(config: &agentj_config::Config) -> anyhow::Result<Sessions> {
+    let session_dir = resolve_session_dir(config);
     let session_cfg = config.inner().session.as_ref();
     let trajectory_store = Arc::new(agentj_ipc::trajectory::TrajectoryStore::new(
         session_dir.clone(),
         session_cfg.and_then(|s| s.trajectory_max_events),
         session_cfg.and_then(|s| s.trajectory_max_bytes),
     ));
-    let session_store = Arc::new(FileBackedStore::new(&session_dir)?);
-    let session: Arc<dyn SessionStore> = session_store.clone() as Arc<dyn SessionStore>;
+    let store = Arc::new(FileBackedStore::new(&session_dir)?);
+    let session: Arc<dyn SessionStore> = store.clone() as Arc<dyn SessionStore>;
+    Ok(Sessions {
+        store,
+        session,
+        trajectory_store,
+    })
+}
 
-    // design 4.3 + D7: assemble providers with credential resolution; keyless real
-    // providers are skipped (never an empty Bearer). An empty registry is fatal only where no
-    // IPC client can link a credential later (`run`); `serve`/`dashboard` boot on and let
-    // Settings · Subscription activate a provider at runtime.
-    // `run --attach` talks to a remote kernel, so local providers are not required.
-    let attached = matches!(
-        &cli.command,
-        Some(Commands::Run {
-            attach: Some(_),
-            ..
-        })
-    );
-    // design D4: only the IPC-serving commands expose the subscription methods; `run` has no
-    // IPC server and `run --attach` targets a remote kernel whose own handle serves them.
-    let serves_clients = matches!(
-        &cli.command,
-        Some(Commands::Serve { .. }) | Some(Commands::Dashboard { .. })
-    );
-    if !attached {
-        let auth_store =
-            agentj_auth::AuthStore::with_default_path().map_err(|e| anyhow::anyhow!("{e}"))?;
-        let live_base = agentj_model::catalog::ModelCatalog::builtin().base_url;
-        let console_base = config
-            .get_str("model.console_base_url")
-            .unwrap_or_else(|| "https://opencode.ai/console".into());
-        let assembly = providers::build_providers(
-            config.inner(),
-            None,
-            &auth_store,
-            || {
-                let base = live_base.clone();
-                async move {
-                    agentj_model::catalog_source::fetch_live_models(&base, None)
-                        .await
-                        .map(Some)
-                        .map_err(|e| e.to_string())
-                }
-            },
-            &console_base,
-        )
-        .await
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
-        // An empty provider set is fatal only where no client can link a credential later:
-        // `serve`/`dashboard` boot on and let Settings · Subscription activate a provider at
-        // runtime (design D2/D3/D7), while `run` has no IPC client and must fail fast.
-        if assembly.providers.is_empty() && !serves_clients {
-            anyhow::bail!("{}", providers::NO_USABLE_PROVIDER);
-        }
-        for warning in &assembly.warnings {
-            tracing::warn!("{warning}");
-        }
-        for (name, provider) in assembly.providers {
-            providers.register(name, provider);
+/// `[model] console_base_url` with the opencode console default.
+fn console_base_url(config: &agentj_config::Config) -> String {
+    config
+        .get_str("model.console_base_url")
+        .unwrap_or_else(|| "https://opencode.ai/console".into())
+}
+
+/// design 4.3 + D7: assemble providers with credential resolution; keyless real
+/// providers are skipped (never an empty Bearer). An empty registry is fatal only
+/// where no IPC client can link a credential later (`run`); `serve`/`dashboard`
+/// boot on and let Settings · Subscription activate a provider at runtime.
+/// `run --attach` talks to a remote kernel, so local providers are not required.
+async fn assemble_providers(
+    config: &agentj_config::Config,
+    mode: CommandMode,
+    registry: &Arc<ProviderRegistry>,
+) -> anyhow::Result<()> {
+    if mode.attached {
+        return Ok(());
+    }
+    let auth_store =
+        agentj_auth::AuthStore::with_default_path().map_err(|e| anyhow::anyhow!("{e}"))?;
+    let live_base = agentj_model::catalog::ModelCatalog::builtin().base_url;
+    let console_base = console_base_url(config);
+    let assembly = providers::build_providers(
+        config.inner(),
+        None,
+        &auth_store,
+        || {
+            let base = live_base.clone();
+            async move {
+                agentj_model::catalog_source::fetch_live_models(&base, None)
+                    .await
+                    .map(Some)
+                    .map_err(|e| e.to_string())
+            }
+        },
+        &console_base,
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("{e}"))?;
+    // An empty provider set is fatal only where no client can link a credential later:
+    // `serve`/`dashboard` boot on and let Settings · Subscription activate a provider at
+    // runtime (design D2/D3/D7), while `run` has no IPC client and must fail fast.
+    if assembly.providers.is_empty() && !mode.serves_clients {
+        anyhow::bail!("{}", providers::NO_USABLE_PROVIDER);
+    }
+    for warning in &assembly.warnings {
+        tracing::warn!("{warning}");
+    }
+    for (name, provider) in assembly.providers {
+        registry.register(name, provider);
+    }
+    Ok(())
+}
+
+/// The IPC-facing provider service, present only on the commands that serve clients.
+fn build_provider_service(
+    config: &agentj_config::Config,
+    mode: CommandMode,
+    providers: &Arc<ProviderRegistry>,
+) -> anyhow::Result<Option<Arc<dyn agentj_ipc::ProviderService>>> {
+    if !mode.serves_clients {
+        return Ok(None);
+    }
+    let store = agentj_auth::AuthStore::with_default_path().map_err(|e| anyhow::anyhow!("{e}"))?;
+    let default_model = config.get_str("model.default_model").unwrap_or_default();
+    let svc = provider_service::CliProviderService::new(
+        store,
+        provider_cfgs(config),
+        config.get_str("model.provider").unwrap_or_default(),
+        console_base_url(config),
+        config.get_int("model.quota_warn_percent").unwrap_or(80) as u8,
+        Arc::clone(providers),
+    )
+    .with_default_model(default_model);
+    Ok(Some(Arc::new(svc)))
+}
+
+/// The validated `[permission]` config plus its policy map, extracted before
+/// `config` is boxed into the KernelContext (whose `config` field erases the
+/// concrete `Config` type).
+struct PermissionSetup {
+    cfg: agentj_permission::PermissionConfig,
+    policies: std::collections::HashMap<String, agentj_permission::ToolPolicy>,
+}
+
+fn resolve_permission_config(config: &agentj_config::Config) -> PermissionSetup {
+    let cfg = config.inner().permission.clone().unwrap_or_default();
+    cfg.validate().expect("invalid [permission] config");
+    let policies = permission_policies_from_config(config);
+    PermissionSetup { cfg, policies }
+}
+
+/// `[web]` settings the serve paths need, resolved before the config is moved into
+/// the kernel context (`TcpServeOptions` is built later).
+struct WebSettings {
+    trust_proxy_headers: bool,
+    secure_cookies: bool,
+    metrics_state_dir: Option<std::path::PathBuf>,
+    integrity: agentj_ipc::web::IntegrityOptions,
+}
+
+impl WebSettings {
+    fn resolve(config: &agentj_config::Config) -> Self {
+        let web = config.inner().web.as_ref();
+        Self {
+            trust_proxy_headers: web.is_some_and(|web| web.trust_proxy_headers),
+            secure_cookies: web.is_some_and(|web| web.secure_cookies),
+            metrics_state_dir: resolve_metrics_state_dir(config),
+            integrity: resolve_integrity_options(config),
         }
     }
+}
 
-    let inject_subscription = serves_clients;
-    let provider_service: Option<Arc<dyn agentj_ipc::ProviderService>> = if inject_subscription {
-        let store =
-            agentj_auth::AuthStore::with_default_path().map_err(|e| anyhow::anyhow!("{e}"))?;
-        let console_base = config
-            .get_str("model.console_base_url")
-            .unwrap_or_else(|| "https://opencode.ai/console".into());
-        let default_model = config.get_str("model.default_model").unwrap_or_default();
-        let svc = provider_service::CliProviderService::new(
-            store,
-            provider_cfgs(&config),
-            config.get_str("model.provider").unwrap_or_default(),
-            console_base,
-            config.get_int("model.quota_warn_percent").unwrap_or(80) as u8,
-            providers.clone(),
-        )
-        .with_default_model(default_model);
-        Some(Arc::new(svc))
-    } else {
-        None
-    };
-
-    // Extract before `config` is boxed into the KernelContext — its config field
-    // is Arc<dyn ConfigProvider>, which erases the concrete Config type.
-    let permission_cfg = config.inner().permission.clone().unwrap_or_default();
-    permission_cfg
-        .validate()
-        .expect("invalid [permission] config");
-    let permission_policies = permission_policies_from_config(&config);
-    let mcp_servers = config.inner().mcp.clone();
-    // `[web]` settings feed the serve paths: resolve them before the config is
-    // moved into the kernel context, because `TcpServeOptions` is built later.
-    let web_trust_proxy_headers = config
-        .inner()
-        .web
-        .as_ref()
-        .is_some_and(|web| web.trust_proxy_headers);
-    let web_secure_cookies = config
-        .inner()
-        .web
-        .as_ref()
-        .is_some_and(|web| web.secure_cookies);
-    let web_metrics_state_dir = resolve_metrics_state_dir(&config);
-    let web_integrity = resolve_integrity_options(&config);
-
-    let ctx = KernelContext {
-        session: session.clone(),
-        tools,
-        providers,
-        config: Arc::new(config),
-    };
-
-    let mut kernel = Kernel::new();
+/// Register every kernel module in the historical order (tool executor, agent loop,
+/// subagent service, then permission) and return the permission module, which both
+/// the IPC server and the approval notifier need.
+fn register_modules(
+    kernel: &mut Kernel,
+    ctx: &KernelContext,
+    permission: PermissionSetup,
+) -> anyhow::Result<Arc<agentj_permission::PermissionModule>> {
     let mut register = ModuleRegister::with_services(
         Arc::clone(&ctx.tools),
         Arc::clone(&ctx.providers),
         kernel.services(),
     );
-    let usage = Arc::new(agentj_stats::UsageCollector::new());
+    let usage = Arc::new(agentj_core::UsageCollector::new());
     kernel.register_module(
         Box::new(ToolExecutorModule::new(ctx.clone())),
-        &ctx,
+        ctx,
         &mut register,
     )?;
-    let mut runner = TurnRunner::new(
-        ctx.clone(),
-        Arc::new(ContextPipeline::new()),
-        "你是 AgentJ，一位专业的 AI 编程助手。请始终使用中文回答，代码注释和解释均使用中文，保持专业、简洁。".into(),
-        kernel.sender(),
-        "tool_executor".into(),
-    );
-    {
-        let collector_clone = Arc::clone(&usage);
-        runner.set_on_turn_complete(Arc::new(move |sid, usage| {
-            record_completed_turn(&collector_clone, sid.clone(), usage)
-        }));
-    }
+    let runner = build_turn_runner(ctx, kernel.sender(), &usage);
     kernel.register_module(
         Box::new(agentj_core::agent_loop_module::AgentLoopModule::new(
             runner.clone(),
         )),
-        &ctx,
+        ctx,
         &mut register,
     )?;
-    kernel.services().register_kernel_async_service(
-        "subagent".into(),
-        Arc::new(SubAgentService::new(runner.clone())),
-    );
-    let session_for_ipc: Arc<dyn SessionStore> = session.clone();
-
+    kernel
+        .services()
+        .register_kernel_async_service("subagent".into(), Arc::new(SubAgentService::new(runner)));
     // Permission wiring (design #17): construct from [permission] config with
     // fail-fast rule validation, register with the kernel so graceful shutdown
     // clears grants + pending approvals, install the checker on the ToolRegistry,
     // and hand the module to the IPC server for permission/respond.
-    let permission_module = Arc::new(agentj_permission::PermissionModule::new(
-        permission_policies,
-        permission_timeout(&permission_cfg),
+    let module = Arc::new(agentj_permission::PermissionModule::new(
+        permission.policies,
+        permission_timeout(&permission.cfg),
     ));
-    ctx.tools.set_permission_checker(permission_module.clone());
-    kernel.register_module(
-        Box::new(permission_module.as_ref().clone()),
-        &ctx,
-        &mut register,
-    )?;
+    ctx.tools.set_permission_checker(module.clone());
+    kernel.register_module(Box::new(module.as_ref().clone()), ctx, &mut register)?;
+    Ok(module)
+}
 
-    // v0.3 ecosystem wiring (T11): take shared handles before the kernel is moved
-    // into IpcServer, then spawn the MCP idle reaper + session expiry loop as
-    // background tasks and load skills for observability (registration deferred
-    // to the manifest-compat research).
-    let events = kernel.events();
+/// The turn runner: context pipeline, system prompt and the usage recording hook.
+fn build_turn_runner(
+    ctx: &KernelContext,
+    sender: agentj_core::kernel::KernelSender,
+    usage: &Arc<agentj_core::UsageCollector>,
+) -> TurnRunner {
+    let mut runner = TurnRunner::new(
+        ctx.clone(),
+        Arc::new(DefaultContextPipeline::new()),
+        "你是 AgentJ，一位专业的 AI 编程助手。请始终使用中文回答，代码注释和解释均使用中文，保持专业、简洁。".into(),
+        sender,
+        "tool_executor".into(),
+    );
+    let collector_clone = Arc::clone(usage);
+    runner.set_on_turn_complete(Arc::new(move |sid, usage| {
+        record_completed_turn(&collector_clone, sid.clone(), usage)
+    }));
+    runner
+}
+
+/// Spawn the MCP manager: idle reaper loop, then one connect attempt per configured
+/// server (a failed connect is logged, never fatal).
+async fn start_mcp_manager(
+    tools: &Arc<ToolRegistry>,
+    events: Arc<agentj_core::hooks::EventBus>,
+    servers: Option<&agentj_config::McpConfig>,
+) -> Arc<McpConnectionManager> {
     let mcp_manager = Arc::new(McpConnectionManager::new(
-        Arc::clone(&ctx.tools),
+        Arc::clone(tools),
         Duration::from_secs(60),
         Duration::from_millis(500),
         5,
-        events.clone(),
+        events,
     ));
     tokio::spawn({
         let m = mcp_manager.clone();
@@ -924,7 +1060,7 @@ async fn main() -> anyhow::Result<()> {
             }
         }
     });
-    if let Some(mcp_cfg) = mcp_servers.as_ref() {
+    if let Some(mcp_cfg) = servers {
         for srv in &mcp_cfg.servers {
             let spec = agentj_mcp::McpServerSpec {
                 command: srv.command.clone(),
@@ -937,197 +1073,217 @@ async fn main() -> anyhow::Result<()> {
             }
         }
     }
-    session_store.spawn_expiry_loop(
-        events.clone(),
-        Duration::from_secs(3600),
-        Duration::from_secs(60),
-    );
+    mcp_manager
+}
 
+/// Load the repo-local skills and log them (registration is deferred to the
+/// manifest-compat research).
+fn log_loaded_skills() {
     let skills = load_skills(Path::new(".")).unwrap_or_default();
     for skill in &skills {
         tracing::info!(skill = %skill.name, priority = ?skill.priority, "loaded");
     }
+}
 
-    match cli.command {
-        Some(Commands::Auth { .. }) => {}
+/// One entry point per subcommand; every arm owns the fully wired kernel.
+async fn dispatch(command: Option<Commands>, wiring: Wiring) -> anyhow::Result<()> {
+    match command {
+        Some(Commands::Auth { .. }) => Ok(()),
         Some(Commands::Run {
             prompt,
             attach,
             provider,
             model,
             yes,
-        }) => {
-            if let Some(url) = attach {
-                let failure =
-                    run_attached(&url, &prompt, provider.as_deref(), model.as_deref()).await?;
-                mcp_manager.close_all().await;
-                if let Some(line) = failure {
-                    eprintln!("{line}");
-                    std::process::exit(1);
-                }
-            } else {
-                // Approval path: `--yes` auto-approves; a TTY spawns a thread that
-                // owns stdin and answers y/n; a non-TTY without `--yes` attaches
-                // nothing and the pending request auto-denies at the timeout
-                // (today's behaviour — no stdin read on the request path).
-                if yes {
-                    let module = permission_module.clone();
-                    permission_module.set_notifier(Arc::new(move |req, _session| {
-                        eprintln!("auto-approved {} (--yes)", req.tool);
-                        let _ = module.respond(
-                            &agentj_core::permission::PermissionRequestId(req.request_id.clone()),
-                            agentj_permission::ApprovalDecision::Allow,
-                        );
-                    }));
-                } else if std::io::stdin().is_terminal() {
-                    let module = permission_module.clone();
-                    permission_module.set_notifier(Arc::new(move |req, _session| {
-                        // Print the prompt synchronously (the notifier is the only
-                        // place holding the request details) before the detached
-                        // reader blocks; reading stdin on this thread would interlock
-                        // with the approval await.
-                        eprintln!("{}", approval_prompt(&req.tool, &req.args, &req.reason));
-                        let module = module.clone();
-                        let request_id =
-                            agentj_core::permission::PermissionRequestId(req.request_id.clone());
-                        std::thread::spawn(move || {
-                            let decision = read_decision_from_stdin();
-                            let _ = module.respond(&request_id, decision);
-                        });
-                    }));
-                }
-                let ipc_server = build_ipc_server(
-                    kernel,
-                    session_for_ipc.clone(),
-                    permission_module,
-                    question_module.clone(),
-                    Some(Arc::clone(&trajectory_store)),
-                    provider_service.clone(),
-                );
-                let signal_task = spawn_signal_task(ipc_server.kernel_sender());
-                let sid = ipc_server.create_session()?;
-                let overrides = agentj_core::types::RunOverrides {
-                    provider: provider.clone(),
-                    model: model.clone(),
-                };
-                let mut rx = ipc_server.run_turn_stream_with(&sid, &prompt, overrides);
-                let mut out = String::new();
-                let mut failed: Option<String> = None;
-                while let Some(ev) = rx.recv().await {
-                    match ev {
-                        agentj_core::types::AgentEvent::Delta(d) => out.push_str(&d),
-                        agentj_core::types::AgentEvent::Done { final_response, .. } => {
-                            out = final_response;
-                            break;
-                        }
-                        agentj_core::types::AgentEvent::Error(e) => {
-                            failed = Some(e);
-                            break;
-                        }
-                        _ => {}
-                    }
-                }
-                // Shut down before reporting: the failed path exits the process, which
-                // would otherwise strand the embedded kernel and its signal task.
-                ipc_server.signal_shutdown()?;
-                drop(signal_task);
-                mcp_manager.close_all().await;
-                if let Some(e) = failed {
-                    eprintln!("error: {e}");
-                    std::process::exit(1);
-                }
-                println!("{out}");
-            }
-        }
-        Some(Commands::Serve { port: None, .. }) => {
-            let mut ipc_server = build_ipc_server(
-                kernel,
-                session_for_ipc,
-                permission_module,
-                question_module.clone(),
-                Some(Arc::clone(&trajectory_store)),
-                provider_service.clone(),
-            );
-            let signal_task = spawn_signal_task(ipc_server.kernel_sender());
-            ipc_server.serve_stdio().await?;
-            signal_task.abort();
-            mcp_manager.close_all().await;
-        }
+        }) => run_agent(wiring, prompt, attach, provider, model, yes).await,
+        // `serve` without `--port` is the stdio server; with it, the resident kernel.
         Some(Commands::Serve {
-            port: Some(port),
+            port,
             host,
             token,
             max_connections,
             web_dist,
-        }) => {
-            serve_tcp(
-                kernel,
-                session_for_ipc,
-                permission_module,
-                question_module.clone(),
-                TcpServeOptions {
-                    host,
-                    port,
-                    token,
-                    max_connections,
-                    web_dist,
-                    trajectory_store: Some(Arc::clone(&trajectory_store)),
-                    trust_proxy_headers: web_trust_proxy_headers,
-                    secure_cookies: web_secure_cookies,
-                    metrics_state_dir: web_metrics_state_dir.clone(),
-                    provider_service: provider_service.clone(),
-                    integrity: web_integrity,
-                },
-                mcp_manager.clone(),
-            )
-            .await?;
-        }
+        }) => match port {
+            None => run_serve_stdio(wiring).await,
+            Some(port) => run_serve(wiring, host, port, token, max_connections, web_dist).await,
+        },
         Some(Commands::Dashboard {
             port,
             host,
             token,
             web_dist,
-        }) => {
-            serve_tcp(
-                kernel,
-                session_for_ipc,
-                permission_module,
-                question_module.clone(),
-                TcpServeOptions {
-                    host,
-                    port,
-                    token,
-                    max_connections: 16,
-                    web_dist,
-                    trajectory_store: Some(Arc::clone(&trajectory_store)),
-                    trust_proxy_headers: web_trust_proxy_headers,
-                    secure_cookies: web_secure_cookies,
-                    metrics_state_dir: web_metrics_state_dir.clone(),
-                    provider_service: provider_service.clone(),
-                    integrity: web_integrity,
-                },
-                mcp_manager.clone(),
-            )
-            .await?;
+        }) => run_serve(wiring, host, port, token, 16, web_dist).await,
+        None => run_without_command(wiring).await,
+    }
+}
+
+/// `agentj run`: attached (remote kernel) or embedded (one in-process turn).
+async fn run_agent(
+    wiring: Wiring,
+    prompt: String,
+    attach: Option<String>,
+    provider: Option<String>,
+    model: Option<String>,
+    yes: bool,
+) -> anyhow::Result<()> {
+    if let Some(url) = attach.as_deref() {
+        let failure = run_attached(url, &prompt, provider.as_deref(), model.as_deref()).await?;
+        wiring.mcp_manager.close_all().await;
+        // The failed path exits the process, exactly as the inline arm did.
+        if let Some(line) = failure {
+            eprintln!("{line}");
+            std::process::exit(1);
         }
-        None => {
-            println!("Use `agentj run \"your prompt\"` or `agentj serve`");
-            let ipc_server = build_ipc_server(
-                kernel,
-                session_for_ipc,
-                permission_module,
-                question_module.clone(),
-                Some(Arc::clone(&trajectory_store)),
-                provider_service.clone(),
+        return Ok(());
+    }
+    attach_approver(&wiring.permission_module, yes);
+    let ipc_server = build_ipc_server(
+        wiring.kernel,
+        wiring.session,
+        wiring.permission_module,
+        wiring.question_module,
+        Some(wiring.trajectory_store),
+        wiring.provider_service,
+    );
+    let signal_task = spawn_signal_task(ipc_server.kernel_sender());
+    let sid = ipc_server.create_session()?;
+    let overrides = agentj_core::types::RunOverrides { provider, model };
+    let mut rx = ipc_server.run_turn_stream_with(&sid, &prompt, overrides);
+    let (out, failed) = drain_turn(&mut rx).await;
+    // Shut down before reporting: the failed path exits the process, which
+    // would otherwise strand the embedded kernel and its signal task.
+    ipc_server.signal_shutdown()?;
+    drop(signal_task);
+    wiring.mcp_manager.close_all().await;
+    if let Some(e) = failed {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    }
+    println!("{out}");
+    Ok(())
+}
+
+/// Approval path: `--yes` auto-approves; a TTY spawns a thread that owns stdin and
+/// answers y/n; a non-TTY without `--yes` attaches nothing and the pending request
+/// auto-denies at the timeout (today's behaviour — no stdin read on the request path).
+fn attach_approver(permission_module: &Arc<agentj_permission::PermissionModule>, yes: bool) {
+    if yes {
+        let module = Arc::clone(permission_module);
+        permission_module.set_notifier(Arc::new(move |req, _session| {
+            eprintln!("auto-approved {} (--yes)", req.tool);
+            let _ = module.respond(
+                &agentj_core::permission::PermissionRequestId(req.request_id.clone()),
+                agentj_permission::ApprovalDecision::Allow,
             );
-            ipc_server.signal_shutdown()?;
-            mcp_manager.close_all().await;
+        }));
+    } else if std::io::stdin().is_terminal() {
+        let module = Arc::clone(permission_module);
+        permission_module.set_notifier(Arc::new(move |req, _session| {
+            // Print the prompt synchronously (the notifier is the only
+            // place holding the request details) before the detached
+            // reader blocks; reading stdin on this thread would interlock
+            // with the approval await.
+            eprintln!("{}", approval_prompt(&req.tool, &req.args, &req.reason));
+            let module = module.clone();
+            let request_id = agentj_core::permission::PermissionRequestId(req.request_id.clone());
+            std::thread::spawn(move || {
+                let decision = read_decision_from_stdin();
+                let _ = module.respond(&request_id, decision);
+            });
+        }));
+    }
+}
+
+/// Drain one turn's event stream: the `Done` text (or the concatenated deltas when no
+/// `Done` arrives) plus the failure message, if any.
+async fn drain_turn(
+    rx: &mut tokio::sync::mpsc::Receiver<agentj_core::types::AgentEvent>,
+) -> (String, Option<String>) {
+    let mut out = String::new();
+    let mut failed: Option<String> = None;
+    while let Some(ev) = rx.recv().await {
+        match ev {
+            agentj_core::types::AgentEvent::Delta(d) => out.push_str(&d),
+            agentj_core::types::AgentEvent::Done { final_response, .. } => {
+                out = final_response;
+                break;
+            }
+            agentj_core::types::AgentEvent::Error(e) => {
+                failed = Some(e);
+                break;
+            }
+            _ => {}
         }
     }
-    // The serve loop reads stdin through tokio's blocking pool; dropping the
-    // runtime would wait for that thread while a client keeps stdin open.
-    // Graceful shutdown already ran above — exit directly.
-    std::process::exit(0);
+    (out, failed)
+}
+
+/// `agentj serve` without `--port`: the stdio JSON-RPC server.
+async fn run_serve_stdio(wiring: Wiring) -> anyhow::Result<()> {
+    let mut ipc_server = build_ipc_server(
+        wiring.kernel,
+        wiring.session,
+        wiring.permission_module,
+        wiring.question_module,
+        Some(wiring.trajectory_store),
+        wiring.provider_service,
+    );
+    let signal_task = spawn_signal_task(ipc_server.kernel_sender());
+    ipc_server.serve_stdio().await?;
+    signal_task.abort();
+    wiring.mcp_manager.close_all().await;
+    Ok(())
+}
+
+/// The resident multi-client TCP kernel shared by `serve --port` and `dashboard`
+/// (`dashboard` pins `max_connections` to its historical 16).
+async fn run_serve(
+    wiring: Wiring,
+    host: String,
+    port: u16,
+    token: Option<String>,
+    max_connections: usize,
+    web_dist: Option<std::path::PathBuf>,
+) -> anyhow::Result<()> {
+    let web = wiring.web;
+    let options = TcpServeOptions {
+        host,
+        port,
+        token,
+        max_connections,
+        web_dist,
+        trajectory_store: Some(wiring.trajectory_store),
+        trust_proxy_headers: web.trust_proxy_headers,
+        secure_cookies: web.secure_cookies,
+        metrics_state_dir: web.metrics_state_dir,
+        provider_service: wiring.provider_service,
+        integrity: web.integrity,
+    };
+    serve_tcp(
+        wiring.kernel,
+        wiring.session,
+        wiring.permission_module,
+        wiring.question_module,
+        options,
+        wiring.mcp_manager,
+    )
+    .await
+}
+
+/// No subcommand: print the hint and shut the freshly booted kernel down cleanly.
+async fn run_without_command(wiring: Wiring) -> anyhow::Result<()> {
+    println!("Use `agentj run \"your prompt\"` or `agentj serve`");
+    let ipc_server = build_ipc_server(
+        wiring.kernel,
+        wiring.session,
+        wiring.permission_module,
+        wiring.question_module,
+        Some(wiring.trajectory_store),
+        wiring.provider_service,
+    );
+    ipc_server.signal_shutdown()?;
+    wiring.mcp_manager.close_all().await;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1398,7 +1554,7 @@ mod tests {
 
     #[test]
     fn record_completed_turn_with_usage_records_tokens() {
-        let c = agentj_stats::UsageCollector::new();
+        let c = agentj_core::UsageCollector::new();
         record_completed_turn(
             &c,
             "s1".into(),
@@ -1416,7 +1572,7 @@ mod tests {
 
     #[test]
     fn record_completed_turn_with_zero_usage_falls_back_to_turn() {
-        let c = agentj_stats::UsageCollector::new();
+        let c = agentj_core::UsageCollector::new();
         record_completed_turn(&c, "s1".into(), Some(TokenUsage::default()));
         let t = c.get_session_totals("s1").unwrap();
         assert_eq!((t.prompt_tokens, t.completion_tokens, t.turns), (0, 0, 1));
@@ -1424,7 +1580,7 @@ mod tests {
 
     #[test]
     fn record_completed_turn_with_none_falls_back_to_turn() {
-        let c = agentj_stats::UsageCollector::new();
+        let c = agentj_core::UsageCollector::new();
         record_completed_turn(&c, "s1".into(), None);
         let t = c.get_session_totals("s1").unwrap();
         assert_eq!((t.prompt_tokens, t.completion_tokens, t.turns), (0, 0, 1));

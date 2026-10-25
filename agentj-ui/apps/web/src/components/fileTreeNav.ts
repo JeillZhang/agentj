@@ -26,9 +26,3 @@ export function visiblePaths(
   walk(ROOT);
   return paths;
 }
-
-/** Parent directory row path for a nested row, or null for a root-level row. */
-export function parentDir(path: string): string | null {
-  const idx = path.lastIndexOf("/");
-  return idx > 0 ? path.slice(0, idx) : null;
-}

@@ -1,8 +1,10 @@
 //! `file/list` — sandboxed directory enumeration (design 2026-09-13, contract item 1).
 //!
-//! Requests resolve against the session `project_root`: the requested path is
-//! lexically normalized, canonicalized, and must stay under the canonicalized
-//! root (`-32807` otherwise). Enumeration is a BFS capped at [`MAX_DEPTH`]
+//! Requests resolve against the session `project_root` through
+//! `agentj_core::paths::resolve_within_root` — the same primitive the permission
+//! engine uses, so `file/list` cannot disagree with it about symlinks or about
+//! paths whose parents do not exist yet (`-32807` when it reports an escape).
+//! Enumeration is a BFS capped at [`MAX_DEPTH`]
 //! levels and [`ENTRY_LIMIT`] entries; `.git` is never returned or descended,
 //! escaping symlink entries are silently skipped, and per-level ordering is
 //! directories-first then name-ascending.
@@ -12,6 +14,7 @@ use std::path::{Component, Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 use agentj_core::git_sample::GitSnapshot;
+use agentj_core::paths::{Resolved, resolve_within_root};
 use agentj_protocol::file::{FileEntry, FileKind, FileListResult, GitFileStatus};
 
 /// Enumeration depth cap (design contract item 1: `depth` 1..=8, default 1).
@@ -33,7 +36,10 @@ pub enum FileListError {
     NotFound,
     /// Requested path exists but is not a directory (→ `-32602`, `not_a_directory`).
     NotADirectory,
-    /// Requested path escapes the session project root (→ `-32807`).
+    /// Requested path is unresolvable inside the session project root — either
+    /// it escapes the root (lexically or via a symlink) or an ancestor cannot be
+    /// stat'ed/canonicalized (e.g. EACCES), so the sandbox cannot prove it is
+    /// inside (→ `-32807`).
     OutsideRoot { path: String },
     /// `depth` outside 1..=8 (→ `-32602`, `invalid_depth`).
     InvalidDepth,
@@ -92,63 +98,139 @@ fn resolve_scope(root: &Path, path: Option<&str>) -> Result<Scope, FileListError
     })
 }
 
-/// Root-relative prefix of the requested directory (`""` for the root itself),
-/// so subdirectory listing entries keep paths relative to the project root.
+/// Prefix used to spell every listed row, relative to the project root.
+///
+/// Rows are advertised under the path the client asked for (BUG-002): clients
+/// derive a row's parent from `entry.path` (`parentPath()` in the SDK, used for
+/// "jump to parent" and for matching rows to the expanded node), so a prefix
+/// that switched to the canonical target whenever the requested directory was a
+/// symlink inside the root stopped matching the node it was rendered under.
+///
+/// Two request shapes deliberately keep the canonical spelling:
+///
+/// - an **absolute** `path` inside the root keeps reporting rows relative to
+///   the root — that is the existing contract, and inventing a spelling for an
+///   absolute request would only trade one confusion for another;
+/// - a request containing `..` also falls back to the canonical prefix, because
+///   a `..` after a symlink pops the *target*'s parent (BUG-001), so the
+///   requested spelling can name a directory that was never read.
+///
+/// Everything else — `src`, `./src`, `src/`, `src_alias` — keeps the requested
+/// spelling with `.`/empty segments normalized away. Containment is unaffected:
+/// `Scope.target` stays the canonical, sandbox-checked directory that is
+/// actually read, and only this display prefix is spelled.
 fn requested_prefix(root: &Path, requested: &str, target: &Path) -> String {
     if requested.is_empty() {
         return String::new();
     }
-    let relative = if Path::new(requested).is_absolute() {
-        target.strip_prefix(root).ok().map(Path::to_path_buf)
-    } else {
-        lexical_join(root, Path::new(requested))
-            .and_then(|joined| joined.strip_prefix(root).ok().map(Path::to_path_buf))
-    };
-    relative
+    let path = Path::new(requested);
+    let spelled_by_client = !path.is_absolute()
+        && !path
+            .components()
+            .any(|component| component == Component::ParentDir);
+    if !spelled_by_client {
+        return canonical_prefix(root, target);
+    }
+    path.components()
+        .filter_map(|component| match component {
+            Component::Normal(name) => Some(name.to_string_lossy().into_owned()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// Canonical root-relative prefix of an already-resolved target (`""` at the root).
+fn canonical_prefix(root: &Path, target: &Path) -> String {
+    target
+        .strip_prefix(root)
         .map(|rel| rel.to_string_lossy().into_owned())
         .unwrap_or_default()
 }
 
-/// Resolve the requested path against `root`: lexical normalization rejects
-/// `..` escapes before canonicalization; the canonical result must stay under
-/// the canonical root.
+/// Resolve the requested path against the canonical `root`. The verdict comes
+/// from the shared fail-closed primitive: a path that is *unresolvable* inside
+/// the root — an escape (lexical or via symlink), or a trail under an ancestor
+/// that cannot be stat'ed (EACCES) — is `OutsideRoot`, and a nonexistent path is
+/// still returned so the caller maps it to `NotFound`.
 fn resolve_target(root: &Path, requested: &str) -> Result<PathBuf, FileListError> {
     if requested.is_empty() {
         return Ok(root.to_path_buf());
     }
-    let raw = Path::new(requested);
-    let candidate = if raw.is_absolute() {
-        raw.to_path_buf()
-    } else {
-        lexical_join(root, raw).ok_or_else(|| outside_root(requested))?
-    };
-    let canonical = candidate
-        .canonicalize()
-        .map_err(|e| io_or_not_found(requested, &e))?;
-    if canonical.starts_with(root) {
-        Ok(canonical)
-    } else {
-        Err(outside_root(requested))
+    match resolve_within_root(root, requested) {
+        Resolved::Inside(target) => Ok(target),
+        Resolved::Outside { .. } => Err(outside_or_enotdir(root, requested)),
     }
 }
 
-/// Join `requested` onto `root` after removing `.` and resolving `..`;
-/// `None` when the path climbs above the root (sandbox escape).
-fn lexical_join(root: &Path, requested: &Path) -> Option<PathBuf> {
-    let mut relative = PathBuf::new();
-    for component in requested.components() {
-        match component {
-            Component::Normal(part) => relative.push(part),
-            Component::CurDir => {}
-            Component::ParentDir => {
-                if !relative.pop() {
-                    return None;
-                }
-            }
-            Component::RootDir | Component::Prefix(_) => return None,
-        }
+/// Map an `Outside` verdict onto the error shape `file/list` documents.
+///
+/// The shared resolver fails closed, and `ENOTDIR` (a trail under a path
+/// component that is a regular file, e.g. `a.txt/sub`) is one of the failures it
+/// cannot tell apart from an escape. For `file/list` that collapse is a
+/// client-visible drift (BUG-003): the base behaviour was `-32603` + the real
+/// io reason, not `-32807 outside_root`. Disambiguate on the error path only —
+/// never on the happy path — and only when the descent tripped over a regular
+/// file that really lives inside the root, so genuine escapes and unstatable
+/// ancestors (EACCES) keep failing closed. A spelling with any `..` also keeps
+/// failing closed: once symlinks are followed it can leave the root (BUG-006).
+fn outside_or_enotdir(root: &Path, requested: &str) -> FileListError {
+    if let Some(reason) = enotdir_in_root(root, requested) {
+        return FileListError::Io {
+            path: requested.to_string(),
+            reason,
+        };
     }
-    Some(root.join(relative))
+    outside_root(requested)
+}
+
+/// Real `ENOTDIR` reason when `requested` descends past a regular file **inside**
+/// the root; `None` keeps the fail-closed `OutsideRoot` verdict.
+fn enotdir_in_root(root: &Path, requested: &str) -> Option<String> {
+    let inside = spelled_in_root(root, requested)?;
+    let error = std::fs::metadata(&inside).err()?;
+    if error.kind() != std::io::ErrorKind::NotADirectory {
+        return None;
+    }
+    // The offending component must canonicalize inside the root: a symlink that
+    // leaves it is an escape, not an io failure.
+    let canonical = deepest_stat(&inside)?.canonicalize().ok()?;
+    canonical.starts_with(root).then(|| error.to_string())
+}
+
+/// Deepest prefix of `path` that still stats — for an `ENOTDIR` request that is
+/// the regular file the descent tripped over.
+fn deepest_stat(path: &Path) -> Option<PathBuf> {
+    let mut probe = path;
+    loop {
+        if std::fs::metadata(probe).is_ok() {
+            return Some(probe.to_path_buf());
+        }
+        probe = probe.parent()?;
+    }
+}
+
+/// Root-anchored form of `requested` when its spelling cannot climb above the
+/// root (`None` keeps the caller fail-closed).
+///
+/// Anything carrying a `..` component is refused outright: the OS resolves `..`
+/// *after* following symlinks, so `link/../a.txt` can land outside the root
+/// (BUG-006) and no lexical flattening may pretend otherwise. A genuine
+/// `ENOTDIR` spelling (`a.txt/sub`) never needs a `..`.
+fn spelled_in_root(root: &Path, requested: &str) -> Option<PathBuf> {
+    let path = Path::new(requested);
+    if path
+        .components()
+        .any(|component| component == Component::ParentDir)
+    {
+        return None;
+    }
+    let inside = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        root.join(path)
+    };
+    inside.starts_with(root).then_some(inside)
 }
 
 /// Map a metadata/canonicalization failure: missing → `NotFound`, else `Io`.
@@ -696,6 +778,66 @@ mod tests {
         fs::remove_dir_all(&root).ok();
     }
 
+    /// A symlink inside the root that points outside it is still an escape.
+    /// Pinned as a characterization test before `resolve_scope` switched to
+    /// `agentj_core::paths::resolve_within_root`.
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_scope_escape_is_outside_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.join("link")).unwrap();
+        assert!(matches!(
+            list(&root, Some("link"), Some(1)),
+            Err(FileListError::OutsideRoot { .. })
+        ));
+    }
+
+    /// Rows listed under a symlinked directory keep the spelling the client
+    /// asked for (BUG-002): clients derive parents from `entry.path`, so a
+    /// canonicalized row under `src/sub` would stop matching the `src_alias`
+    /// node they expanded. Safety is unchanged — the walk still reads the
+    /// canonical target gated by `resolve_within_root`.
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_directory_keeps_requested_spelling() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        fs::create_dir_all(root.join("src/sub")).unwrap();
+        fs::write(root.join("src/sub/a.rs"), "x").unwrap();
+        std::os::unix::fs::symlink(root.join("src"), root.join("src_alias")).unwrap();
+        assert_eq!(
+            paths(&list(&root, Some("src_alias"), Some(2)).unwrap()),
+            ["src_alias/sub", "src_alias/sub/a.rs"],
+            "rows keep the spelling the client expanded"
+        );
+        assert_eq!(
+            paths(&list(&root, Some("src_alias/sub"), Some(1)).unwrap()),
+            ["src_alias/sub/a.rs"],
+            "a nested request keeps its own spelling"
+        );
+        assert!(
+            matches!(
+                list(&root, Some("src_alias/../.."), Some(1)),
+                Err(FileListError::OutsideRoot { .. })
+            ),
+            "the alias must not become an escape hatch"
+        );
+    }
+
+    /// A path that simply does not exist stays `NotFound` — it must not be
+    /// promoted to `OutsideRoot` by the shared resolver.
+    #[test]
+    fn missing_scope_is_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        assert!(matches!(
+            list(&root, Some("missing"), Some(1)),
+            Err(FileListError::NotFound)
+        ));
+    }
+
     #[test]
     fn file_path_is_not_a_directory() {
         let root = temp_dir("file");
@@ -705,6 +847,129 @@ mod tests {
             Err(FileListError::NotADirectory)
         ));
         fs::remove_dir_all(&root).ok();
+    }
+
+    /// BUG-003: a trail under a **regular file** is an io failure, not a sandbox
+    /// verdict. The base commit canonicalized the request directly and reported
+    /// `-32603` + the real `ENOTDIR` reason; the shared fail-closed resolver
+    /// answers `Outside` for anything it cannot canonicalize, which silently
+    /// moved this shape to `-32807 outside_root`. The documented `file/list`
+    /// error split (io vs. outside) must not drift.
+    #[test]
+    fn path_under_a_regular_file_is_io_not_outside_root() {
+        let root = temp_dir("file-sub");
+        fs::write(root.join("a.txt"), "x").unwrap();
+        match list(&root, Some("a.txt/sub"), None).unwrap_err() {
+            FileListError::Io { path, reason } => {
+                assert_eq!(path, "a.txt/sub", "io label is the requested spelling");
+                assert!(!reason.is_empty(), "io reason must be carried");
+                #[cfg(unix)]
+                assert!(
+                    reason.contains("Not a directory"),
+                    "reason must report ENOTDIR, got {reason:?}"
+                );
+            }
+            other => panic!("a path under a regular file must stay Io, got {other:?}"),
+        }
+        fs::remove_dir_all(&root).ok();
+    }
+
+    /// The BUG-003 disambiguation must only widen io for `ENOTDIR`: real escapes
+    /// stay `OutsideRoot` and a missing path stays `NotFound`.
+    #[test]
+    fn escape_and_missing_verdicts_are_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        fs::write(root.join("a.txt"), "x").unwrap();
+        assert!(matches!(
+            list(&root, Some(".."), None),
+            Err(FileListError::OutsideRoot { .. })
+        ));
+        assert!(matches!(
+            list(&root, Some("a.txt/../.."), None),
+            Err(FileListError::OutsideRoot { .. })
+        ));
+        assert!(matches!(
+            list(&root, Some("nope"), None),
+            Err(FileListError::NotFound)
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_outside_with_file_tail_is_still_outside_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        fs::write(outside.path().join("secret.txt"), "x").unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.join("link")).unwrap();
+        assert!(matches!(
+            list(&root, Some("link/secret.txt/sub"), None),
+            Err(FileListError::OutsideRoot { .. })
+        ));
+    }
+
+    /// BUG-006: `link/../a.txt/sub` resolves to `<outside>/a.txt/sub`, i.e. the
+    /// request leaves the root, so the verdict must be `OutsideRoot` — the same
+    /// verdict `link/..` already gets. Lexically flattening the `..` inside the
+    /// root made the ENOTDIR mapping fire and report `Io` instead.
+    #[cfg(unix)]
+    #[test]
+    fn dotdot_through_a_symlink_stays_outside_root() {
+        let base = temp_dir("dotdot-symlink");
+        let root = base.join("ws");
+        let outside = base.join("outside");
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        let root = root.canonicalize().unwrap();
+        fs::write(root.join("a.txt"), "inside").unwrap();
+        fs::write(outside.join("a.txt"), "outside").unwrap();
+        std::os::unix::fs::symlink("../outside", root.join("link")).unwrap();
+
+        for escaping in ["link/..", "link/../a.txt/sub", "sub/../a.txt/sub"] {
+            assert!(
+                matches!(
+                    list(&root, Some(escaping), None),
+                    Err(FileListError::OutsideRoot { .. })
+                ),
+                "{escaping} escapes the root and must stay OutsideRoot, got {:?}",
+                list(&root, Some(escaping), None).unwrap_err()
+            );
+        }
+
+        // Genuine ENOTDIR keeps the io mapping (BUG-003 must not regress).
+        match list(&root, Some("a.txt/sub"), None).unwrap_err() {
+            FileListError::Io { reason, .. } => assert!(
+                reason.contains("Not a directory"),
+                "reason must report ENOTDIR, got {reason:?}"
+            ),
+            other => panic!("a.txt/sub must stay Io, got {other:?}"),
+        }
+        fs::remove_dir_all(&base).ok();
+    }
+
+    /// An ancestor that cannot be stat'ed (EACCES) is *not* an `ENOTDIR` io
+    /// failure: the sandbox cannot prove containment, so it keeps failing closed.
+    #[cfg(unix)]
+    #[test]
+    fn unsearchable_ancestor_stays_outside_root() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let locked = root.join("locked");
+        fs::create_dir(&locked).unwrap();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+        if fs::metadata(locked.join("sub")).is_ok() {
+            // Privileged runner: permission bits are not enforced → unexercisable.
+            fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+            return;
+        }
+        let verdict = list(&root, Some("locked/sub"), None).unwrap_err();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(
+            matches!(verdict, FileListError::OutsideRoot { .. }),
+            "EACCES must stay OutsideRoot, got {verdict:?}"
+        );
     }
 
     #[test]
@@ -938,9 +1203,6 @@ mod tests {
 
     #[derive(serde::Deserialize)]
     struct FixtureEntry {
-        /// Part of the fixture's declared shape; the tree is built from `path`.
-        #[allow(dead_code)]
-        name: String,
         path: String,
         kind: String,
     }

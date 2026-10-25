@@ -1,11 +1,15 @@
-//! Decision engine: pure rule evaluation (design #17 — Deny > Allow > Mode).
+//! Decision engine: rule evaluation over a fail-closed path resolver
+//! (design #17 — Deny > Allow > Mode).
 //! Path rules match RELATIVE glob patterns (user-specified relative to the
-//! workspace root). Escapes are detected lexically (no filesystem access):
-//! resolve the argument against workspace_root, strip `..` segments, and if
-//! the result leaves the root — Deny.
+//! workspace root). Escapes are decided by `agentj_core::paths::resolve_within_root`
+//! — the same fail-closed primitive the tool-argument rebaser and `file/list`
+//! use, so one verdict covers all of them (symlinks followed by real
+//! canonicalization, nonexistent tails allowed, unverifiable paths denied).
 
 use globset::{Glob, GlobSetBuilder};
-use std::path::{Component, Path, PathBuf};
+use std::path::Path;
+
+use agentj_core::paths::{Resolved, resolve_within_root};
 
 use crate::policy::{PermissionEffect, PermissionMode, ToolPolicy};
 
@@ -18,8 +22,11 @@ pub enum EvalOutcome {
     Mode(PermissionMode),
 }
 
-/// Stateless rule evaluator. (Design keeps it pure so it is trivially testable;
+/// Stateless rule evaluator. (Kept stateless so it is trivially testable;
 /// PermissionModule owns state like pending approvals and session allow-lists.)
+/// `eval_path` is the one exception to "pure": it asks the filesystem to
+/// canonicalize the target (fail closed), so verdicts match what the tools
+/// actually touch.
 #[derive(Debug, Default)]
 pub struct PermissionEngine;
 
@@ -48,12 +55,17 @@ impl PermissionEngine {
     }
 
     /// Evaluate a file tool path argument against path rules.
-    /// 1. Lexically resolve against workspace_root; if the result escapes the
-    ///    root → Deny (unconditional — outside the workspace is never allowed).
+    /// 1. Resolve the argument against `workspace_root` through the fail-closed
+    ///    `resolve_within_root` (real canonicalization, symlinks followed,
+    ///    nonexistent tails allowed). Anything it cannot prove is inside the
+    ///    root → Deny (unconditional — unverifiable or outside is never allowed).
     /// 2. Match the RELATIVE argument against relative glob patterns.
     ///    Deny > Allow > Mode.
     pub fn eval_path(&self, policy: &ToolPolicy, workspace_root: &Path, path: &str) -> EvalOutcome {
-        if self.escapes_root(workspace_root, path) {
+        if matches!(
+            resolve_within_root(workspace_root, path),
+            Resolved::Outside { .. }
+        ) {
             return EvalOutcome::Deny;
         }
         let mut any_allow = false;
@@ -72,13 +84,6 @@ impl PermissionEngine {
         }
     }
 
-    /// Lexical (no filesystem) check: does `arg` resolve outside `root`?
-    fn escapes_root(&self, root: &Path, arg: &str) -> bool {
-        let joined = root.join(arg);
-        let normalized = lexical_normalize(&joined);
-        !normalized.starts_with(root)
-    }
-
     fn glob_matches(&self, pattern: &str, relative_path: &str) -> bool {
         // Patterns are relative globs (e.g. "src/**", ".env"); match against
         // the relative argument. Build a set per rule — rules are few.
@@ -91,23 +96,6 @@ impl PermissionEngine {
             .map(|set| set.is_match(relative_path))
             .unwrap_or(false)
     }
-}
-
-/// Lexically strip `.`/`..` components without touching the filesystem.
-/// `/ws/a/../../x` → `/x`; `a/b/c` stays under `/ws`. (`..` at the root is
-/// kept — the caller compares against `root` to decide escape.)
-fn lexical_normalize(path: &Path) -> PathBuf {
-    let mut out = PathBuf::new();
-    for comp in path.components() {
-        match comp {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                out.pop();
-            }
-            other => out.push(other.as_os_str()),
-        }
-    }
-    out
 }
 
 #[cfg(test)]
@@ -191,6 +179,14 @@ mod tests {
         );
     }
 
+    fn ask_policy() -> ToolPolicy {
+        ToolPolicy {
+            mode: PermissionMode::Ask,
+            path_rules: vec![],
+            command_rules: vec![],
+        }
+    }
+
     fn write_policy() -> ToolPolicy {
         ToolPolicy {
             mode: PermissionMode::Ask,
@@ -227,7 +223,8 @@ mod tests {
     fn dotdot_escape_rejected_by_deny() {
         let engine = PermissionEngine::new();
         let root = std::path::Path::new("/ws");
-        // Lexically escapes the workspace root — denied regardless of rules.
+        // Escapes the workspace root (lexically or via symlink) — denied
+        // regardless of rules, because the resolver cannot prove it is inside.
         let path = "../secret.key";
         assert_eq!(
             engine.eval_path(&write_policy(), root, path),
@@ -255,10 +252,66 @@ mod tests {
         );
     }
 
+    /// A symlink inside the root that points outside it must be Deny: the
+    /// lexical `starts_with` check let it through (Review Focus #1).
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_escape_is_denied() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.join("link")).unwrap();
+        let engine = PermissionEngine::new();
+        assert_eq!(
+            engine.eval_path(&ask_policy(), &root, "link/secret"),
+            EvalOutcome::Deny
+        );
+    }
+
+    /// BUG-001: `..` after a symlink resolves against the link TARGET, so
+    /// `link/../secret` leaves the root even though it lexically stays inside.
+    #[cfg(unix)]
+    #[test]
+    fn symlink_then_dotdot_escape_is_denied() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        std::fs::write(outside.path().join("secret"), b"x").unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.join("link")).unwrap();
+        let engine = PermissionEngine::new();
+        for shape in ["link/../secret", "link/./../secret"] {
+            assert_eq!(
+                engine.eval_path(&ask_policy(), &root, shape),
+                EvalOutcome::Deny,
+                "{shape} escapes through the symlink"
+            );
+        }
+        let absolute = format!("{}/link/../secret", root.display());
+        assert_eq!(
+            engine.eval_path(&ask_policy(), &root, &absolute),
+            EvalOutcome::Deny,
+            "{absolute} escapes through the symlink"
+        );
+    }
+
+    /// Writing a path whose parents do not exist yet is legitimate: existence
+    /// is the write tool's business, not the escape check's (Review Focus #2).
+    #[test]
+    fn nonexistent_write_target_is_not_denied() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let engine = PermissionEngine::new();
+        assert_eq!(
+            engine.eval_path(&ask_policy(), &root, "new/dir/file.rs"),
+            EvalOutcome::Mode(PermissionMode::Ask)
+        );
+    }
+
     #[test]
     fn path_escapes_workspace_detected() {
         let engine = PermissionEngine::new();
-        // Even with no deny rule, an escape must be Deny (lexical, no fs access).
+        // Even with no deny rule, an escape must be Deny. `/ws` does not exist,
+        // so this also pins the lexical fallback of the resolver.
         let p = ToolPolicy::default(); // no rules, mode=Ask
         assert_eq!(
             engine.eval_path(&p, std::path::Path::new("/ws"), "../x"),

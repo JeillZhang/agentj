@@ -53,66 +53,100 @@ fn lock_guard<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|p| p.into_inner())
 }
 
+/// The five indexes a startup directory scan builds, all keyed by session id.
+#[derive(Default)]
+struct StoreIndex {
+    sessions: HashMap<SessionId, Vec<ChatMessage>>,
+    statuses: HashMap<SessionId, SessionStatus>,
+    created: HashMap<SessionId, u64>,
+    updated: HashMap<SessionId, u64>,
+    roots: HashMap<SessionId, PathBuf>,
+}
+
+impl StoreIndex {
+    /// One parsed snapshot → every index (the snapshot is the single source).
+    fn insert(&mut self, sid: &str, snap: SessionSnapshot) {
+        if let Some(root) = snap.project_root {
+            self.roots.insert(sid.to_string(), PathBuf::from(root));
+        }
+        let sid = sid.to_string();
+        self.sessions.insert(sid.clone(), snap.messages);
+        self.statuses.insert(sid.clone(), snap.status);
+        self.created.insert(sid.clone(), snap.created_at);
+        self.updated.insert(sid, snap.updated_at);
+    }
+}
+
+fn ensure_dir(dir: &Path) -> Result<(), ModuleError> {
+    fs::create_dir_all(dir).map_err(|e| persistence_err(e.to_string()))
+}
+
+/// Only crash leftovers are cleaned. A *fresh* `.tmp` may belong to a concurrent
+/// writer (another kernel sharing this dir) that is between its write and rename —
+/// deleting it would make that writer's rename fail with ENOENT and lose the session.
+/// See [`stale_tmp`].
+fn cleanup_tmp(path: &Path) {
+    if stale_tmp(path) {
+        let _ = fs::remove_file(path);
+    }
+}
+
+/// Parse one <sid>.json into `index`; a corrupt file is backed up and skipped, an
+/// unreadable one is skipped (neither blocks construction).
+fn load_one(path: &Path, sid: &str, index: &mut StoreIndex) {
+    let Ok(raw) = fs::read_to_string(path) else {
+        return; // unreadable file: skip, keep going
+    };
+    match serde_json::from_str::<SessionSnapshot>(&raw) {
+        Ok(snap) => index.insert(sid, snap),
+        Err(_) => backup_corrupt(path, sid),
+    }
+}
+
+fn backup_corrupt(path: &Path, sid: &str) {
+    let backup = path.with_extension("json.corrupt");
+    let _ = fs::rename(path, backup);
+    tracing::warn!(session = %sid, "corrupt session file backed up as .corrupt");
+}
+
+/// Scan `dir` once: clean stale `.tmp`, then preload every valid `<sid>.json`.
+fn load_existing(dir: &Path) -> Result<StoreIndex, ModuleError> {
+    let mut index = StoreIndex::default();
+    for entry in fs::read_dir(dir).map_err(|e| persistence_err(e.to_string()))? {
+        let path = entry.map_err(|e| persistence_err(e.to_string()))?.path();
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        if name.ends_with(".tmp") {
+            cleanup_tmp(&path);
+            continue;
+        }
+        if !name.ends_with(".json") {
+            continue;
+        }
+        let sid = name.trim_end_matches(".json").to_string();
+        if is_valid_sid(&sid) {
+            load_one(&path, &sid, &mut index);
+        }
+    }
+    Ok(index)
+}
+
 impl FileBackedStore {
     /// Open/create the session dir; clean crash leftovers (.tmp), then scan and parse
     /// every <sid>.json into memory. Corrupt files → rename to <sid>.json.corrupt +
     /// tracing warn + skip (does NOT block construction); unreadable files are skipped.
     pub fn new(dir: &Path) -> Result<Self, ModuleError> {
-        fs::create_dir_all(dir).map_err(|e| persistence_err(e.to_string()))?;
-        let mut sessions = HashMap::new();
-        let mut statuses = HashMap::new();
-        let mut created = HashMap::new();
-        let mut updated = HashMap::new();
-        let mut roots = HashMap::new();
-        for entry in fs::read_dir(dir).map_err(|e| persistence_err(e.to_string()))? {
-            let path = entry.map_err(|e| persistence_err(e.to_string()))?.path();
-            let name = path
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_default();
-            if name.ends_with(".tmp") {
-                // Only crash leftovers are cleaned. A *fresh* `.tmp` may belong to a
-                // concurrent writer (another kernel sharing this dir) that is between its
-                // write and rename — deleting it would make that writer's rename fail with
-                // ENOENT and lose the session. See `stale_tmp`.
-                if stale_tmp(&path) {
-                    let _ = fs::remove_file(&path);
-                }
-                continue;
-            }
-            if !name.ends_with(".json") {
-                continue;
-            }
-            let sid = name.trim_end_matches(".json").to_string();
-            if !is_valid_sid(&sid) {
-                continue;
-            }
-            if let Ok(raw) = fs::read_to_string(&path) {
-                match serde_json::from_str::<SessionSnapshot>(&raw) {
-                    Ok(snap) => {
-                        if let Some(root) = snap.project_root {
-                            roots.insert(sid.clone(), PathBuf::from(root));
-                        }
-                        sessions.insert(sid.clone(), snap.messages);
-                        statuses.insert(sid.clone(), snap.status);
-                        created.insert(sid.clone(), snap.created_at);
-                        updated.insert(sid.clone(), snap.updated_at);
-                    }
-                    Err(_) => {
-                        let backup = path.with_extension("json.corrupt");
-                        let _ = fs::rename(&path, backup);
-                        tracing::warn!(session = %sid, "corrupt session file backed up as .corrupt");
-                    }
-                }
-            } // unreadable file: skip, keep going
-        }
+        ensure_dir(dir)?;
+        let index = load_existing(dir)?;
         Ok(Self {
             dir: dir.to_path_buf(),
-            sessions: Mutex::new(sessions),
-            statuses: Mutex::new(statuses),
-            created: Mutex::new(created),
-            updated: Mutex::new(updated),
-            roots: Mutex::new(roots),
+            sessions: Mutex::new(index.sessions),
+            statuses: Mutex::new(index.statuses),
+            created: Mutex::new(index.created),
+            updated: Mutex::new(index.updated),
+            roots: Mutex::new(index.roots),
         })
     }
 

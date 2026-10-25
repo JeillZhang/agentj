@@ -100,6 +100,19 @@ impl Tool for McpTool {
 }
 
 async fn call_server(command: &str, name: &str, input: Value) -> Result<Value, ToolError> {
+    let mut transport = prepare_call(command, name).await?;
+    let resp = transport
+        .request(
+            "tools/call",
+            serde_json::json!({ "name": name, "arguments": input }),
+        )
+        .await
+        .map_err(|e| call_failed(name, e.to_string()))?;
+    Ok(extract_result(&resp))
+}
+
+/// Spawn one MCP server over `sh -c <command>` and finish the discovery handshake.
+async fn prepare_call(command: &str, name: &str) -> Result<McpTransport, ToolError> {
     let mut child = Command::new("sh")
         .arg("-c")
         .arg(command)
@@ -108,10 +121,7 @@ async fn call_server(command: &str, name: &str, input: Value) -> Result<Value, T
         .stderr(std::process::Stdio::inherit())
         .kill_on_drop(true) // lifecycle: no orphan MCP server processes on drop
         .spawn()
-        .map_err(|e| ToolError::ExecutionFailed {
-            name: name.to_string(),
-            reason: e.to_string(),
-        })?;
+        .map_err(|e| call_failed(name, e.to_string()))?;
     let stdin = child.stdin.take().unwrap();
     let stdout = child.stdout.take().unwrap();
     let mut transport = McpTransport::new(stdin, stdout, child);
@@ -125,34 +135,31 @@ async fn call_server(command: &str, name: &str, input: Value) -> Result<Value, T
             }),
         )
         .await
-        .map_err(|e| ToolError::ExecutionFailed {
-            name: name.to_string(),
-            reason: e.to_string(),
-        })?;
+        .map_err(|e| call_failed(name, e.to_string()))?;
     // The fixture server emits the tools/call result only on its third round,
     // so mirror the discovery handshake before invoking the tool.
     transport
         .request("tools/list", serde_json::json!({}))
         .await
-        .map_err(|e| ToolError::ExecutionFailed {
-            name: name.to_string(),
-            reason: e.to_string(),
-        })?;
-    let resp = transport
-        .request(
-            "tools/call",
-            serde_json::json!({ "name": name, "arguments": input }),
-        )
-        .await
-        .map_err(|e| ToolError::ExecutionFailed {
-            name: name.to_string(),
-            reason: e.to_string(),
-        })?;
+        .map_err(|e| call_failed(name, e.to_string()))?;
+    Ok(transport)
+}
+
+/// `content[0].text` of a `tools/call` response, as a JSON string.
+fn extract_result(resp: &Value) -> Value {
     let text = resp["content"][0]["text"]
         .as_str()
         .unwrap_or("")
         .to_string();
-    Ok(Value::String(text))
+    Value::String(text)
+}
+
+/// The single error shape every `call_server` step reports.
+fn call_failed(name: &str, reason: String) -> ToolError {
+    ToolError::ExecutionFailed {
+        name: name.to_string(),
+        reason,
+    }
 }
 
 #[cfg(test)]

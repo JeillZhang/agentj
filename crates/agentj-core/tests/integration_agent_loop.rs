@@ -1,6 +1,6 @@
 //! Integration test via bus-driven Kernel modules.
 
-use agentj_context::ContextPipeline;
+use agentj_core::DefaultContextPipeline;
 use agentj_core::agent_loop_module::AgentLoopModule;
 use agentj_core::kernel::Kernel;
 use agentj_core::module::{
@@ -55,7 +55,7 @@ async fn e2e_streaming_with_real_modules_via_bus() {
         kernel.services(),
     );
 
-    let pipeline = Arc::new(ContextPipeline::new());
+    let pipeline = Arc::new(DefaultContextPipeline::new());
     let runner = TurnRunner::new(
         ctx.clone(),
         pipeline,

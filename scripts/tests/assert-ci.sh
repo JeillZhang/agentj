@@ -15,7 +15,7 @@ CHECKS=(harness ci-jobs coverage-gate frontend-job governance-files hygiene docs
 # `check_<name>()` implementations and these lists disagree in either direction,
 # so "one check silently dropped" can no longer look like "everything green".
 EXPECTED_UI_CHECKS="ui-manifests lockfile-root single-lockfile"
-EXPECTED_CARGO_CHECKS="cargo-root crate-inheritance licenses deny-config lockfile-locked"
+EXPECTED_CARGO_CHECKS="cargo-root crate-inheritance licenses deny-config lockfile-locked fn-length"
 EXPECTED_CI_CHECKS="harness ci-jobs coverage-gate frontend-job governance-files hygiene docs-summaries docs-agents"
 
 bad() { printf 'FAIL %s: %s\n' "$1" "$2"; return 1; }
@@ -650,8 +650,10 @@ for name, path in (("se", SE), ("fe", FE)):
         if stale in section:
             fail(f"{name} 下一步 still lists finished work as pending: {stale}")
 
-se_keep = ["⑥", "⑩", "⑪", "⑬", "⑯", "⑰", "㉙"]
-se_drop = ["⑮", "⑳", "㉛", "㉜", "⑫", "㉗", "㉘", "㉚"]
+# Rows that must survive the current summary rewrite. ⑩/⑪/⑬/⑯/㉙ and ③/㉔ were
+# implemented by the structure-debt batch, so they moved to the "must be gone" lists.
+se_keep = ["⑥", "⑰"]
+se_drop = ["⑮", "⑳", "㉛", "㉜", "⑫", "㉗", "㉘", "㉚", "⑩", "⑪", "⑬", "⑯", "㉙"]
 for symbol in se_keep:
     if symbol not in se:
         fail(f"se 待实施 must keep row {symbol}")
@@ -662,8 +664,8 @@ for token in ("dmg", "msi"):
     if token not in se.lower():
         fail(f"se 待实施 must carry the desktop packaging row ({token})")
 
-fe_keep = ["③", "㉔"]
-fe_drop = ["㉑", "㉒", "㉕", "㉝", "㉞", "㉓"]
+fe_keep = []
+fe_drop = ["㉑", "㉒", "㉕", "㉝", "㉞", "㉓", "③", "㉔"]
 for symbol in fe_keep:
     if symbol not in fe:
         fail(f"fe 待实施 must keep row {symbol}")
@@ -764,6 +766,45 @@ if missing:
 PY2
   ); then
     bad "$name" "$job_out"
+    failed=1
+  fi
+
+  # The check count AGENTS.md advertises must equal what the three harnesses
+  # actually register, so "one check landed" cannot leave the docs behind.
+  local count_out
+  if ! count_out=$(python3 - "$ROOT" <<'PY3'
+import pathlib
+import re
+import subprocess
+import sys
+
+root = pathlib.Path(sys.argv[1])
+agents = (root / "AGENTS.md").read_text()
+match = re.search(r"(\d+) 个 check", agents)
+if match is None:
+    print("AGENTS.md must advertise the harness size as 'N 个 check'")
+    sys.exit(1)
+claimed = int(match.group(1))
+counts = []
+for script in ("assert-ui.sh", "assert-cargo.sh", "assert-ci.sh"):
+    listing = subprocess.run(
+        ["bash", str(root / "scripts/tests" / script), "--list"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    names = [line for line in listing.splitlines() if line.strip()]
+    counts.append(len(names))
+if claimed != sum(counts):
+    print(
+        f"AGENTS.md advertises {claimed} checks, the harnesses register "
+        f"{sum(counts)} ({counts[0]} ui + {counts[1]} cargo + {counts[2]} ci)"
+    )
+    sys.exit(1)
+print("ok")
+PY3
+  ); then
+    bad "$name" "$count_out"
     failed=1
   fi
 

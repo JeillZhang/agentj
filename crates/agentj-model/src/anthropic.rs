@@ -68,52 +68,74 @@ impl AnthropicProvider {
         options: &ModelOptions,
         stream: bool,
     ) -> Value {
-        // Anthropic: system is a top-level field, NOT a message role (design 4.1 wire mapping)
-        let system: String = messages
-            .iter()
-            .filter(|m| m.role == Role::System)
-            .map(|m| m.content.clone())
-            .collect::<Vec<_>>()
-            .join("\n");
-        let msgs: Vec<Value> = messages
-            .iter()
-            .filter(|m| m.role != Role::System)
-            .map(|m| match m.role {
-                Role::Tool => serde_json::json!({
-                    "role": "user",
-                    "content": [{
-                        "type": "tool_result",
-                        "tool_use_id": m.tool_call_id.clone().unwrap_or_default(),
-                        "content": m.content,
-                    }],
-                }),
-                Role::Assistant if !m.tool_calls.is_empty() => serde_json::json!({
-                    "role": "assistant",
-                    "content": m.tool_calls.iter().map(|tc| serde_json::json!({
-                        "type": "tool_use",
-                        "id": tc.id,
-                        "name": tc.name,
-                        "input": tc.arguments,
-                    })).collect::<Vec<_>>(),
-                }),
-                Role::Assistant => serde_json::json!({ "role": "assistant", "content": m.content }),
-                _ => serde_json::json!({ "role": "user", "content": m.content }),
-            })
-            .collect();
         serde_json::json!({
             "model": options.model,
-            "system": system,
-            "messages": msgs,
-            "tools": tools.iter().map(|t| serde_json::json!({
-                "name": t.name,
-                "description": t.description,
-                "input_schema": t.input_schema,
-            })).collect::<Vec<_>>(),
+            "system": body_system(messages),
+            "messages": body_messages(messages),
+            "tools": body_tools(tools),
             "max_tokens": options.max_tokens.unwrap_or(4096),
             "stream": stream,
             "temperature": options.temperature.unwrap_or(0.7),
         })
     }
+}
+
+/// Anthropic: system is a top-level field, NOT a message role (design 4.1 wire mapping).
+fn body_system(messages: &[ChatMessage]) -> String {
+    messages
+        .iter()
+        .filter(|m| m.role == Role::System)
+        .map(|m| m.content.clone())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Map the non-system history to `/v1/messages` `messages` entries.
+fn body_messages(messages: &[ChatMessage]) -> Vec<Value> {
+    messages
+        .iter()
+        .filter(|m| m.role != Role::System)
+        .map(body_message)
+        .collect()
+}
+
+/// Map one non-system message to its `/v1/messages` wire shape.
+fn body_message(m: &ChatMessage) -> Value {
+    match m.role {
+        Role::Tool => serde_json::json!({
+            "role": "user",
+            "content": [{
+                "type": "tool_result",
+                "tool_use_id": m.tool_call_id.clone().unwrap_or_default(),
+                "content": m.content,
+            }],
+        }),
+        Role::Assistant if !m.tool_calls.is_empty() => serde_json::json!({
+            "role": "assistant",
+            "content": m.tool_calls.iter().map(|tc| serde_json::json!({
+                "type": "tool_use",
+                "id": tc.id,
+                "name": tc.name,
+                "input": tc.arguments,
+            })).collect::<Vec<_>>(),
+        }),
+        Role::Assistant => serde_json::json!({ "role": "assistant", "content": m.content }),
+        _ => serde_json::json!({ "role": "user", "content": m.content }),
+    }
+}
+
+/// Map agentj tool definitions to `/v1/messages` `tools` entries.
+fn body_tools(tools: &[ToolDefinition]) -> Vec<Value> {
+    tools
+        .iter()
+        .map(|t| {
+            serde_json::json!({
+                "name": t.name,
+                "description": t.description,
+                "input_schema": t.input_schema,
+            })
+        })
+        .collect()
 }
 
 /// Accumulates a streaming tool_use block by content-block index (design 4.2).
@@ -140,76 +162,97 @@ impl AnthropicChunkParser {
     fn push_line(&mut self, line: &str, out: &mut Vec<Result<ModelEvent, ModelError>>) {
         crate::sse::push_line(self, line, out);
     }
+
+    /// `content_block_start` → register a pending `tool_use` block.
+    fn push_block_start(&mut self, json: &Value) {
+        if json["content_block"]["type"].as_str() != Some("tool_use") {
+            return;
+        }
+        let idx = json["index"].as_u64().unwrap_or(0) as usize;
+        let id = json["content_block"]["id"]
+            .as_str()
+            .unwrap_or("")
+            .to_string();
+        let name = json["content_block"]["name"]
+            .as_str()
+            .unwrap_or("")
+            .to_string();
+        self.tool_blocks.insert(
+            idx,
+            PendingToolUse {
+                id,
+                name,
+                args: String::new(),
+            },
+        );
+    }
+
+    /// `content_block_delta` → route on the delta type.
+    fn push_block_delta(&mut self, json: &Value, out: &mut Vec<Result<ModelEvent, ModelError>>) {
+        match json["delta"]["type"].as_str().unwrap_or("") {
+            "text_delta" => self.push_text_delta(json, out),
+            "input_json_delta" => self.push_input_json_delta(json),
+            _ => {}
+        }
+    }
+
+    /// `text_delta` → Delta with the plain-text fragment.
+    fn push_text_delta(&self, json: &Value, out: &mut Vec<Result<ModelEvent, ModelError>>) {
+        // clippy collapsible_if: nested if → let-chain (edition 2024)
+        if let Some(text) = json["delta"]["text"].as_str()
+            && !text.is_empty()
+        {
+            out.push(Ok(ModelEvent::Delta(text.to_string())));
+        }
+    }
+
+    /// `input_json_delta` → append the partial JSON fragment to its block.
+    fn push_input_json_delta(&mut self, json: &Value) {
+        let idx = json["index"].as_u64().unwrap_or(0) as usize;
+        // clippy collapsible_if: nested if-let → let-chain (edition 2024)
+        if let Some(tb) = self.tool_blocks.get_mut(&idx)
+            && let Some(args) = json["delta"]["partial_json"].as_str()
+        {
+            tb.args.push_str(args);
+        }
+    }
+
+    /// `content_block_stop` → emit the assembled ToolCall for that block.
+    fn push_block_stop(&mut self, json: &Value, out: &mut Vec<Result<ModelEvent, ModelError>>) {
+        let idx = json["index"].as_u64().unwrap_or(0) as usize;
+        if let Some(tb) = self.tool_blocks.remove(&idx) {
+            let arguments = serde_json::from_str(&tb.args).unwrap_or(Value::Null);
+            out.push(Ok(ModelEvent::ToolCall(ToolCall {
+                id: tb.id,
+                name: tb.name,
+                arguments,
+            })));
+        }
+    }
+
+    /// `message_delta` → Usage (only when both token counts are present).
+    fn push_message_delta(&self, json: &Value, out: &mut Vec<Result<ModelEvent, ModelError>>) {
+        if let Some(u) = json.get("usage").and_then(|u| u.as_object())
+            && let (Some(i), Some(o)) = (
+                u.get("input_tokens").and_then(|v| v.as_u64()),
+                u.get("output_tokens").and_then(|v| v.as_u64()),
+            )
+        {
+            out.push(Ok(ModelEvent::Usage(TokenUsage {
+                prompt_tokens: i,
+                completion_tokens: o,
+            })));
+        }
+    }
 }
 
 impl crate::sse::SsePayload for AnthropicChunkParser {
     fn push_payload(&mut self, json: Value, out: &mut Vec<Result<ModelEvent, ModelError>>) {
         match json["type"].as_str().unwrap_or("") {
-            "content_block_start" => {
-                if json["content_block"]["type"].as_str() == Some("tool_use") {
-                    let idx = json["index"].as_u64().unwrap_or(0) as usize;
-                    let id = json["content_block"]["id"]
-                        .as_str()
-                        .unwrap_or("")
-                        .to_string();
-                    let name = json["content_block"]["name"]
-                        .as_str()
-                        .unwrap_or("")
-                        .to_string();
-                    self.tool_blocks.insert(
-                        idx,
-                        PendingToolUse {
-                            id,
-                            name,
-                            args: String::new(),
-                        },
-                    );
-                }
-            }
-            "content_block_delta" => match json["delta"]["type"].as_str().unwrap_or("") {
-                "text_delta" => {
-                    // clippy collapsible_if: nested if → let-chain (edition 2024)
-                    if let Some(text) = json["delta"]["text"].as_str()
-                        && !text.is_empty()
-                    {
-                        out.push(Ok(ModelEvent::Delta(text.to_string())));
-                    }
-                }
-                "input_json_delta" => {
-                    let idx = json["index"].as_u64().unwrap_or(0) as usize;
-                    // clippy collapsible_if: nested if-let → let-chain (edition 2024)
-                    if let Some(tb) = self.tool_blocks.get_mut(&idx)
-                        && let Some(args) = json["delta"]["partial_json"].as_str()
-                    {
-                        tb.args.push_str(args);
-                    }
-                }
-                _ => {}
-            },
-            "content_block_stop" => {
-                let idx = json["index"].as_u64().unwrap_or(0) as usize;
-                if let Some(tb) = self.tool_blocks.remove(&idx) {
-                    let arguments = serde_json::from_str(&tb.args).unwrap_or(Value::Null);
-                    out.push(Ok(ModelEvent::ToolCall(ToolCall {
-                        id: tb.id,
-                        name: tb.name,
-                        arguments,
-                    })));
-                }
-            }
-            "message_delta" => {
-                if let Some(u) = json.get("usage").and_then(|u| u.as_object())
-                    && let (Some(i), Some(o)) = (
-                        u.get("input_tokens").and_then(|v| v.as_u64()),
-                        u.get("output_tokens").and_then(|v| v.as_u64()),
-                    )
-                {
-                    out.push(Ok(ModelEvent::Usage(TokenUsage {
-                        prompt_tokens: i,
-                        completion_tokens: o,
-                    })));
-                }
-            }
+            "content_block_start" => self.push_block_start(&json),
+            "content_block_delta" => self.push_block_delta(&json, out),
+            "content_block_stop" => self.push_block_stop(&json, out),
+            "message_delta" => self.push_message_delta(&json, out),
             // clippy collapsible_match: arm-body if → match guard (done_emitted true
             // falls through to `_` below, same semantics as the spec's nested if)
             "message_stop" if !self.done_emitted => {

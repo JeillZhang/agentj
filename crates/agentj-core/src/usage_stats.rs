@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use agentj_core::types::SessionId;
+use crate::types::SessionId;
 
 /// Per-session token usage totals.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

@@ -65,9 +65,10 @@ CLI、TUI、Web、Desktop 均作为协议消费者接入，任意语言可开发
 ## Project Structure
 
 ```
-crates/                    # 18 个 workspace crate（统一目录）
+crates/                    # 15 个 workspace crate（统一目录）
   agentj-protocol/         # IPC 协议契约（wire 类型 + schema 生成）
   agentj-core/             # 内核调度 + 事件总线（重入防护）+ TurnRunner + TurnArtifact（diff）
+                           #   + 上下文管线 / 用量统计 / skills 加载器
   agentj-config/           # TOML 配置（[model]/[permission]/[session]/[license]/[[mcp.servers]]）
   agentj-auth/             # 订阅凭据（auth.json 0600 原子写 + flag>env>file 优先级）
   agentj-session/          # 会话生命周期（FileBackedStore + 过期清理 + project_root）
@@ -76,11 +77,8 @@ crates/                    # 18 个 workspace crate（统一目录）
                            #   data/opencode-go.json = 生成的路由快照（gen_opencode_catalog）
   agentj-tools/            # 内置工具（bash/glob/grep/read/write + todo）
   agentj-permission/       # 权限系统
-  agentj-context/          # 上下文管线
-  agentj-stats/            # 用量统计 UsageCollector
   agentj-license/          # Ed25519 许可证校验
   agentj-mcp/              # MCP 客户端 + McpConnectionManager
-  agentj-skills/           # skills 加载器
   agentj-plugin/           # 插件系统 + libloading
   agentj-ipc/              # JSON-RPC IPC（stdio/TCP/WS + 连接分类器 + file/list + web 静态托管/登录门/指标）
   agentj-cli/              # agentj 二进制（run/serve/dashboard/auth）

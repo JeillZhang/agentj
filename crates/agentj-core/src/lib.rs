@@ -3,22 +3,29 @@
 pub mod agent_loop_module;
 pub mod artifacts;
 pub mod budget;
+mod context_pipeline;
 pub mod dispatcher;
 pub mod error;
 pub mod git_sample;
 pub mod hooks;
 pub mod kernel;
 pub mod module;
+pub mod paths;
+pub mod pending;
 pub mod permission;
 pub mod resolver;
+pub mod skills;
 pub mod sync;
 pub mod text_tool_call;
 pub mod tool_executor;
 pub mod tool_paths;
 pub mod turn_runner;
 pub mod types;
+pub mod usage_stats;
 
+pub use context_pipeline::DefaultContextPipeline;
 pub use resolver::{KernelService, ModuleResolver, ServiceRegistry};
+pub use usage_stats::{SessionUsage, UsageCollector};
 
 pub fn add(left: u64, right: u64) -> u64 {
     left + right

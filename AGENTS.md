@@ -1,6 +1,6 @@
 # AGENTS.md
 
-> **当前版本 0.1.0** · `PROTOCOL_VERSION` **0.19.0**（28 方法 / 78 schemas / 18 crates）
+> **当前版本 0.1.0** · `PROTOCOL_VERSION` **0.19.0**（28 方法 / 78 schemas / 15 crates）
 > 本文件只记录**约束、入口与基线**（Setup / Commands / Architecture / Conventions / Rules）。
 > **逐版本变更与历史决策不写在这里** —— 见 [`docs/changelog/`](docs/changelog/)、
 > [`docs/guide/`](docs/guide/)、[`docs/specs/`](docs/specs/) 与 `.agents/summary/`。
@@ -8,7 +8,7 @@
 ## Project Overview
 
 AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + 可插拔模块」架构。
-后端 18 个 crate 位于 `crates/`；前端 monorepo 位于 `agentj-ui/`（npm workspaces
+后端 15 个 crate 位于 `crates/`；前端 monorepo 位于 `agentj-ui/`（npm workspaces
 `apps/*` + `packages/*`，三端共享 SDK / protocol / tokens）；WebSocket 网关同端口复用。
 
 ## Setup
@@ -55,9 +55,13 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
   + `protocol/methods.json` + `agentj-ui/package.json` / `apps/web` / `apps/tui` / `apps/desktop`
   + `agentj-ui/package-lock.json` 根条目；失败打印出错文件与命中字面量。
   `AGENTJ_ROOT=<路径>` 可对任意目录跑同一套断言，`scripts/test-check-version.sh` 是其正/负样例）
-- `bash scripts/tests/assert-{ui,cargo,ci}.sh all` — 仓库不变量断言（16 个 check：UI 清单 /
-  单一 lockfile / Cargo 工作区策略 / 18 crate 继承 / LICENSE / deny.toml / lockfile 一致性 /
-  CI 作业契约 / 覆盖率棘轮 / 治理文件 / 卫生 / summary / 文档基线）。`<check>` 单跑、
+- `python3 scripts/tests/fn-length.py [PATH…]` — 逐个 `fn` 计 body 行数，>50 行即失败并列出
+  `file:line: fn name = N lines`（目录参数自动展开；`/tests/` 段跳过并打印
+  `scanned N file(s), skipped M test file(s)`；空目标集 `rc=2` 拒绝空过）。
+- `bash scripts/tests/assert-{ui,cargo,ci}.sh all` — 仓库不变量断言（17 个 check：UI 清单 /
+  单一 lockfile / Cargo 工作区策略 / 15 crate 继承 / LICENSE / deny.toml / lockfile 一致性 /
+  函数长度 / CI 作业契约 / 覆盖率棘轮 / 治理文件 / 卫生 / summary / 文档基线 —— 文档基线一项
+  同时断言这里的 check 数与三个脚本实际注册的一致）。`<check>` 单跑、
   `--list` 列出、`--strict` 把未实现项（SKIP）视为失败 —— **收尾门禁用 `--strict`**
 
 > 各门禁的当前测试数量与最近一次结果见 `.agents/summary/summary_and_next_{se,fe}.md`；
@@ -89,7 +93,7 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
 
 ## Architecture
 
-> 全部 18 个 crate 位于 `crates/`（`crates/*`），前端 monorepo 位于
+> 全部 15 个 crate 位于 `crates/`（`crates/*`），前端 monorepo 位于
 > `agentj-ui/`（npm workspaces，frontend stays in-repo，不拆独立仓），
 > 下文 `agentj-*` 均为 `crates/agentj-*`，`@agentj/*` 为 `agentj-ui` 包。
 
@@ -108,7 +112,12 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
   `ToolResultTruncated`；`AgentEvent::Done` 携带本轮生效的 `provider`/`model`）
   + 事件总线重入防护（EventGuard thread_local + MAX_EVENT_DEPTH=16）
   + `sync`（`lock_or_recover`/`read_or_recover`/`write_or_recover` 防中毒锁 helper
-  + `panic_payload_message`：把 panic 负载渲染成可上报文本）。
+  + `panic_payload_message`：把 panic 负载渲染成可上报文本）
+  + `pending`（`PendingRegistry`：待决条目存储 + TTL/归属回收，permission/question 共用）
+  + `paths`/`tool_paths`（`resolve_within_root` 越界判定 + 工具相对路径重定基）
+  + `context_pipeline`（`DefaultContextPipeline`：装配/回流纯函数；预算裁剪由 `budget` 统一下发）
+  + `usage_stats`（`UsageCollector`/`SessionUsage` 用量统计）
+  + `skills`（`.aj` > `.agents` > `.claude` skills 加载器）。
 - `agentj-config`：TOML 配置（[model]/[agent]/[permission]/[session]/[license]/[[mcp.servers]]；
   `[permission] timeout_ms` 调整 `ask` 自动拒绝等待预算（缺省 60s，钳制 100..=600_000，
   越界钳制并告警；e2e fixture 调至 800ms）；
@@ -149,12 +158,9 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
   两个进程型工具（`bash` / `grep`）统一经 `ToolExecutor`（`executor.rs`）以独立进程组
   执行，超时杀整组并按工具默认值（`bash` 120s、`grep` 60s）生效，可经入参 `timeout_ms`
   覆盖（钳制 1s–600s）。
-- `agentj-context`：上下文管线（装配/回流纯函数；预算裁剪由 `agentj-core::budget` 统一下发）。
-- `agentj-stats`：用量统计 UsageCollector。
 - `agentj-license`：Ed25519 许可证校验（entitlements + free mode）。
 - `agentj-mcp`：MCP 客户端 + McpConnectionManager 长驻连接
   （McpServerSpec + close_all）。
-- `agentj-skills`：skills 加载器。
 - `agentj-plugin`：插件系统（manifest + 状态机 + 依赖图 + libloading）。
 - `agentj-ipc`：JSON-RPC IPC（stdio/TCP/WS + 同端口分类器 + WsConnection
   + 注入式 `ProviderService` handle（`model/list` / `auth/status` / `provider/usage` /
@@ -168,6 +174,13 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
   + `error.data` 透传 + 非法结构请求回显可确定 id（可确定 id → `-32600`；语法错误
   → `-32700` + `id:null`）。**错误码表与鉴权通道契约以
   [`docs/specs/ipc-protocol.md`](docs/specs/ipc-protocol.md) 为准**，本文件不复述。
+  - **模块布局**（`lib.rs` 仅剩装配 + 再导出，≤600 行）：`dispatch`（`handle_request_from` /
+    `auth_gate` / `dispatch_request` / `DISPATCH_METHODS` 方法表）+ `handlers/{lifecycle,
+    session,run,pending,provider,file}`（24 个方法处理器）+ `rpc`（JSON-RPC 信封 +
+    `DispatchError`）+ `registry`（`Connection` / `ConnectionRegistry`）+ `frames`（帧构造与
+    artifact wire 映射）+ `stdio` / `tcp` / `web` / `ws` + `tests/*`（按域分文件）。
+    两道防漂移 pin：`DISPATCH_METHODS` ↔ `protocol/methods.json` 双向；`tests/pins.rs` 断言
+    已搬走的符号不再回潮到 `lib.rs` / `web.rs` / `tcp.rs` / `ws.rs`。
   - `web` 子模块（同端口静态托管 + 混合鉴权）：`WebConfig` + `build_router`
     （`/ws` + `/login`/`/logout` + 静态 `ServeDir`/SPA fallback；两静态服务各自
     包裹 cache 层与登录门，避免 `Router::layer` 波及 `/ws`）+ 不透明会话 cookie
@@ -213,6 +226,10 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
   `VERSION` / `PROTOCOL_VERSION` / `resolveWsUrl` + `src/methods.ts` METHODS
   + `transports/websocket.ts` + `transports/tcp.ts`；`RpcClient.request` 拦截
   空/未定义 method；`index.ts` barrel 导出 `VERSION`），被 Web/TUI/Desktop 同源消费。
+  - 三端共享纯逻辑：`src/files.ts`（文件树模型/导航/行格式化/搜检索引：`buildFileNode` /
+    `updateNode` / `flattenVisible` / `moveSelection` / `formatFileRowParts` /
+    `formatSearchRowParts` / `toGitLetter` / `parentPath` …）+ `src/toolSummary.ts`
+    （工具调用摘要）：Web 与 TUI 都只消费这一份，不得在应用内重写。
   - `resolveWsUrl` 页面地址派生：无 `VITE_AGENTJ_WS_URL`/显式 host 时取页面
     `location.hostname:4096`（https → wss；`tauri.localhost` 保持明文回环）。
   - 手动连接持久化到 `agentj.connection`（刷新自动恢复并重连）；显式设置优先于
@@ -262,7 +279,7 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
 - **守护内核**：统一 Connection 抽象 + `serve --port` 常驻多客户端 + `run --attach`
   + `dashboard`（见 daemon-kernel 设计文档）。
 
-> Crate 边界：Rust 18 crate 保持 `crates/*` 边界纯净，
+> Crate 边界：Rust 15 crate 保持 `crates/*` 边界纯净，
 > 前端（TS/React/Bun/Tauri）全部收敛于 `agentj-ui/` 内，
 > 通过 `protocol/methods.json` + `schemas/*.json` 与后端契约对齐，
 > 不向 Rust workspace 注入前端构建产物。

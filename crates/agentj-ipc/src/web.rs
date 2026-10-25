@@ -1213,6 +1213,17 @@ async fn verify_asset(
     next.run(req).await
 }
 
+/// The `Cache-Control` override both static mounts wrap around their service —
+/// the only difference between the SPA and the hashed-asset mount.
+fn cache_layer(
+    value: &'static str,
+) -> tower_http::set_header::SetResponseHeaderLayer<axum::http::HeaderValue> {
+    tower_http::set_header::SetResponseHeaderLayer::overriding(
+        axum::http::header::CACHE_CONTROL,
+        axum::http::HeaderValue::from_static(value),
+    )
+}
+
 /// Mount the static SPA surface (D6: cache headers + login gate wrapped around
 /// each service individually — `Router::layer` would leak onto `/ws`). The root
 /// mount is `fallback_service` (unknown paths -> index.html, 200) because
@@ -1227,16 +1238,9 @@ fn static_surface(
     let spa = tower_http::services::ServeDir::new(dist).fallback(
         tower_http::services::ServeFile::new(dist.join("index.html")),
     );
-    let spa = tower_http::set_header::SetResponseHeaderLayer::overriding(
-        axum::http::header::CACHE_CONTROL,
-        axum::http::HeaderValue::from_static("no-cache"),
-    )
-    .layer(spa);
-    let assets = tower_http::set_header::SetResponseHeaderLayer::overriding(
-        axum::http::header::CACHE_CONTROL,
-        axum::http::HeaderValue::from_static("public, max-age=31536000, immutable"),
-    )
-    .layer(tower_http::services::ServeDir::new(dist.join("assets")));
+    let spa = cache_layer("no-cache").layer(spa);
+    let assets = cache_layer("public, max-age=31536000, immutable")
+        .layer(tower_http::services::ServeDir::new(dist.join("assets")));
     let gate_assets = {
         let web = web.clone();
         axum::middleware::from_fn(move |req, next| {
@@ -1271,38 +1275,44 @@ fn static_surface(
         .fallback_service(gate_spa.layer(verify_spa.layer(spa)))
 }
 
-/// Unauthenticated version probe: reports this server's product/protocol
-/// versions, the optional facts read from the mounted dist, the aggregate
-/// login-limiter counters, the startup integrity summary and the runtime
-/// spot-check block, so a remote client or operator can detect a stale UI and
-/// observe throttling without holding a session cookie. Registered as an
-/// explicit route (like `/login`), so the login gate and the SPA fallback never
-/// answer it.
-async fn version_handler(web: std::sync::Arc<WebConfig>) -> axum::response::Response {
-    let dist = web.dist_version();
-    let counters = web.login_limiter.counters(Instant::now());
-    let integrity = web.integrity();
+/// Runtime spot-check block: rounds/checked/mismatched/missing plus the age of the
+/// last sweep when one has run.
+fn runtime_json(web: &WebConfig) -> serde_json::Value {
     let (runtime, last_run_age) = web.runtime_snapshot();
-    let (on_demand, on_demand_age) = web.on_demand_snapshot();
-    let mut runtime_json = serde_json::json!({
+    let mut json = serde_json::json!({
         "rounds": runtime.rounds,
         "checked": runtime.checked,
         "mismatched": runtime.mismatched,
         "missing": runtime.missing,
     });
     if let Some(age) = last_run_age {
-        runtime_json["last_run_age_secs"] = serde_json::json!(age);
+        json["last_run_age_secs"] = serde_json::json!(age);
     }
-    let mut on_demand_json = serde_json::json!({
+    json
+}
+
+/// On-demand verification block (a manual sweep over the whole manifest).
+fn on_demand_json(web: &WebConfig) -> serde_json::Value {
+    let (on_demand, on_demand_age) = web.on_demand_snapshot();
+    let mut json = serde_json::json!({
         "sweeps": on_demand.sweeps,
         "checked": on_demand.checked,
         "mismatched": on_demand.mismatched,
         "missing": on_demand.missing,
     });
     if let Some(age) = on_demand_age {
-        on_demand_json["last_run_age_secs"] = serde_json::json!(age);
+        json["last_run_age_secs"] = serde_json::json!(age);
     }
-    let body = serde_json::json!({
+    json
+}
+
+/// The `/version` body: product/protocol versions, the dist facts, the throttling
+/// counters and the integrity summary (manifest + static + the two runtime blocks).
+fn version_payload(web: &WebConfig) -> serde_json::Value {
+    let dist = web.dist_version();
+    let counters = web.login_limiter.counters(Instant::now());
+    let integrity = web.integrity();
+    serde_json::json!({
         "product_version": env!("CARGO_PKG_VERSION"),
         "protocol_version": agentj_protocol::PROTOCOL_VERSION,
         "dist_present": web.dist.is_some(),
@@ -1324,11 +1334,21 @@ async fn version_handler(web: std::sync::Arc<WebConfig>) -> axum::response::Resp
             "checked": integrity.checked,
             "mismatched": integrity.mismatched,
             "missing": integrity.missing,
-            "runtime": runtime_json,
-            "on_demand": on_demand_json,
+            "runtime": runtime_json(web),
+            "on_demand": on_demand_json(web),
         },
-    });
-    let mut res = axum::Json(body).into_response();
+    })
+}
+
+/// Unauthenticated version probe: reports this server's product/protocol
+/// versions, the optional facts read from the mounted dist, the aggregate
+/// login-limiter counters, the startup integrity summary and the runtime
+/// spot-check block, so a remote client or operator can detect a stale UI and
+/// observe throttling without holding a session cookie. Registered as an
+/// explicit route (like `/login`), so the login gate and the SPA fallback never
+/// answer it.
+async fn version_handler(web: std::sync::Arc<WebConfig>) -> axum::response::Response {
+    let mut res = axum::Json(version_payload(&web)).into_response();
     res.headers_mut().insert(
         axum::http::header::CACHE_CONTROL,
         axum::http::HeaderValue::from_static("no-store"),

@@ -6,7 +6,7 @@ use futures::StreamExt;
 use futures::stream::{self, BoxStream};
 use reqwest::Client;
 use serde_json::Value;
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, BufReader};
 use tokio_util::io::StreamReader;
 
 /// Ollama local-model provider (design v0.3+ 模型扩展). Talks NDJSON over POST /api/chat.
@@ -16,6 +16,148 @@ pub struct OllamaProvider {
     #[allow(dead_code)]
     model: String,
     client: Client,
+}
+
+/// One decoded NDJSON frame of the `/api/chat` streaming vocabulary.
+struct NdjsonFrame {
+    content: String,
+    done: bool,
+    usage: Option<TokenUsage>,
+}
+
+impl NdjsonFrame {
+    /// Decode one line; `None` for blank/unparsable frames (the reader skips them).
+    fn parse(line: &str) -> Option<Self> {
+        let json: Value = serde_json::from_str(line.trim()).ok()?;
+        let content = json["message"]["content"]
+            .as_str()
+            .unwrap_or("")
+            .to_string();
+        let done = json.get("done").and_then(|d| d.as_bool()).unwrap_or(false);
+        let prompt = json.get("prompt_eval_count").and_then(|v| v.as_u64());
+        let eval = json.get("eval_count").and_then(|v| v.as_u64());
+        let usage = match (prompt, eval) {
+            (None, None) => None,
+            _ => Some(TokenUsage {
+                prompt_tokens: prompt.unwrap_or(0),
+                completion_tokens: eval.unwrap_or(0),
+            }),
+        };
+        Some(Self {
+            content,
+            done,
+            usage,
+        })
+    }
+}
+
+/// NDJSON stream state machine for one `POST /api/chat` response.
+///
+/// - `done_seen`: a `done:true` frame (or a truncation error) was consumed.
+/// - `pending_usage`: a `done:true` frame carried eval counts; emit `Usage` next.
+/// - `pending_done`: a `done:true` frame carried content/usage; emit `Done` next.
+/// - `terminated`: a truncation error was emitted; the stream ends here.
+struct NdjsonStream<R> {
+    reader: BufReader<R>,
+    done_seen: bool,
+    pending_usage: Option<TokenUsage>,
+    pending_done: bool,
+    terminated: bool,
+}
+
+impl<R: AsyncBufRead + Unpin> NdjsonStream<R> {
+    fn new(reader: BufReader<R>) -> Self {
+        Self {
+            reader,
+            done_seen: false,
+            pending_usage: None,
+            pending_done: false,
+            terminated: false,
+        }
+    }
+
+    /// One `stream::unfold` step.
+    async fn next_event(&mut self) -> Option<Result<ModelEvent, ModelError>> {
+        if self.terminated {
+            return None;
+        }
+        if let Some(pending) = self.take_pending() {
+            return Some(pending);
+        }
+        self.read_event().await
+    }
+
+    /// Drain the events buffered behind a `done:true` frame (Usage before Done).
+    fn take_pending(&mut self) -> Option<Result<ModelEvent, ModelError>> {
+        if let Some(usage) = self.pending_usage.take() {
+            self.pending_done = true;
+            return Some(Ok(ModelEvent::Usage(usage)));
+        }
+        if self.pending_done {
+            self.pending_done = false;
+            self.done_seen = true;
+            return Some(Ok(ModelEvent::Done));
+        }
+        None
+    }
+
+    /// Read frames until one of them yields an event (or the stream ends).
+    async fn read_event(&mut self) -> Option<Result<ModelEvent, ModelError>> {
+        loop {
+            let line = match self.read_line().await {
+                Ok(Some(line)) => line,
+                Ok(None) => return None,
+                Err(e) => return Some(Err(e)),
+            };
+            let Some(frame) = NdjsonFrame::parse(&line) else {
+                continue;
+            };
+            if frame.done {
+                self.done_seen = true;
+                return Some(self.done_event(frame));
+            }
+            if !frame.content.is_empty() {
+                return Some(Ok(ModelEvent::Delta(frame.content)));
+            }
+        }
+    }
+
+    /// Read one line; EOF/transport failures before `done:true` become truncation errors.
+    async fn read_line(&mut self) -> Result<Option<String>, ModelError> {
+        let mut line = String::new();
+        match self.reader.read_line(&mut line).await {
+            Ok(0) if !self.done_seen => {
+                self.terminated = true;
+                Err(ModelError::Stream("stream ended before done:true".into()))
+            }
+            Ok(0) => Ok(None),
+            Ok(_) => Ok(Some(line)),
+            Err(e) if !self.done_seen => {
+                self.terminated = true;
+                Err(ModelError::Stream(format!(
+                    "stream error before done:true: {e}"
+                )))
+            }
+            Err(_) => Ok(None),
+        }
+    }
+
+    /// Event a `done:true` frame stands for (BUG-010: delta before done).
+    fn done_event(&mut self, frame: NdjsonFrame) -> Result<ModelEvent, ModelError> {
+        let has_usage = frame.usage.is_some();
+        if !frame.content.is_empty() {
+            self.pending_usage = frame.usage;
+            self.pending_done = !has_usage;
+            return Ok(ModelEvent::Delta(frame.content));
+        }
+        match frame.usage {
+            Some(usage) => {
+                self.pending_done = true;
+                Ok(ModelEvent::Usage(usage))
+            }
+            None => Ok(ModelEvent::Done),
+        }
+    }
 }
 
 impl OllamaProvider {
@@ -32,6 +174,26 @@ impl OllamaProvider {
         messages: &[ChatMessage],
         options: &ModelOptions,
     ) -> Result<BoxStream<'static, Result<ModelEvent, ModelError>>, ModelError> {
+        let response = self.send_chat_request(messages, options).await?;
+        // bytes_stream() is a Stream, not AsyncRead — StreamReader bridges it to the
+        // line reader (tokio-util); each NDJSON line becomes one ModelEvent.
+        let byte_stream = response
+            .bytes_stream()
+            .map(|r| r.map_err(std::io::Error::other));
+        let reader = BufReader::new(StreamReader::new(byte_stream));
+        let stream = stream::unfold(NdjsonStream::new(reader), |mut state| async move {
+            let event = state.next_event().await?;
+            Some((event, state))
+        });
+        Ok(Box::pin(stream))
+    }
+
+    /// POST `/api/chat` in streaming mode and reject non-200 responses verbatim.
+    async fn send_chat_request(
+        &self,
+        messages: &[ChatMessage],
+        options: &ModelOptions,
+    ) -> Result<reqwest::Response, ModelError> {
         let url = format!("{}/api/chat", self.base_url);
         let response = self
             .client
@@ -52,119 +214,7 @@ impl OllamaProvider {
                 message: msg,
             });
         }
-        // bytes_stream() is a Stream, not AsyncRead — StreamReader bridges it to the
-        // line reader (tokio-util); each NDJSON line becomes one ModelEvent.
-        let byte_stream = response
-            .bytes_stream()
-            .map(|r| r.map_err(std::io::Error::other));
-        let reader = BufReader::new(StreamReader::new(byte_stream));
-        // State: (reader, done_seen, pending_usage, pending_done, terminated).
-        // - done_seen: a done:true line was emitted (or a truncation error was).
-        // - pending_usage: a done:true line carried eval counts; emit Usage next.
-        // - pending_done: a done:true line carried content/usage; emit Done next.
-        // - terminated: a truncation error was emitted; end the stream.
-        let stream = stream::unfold(
-            (reader, false, None, false, false),
-            |(mut reader, mut done_seen, mut pending_usage, pending_done, mut terminated)| async move {
-                if terminated {
-                    return None;
-                }
-                if let Some(usage) = pending_usage.take() {
-                    return Some((
-                        Ok(ModelEvent::Usage(usage)),
-                        (reader, done_seen, None, true, false),
-                    ));
-                }
-                if pending_done {
-                    return Some((Ok(ModelEvent::Done), (reader, true, None, false, false)));
-                }
-                let mut line = String::new();
-                loop {
-                    match reader.read_line(&mut line).await {
-                        Ok(0) => {
-                            // EOF before done:true → truncated stream, never silent.
-                            if !done_seen {
-                                terminated = true;
-                                return Some((
-                                    Err(ModelError::Stream("stream ended before done:true".into())),
-                                    (reader, done_seen, None, false, terminated),
-                                ));
-                            }
-                            return None; // normal end after done
-                        }
-                        Ok(_) => {}
-                        Err(e) => {
-                            // Transport error before done:true → truncated stream.
-                            if !done_seen {
-                                terminated = true;
-                                return Some((
-                                    Err(ModelError::Stream(format!(
-                                        "stream error before done:true: {e}"
-                                    ))),
-                                    (reader, done_seen, None, false, terminated),
-                                ));
-                            }
-                            return None;
-                        }
-                    }
-                    let trimmed = line.trim().to_string();
-                    line.clear();
-                    let json: Value = match serde_json::from_str(&trimmed) {
-                        Ok(v) => v,
-                        Err(_) => continue,
-                    };
-                    let content = json["message"]["content"]
-                        .as_str()
-                        .unwrap_or("")
-                        .to_string();
-                    let done = json.get("done").and_then(|d| d.as_bool()).unwrap_or(false);
-                    if done {
-                        done_seen = true;
-                        let prompt = json.get("prompt_eval_count").and_then(|v| v.as_u64());
-                        let eval = json.get("eval_count").and_then(|v| v.as_u64());
-                        let usage_opt = match (prompt, eval) {
-                            (None, None) => None,
-                            _ => Some(TokenUsage {
-                                prompt_tokens: prompt.unwrap_or(0),
-                                completion_tokens: eval.unwrap_or(0),
-                            }),
-                        };
-                        if !content.is_empty() {
-                            // BUG-010: emit delta before done for done-line content.
-                            // If usage present: Delta -> Usage -> Done;
-                            // else: Delta -> Done.
-                            if let Some(u) = usage_opt {
-                                return Some((
-                                    Ok(ModelEvent::Delta(content)),
-                                    (reader, done_seen, Some(u), false, false),
-                                ));
-                            }
-                            return Some((
-                                Ok(ModelEvent::Delta(content)),
-                                (reader, done_seen, None, true, false),
-                            ));
-                        }
-                        if let Some(u) = usage_opt {
-                            return Some((
-                                Ok(ModelEvent::Usage(u)),
-                                (reader, done_seen, None, true, false),
-                            ));
-                        }
-                        return Some((
-                            Ok(ModelEvent::Done),
-                            (reader, done_seen, None, false, false),
-                        ));
-                    }
-                    if !content.is_empty() {
-                        return Some((
-                            Ok(ModelEvent::Delta(content)),
-                            (reader, done_seen, None, false, false),
-                        ));
-                    }
-                }
-            },
-        );
-        Ok(Box::pin(stream))
+        Ok(response)
     }
 }
 

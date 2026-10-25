@@ -3,7 +3,7 @@ import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import { Check, ChevronDown, ChevronsUp, Clock, Folder, Minus, Pencil, X } from "lucide-react";
-import { METHODS, parseProgress, RpcClient } from "@agentj/sdk";
+import { METHODS, parseProgress, RpcClient, toolSummary } from "@agentj/sdk";
 import type { ProgressFrame } from "@agentj/sdk";
 import CodeBlockCard from "./components/CodeBlockCard";
 import ComposerOptions from "./components/ComposerOptions";
@@ -179,33 +179,6 @@ export function toolGlyph(entry: Extract<RunEntry, { kind: "tool" }>, pending: b
   if (entry.state === "ok") return <Check size={16} aria-hidden="true" />;
   if (entry.state === "denied" || entry.state === "failed") return <X size={16} aria-hidden="true" />;
   return pending ? <Clock size={16} aria-hidden="true" /> : <Minus size={16} aria-hidden="true" />;
-}
-
-/** One-line summary of what a tool call targets: the bash command, the read/written
- *  file, the glob/grep pattern. Unknown or malformed args yield "" (no chip shown). */
-export function toolSummary(entry: Extract<RunEntry, { kind: "tool" }>): string {
-  const args = entry.args;
-  if (typeof args !== "object" || args === null) return "";
-  const a = args as Record<string, unknown>;
-  const str = (key: string) => (typeof a[key] === "string" ? (a[key] as string) : "");
-  switch (entry.name) {
-    case "bash":
-      return str("command");
-    case "read":
-    case "write":
-      return str("path");
-    case "glob":
-      return str("pattern");
-    case "grep": {
-      const pattern = str("pattern");
-      const include = str("include");
-      return pattern && include && include !== "*" ? `${pattern} · ${include}` : pattern;
-    }
-    case "todo":
-      return Array.isArray(a.items) ? `${a.items.length} 项` : "";
-    default:
-      return "";
-  }
 }
 
 export function ToolCard({

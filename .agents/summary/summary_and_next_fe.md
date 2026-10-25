@@ -8,14 +8,97 @@
 > 待实施），不得随内容替换而删除；仅当该特性实际实施完成后才能移除（移入功能记录）。
 > 后端总结独立存放于 `summary_and_next_se.md`；两文件内容隔离，互不写入对方文件。
 
-本文件当前记录**依赖刷新批次（前端侧）**（react / vite / vitest / jsdom / jest-dom /
-lucide-react / @opentui / @tauri-apps/cli 一次性升级，wire 面零变更）。
+本文件当前记录**结构债收敛与三端纯函数共享（前端侧）**——files / toolSummary 上提 SDK +
+Web 文件树接入服务端搜索，wire 面零变更。
 
-> 当前功能：**依赖刷新批次（前端侧）** —— 分支 `chore/dependency-refresh-batch`（自 `c82c679` 起）。
-> 后端同批次的 Rust 侧记录见 `summary_and_next_se.md`。
-> `PROTOCOL_VERSION` 仍 0.19.0，`VERSION` 仍 0.1.0。
+> 当前功能：**结构债收敛 + Web 服务端搜索** —— 分支 `refactor/structure-debt-and-web-search`
+> （自 `b7a3ae7` 起；前端为计划 Phase D 的 T42–T47）。后端同批次的 Rust 侧记录见
+> `summary_and_next_se.md`。
+> `PROTOCOL_VERSION` 仍 **0.19.0**，`VERSION` 仍 **0.1.0**；`packages/protocol/types.d.ts` /
+> `schemas/*.json` 全程零 diff（`file/list` 的 `query` / `total` 是既有字段）。
 
-## 依赖刷新批次（前端）✅
+## 结构债收敛 + Web 服务端搜索（前端侧） ✅
+
+### 交付
+
+**A. 纯函数上提 `@agentj/sdk`（同一语义不再两份实现）**
+
+- `packages/sdk/src/files.ts`（164 行，从 `apps/tui/src/files.ts` 逐字搬迁）+ `__tests__/files.test.ts`
+  （13 个用例）：`MAX_INDENT_DEPTH` / `toGitLetter` / `buildFileNode` / `updateNode` / `parentPath` /
+  `flattenVisible` / `isEmptyExpandedDir` / `clampSelection` / `moveSelection` / `truncate` /
+  `formatFileRowParts` / `buildSearchIndex` / `formatSearchRowParts` / `statusLetterColor`，
+  含 `FileNode` / `GitLetter` / `RawFileEntry` / `RowParts` / `SearchEntry` / `VisibleRow` /
+  `VisibleRowNote` 7 个类型，全部经 `index.ts` barrel 导出。
+- `packages/sdk/src/toolSummary.ts`（27 行，从 `apps/web/src/RunPanel.tsx:186` 搬迁）。
+- 消费者改接：TUI `apps/tui/src/files.ts` 161 → **32 行**（re-export；`moveSelection` 用 SDK 的
+  clamp 变体，Web 的 wrap-aware 版本留在 `hooks/useRovingFocus.ts`）；Web `FileTree.tsx` 删本地
+  `GIT_LETTERS` / `toGit`，`fileTreeNav.ts` 删 `parentDir`，`RunPanel.tsx` 删本地 `toolSummary`
+  （1129 → 1102 行）。Web 的 `visiblePaths` 有意留在本地（Web 按父目录 Map 索引，TUI 按 children 嵌套）。
+
+**B. Web 文件树服务端搜索（`apps/web/src/components/FileTree.tsx` 476 → 695 行）**
+
+- 输入即检索：150ms 防抖后发 `file/list { session_id, path: null, query }`（**不发 `depth`**——
+  规范 `docs/specs/ipc-protocol.md:790` 与内核 `file_list.rs:345-350` 都表明 query 模式忽略它），
+  渲染服务端返回的顺序与 `total`，客户端不重排、不本地过滤。
+- 模式判定：`typeof reply.total === "number"`（显式 `0` 也是合法结果）；旧内核（无 `total`）
+  显示「不支持服务端搜索」并以空结果呈现，不降级为本地过滤。
+- 代次守卫：`{seq, session}` 快照比对（`fileTreeSearch.ts` 的 `replyIsCurrent` 纯谓词，
+  成功与错误路径共用），session 用 `useLayoutEffect` 刷新的 ref 做**绘制前**同步，
+  乱序回复与跨会话回复都被丢弃。
+- 状态行优先级：`搜索失败：<message>`（保留原有行与 git 字母，丢 `total`/`truncated`）→
+  旧内核提示 → `搜索中…`（防抖等待中或请求在途）→ `输入关键字搜索文件名`（空串）→
+  `搜索到 <rows> / <total> 项`，截断时追加 ` · 部分结果`。
+- 键盘可达：结果容器可聚焦并处理 `↑` / `↓`（移动活动行）与 `Esc`（从输入框或结果行均可退出搜索态、
+  恢复原树并取消未触发的尾部请求）；搜索态下图树快捷键（`j` / `k` / `r`）被置为惰性，
+  不会改动被隐藏的树；目录命中用文件夹图标。
+- `filetree.css` 146 → 181 行（搜索盒 / 状态行 / 结果行 / 空态）。
+
+### 验证
+
+| 门禁 | 结果 |
+|------|------|
+| `npm --prefix agentj-ui test --workspace=@agentj/sdk` | 75 passed（9 files） |
+| `npm --prefix agentj-ui test --workspace=@agentj/web` | 701 passed（55 files；本批次前 681） |
+| `bun --cwd agentj-ui/apps/tui test` | 193 pass / 0 fail（22 files） |
+| `npm --prefix agentj-ui run build --workspace=@agentj/web` | 通过 |
+| `npm --prefix agentj-ui run build --workspace=@agentj/sdk` | 通过（`tsc --noEmit`） |
+| `npm --prefix agentj-ui run lint --workspace=@agentj/web` | 0 error（警告均为既有） |
+| `npm --prefix agentj-ui run build --workspace=@agentj/protocol` + `generate` | 通过，`git status --porcelain packages/protocol` 空 |
+| `node agentj-ui/apps/desktop/check-desktop-ui.mjs` | `desktop-ui-ok` |
+| `bash scripts/tests/assert-ui.sh all` | 3 passed |
+| `./scripts/check-version.sh` | `version-ok` |
+
+### 测试验收（`jskill-test-acceptance`，2 轮）
+
+独立 tester 复验前端侧全部行为，**零前端 Bug**：旧内核 `file/list`（无 `total`）⇒ 提示「内核不支持服务端搜索」
+且 0 行结果、不本地重排；错误保留既有行；`· 部分结果` 截断提示；Esc 恢复树（含结果行聚焦态）；
+三次击键仅发 1 次请求且参数为 `{ session_id, path: null, query }`；`total:0` 不被误判为旧内核；
+迟到回复代际守卫；SDK/TUI 共享纯函数行为一致。6 个验收 Bug 全在后端（见 `_se.md`），
+前端只需在修复后复跑：sdk 75 / web 701 / tui 193 全绿。
+
+### 决策与偏差（本批次）
+
+- **Web 搜索逻辑留在 `FileTree.tsx`**（计划只列该文件）：内部已按函数拆分（`applySearchReply` /
+  `searchHead` / `toSearchEntry` / `SearchBar` / `SearchResults`），~90 行无 JSX 的 `SearchState`
+  适合后续提为 `hooks/useFileSearch.ts`。
+- **`depth` 不发**：计划写了 `depth: 8`，但服务端在 query 模式忽略该参数，发它只会让测试固化了
+  一个假机制——实测规范与内核两处一致后删除。
+- **可观测性不可测的一处**：`session` 守卫从 passive effect 移到 `useLayoutEffect` 的 ref；
+  jsdom + `act` 无法复现「passive effect 之前的一帧」，故改为把守卫提成纯谓词并钉住语义
+  （session 不一致时即使 seq 与 query 都相同也丢弃），DOM 级模拟测试因对旧实现同样通过而被删除
+  （不留假绿）。
+- **TUI `files.test.ts` 未收窄**（~190 行仍在重测 SDK 已覆盖的行为）——不属于计划范围。
+
+### 遗留问题 / 已知限制（本批次）
+
+- `apps/web/src/components/FileTree.tsx` 695 行承载两套状态机（懒加载树 + 搜索），见上条的提取建议。
+- `apps/web/src/RunPanel.test.tsx` 的字面量需写成 `{ name, args }`（SDK 签名不容 `kind/id/state`
+  多余属性），另加一条 `RunEntry` 结构化断言保持兼容性可见。
+- TUI 的 `files.test.ts` 与 SDK 测试重复（见上）。
+
+## 归档：依赖刷新批次（前端）✅
+
+分支 `chore/dependency-refresh-batch`（自 `c82c679`）。
 
 ### 交付
 
@@ -214,10 +297,11 @@ lucide-react / @opentui / @tauri-apps/cli 一次性升级，wire 面零变更）
 
 ## 待实施（跨阶段保留：未实施不得删除）
 
+> 本批次把「Web 服务端搜索」与「三端共享纯函数」两项实施完毕并移出本表；当前表中暂无前端条目——
+> 下一特性由 `jskill-feature-next` 合并 `_se.md` 待实施表选取。
+
 | # | 特性 | 内容 | 依赖 | 状态 |
 |---|------|------|------|------|
-| ③ | Web 接入服务端搜索 | Web Files 搜索态打通（消费服务端 `query`/`total`；提示行搜索态可达） | 无（基于服务端搜索） | 待实施 |
-| ㉔ | 【债】三端共享逻辑收敛 | Web 19,930 行 / TUI 7,939 行各自重写会话、运行视图、文件树、搜索（`toolSummary`、files 懒加载、空文本过滤等均为双份实现）；评估把无 UI 依赖的纯函数上提 `@agentj/sdk`，避免同一缺陷修两次 | 与本轮空白过滤上提同向 | 待实施 |
 
 > 类型标记：`【债】` = 工程债 / 质量门禁，`【修复】` = 已确认缺陷或元数据不一致；无标记 = 特性。
 > 规则：本表条目在未实施时必须**跨阶段保留**（不得随内容替换删除）；实施完成后从本表移除，
@@ -225,9 +309,10 @@ lucide-react / @opentui / @tauri-apps/cli 一次性升级，wire 面零变更）
 
 ## 下一步
 
-- 健壮性与去重批次（前端侧）已收尾，分支推送 `origin` 与 `gitcode`，PR 开在 `origin`
-  （用户负责合并）。
-- 前端候选：③ Web 接入服务端搜索（消费服务端 `query` / `total`，唯一带协议消费面的待实施项）；
-  ㉔ 三端共享逻辑收敛（建议与 ③ 同批：files 懒加载 / `toolSummary` / 空文本过滤都在两侧重复）；
-  或订阅状态常驻指示；或 TUI `/models` 与 Web 选择语义对齐。
+- 结构债收敛批次（前端侧）已收尾，分支推送 `origin` 与 `gitcode`，PR 开在 `origin`
+  （用户负责合并）。③（Web 服务端搜索）与 ㉔（三端共享纯函数：files / toolSummary）已实施，
+  从上表移除。
+- 前端候选：`useFileSearch` 提取（FileTree 两套状态机分离）；TUI `files.test.ts` 收窄为
+  表层断言 + 冒烟；订阅状态常驻指示；TUI `/models` 与 Web 选择语义对齐；
+  Web 设置面板的项目/演示数据 tab 与 `project_root` 的进一步打通。
 - 后端候选见 `summary_and_next_se.md`。

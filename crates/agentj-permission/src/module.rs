@@ -9,8 +9,9 @@
 //! (a zero-receiver `watch::Sender::send` would drop the value).
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::sync::watch;
 
 use agentj_core::error::ModuleError;
@@ -18,6 +19,7 @@ use agentj_core::module::{
     KernelContext, KernelMessage, KernelModule, KernelResponse, Module, ModuleMetadata,
     ModuleRegister, ToolSource,
 };
+use agentj_core::pending::PendingRegistry;
 use agentj_core::permission::{
     PermissionChecker, PermissionContext, PermissionDecision, PermissionRequestId,
 };
@@ -40,9 +42,9 @@ pub enum ApprovalDecision {
     AllowAlways,
 }
 
-/// How long a settled-but-unconsumed pending entry may linger before
-/// `prune_pending` drops it. Far above the approval timeout (60s default), so no
-/// live waiter can lose its decision to pruning.
+/// How long a settled-but-unconsumed pending entry may linger before the
+/// registry sweeps it. Far above the approval timeout (60s default), so no live
+/// waiter can lose its decision to pruning.
 const PENDING_TTL: Duration = Duration::from_secs(300);
 
 /// Pending approval entry. `decision` is None while awaiting, Some(resolved)
@@ -54,17 +56,20 @@ const PENDING_TTL: Duration = Duration::from_secs(300);
 /// keeps a `_rx` alive in the entry (see register_ask) so a respond that arrives
 /// BEFORE await_approval subscribes is still stored and delivered — the guard
 /// against the respond/await race is exact, not approximate.
+///
+/// `finished` is the single-winner arbiter for the *decision*: the first of
+/// respond / cancel_session / clear_all to swap it delivers, every other settler
+/// gets `false`. It must be an `Arc` so the clones handed out by
+/// `PendingRegistry::get` observe the same flag as the stored entry.
 #[derive(Debug, Clone)]
 struct PendingRequest {
     decision: Arc<watch::Sender<Option<PermissionDecision>>>,
     // Keep a receiver alive: `watch::Sender::send` with zero receivers drops the
     // value; an early respond must not be lost before await_approval subscribes.
     _keepalive: watch::Receiver<Option<PermissionDecision>>,
+    finished: Arc<AtomicBool>,
     tool: String,
     args: serde_json::Value,
-    session_id: String,
-    /// Registration instant; drives `prune_pending` (bounded pending map).
-    created_at: Instant,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -76,12 +81,45 @@ pub struct PendingView {
 /// Notification sink for Ask requests (set once at startup by the IPC layer).
 type Notifier = Arc<dyn Fn(&PermissionRequestParams, &str) + Send + Sync>;
 
+#[cfg(test)]
+type SettleGate = Box<dyn Fn(&PermissionRequestId)>;
+
+#[cfg(test)]
+thread_local! {
+    /// Test-only interleave hook: `respond` runs it right after cloning the
+    /// pending entry and before resolving the owning session, so a test can
+    /// drop the entry inside the exact window a registry sweep opens. Single
+    /// shot (taken on first run) and thread-scoped, so parallel tests and
+    /// non-test builds never observe it.
+    static SETTLE_GATE: std::cell::RefCell<Option<SettleGate>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Install the one-shot interleave hook used by the vanish-window test.
+#[cfg(test)]
+fn set_settle_gate(gate: impl Fn(&PermissionRequestId) + 'static) {
+    SETTLE_GATE.with(|slot| *slot.borrow_mut() = Some(Box::new(gate)));
+}
+
+/// Run (and consume) the interleave hook, if a test installed one.
+#[cfg(test)]
+fn run_settle_gate(request_id: &PermissionRequestId) {
+    SETTLE_GATE.with(|slot| {
+        let gate = slot.borrow_mut().take();
+        if let Some(gate) = gate {
+            gate(request_id);
+        }
+    });
+}
+
 #[derive(Clone)]
 pub struct PermissionModule {
     engine: Arc<PermissionEngine>,
     policies: Arc<HashMap<String, ToolPolicy>>,
     session_state: Arc<SessionAllowState>,
-    pending: Arc<Mutex<HashMap<PermissionRequestId, PendingRequest>>>,
+    /// Session-tagged pending table (shared via `Arc`: the registry is itself
+    /// interior-mutable, and clones of this module must see one table).
+    pending: Arc<PendingRegistry<PermissionRequestId, PendingRequest>>,
     timeout: Duration,
     /// Emitted when an Ask request is registered (IPC layer subscribes).
     notifier: Arc<Mutex<Option<Notifier>>>,
@@ -93,7 +131,7 @@ impl PermissionModule {
             engine: Arc::new(PermissionEngine::new()),
             policies: Arc::new(policies),
             session_state: Arc::new(SessionAllowState::new()),
-            pending: Arc::new(Mutex::new(HashMap::new())),
+            pending: Arc::new(PendingRegistry::new(Some(PENDING_TTL))),
             timeout,
             notifier: Arc::new(Mutex::new(None)),
         }
@@ -109,17 +147,15 @@ impl PermissionModule {
     /// layer to gate `permission/respond` by the resolved session's owner
     /// (G2 design D4).
     pub fn session_of(&self, request_id: &PermissionRequestId) -> Option<String> {
-        lock_or_recover(&self.pending)
-            .get(request_id)
-            .map(|req| req.session_id.clone())
+        self.pending.session_of(request_id)
     }
 
     pub fn view(&self, request_id: &str) -> Option<PendingView> {
-        let pending = lock_or_recover(&self.pending);
         let key = PermissionRequestId(request_id.to_string());
-        pending.get(&key).map(|entry| PendingView {
-            tool: entry.tool.clone(),
-            session_id: entry.session_id.clone(),
+        let entry = self.pending.get(&key)?;
+        Some(PendingView {
+            tool: entry.tool,
+            session_id: self.pending.session_of(&key)?,
         })
     }
 
@@ -133,15 +169,27 @@ impl PermissionModule {
     /// removing it here made the tool loop deny its own approved call with
     /// "request not found" whenever the client answered first.
     /// Returns true when this call is the first decision for the request;
-    /// false for an unknown id or an already-settled request (a second decision
-    /// must not silently override the first).
+    /// false for an unknown id or an already-settled request. Single-winner is
+    /// *enforced*, not hoped for: the entry's `finished` flag is swapped before
+    /// the decision is sent, so two concurrent responds (or a respond racing
+    /// cancel_session / clear_all) can never both deliver.
+    ///
+    /// The owning session is resolved BEFORE the flag is claimed: the two
+    /// lookups are separate lock acquisitions, so an entry can vanish between
+    /// them (PENDING_TTL sweep). Claiming first would burn the flag without
+    /// delivering anything — `cancel_session` / `clear_all` then no-op on the
+    /// already-true flag and the waiter waits out `timeout_ms`.
     pub fn respond(&self, request_id: &PermissionRequestId, decision: ApprovalDecision) -> bool {
-        let map = lock_or_recover(&self.pending);
-        let Some(req) = map.get(request_id) else {
+        let Some(req) = self.pending.get(request_id) else {
             return false; // unknown (or already consumed/pruned) request id
         };
-        if req._keepalive.borrow().is_some() {
-            return false; // already settled (respond / cancel_session / shutdown)
+        #[cfg(test)]
+        run_settle_gate(request_id);
+        let Some(session_id) = self.pending.session_of(request_id) else {
+            return false; // swept between the two lookups: nothing to deliver to
+        };
+        if req.finished.swap(true, Ordering::AcqRel) {
+            return false; // already settled (another respond / cancel_session / shutdown)
         }
         let resolved = match decision {
             ApprovalDecision::Allow => PermissionDecision::Allow,
@@ -151,7 +199,7 @@ impl PermissionModule {
             ApprovalDecision::AllowAlways => {
                 let key = rule_key_for(&req.tool, &req.args);
                 self.session_state.grant(
-                    &req.session_id,
+                    &session_id,
                     RuleFingerprint {
                         tool: req.tool.clone(),
                         rule_key: key,
@@ -167,18 +215,19 @@ impl PermissionModule {
     /// Resolve ALL pending approvals for a session to Deny (session
     /// termination / $/cancelRequest / client disconnect). The entries stay
     /// until their tool loop consumes the decision, so the waiter reports the
-    /// real reason instead of a missing request.
+    /// real reason instead of a missing request. Claims each entry with the same
+    /// `finished` flag as `respond`, so a disconnect Deny and a user Allow can
+    /// never both settle one request.
     pub fn cancel_session(&self, session_id: &str, reason: &str) -> usize {
-        let map = lock_or_recover(&self.pending);
         let mut n = 0;
-        for req in map.values() {
-            if req.session_id == session_id && req._keepalive.borrow().is_none() {
+        self.pending.for_session(session_id, |_, req| {
+            if !req.finished.swap(true, Ordering::AcqRel) {
                 let _ = req.decision.send(Some(PermissionDecision::Deny {
                     reason: reason.to_string(),
                 }));
                 n += 1;
             }
-        }
+        });
         n
     }
 
@@ -258,21 +307,28 @@ impl PermissionModule {
     fn register_ask(&self, ctx: &PermissionContext) -> PermissionDecision {
         let request_id = PermissionRequestId(Uuid::new_v4().to_string());
         let (tx, rx) = watch::channel(None);
-        {
-            let mut map = lock_or_recover(&self.pending);
-            prune_pending(&mut map, PENDING_TTL);
-            map.insert(
-                request_id.clone(),
-                PendingRequest {
-                    decision: Arc::new(tx),
-                    // Keep the initial receiver alive so an early respond() (before
-                    // await_approval subscribes) is stored, not silently dropped.
-                    _keepalive: rx,
-                    tool: ctx.tool.clone(),
-                    args: ctx.args.clone(),
-                    session_id: ctx.session_id.clone(),
-                    created_at: std::time::Instant::now(),
-                },
+        let inserted = self.pending.insert(
+            request_id.clone(),
+            &ctx.session_id,
+            PendingRequest {
+                decision: Arc::new(tx),
+                // Keep the initial receiver alive so an early respond() (before
+                // await_approval subscribes) is stored, not silently dropped.
+                _keepalive: rx,
+                finished: Arc::new(AtomicBool::new(false)),
+                tool: ctx.tool.clone(),
+                args: ctx.args.clone(),
+            },
+        );
+        // The registry never overwrites, so a colliding id would hand this ask
+        // the previous request's waiter channel. Enforce the invariant loudly in
+        // debug builds, and leave a release-build trace of the silent collision.
+        debug_assert!(inserted, "duplicate approval request id {}", request_id.0);
+        if !inserted {
+            tracing::error!(
+                request_id = %request_id.0,
+                "duplicate approval request id: the registry kept the earlier asker, \
+                 so this request's decision channel is unreachable"
             );
         }
         let params = PermissionRequestParams {
@@ -354,7 +410,7 @@ impl PermissionChecker for PermissionModule {
     }
 
     async fn await_approval(&self, request_id: &PermissionRequestId) -> PermissionDecision {
-        let Some(req) = lock_or_recover(&self.pending).get(request_id).cloned() else {
+        let Some(req) = self.pending.get(request_id) else {
             return PermissionDecision::Deny {
                 reason: "unknown or expired approval request".into(),
             };
@@ -437,47 +493,38 @@ impl PermissionModule {
     /// Clear session grants and resolve every pending approval to Deny.
     pub fn clear_all(&self) {
         self.session_state.clear_all();
-        let map = lock_or_recover(&self.pending);
-        for req in map.values() {
-            let _ = req.decision.send(Some(PermissionDecision::Deny {
-                reason: "shutdown".into(),
-            }));
-        }
+        // `false` = never prune: entries stay readable until their tool loop
+        // consumes them (same contract as `cancel_session`).
+        self.pending.prune_where(|_, req| {
+            if !req.finished.swap(true, Ordering::AcqRel) {
+                let _ = req.decision.send(Some(PermissionDecision::Deny {
+                    reason: "shutdown".into(),
+                }));
+            }
+            false
+        });
     }
 
     /// Entries currently registered: awaiting a decision, or settled and still
     /// waiting for their tool loop to consume the decision. (test/observability)
     #[cfg(test)]
     fn pending_len(&self) -> usize {
-        lock_or_recover(&self.pending).len()
+        self.pending.len()
     }
 
-    /// Drop entries older than `ttl` (called on every registration).
+    /// Rebuild the pending table with a short TTL so a test can exercise the
+    /// registry's expiry sweep without waiting 300s.
     #[cfg(test)]
-    fn prune_pending(&self, ttl: Duration) {
-        prune_pending(&mut lock_or_recover(&self.pending), ttl);
+    fn with_pending_ttl(mut self, ttl: Duration) -> Self {
+        self.pending = Arc::new(PendingRegistry::new(Some(ttl)));
+        self
     }
 
     /// Remove the entry a waiter just consumed (exactly-once delivery).
     fn prune_consumed(&self, request_id: &PermissionRequestId) {
-        let mut map = lock_or_recover(&self.pending);
-        if map
-            .get(request_id)
-            .is_some_and(|req| req._keepalive.borrow().is_some())
-        {
-            map.remove(request_id);
-        }
+        self.pending
+            .prune_where(|key, req| key == request_id && req._keepalive.borrow().is_some());
     }
-}
-
-/// Drop pending entries older than `ttl`. The awaiting tool loop removes the
-/// entry it consumed, so a leftover is a settled-but-unconsumed request (a
-/// respond that arrived after the approval timeout) or one nobody ever awaited;
-/// either way it can no longer be legitimately awaited, because an approval wait
-/// is bounded by the (much shorter) approval timeout.
-fn prune_pending(map: &mut HashMap<PermissionRequestId, PendingRequest>, ttl: Duration) {
-    let now = Instant::now();
-    map.retain(|_, req| now.duration_since(req.created_at) < ttl);
 }
 
 #[cfg(test)]
@@ -490,7 +537,8 @@ mod tests {
     use agentj_protocol::permission::PermissionRequestParams;
     use std::collections::HashMap;
     use std::path::PathBuf;
-    use std::sync::{Arc, Mutex};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Barrier, Mutex};
     use std::time::Duration;
 
     fn module() -> PermissionModule {
@@ -676,6 +724,43 @@ mod tests {
         );
     }
 
+    /// Contract pinned: a request whose entry vanishes between the pending
+    /// lookup and the owning-session lookup (the registry's TTL sweep can run
+    /// there) must come back `false` WITHOUT the single-winner claim being
+    /// burned. A burned claim is invisible to `cancel_session` / `clear_all`
+    /// (both no-op on an already-true flag) and to `prune_consumed`, so a
+    /// phantom winner leaves the tool loop waiting out `[permission] timeout_ms`.
+    /// The interleave is injected deterministically: the settle gate drops the
+    /// entry inside `respond` itself, right after the clone and before the
+    /// session is resolved.
+    #[test]
+    fn respond_does_not_burn_the_claim_when_the_entry_vanishes_before_settle() {
+        let m = module();
+        let PermissionDecision::Ask { request_id } = m.check(&ctx(&m, "curl http://example.com"))
+        else {
+            panic!("expected Ask");
+        };
+        let entry = m.pending.get(&request_id).expect("pending entry");
+        let registry = m.pending.clone();
+        let target = request_id.clone();
+        set_settle_gate(move |_| {
+            registry.prune_where(|key, _| *key == target);
+        });
+
+        assert!(
+            !m.respond(&request_id, ApprovalDecision::Allow),
+            "a respond that cannot resolve the session must report false"
+        );
+        assert!(
+            !entry.finished.load(Ordering::Acquire),
+            "the claim must not be taken before the owning session resolves"
+        );
+        assert!(
+            !m.pending.contains(&request_id),
+            "the swept entry stays swept (no phantom pending leftover)"
+        );
+    }
+
     /// Settled requests are consumed by their waiter; anything nobody ever
     /// consumed (late respond after the timeout, cancelled run) is pruned so the
     /// pending map cannot grow without bound.
@@ -700,8 +785,20 @@ mod tests {
             panic!("expected Ask");
         };
         assert!(m.respond(&request_id, ApprovalDecision::Allow));
-        m.prune_pending(Duration::ZERO); // test hook: every entry counts as stale
-        assert_eq!(m.pending_len(), 0);
+
+        // TTL sweep: the registry drops a settled-but-unconsumed entry on the
+        // next registration (a 1ms TTL keeps the test instantaneous).
+        let m = module().with_pending_ttl(Duration::from_millis(1));
+        let c3 = ctx(&m, "curl http://example.com");
+        let PermissionDecision::Ask { request_id } = m.check(&c3) else {
+            panic!("expected Ask");
+        };
+        assert!(m.respond(&request_id, ApprovalDecision::Allow));
+        assert_eq!(m.pending_len(), 1);
+        std::thread::sleep(Duration::from_millis(5));
+        let c4 = ctx(&m, "curl http://example.com");
+        assert!(matches!(m.check(&c4), PermissionDecision::Ask { .. }));
+        assert_eq!(m.pending_len(), 1, "the stale entry was swept on insert");
     }
 
     #[test]
@@ -1188,6 +1285,119 @@ mod tests {
             panic!("expected Ask");
         }
     }
+    /// The table is shared with `PendingRegistry`: a settled entry is still
+    /// readable by its waiter, and consumption is exactly-once.
+    #[test]
+    fn settled_entries_are_pruned_only_after_the_waiter_consumes() {
+        let m = module();
+        let id = pending_id(&m, "s1", "rm -rf /");
+        assert!(m.respond(&id, ApprovalDecision::Allow));
+        assert_eq!(m.pending_len(), 1, "still readable by the waiter");
+        m.prune_consumed(&id);
+        assert_eq!(m.pending_len(), 0);
+        m.prune_consumed(&id);
+        assert_eq!(m.pending_len(), 0, "consumption is idempotent");
+    }
+
+    #[test]
+    fn cancel_session_keeps_the_entry_for_the_waiter() {
+        let m = module();
+        let id = pending_id(&m, "s1", "rm -rf /");
+        assert_eq!(m.cancel_session("s1", "disconnected"), 1);
+        assert_eq!(m.pending_len(), 1);
+        m.prune_consumed(&id);
+        assert_eq!(m.pending_len(), 0);
+    }
+
+    /// A disconnect Deny must win against a later user Allow: once the entry is
+    /// claimed, a second settler is rejected instead of overwriting it.
+    #[test]
+    fn respond_after_cancel_session_is_rejected() {
+        let m = module();
+        let id = pending_id(&m, "s1", "curl http://example.com");
+        assert_eq!(m.cancel_session("s1", "disconnected"), 1);
+        assert!(
+            !m.respond(&id, ApprovalDecision::Allow),
+            "a later Allow must not overwrite the disconnect Deny"
+        );
+        assert_eq!(m.cancel_session("s1", "disconnected"), 0, "settled once");
+    }
+
+    /// Single winner under concurrency: the entry's one-shot claim flag admits
+    /// exactly one of N racing `respond` calls, so the delivered decision is
+    /// never a coin flip between two clients.
+    #[test]
+    fn concurrent_respond_calls_have_exactly_one_winner() {
+        const THREADS: usize = 8;
+        const ROUNDS: usize = 32;
+        for round in 0..ROUNDS {
+            let m = module();
+            let id = pending_id(&m, "s1", "curl http://example.com");
+            let winners = Arc::new(AtomicUsize::new(0));
+            let barrier = Arc::new(Barrier::new(THREADS));
+            let handles: Vec<_> = (0..THREADS)
+                .map(|_| {
+                    let m = m.clone();
+                    let id = id.clone();
+                    let winners = Arc::clone(&winners);
+                    let barrier = Arc::clone(&barrier);
+                    std::thread::spawn(move || {
+                        barrier.wait();
+                        if m.respond(&id, ApprovalDecision::Allow) {
+                            winners.fetch_add(1, Ordering::AcqRel);
+                        }
+                    })
+                })
+                .collect();
+            for handle in handles {
+                handle.join().unwrap();
+            }
+            assert_eq!(
+                winners.load(Ordering::Acquire),
+                1,
+                "round {round}: exactly one responder may win"
+            );
+        }
+    }
+
+    /// `respond` racing `cancel_session` for one request: both go through the
+    /// same claim flag, so exactly one of them settles it.
+    #[test]
+    fn cancel_session_and_respond_cannot_both_settle() {
+        const ROUNDS: usize = 32;
+        for round in 0..ROUNDS {
+            let m = module();
+            let id = pending_id(&m, "s1", "curl http://example.com");
+            let barrier = Arc::new(Barrier::new(2));
+            let responder = {
+                let m = m.clone();
+                let id = id.clone();
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    m.respond(&id, ApprovalDecision::Allow)
+                })
+            };
+            barrier.wait();
+            let cancelled = m.cancel_session("s1", "disconnected");
+            let allowed = responder.join().unwrap();
+            assert_eq!(
+                usize::from(allowed) + cancelled,
+                1,
+                "round {round}: exactly one settler may claim the request"
+            );
+        }
+    }
+
+    fn pending_id(m: &PermissionModule, session: &str, cmd: &str) -> PermissionRequestId {
+        let mut c = ctx(m, cmd);
+        c.session_id = session.to_string();
+        match m.eval(&c) {
+            PermissionDecision::Ask { request_id } => request_id,
+            other => panic!("expected Ask, got {other:?}"),
+        }
+    }
+
     #[test]
     fn session_of_unknown_request_is_none() {
         let module = PermissionModule::new(HashMap::new(), Duration::from_secs(1));

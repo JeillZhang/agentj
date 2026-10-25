@@ -3,7 +3,7 @@ use crate::hooks::EventBus;
 use crate::module::{
     EventType, KernelContext, KernelMessage, KernelModule, ModuleRegister, ModuleState,
 };
-use crate::resolver::{ModuleResolver, ServiceRegistry};
+use crate::resolver::{ModuleResolver, ServiceCallReply, ServiceRegistry};
 use crate::types::ModuleId;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
@@ -214,56 +214,7 @@ impl Kernel {
             .collect();
         let mut first_error: Option<KernelError> = None;
         for id in &ids {
-            crate::sync::lock_or_recover(states).insert(id.clone(), ModuleState::Stopping);
-            let module = {
-                let mut guard = crate::sync::lock_or_recover(modules);
-                guard.remove(id) // remove while shutting down: no more messages after this
-            };
-            let Some(mut module) = module else { continue };
-            // shutdown() is a sync fn that may block (e.g. killing a subprocess); run it on
-            // the blocking pool so the per-module timeout can still fire.
-            let shutdown_task = tokio::task::spawn_blocking(move || module.shutdown());
-            let result = tokio::time::timeout(timeout, shutdown_task).await;
-            let (state, err) = match result {
-                Ok(Ok(Ok(()))) => (ModuleState::Stopped, None),
-                Ok(Ok(Err(e))) => {
-                    tracing::error!(module_id = %id, error = %e, "module shutdown failed");
-                    (
-                        ModuleState::Failed,
-                        Some(KernelError::ModuleShutdownFailed(
-                            id.clone(),
-                            anyhow::Error::from(e),
-                        )),
-                    )
-                }
-                Ok(Err(e)) => {
-                    tracing::error!(module_id = %id, error = %e, "module shutdown task panicked");
-                    (
-                        ModuleState::Failed,
-                        Some(KernelError::ModuleShutdownFailed(
-                            id.clone(),
-                            anyhow::anyhow!(e.to_string()),
-                        )),
-                    )
-                }
-                Err(_) => {
-                    tracing::error!(module_id = %id, ?timeout, "module shutdown timeout");
-                    (
-                        ModuleState::Failed,
-                        Some(KernelError::ShutdownTimeout(timeout)),
-                    )
-                }
-            };
-            crate::sync::lock_or_recover(states).insert(id.clone(), state);
-            match state {
-                ModuleState::Stopped => {
-                    events.publish(&EventType::ModuleStopped(id.clone()));
-                }
-                ModuleState::Failed => {
-                    events.publish(&EventType::ModuleFailed(id.clone()));
-                }
-                _ => {}
-            }
+            let err = Self::stop_module(modules, states, events, id, timeout).await;
             if first_error.is_none() {
                 first_error = err;
             }
@@ -271,6 +222,67 @@ impl Kernel {
         match first_error {
             Some(e) => Err(e),
             None => Ok(()),
+        }
+    }
+
+    /// Stop one module: drop it from the map (no more messages after this), run its
+    /// shutdown, record and publish the outcome. Returns the error to report, if any.
+    async fn stop_module(
+        modules: &Mutex<HashMap<String, Box<dyn KernelModule>>>,
+        states: &Mutex<HashMap<String, ModuleState>>,
+        events: &Arc<EventBus>,
+        id: &str,
+        timeout: Duration,
+    ) -> Option<KernelError> {
+        crate::sync::lock_or_recover(states).insert(id.to_string(), ModuleState::Stopping);
+        let module = {
+            let mut guard = crate::sync::lock_or_recover(modules);
+            guard.remove(id) // remove while shutting down: no more messages after this
+        };
+        let module = module?;
+        let (state, err) = Self::run_shutdown(module, id, timeout).await;
+        crate::sync::lock_or_recover(states).insert(id.to_string(), state);
+        match state {
+            ModuleState::Stopped => events.publish(&EventType::ModuleStopped(id.to_string())),
+            ModuleState::Failed => events.publish(&EventType::ModuleFailed(id.to_string())),
+            _ => {}
+        }
+        err
+    }
+
+    /// Run one module's `shutdown()` on the blocking pool under the per-module timeout
+    /// and map the outcome to its lifecycle state plus the error to report.
+    async fn run_shutdown(
+        mut module: Box<dyn KernelModule>,
+        id: &str,
+        timeout: Duration,
+    ) -> (ModuleState, Option<KernelError>) {
+        // shutdown() is a sync fn that may block (e.g. killing a subprocess); run it on
+        // the blocking pool so the per-module timeout can still fire.
+        let shutdown_task = tokio::task::spawn_blocking(move || module.shutdown());
+        match tokio::time::timeout(timeout, shutdown_task).await {
+            Ok(Ok(Ok(()))) => (ModuleState::Stopped, None),
+            Ok(Ok(Err(e))) => {
+                tracing::error!(module_id = %id, error = %e, "module shutdown failed");
+                let failure =
+                    KernelError::ModuleShutdownFailed(id.to_string(), anyhow::Error::from(e));
+                (ModuleState::Failed, Some(failure))
+            }
+            Ok(Err(e)) => {
+                tracing::error!(module_id = %id, error = %e, "module shutdown task panicked");
+                let failure = KernelError::ModuleShutdownFailed(
+                    id.to_string(),
+                    anyhow::anyhow!(e.to_string()),
+                );
+                (ModuleState::Failed, Some(failure))
+            }
+            Err(_) => {
+                tracing::error!(module_id = %id, ?timeout, "module shutdown timeout");
+                (
+                    ModuleState::Failed,
+                    Some(KernelError::ShutdownTimeout(timeout)),
+                )
+            }
         }
     }
 }
@@ -297,43 +309,71 @@ fn route_message(
         reply,
     } = msg
     {
-        if let Some(svc) = services.get_kernel_service(service) {
-            let out = svc.call(method, params.clone());
-            if let Some(tx) = crate::sync::lock_or_recover(reply).take() {
-                let _ = tx.send(out);
-            }
-            return;
-        }
-        if let Some(svc) = services.get_kernel_async_service(service) {
-            let svc = svc.clone();
-            let method = method.clone();
-            let params = params.clone();
-            let reply = reply.clone();
-            tokio::spawn(async move {
-                let out = svc.call(&method, params).await;
-                if let Some(tx) = crate::sync::lock_or_recover(&reply).take() {
-                    let _ = tx.send(out);
-                }
-            });
-            return;
-        }
-        let out: Result<serde_json::Value, String> = Err(format!("service '{service}' not found"));
+        route_service_call(services, service, method, params, reply);
+        return;
+    }
+    if let KernelMessage::ToolCallRequest { target, .. } = msg {
+        route_to_module(modules, target, msg);
+        return;
+    }
+    broadcast_to_modules(modules, msg);
+}
+
+/// Answer one service call: sync service first, then async, else an error reply.
+fn route_service_call(
+    services: &ServiceRegistry,
+    service: &ModuleId,
+    method: &str,
+    params: &serde_json::Value,
+    reply: &ServiceCallReply,
+) {
+    if let Some(svc) = services.get_kernel_service(service) {
+        let out = svc.call(method, params.clone());
         if let Some(tx) = crate::sync::lock_or_recover(reply).take() {
             let _ = tx.send(out);
         }
         return;
     }
-    if let KernelMessage::ToolCallRequest { target, .. } = msg {
-        let mut guard = crate::sync::lock_or_recover(modules);
-        if let Some(module) = guard.get_mut(target) {
-            if let Err(e) = module.handle(msg) {
-                tracing::error!(?e, "module handler error");
+    if let Some(svc) = services.get_kernel_async_service(service) {
+        let svc = svc.clone();
+        let method = method.to_string();
+        let params = params.clone();
+        let reply = reply.clone();
+        tokio::spawn(async move {
+            let out = svc.call(&method, params).await;
+            if let Some(tx) = crate::sync::lock_or_recover(&reply).take() {
+                let _ = tx.send(out);
             }
-        } else {
-            tracing::warn!(%target, "ToolCallRequest to unregistered module");
-        }
+        });
         return;
     }
+    let out: Result<serde_json::Value, String> = Err(format!("service '{service}' not found"));
+    if let Some(tx) = crate::sync::lock_or_recover(reply).take() {
+        let _ = tx.send(out);
+    }
+}
+
+/// Deliver a message to exactly one addressed module.
+fn route_to_module(
+    modules: &Mutex<HashMap<String, Box<dyn KernelModule>>>,
+    target: &ModuleId,
+    msg: &KernelMessage,
+) {
+    let mut guard = crate::sync::lock_or_recover(modules);
+    if let Some(module) = guard.get_mut(target) {
+        if let Err(e) = module.handle(msg) {
+            tracing::error!(?e, "module handler error");
+        }
+    } else {
+        tracing::warn!(%target, "ToolCallRequest to unregistered module");
+    }
+}
+
+/// Deliver a message to every registered module; a failing handler is logged only.
+fn broadcast_to_modules(
+    modules: &Mutex<HashMap<String, Box<dyn KernelModule>>>,
+    msg: &KernelMessage,
+) {
     let mut guard = crate::sync::lock_or_recover(modules);
     for module in guard.values_mut() {
         if let Err(e) = module.handle(msg) {

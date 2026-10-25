@@ -524,56 +524,24 @@ impl McpConnectionManager {
         tool: &str,
         input: Value,
     ) -> Result<Value, ToolError> {
-        let conn = self
-            .connections
+        let conn = self.connected(server_id)?;
+        let handle = transport_of(&conn, server_id)?;
+        match send_request(handle, server_id, tool, input).await {
+            Ok(r) => extract_text(tool, r),
+            Err(e) => Err(self.handle_execute_error(server_id, &conn.spec, e).await),
+        }
+    }
+
+    /// Clone the live connection entry for `server_id`.
+    fn connected(&self, server_id: &str) -> Result<Arc<McpConnection>, ToolError> {
+        self.connections
             .read()
             .ok()
             .and_then(|g| g.get(server_id).cloned())
             .ok_or_else(|| ToolError::ServerUnavailable {
                 server_id: server_id.into(),
                 reason: "not connected".into(),
-            })?;
-        let handle = conn
-            .transport
-            .read()
-            .ok()
-            .and_then(|g| g.clone())
-            .ok_or_else(|| ToolError::ServerUnavailable {
-                server_id: server_id.into(),
-                reason: "transport closed".into(),
-            })?;
-        let params = serde_json::json!({ "name": tool, "arguments": input });
-        let resp = tokio::task::spawn_blocking(move || handle.request("tools/call", params))
-            .await
-            .map_err(|e| ToolError::ServerUnavailable {
-                server_id: server_id.into(),
-                reason: e.to_string(),
-            })?
-            .map_err(|e| ToolError::ServerUnavailable {
-                server_id: server_id.into(),
-                reason: e,
-            });
-        match resp {
-            Ok(r) => {
-                if r["isError"].as_bool().unwrap_or(false) {
-                    return Err(ToolError::ExecutionFailed {
-                        name: tool.into(),
-                        reason: r["content"][0]["text"]
-                            .as_str()
-                            .map(str::to_string)
-                            .unwrap_or_else(|| "MCP tool returned isError=true".into()),
-                    });
-                }
-                r["content"][0]["text"]
-                    .as_str()
-                    .map(|s| Value::String(s.to_string()))
-                    .ok_or_else(|| ToolError::ExecutionFailed {
-                        name: tool.into(),
-                        reason: "MCP tool returned no text content".into(),
-                    })
-            }
-            Err(e) => Err(self.handle_execute_error(server_id, &conn.spec, e).await),
-        }
+            })
     }
 
     async fn reconnect(self: &Arc<Self>, server_id: &str, spec: &McpServerSpec) {
@@ -689,6 +657,58 @@ impl McpConnectionManager {
     fn publish(&self, event: &EventType) {
         self.events.publish(event);
     }
+}
+
+/// Clone the connection's transport handle (or a `ServerUnavailable`).
+fn transport_of(conn: &McpConnection, server_id: &str) -> Result<Arc<TransportHandle>, ToolError> {
+    conn.transport
+        .read()
+        .ok()
+        .and_then(|g| g.clone())
+        .ok_or_else(|| ToolError::ServerUnavailable {
+            server_id: server_id.into(),
+            reason: "transport closed".into(),
+        })
+}
+
+/// Run one `tools/call` op on the connection's dedicated transport thread.
+async fn send_request(
+    handle: Arc<TransportHandle>,
+    server_id: &str,
+    tool: &str,
+    input: Value,
+) -> Result<Value, ToolError> {
+    let params = serde_json::json!({ "name": tool, "arguments": input });
+    tokio::task::spawn_blocking(move || handle.request("tools/call", params))
+        .await
+        .map_err(|e| ToolError::ServerUnavailable {
+            server_id: server_id.into(),
+            reason: e.to_string(),
+        })?
+        .map_err(|e| ToolError::ServerUnavailable {
+            server_id: server_id.into(),
+            reason: e,
+        })
+}
+
+/// Turn a `tools/call` result into the tool's text payload (or `ExecutionFailed`).
+fn extract_text(tool: &str, r: Value) -> Result<Value, ToolError> {
+    if r["isError"].as_bool().unwrap_or(false) {
+        return Err(ToolError::ExecutionFailed {
+            name: tool.into(),
+            reason: r["content"][0]["text"]
+                .as_str()
+                .map(str::to_string)
+                .unwrap_or_else(|| "MCP tool returned isError=true".into()),
+        });
+    }
+    r["content"][0]["text"]
+        .as_str()
+        .map(|s| Value::String(s.to_string()))
+        .ok_or_else(|| ToolError::ExecutionFailed {
+            name: tool.into(),
+            reason: "MCP tool returned no text content".into(),
+        })
 }
 
 /// A tool backed by a long-lived connection (registered with ToolSource::Mcp).

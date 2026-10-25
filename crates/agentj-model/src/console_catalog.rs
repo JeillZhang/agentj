@@ -20,11 +20,7 @@ pub async fn fetch_account_models(
     org_id: Option<&str>,
 ) -> Result<Vec<String>, ModelError> {
     let url = format!("{}/api/v2/config", console_base.trim_end_matches('/'));
-    let mut req = http::client().get(&url).bearer_auth(key).timeout(TIMEOUT);
-    if let Some(org) = org_id {
-        req = req.header("x-org-id", org);
-    }
-    let resp = req
+    let resp = build_request(&url, key, org_id)
         .send()
         .await
         .map_err(|e| ModelError::Network(e.to_string()))?;
@@ -38,8 +34,29 @@ pub async fn fetch_account_models(
         .text()
         .await
         .map_err(|e| ModelError::Network(e.to_string()))?;
+    let ids = parse_accounts(&body)?;
+    if ids.is_empty() {
+        Err(ModelError::Stream(
+            "account catalog has no opencode-go models".into(),
+        ))
+    } else {
+        Ok(ids)
+    }
+}
+
+/// Build the `GET /api/v2/config` request (bearer + optional workspace header).
+fn build_request(url: &str, key: &str, org_id: Option<&str>) -> reqwest::RequestBuilder {
+    let req = http::client().get(url).bearer_auth(key).timeout(TIMEOUT);
+    match org_id {
+        Some(org) => req.header("x-org-id", org),
+        None => req,
+    }
+}
+
+/// Select the opencode-go model ids out of a `/api/v2/config` body.
+fn parse_accounts(body: &str) -> Result<Vec<String>, ModelError> {
     let v: serde_json::Value =
-        serde_json::from_str(&body).map_err(|e| ModelError::Stream(e.to_string()))?;
+        serde_json::from_str(body).map_err(|e| ModelError::Stream(e.to_string()))?;
     let mut ids: Vec<String> = v["providers"]
         .as_object()
         .map(|providers| {
@@ -63,13 +80,7 @@ pub async fn fetch_account_models(
         .unwrap_or_default();
     ids.sort();
     ids.dedup();
-    if ids.is_empty() {
-        Err(ModelError::Stream(
-            "account catalog has no opencode-go models".into(),
-        ))
-    } else {
-        Ok(ids)
-    }
+    Ok(ids)
 }
 
 #[cfg(test)]

@@ -22,7 +22,6 @@ version = "0.1.0"
 dependencies = [
  "agentj-auth",
  "agentj-config",
- "agentj-context",
  "agentj-core",
  "agentj-ipc",
  "agentj-license",
@@ -32,8 +31,6 @@ dependencies = [
  "agentj-protocol",
  "agentj-question",
  "agentj-session",
- "agentj-skills",
- "agentj-stats",
  "agentj-tools",
  "anyhow",
  "async-trait",
@@ -65,18 +62,9 @@ dependencies = [
 ]
 
 [[package]]
-name = "agentj-context"
-version = "0.1.0"
-dependencies = [
- "agentj-core",
- "serde_json",
-]
-
-[[package]]
 name = "agentj-core"
 version = "0.1.0"
 dependencies = [
- "agentj-context",
  "agentj-model",
  "agentj-protocol",
  "agentj-session",
@@ -87,6 +75,7 @@ dependencies = [
  "parking_lot",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror",
  "tokio",
  "tracing",
@@ -97,7 +86,6 @@ dependencies = [
 name = "agentj-ipc"
 version = "0.1.0"
 dependencies = [
- "agentj-context",
  "agentj-core",
  "agentj-model",
  "agentj-permission",
@@ -170,6 +158,7 @@ dependencies = [
  "globset",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror",
  "tokio",
  "tracing",
@@ -213,6 +202,7 @@ dependencies = [
  "agentj-protocol",
  "serde",
  "serde_json",
+ "tracing",
  "uuid",
 ]
 
@@ -226,21 +216,6 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
-]
-
-[[package]]
-name = "agentj-skills"
-version = "0.1.0"
-dependencies = [
- "tempfile",
- "tracing",
-]
-
-[[package]]
-name = "agentj-stats"
-version = "0.1.0"
-dependencies = [
- "agentj-core",
 ]
 
 [[package]]

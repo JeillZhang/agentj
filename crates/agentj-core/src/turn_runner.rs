@@ -2,19 +2,23 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use futures::StreamExt;
+use futures::stream::BoxStream;
 use tokio::sync::mpsc;
 
 use crate::artifacts::TurnArtifact;
 use crate::budget::{self, DEFAULT_CONTEXT_TOKENS, MAX_OVERFLOW_RETRIES};
-use crate::error::{ModelError, ModuleError};
+use crate::error::{ModelError, ModuleError, ToolError};
 use crate::kernel::KernelSender;
-use crate::module::{ContextPipeline, KernelContext, KernelMessage, ToolExecutionOutcome};
+use crate::module::{
+    ContextPipeline, KernelContext, KernelMessage, ModelProvider, ToolExecutionOutcome,
+};
 use crate::sync::lock_or_recover;
 use crate::text_tool_call;
 use crate::types::{
-    AgentEvent, ChatMessage, ModelEvent, ModelOptions, ModuleId, Role, RunOverrides, SessionId,
-    TokenUsage, ToolCall,
+    AgentEvent, ChatMessage, ModelEvent, ModelOptions, ModuleId, OnTurnComplete, Role,
+    RunOverrides, SessionId, TokenUsage, ToolCall, ToolDefinition,
 };
+use tokio::sync::oneshot::error as oneshot_error;
 
 /// Retries allowed when a model round never produced a usable conclusion — the stream
 /// ended before `Done`, or the model answered with nothing. @since 0.29.8
@@ -42,6 +46,77 @@ fn recovered_call_id() -> String {
 
 pub struct TurnHandle {
     cancel_tx: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+}
+
+/// How the model phase continues after one round.
+enum RoundFlow {
+    Next,
+    Finished,
+    Cancelled,
+}
+
+/// Accumulated output of one model stream.
+struct Collected {
+    content: String,
+    tool_calls: Vec<ToolCall>,
+    saw_done: bool,
+}
+
+/// How one model stream ended.
+enum StreamEnd {
+    Collected(Collected),
+    Cancelled,
+    ClientGone,
+}
+
+/// How one round of tool calls ended.
+enum ToolRound {
+    Completed(Vec<(ToolCall, String)>),
+    Cancelled,
+    ClientGone,
+}
+
+/// Why a tool round had to stop early.
+enum ToolAbort {
+    Cancelled,
+    ClientGone,
+}
+
+/// The per-round and cross-round lane of one turn: request context, round counters, and
+/// the tool/usage accumulators. Grouped so the helpers below stay inside the function
+/// length budget without changing any state the turn keeps.
+#[derive(Default)]
+struct TurnLane {
+    tool_defs: Vec<ToolDefinition>,
+    options: ModelOptions,
+    messages: Vec<ChatMessage>,
+    all_tool_calls: Vec<ToolCall>,
+    usage: Option<TokenUsage>,
+    context_budget: usize,
+    cancelled: bool,
+    overflow_retries: usize,
+    incomplete_retries: usize,
+}
+
+/// One turn's state, so the round helpers can take `&mut self` instead of threading a
+/// dozen locals through every call.
+struct TurnState {
+    ctx: KernelContext,
+    pipeline: Arc<dyn ContextPipeline>,
+    session_id: SessionId,
+    run_id: String,
+    reply: mpsc::Sender<AgentEvent>,
+    sender: KernelSender,
+    tool_executor_id: ModuleId,
+    todo_revisions: Arc<Mutex<HashMap<String, u64>>>,
+    file_change_seqs: Arc<Mutex<HashMap<String, u64>>>,
+    cancel_rx: tokio::sync::oneshot::Receiver<()>,
+    on_done: Option<OnTurnComplete>,
+    provider_name: String,
+    provider: Arc<dyn ModelProvider>,
+    max_iter: usize,
+    max_tool_result_chars: usize,
+    lane: TurnLane,
 }
 
 #[allow(clippy::type_complexity)]
@@ -141,6 +216,51 @@ impl TurnRunner {
         reply: mpsc::Sender<AgentEvent>,
     ) -> Result<(), ModuleError> {
         let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
+        self.register_turn(&session_id, cancel_tx)?;
+        let turns = Arc::clone(&self.turns);
+        let turn_reply = reply.clone();
+        let turn = self.turn_future(
+            session_id.clone(),
+            content,
+            system_prompt,
+            overrides,
+            turn_reply,
+            cancel_rx,
+        );
+        tokio::spawn(async move { Self::spawn_guarded(session_id, reply, turns, turn).await });
+        Ok(())
+    }
+
+    /// Remember the turn slot before the task starts: the handle owns the cancel sender.
+    fn register_turn(
+        &self,
+        session_id: &SessionId,
+        cancel_tx: tokio::sync::oneshot::Sender<()>,
+    ) -> Result<(), ModuleError> {
+        let mut map = self
+            .turns
+            .lock()
+            .map_err(|_| ModuleError::Init("turns poisoned".into()))?;
+        map.insert(
+            session_id.clone(),
+            TurnHandle {
+                cancel_tx: std::sync::Mutex::new(Some(cancel_tx)),
+            },
+        );
+        Ok(())
+    }
+
+    /// The owned turn future: every piece the turn needs is cloned here so the task can
+    /// outlive `&self` and the panic guard has one value to wrap.
+    fn turn_future(
+        &self,
+        session_id: SessionId,
+        content: String,
+        system_prompt: Option<String>,
+        overrides: RunOverrides,
+        reply: mpsc::Sender<AgentEvent>,
+        cancel_rx: tokio::sync::oneshot::Receiver<()>,
+    ) -> impl Future<Output = Result<(), String>> + Send + 'static {
         let ctx = self.ctx.clone();
         let pipeline = Arc::clone(&self.pipeline);
         let system_prompt = system_prompt.unwrap_or_else(|| self.default_system_prompt.clone());
@@ -149,60 +269,64 @@ impl TurnRunner {
         let on_done = self.on_turn_complete.clone();
         let sender = self.sender.clone();
         let tool_executor_id = self.tool_executor_id.clone();
-        let turns = Arc::clone(&self.turns);
         let todo_revisions = Arc::clone(&self.todo_revisions);
         let file_change_seqs = Arc::clone(&self.file_change_seqs);
         let run_id = uuid::Uuid::new_v4().to_string();
-        {
-            let mut map = self
-                .turns
-                .lock()
-                .map_err(|_| ModuleError::Init("turns poisoned".into()))?;
-            map.insert(
-                session_id.clone(),
-                TurnHandle {
-                    cancel_tx: std::sync::Mutex::new(Some(cancel_tx)),
-                },
-            );
-        }
-        tokio::spawn(async move {
-            // A panic anywhere in the turn (provider adapter, pipeline, tool plumbing)
-            // must still terminate the client's stream and release the session's turn
-            // slot — otherwise the client waits forever with no terminal event.
-            let future = std::panic::AssertUnwindSafe(Self::run_turn(
+        async move {
+            Self::run_turn(
                 ctx,
                 pipeline,
-                session_id.clone(),
-                run_id.clone(),
+                session_id,
+                run_id,
                 content,
                 system_prompt,
                 overrides,
                 max_iter,
                 max_tool_result_chars,
-                reply.clone(),
+                reply,
                 sender,
                 tool_executor_id,
                 todo_revisions,
                 file_change_seqs,
                 cancel_rx,
-                on_done.clone(),
-            ));
-            let result = match futures::FutureExt::catch_unwind(future).await {
+                on_done,
+            )
+            .await
+        }
+    }
+
+    /// Await the turn behind a panic guard, then always deliver its terminal error event
+    /// and release the session's turn slot.
+    ///
+    /// A panic anywhere in the turn (provider adapter, pipeline, tool plumbing) must still
+    /// terminate the client's stream and release the slot — otherwise the client waits
+    /// forever with no terminal event.
+    async fn spawn_guarded<F>(
+        session_id: SessionId,
+        reply: mpsc::Sender<AgentEvent>,
+        turns: Arc<Mutex<HashMap<SessionId, TurnHandle>>>,
+        future: F,
+    ) where
+        F: Future<Output = Result<(), String>>,
+    {
+        let result =
+            match futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(future)).await {
                 Ok(result) => result,
-                Err(payload) => {
-                    let reason = crate::sync::panic_payload_message(payload.as_ref());
-                    tracing::error!(%reason, "turn panicked");
-                    Err(format!("turn panicked: {reason}"))
-                }
+                Err(payload) => Err(Self::on_panic(payload.as_ref())),
             };
-            if let Err(e) = &result {
-                let _ = reply.send(AgentEvent::Error(e.clone())).await;
-            }
-            if let Ok(mut map) = turns.lock() {
-                map.remove(&session_id);
-            }
-        });
-        Ok(())
+        if let Err(e) = &result {
+            let _ = reply.send(AgentEvent::Error(e.clone())).await;
+        }
+        if let Ok(mut map) = turns.lock() {
+            map.remove(&session_id);
+        }
+    }
+
+    /// Render a panicked turn as the error string the client sees (unchanged text).
+    fn on_panic(payload: &(dyn std::any::Any + Send)) -> String {
+        let reason = crate::sync::panic_payload_message(payload);
+        tracing::error!(%reason, "turn panicked");
+        format!("turn panicked: {reason}")
     }
 
     #[allow(clippy::too_many_arguments, clippy::type_complexity)]
@@ -221,376 +345,34 @@ impl TurnRunner {
         tool_executor_id: ModuleId,
         todo_revisions: Arc<Mutex<HashMap<String, u64>>>,
         file_change_seqs: Arc<Mutex<HashMap<String, u64>>>,
-        mut cancel_rx: tokio::sync::oneshot::Receiver<()>,
-        on_done: Option<Arc<dyn Fn(&SessionId, Option<TokenUsage>) + Send + Sync>>,
+        cancel_rx: tokio::sync::oneshot::Receiver<()>,
+        on_done: Option<OnTurnComplete>,
     ) -> Result<(), String> {
-        let route = |reason: String| format!("agent error: {reason}");
-        ctx.session
-            .append(&session_id, ChatMessage::user(user_input))
-            .map_err(|e| route(e.to_string()))?;
-        let history = ctx
-            .session
-            .get(&session_id)
-            .map_err(|e| route(e.to_string()))?;
-        let (provider_name, provider) = match overrides
-            .provider
-            .as_deref()
-            .map(str::trim)
-            .filter(|name| !name.is_empty())
-        {
-            Some(name) => (
-                name.to_string(),
-                ctx.providers.get(name).ok_or_else(|| {
-                    route(format!(
-                        "unknown provider: {name} (registered: {})",
-                        ctx.providers.list().join(", ")
-                    ))
-                })?,
-            ),
-            None => ctx
-                .providers
-                .get_default_with_name()
-                .ok_or_else(|| route("no default provider".into()))?,
+        let (provider_name, provider) = TurnState::resolve_provider(&ctx, &overrides)?;
+        let mut turn = TurnState {
+            ctx,
+            pipeline,
+            session_id,
+            run_id,
+            reply,
+            sender,
+            tool_executor_id,
+            todo_revisions,
+            file_change_seqs,
+            cancel_rx,
+            on_done,
+            provider_name,
+            provider,
+            max_iter,
+            max_tool_result_chars,
+            lane: TurnLane::default(),
         };
-        let tool_defs = ctx.tools.definitions();
-        let mut messages = pipeline.assemble(&system_prompt, &history, &[]);
-        let mut all_tool_calls: Vec<ToolCall> = vec![];
-        let model = overrides
-            .model
-            .as_deref()
-            .map(str::trim)
-            .filter(|name| !name.is_empty())
-            .map(str::to_string)
-            .unwrap_or_else(|| {
-                ctx.config
-                    .get_str("model.default_model")
-                    .unwrap_or_else(|| "deepseek-chat".into())
-            });
-        let default_options = ModelOptions {
-            model,
-            session_id: Some(session_id.clone()),
-            ..Default::default()
-        };
-        let mut cancelled = false;
-        let mut usage: Option<TokenUsage> = None;
-        // 上下文预算（design §上下文预算）：发送前把装配好的请求裁到预算内，上游报
-        // context 超限时收紧预算重试，而不是把 400 直接抛给用户。@since 0.29.7
-        let mut context_budget = ctx
-            .config
-            .get_int("model.max_context_tokens")
-            .and_then(|value| usize::try_from(value).ok())
-            .map_or(DEFAULT_CONTEXT_TOKENS, budget::clamp_budget);
-        let mut overflow_retries = 0usize;
-        // 未完成轮次的重试计数（流截断 / 空回复，见下方守卫）。@since 0.29.8
-        let mut incomplete_retries = 0usize;
-        'outer: for _iter in 0..max_iter {
-            let request = pipeline.fit(messages.clone(), context_budget);
-            let stream = match provider
-                .chat_stream(request, tool_defs.clone(), default_options.clone())
-                .await
-            {
-                Ok(stream) => stream,
-                Err(err @ ModelError::TokenLimitExceeded { max, .. }) => {
-                    // 上游报超限：收紧预算重发（预算严格递减；无法再减时如实上抛）。
-                    match budget::retry_budget(context_budget, max) {
-                        Some(next) if overflow_retries < MAX_OVERFLOW_RETRIES => {
-                            overflow_retries += 1;
-                            context_budget = next;
-                            continue 'outer;
-                        }
-                        _ => return Err(route(err.to_string())),
-                    }
-                }
-                Err(e) => return Err(route(e.to_string())),
-            };
-            futures::pin_mut!(stream);
-            let mut content = String::new();
-            let mut tc_list: Vec<ToolCall> = vec![];
-            let mut saw_done = false;
-            loop {
-                let next = tokio::select! {
-                    r = stream.next() => r,
-                    _ = &mut cancel_rx => { cancelled = true; None },
-                };
-                match next {
-                    Some(result) => match result.map_err(|e| route(e.to_string()))? {
-                        ModelEvent::Delta(text) => {
-                            content.push_str(&text);
-                            if reply.send(AgentEvent::Delta(text)).await.is_err() {
-                                return Ok(());
-                            }
-                        }
-                        ModelEvent::ToolCall(tc) => tc_list.push(tc),
-                        ModelEvent::Usage(tu) => match &mut usage {
-                            Some(acc) => acc.accumulate(tu),
-                            None => usage = Some(tu),
-                        },
-                        ModelEvent::Done => {
-                            saw_done = true;
-                            break;
-                        }
-                    },
-                    None => {
-                        if cancelled {
-                            break 'outer;
-                        }
-                        break;
-                    }
-                }
-            }
-            if cancelled {
-                break 'outer;
-            }
-            // 纯文本回复却没以 Done 收尾 = 上游/连接中途截断：半截句子不能被当成
-            // 「最终结论」落库（用户只看到一句残句，「继续」也接不上）。先重发，仍不行
-            // 就如实报错。带工具调用的轮次不受影响：openai-compat 只在收到
-            // finish_reason=tool_calls 后才吐工具调用，那本身就是上游已完成的信号。
-            // @since 0.29.8
-            if !saw_done && tc_list.is_empty() && !content.trim().is_empty() {
-                if incomplete_retries < MAX_INCOMPLETE_RETRIES {
-                    incomplete_retries += 1;
-                    if text_tool_call::looks_like_tool_call_text(&content) {
-                        messages.push(ChatMessage::user(TOOL_CALL_AS_TEXT_NUDGE.to_string()));
-                    }
-                    continue 'outer;
-                }
-                return Err(route("model stream ended before completion".into()));
-            }
-            // 有些模型把工具调用写成**纯文本方言**
-            // （`analysis <|constrain|>xml<|message|><rfl:parameter name="command">ls -la</rfl:parameter>`，
-            // 实测 opencode-go 部分模型），网关没把它翻译成结构化 tool_calls。当成「最终
-            // 结论」收尾就会让整轮任务停在半路，所以按文本里写明的参数还原成真正的工具调用，
-            // 继续正常执行（权限门与落库都走原有路径）。@since 0.29.10
-            if tc_list.is_empty()
-                && let Some(call) = text_tool_call::recover_tool_call(&content)
-            {
-                tracing::warn!(
-                    tool = %call.tool,
-                    chars = content.len(),
-                    "model wrote its tool call as text; recovered it and executing the tool"
-                );
-                tc_list.push(ToolCall {
-                    id: recovered_call_id(),
-                    name: call.tool,
-                    arguments: call.arguments,
-                });
-                content.clear();
-            }
-            // 认得出是文本工具调用、但参数无法无歧义还原：同样不能当结论。重发一次并要求
-            // 模型改走工具通道，仍不改就如实报错（而不是把标记当答复交给用户）。
-            // @since 0.29.10
-            if tc_list.is_empty() && text_tool_call::looks_like_tool_call_text(&content) {
-                if incomplete_retries < MAX_INCOMPLETE_RETRIES {
-                    incomplete_retries += 1;
-                    tracing::warn!(
-                        chars = content.len(),
-                        "model wrote unparsable tool-call markup; replaying with a corrective note"
-                    );
-                    messages.push(ChatMessage::user(TOOL_CALL_AS_TEXT_NUDGE.to_string()));
-                    continue 'outer;
-                }
-                return Err(route(
-                    "model kept writing its tool call as text instead of calling the tool".into(),
-                ));
-            }
-            if tc_list.is_empty() {
-                ctx.session
-                    .append(&session_id, ChatMessage::assistant(content.clone()))
-                    .map_err(|e| route(e.to_string()))?;
-                if reply
-                    .send(AgentEvent::Done {
-                        run_id: Some(run_id.clone()),
-                        final_response: content,
-                        tool_calls: all_tool_calls,
-                        usage,
-                        provider: Some(provider_name.clone()),
-                        model: Some(default_options.model.clone()),
-                    })
-                    .await
-                    .is_err()
-                {
-                    return Ok(());
-                }
-                if let Some(f) = &on_done {
-                    f(&session_id, usage);
-                }
-                return Ok(());
-            }
-            // 工具往返必须落库：若只有最终一句话留在快照里，下一轮（尤其用户
-            // 「继续」）模型看不到任何工具调用与结果，等于从零重来。落库延到整轮
-            // 结束后：取消或中途失败时整轮不写，绝不会留下没有结果的悬空调用。
-            // @since 0.29.8
-            let mut round: Vec<(ToolCall, String)> = Vec::with_capacity(tc_list.len());
-            for tc in tc_list {
-                if reply.send(AgentEvent::ToolCall(tc.clone())).await.is_err() {
-                    return Ok(());
-                }
-                all_tool_calls.push(tc.clone());
-                let (tx, mut tool_rx) = tokio::sync::oneshot::channel();
-                if sender
-                    .send(KernelMessage::ToolCallRequest {
-                        session_id: session_id.clone(),
-                        tool_call: tc.clone(),
-                        target: tool_executor_id.clone(),
-                        reply: Arc::new(std::sync::Mutex::new(Some(tx))),
-                    })
-                    .is_err()
-                {
-                    if reply
-                        .send(AgentEvent::Error("bus send failed".into()))
-                        .await
-                        .is_err()
-                    {
-                        return Ok(());
-                    }
-                    return Ok(());
-                }
-                let (tool_result, artifacts) = tokio::select! {
-                    r = &mut tool_rx => match r {
-                        Ok(Ok(outcome)) => {
-                            let ToolExecutionOutcome { result, artifacts } = outcome;
-                            let text = result
-                                .as_str()
-                                .map(String::from)
-                                .unwrap_or_else(|| result.to_string());
-                            (text, artifacts)
-                        }
-                        Ok(Err(e)) => (format!("Error: {e}"), Vec::new()),
-                        Err(_) => {
-                            if reply
-                                .send(AgentEvent::Error("tool executor dropped".into()))
-                                .await
-                                .is_err()
-                            {
-                                return Ok(());
-                            }
-                            return Ok(());
-                        }
-                    },
-                    _ = &mut cancel_rx => { cancelled = true; break; },
-                };
-                if cancelled {
-                    break;
-                }
-                // Cap oversized tool results exactly once, at the single tool-result
-                // conversion point. The truncated string is what every downstream sink
-                // (event, reflux, persisted history) sees.
-                let (tool_result, dropped) =
-                    crate::budget::truncate_chars(&tool_result, max_tool_result_chars);
-                if dropped > 0
-                    && reply
-                        .send(AgentEvent::ToolResultTruncated {
-                            tool_call_id: tc.id.clone(),
-                            dropped_chars: dropped,
-                        })
-                        .await
-                        .is_err()
-                {
-                    return Ok(());
-                }
-                if reply
-                    .send(AgentEvent::ToolResult {
-                        call_id: tc.id.clone(),
-                        result: tool_result.clone(),
-                    })
-                    .await
-                    .is_err()
-                {
-                    return Ok(());
-                }
-                if !Self::forward_artifacts(
-                    &reply,
-                    artifacts,
-                    &run_id,
-                    &todo_revisions,
-                    &file_change_seqs,
-                )
-                .await
-                {
-                    return Ok(());
-                }
-                pipeline.reflux(&mut messages, &tc, tool_result.clone());
-                round.push((tc, tool_result));
-            }
-            if cancelled {
-                break 'outer;
-            }
-            ctx.session
-                .append(
-                    &session_id,
-                    ChatMessage {
-                        role: Role::Assistant,
-                        content: content.clone(),
-                        tool_call_id: None,
-                        tool_calls: round.iter().map(|(tc, _)| tc.clone()).collect(),
-                    },
-                )
-                .map_err(|e| route(e.to_string()))?;
-            for (tc, tool_result) in round {
-                ctx.session
-                    .append(&session_id, ChatMessage::tool_result(tc.id, tool_result))
-                    .map_err(|e| route(e.to_string()))?;
-            }
-        }
-        if cancelled {
-            if reply
-                .send(AgentEvent::Error("cancelled".into()))
-                .await
-                .is_err()
-            {
-                return Ok(());
-            }
+        turn.prepare_turn(user_input, &overrides, system_prompt)
+            .await?;
+        if turn.run_tool_rounds().await? {
             return Ok(());
         }
-        // 工具轮次用尽：此刻模型最后一句往往还是「让我再看看…」，直接报内部错误会把整轮
-        // 成果丢掉，用户也接不下去。再走一趟**不带工具**的收尾，只允许它基于已获得的
-        // 信息作答；收尾也拿不到内容才如实报错。@since 0.29.9
-        messages.push(ChatMessage::user(BUDGET_EXHAUSTED_NUDGE.to_string()));
-        let conclusion = match Self::conclude_without_tools(
-            provider.as_ref(),
-            &pipeline,
-            messages,
-            &default_options,
-            context_budget,
-            &reply,
-            &mut cancel_rx,
-            &mut usage,
-        )
-        .await
-        {
-            Ok(Some(text)) => text,
-            Ok(None) => {
-                let _ = reply.send(AgentEvent::Error("cancelled".into())).await;
-                return Ok(());
-            }
-            Err(e) => return Err(route(e.to_string())),
-        };
-        if conclusion.trim().is_empty() {
-            return Err(route(format!(
-                "max tool iterations exceeded ({max_iter}) and the model returned no conclusion"
-            )));
-        }
-        ctx.session
-            .append(&session_id, ChatMessage::assistant(conclusion.clone()))
-            .map_err(|e| route(e.to_string()))?;
-        if reply
-            .send(AgentEvent::Done {
-                run_id: Some(run_id.clone()),
-                final_response: conclusion,
-                tool_calls: all_tool_calls,
-                usage,
-                provider: Some(provider_name.clone()),
-                model: Some(default_options.model.clone()),
-            })
-            .await
-            .is_err()
-        {
-            return Ok(());
-        }
-        if let Some(f) = &on_done {
-            f(&session_id, usage);
-        }
-        Ok(())
+        turn.finish_turn().await
     }
 
     /// 工具轮次用尽后的收尾一趟：不提供任何工具，把流里的文本收集起来。返回 `None`
@@ -660,6 +442,549 @@ impl TurnRunner {
             }
         }
         true
+    }
+}
+
+impl TurnState {
+    /// Explicit `provider` override wins over the kernel default; an unknown name is
+    /// reported with the registered list instead of silently falling back.
+    fn resolve_provider(
+        ctx: &KernelContext,
+        overrides: &RunOverrides,
+    ) -> Result<(String, Arc<dyn ModelProvider>), String> {
+        let route = |reason: String| format!("agent error: {reason}");
+        match overrides
+            .provider
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+        {
+            Some(name) => {
+                let provider = ctx.providers.get(name).ok_or_else(|| {
+                    route(format!(
+                        "unknown provider: {name} (registered: {})",
+                        ctx.providers.list().join(", ")
+                    ))
+                })?;
+                Ok((name.to_string(), provider))
+            }
+            None => ctx
+                .providers
+                .get_default_with_name()
+                .ok_or_else(|| route("no default provider".into())),
+        }
+    }
+
+    /// Model id for this turn: explicit override > configured default > `deepseek-chat`.
+    fn resolve_model(ctx: &KernelContext, overrides: &RunOverrides) -> String {
+        overrides
+            .model
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| {
+                ctx.config
+                    .get_str("model.default_model")
+                    .unwrap_or_else(|| "deepseek-chat".into())
+            })
+    }
+
+    /// Append the user message, assemble the request context and set the token budget.
+    async fn prepare_turn(
+        &mut self,
+        user_input: String,
+        overrides: &RunOverrides,
+        system_prompt: String,
+    ) -> Result<(), String> {
+        let route = |reason: String| format!("agent error: {reason}");
+        self.ctx
+            .session
+            .append(&self.session_id, ChatMessage::user(user_input))
+            .map_err(|e| route(e.to_string()))?;
+        let history = self
+            .ctx
+            .session
+            .get(&self.session_id)
+            .map_err(|e| route(e.to_string()))?;
+        self.lane.tool_defs = self.ctx.tools.definitions();
+        self.lane.messages = self.pipeline.assemble(&system_prompt, &history, &[]);
+        self.lane.options = ModelOptions {
+            model: Self::resolve_model(&self.ctx, overrides),
+            session_id: Some(self.session_id.clone()),
+            ..Default::default()
+        };
+        // 上下文预算（design §上下文预算）：发送前把装配好的请求裁到预算内，上游报
+        // context 超限时收紧预算重试，而不是把 400 直接抛给用户。@since 0.29.7
+        self.lane.context_budget = self
+            .ctx
+            .config
+            .get_int("model.max_context_tokens")
+            .and_then(|value| usize::try_from(value).ok())
+            .map_or(DEFAULT_CONTEXT_TOKENS, budget::clamp_budget);
+        Ok(())
+    }
+
+    /// Drain up to `max_iter` rounds. `Ok(true)` means the turn already produced its
+    /// terminal event inside a round (final answer, or the client went away).
+    async fn run_tool_rounds(&mut self) -> Result<bool, String> {
+        for _iter in 0..self.max_iter {
+            match self.run_round().await? {
+                RoundFlow::Next => {}
+                RoundFlow::Finished => return Ok(true),
+                RoundFlow::Cancelled => return Ok(false),
+            }
+        }
+        Ok(false)
+    }
+
+    /// One model round: open the stream, drain it, run the guards, then either answer or
+    /// execute the round's tool calls.
+    async fn run_round(&mut self) -> Result<RoundFlow, String> {
+        let Some(stream) = self.open_stream().await? else {
+            return Ok(RoundFlow::Next); // budget shrank: replay the round
+        };
+        let mut collected = match self.collect_stream(stream).await? {
+            StreamEnd::Collected(collected) => collected,
+            StreamEnd::Cancelled => return Ok(RoundFlow::Cancelled),
+            StreamEnd::ClientGone => return Ok(RoundFlow::Finished),
+        };
+        let retry = self.guard_round(
+            &mut collected.content,
+            &mut collected.tool_calls,
+            collected.saw_done,
+        )?;
+        if retry {
+            return Ok(RoundFlow::Next);
+        }
+        if collected.tool_calls.is_empty() {
+            return self.emit_final_answer(collected.content).await;
+        }
+        match self.execute_tool_calls(collected.tool_calls).await {
+            ToolRound::Cancelled => Ok(RoundFlow::Cancelled),
+            ToolRound::ClientGone => Ok(RoundFlow::Finished),
+            ToolRound::Completed(round) => self.commit_tool_round(collected.content, round).await,
+        }
+    }
+
+    /// Send the next request and open its stream. `Ok(None)` means upstream reported an
+    /// overflow and the budget was tightened, so the round has to be replayed.
+    async fn open_stream(
+        &mut self,
+    ) -> Result<Option<BoxStream<'static, Result<ModelEvent, ModelError>>>, String> {
+        let route = |reason: String| format!("agent error: {reason}");
+        let request = self
+            .pipeline
+            .fit(self.lane.messages.clone(), self.lane.context_budget);
+        let tools = self.lane.tool_defs.clone();
+        let options = self.lane.options.clone();
+        match self.provider.chat_stream(request, tools, options).await {
+            Ok(stream) => Ok(Some(stream)),
+            Err(err @ ModelError::TokenLimitExceeded { max, .. }) => {
+                // 上游报超限：收紧预算重发（预算严格递减；无法再减时如实上抛）。
+                match budget::retry_budget(self.lane.context_budget, max) {
+                    Some(next) if self.lane.overflow_retries < MAX_OVERFLOW_RETRIES => {
+                        self.lane.overflow_retries += 1;
+                        self.lane.context_budget = next;
+                        Ok(None)
+                    }
+                    _ => Err(route(err.to_string())),
+                }
+            }
+            Err(e) => Err(route(e.to_string())),
+        }
+    }
+
+    /// Drain one model stream, forwarding deltas to the client as they arrive.
+    async fn collect_stream(
+        &mut self,
+        stream: BoxStream<'static, Result<ModelEvent, ModelError>>,
+    ) -> Result<StreamEnd, String> {
+        let route = |reason: String| format!("agent error: {reason}");
+        futures::pin_mut!(stream);
+        let mut content = String::new();
+        let mut tool_calls: Vec<ToolCall> = vec![];
+        let mut saw_done = false;
+        loop {
+            let next = tokio::select! {
+                r = stream.next() => r,
+                _ = &mut self.cancel_rx => { self.lane.cancelled = true; None },
+            };
+            match next {
+                Some(result) => match result.map_err(|e| route(e.to_string()))? {
+                    ModelEvent::Delta(text) => {
+                        content.push_str(&text);
+                        if self.reply.send(AgentEvent::Delta(text)).await.is_err() {
+                            return Ok(StreamEnd::ClientGone);
+                        }
+                    }
+                    ModelEvent::ToolCall(tc) => tool_calls.push(tc),
+                    ModelEvent::Usage(tu) => accumulate_usage(&mut self.lane.usage, tu),
+                    ModelEvent::Done => {
+                        saw_done = true;
+                        break;
+                    }
+                },
+                None => break,
+            }
+        }
+        if self.lane.cancelled {
+            return Ok(StreamEnd::Cancelled);
+        }
+        Ok(StreamEnd::Collected(Collected {
+            content,
+            tool_calls,
+            saw_done,
+        }))
+    }
+
+    /// 落库/执行前的三道守卫（逐条照搬拆分前的判定顺序）。`Ok(true)` = 本轮要重发。
+    fn guard_round(
+        &mut self,
+        content: &mut String,
+        tool_calls: &mut Vec<ToolCall>,
+        saw_done: bool,
+    ) -> Result<bool, String> {
+        if !saw_done && tool_calls.is_empty() && !content.trim().is_empty() {
+            return self.guard_truncated_stream(content);
+        }
+        if tool_calls.is_empty() {
+            self.recover_text_tool_call(content, tool_calls);
+        }
+        if tool_calls.is_empty() && text_tool_call::looks_like_tool_call_text(content) {
+            return self.guard_unparsable_markup(content);
+        }
+        Ok(false)
+    }
+
+    /// 纯文本回复却没以 Done 收尾 = 上游/连接中途截断：半截句子不能被当成「最终结论」
+    /// 落库（用户只看到一句残句，「继续」也接不上）。先重发，仍不行就如实报错。带工具
+    /// 调用的轮次不受影响：openai-compat 只在收到 finish_reason=tool_calls 后才吐工具
+    /// 调用，那本身就是上游已完成的信号。@since 0.29.8
+    fn guard_truncated_stream(&mut self, content: &str) -> Result<bool, String> {
+        let route = |reason: String| format!("agent error: {reason}");
+        if self.lane.incomplete_retries < MAX_INCOMPLETE_RETRIES {
+            self.lane.incomplete_retries += 1;
+            if text_tool_call::looks_like_tool_call_text(content) {
+                self.push_nudge();
+            }
+            return Ok(true);
+        }
+        Err(route("model stream ended before completion".into()))
+    }
+
+    /// 有些模型把工具调用写成**纯文本方言**
+    /// （`analysis <|constrain|>xml<|message|><rfl:parameter name="command">ls -la</rfl:parameter>`，
+    /// 实测 opencode-go 部分模型），网关没把它翻译成结构化 tool_calls。当成「最终
+    /// 结论」收尾就会让整轮任务停在半路，所以按文本里写明的参数还原成真正的工具调用，
+    /// 继续正常执行（权限门与落库都走原有路径）。@since 0.29.10
+    fn recover_text_tool_call(&mut self, content: &mut String, tool_calls: &mut Vec<ToolCall>) {
+        let Some(call) = text_tool_call::recover_tool_call(content) else {
+            return;
+        };
+        tracing::warn!(
+            tool = %call.tool,
+            chars = content.len(),
+            "model wrote its tool call as text; recovered it and executing the tool"
+        );
+        tool_calls.push(ToolCall {
+            id: recovered_call_id(),
+            name: call.tool,
+            arguments: call.arguments,
+        });
+        content.clear();
+    }
+
+    /// 认得出是文本工具调用、但参数无法无歧义还原：同样不能当结论。重发一次并要求模型改走
+    /// 工具通道，仍不改就如实报错（而不是把标记当答复交给用户）。@since 0.29.10
+    fn guard_unparsable_markup(&mut self, content: &str) -> Result<bool, String> {
+        let route = |reason: String| format!("agent error: {reason}");
+        if self.lane.incomplete_retries < MAX_INCOMPLETE_RETRIES {
+            self.lane.incomplete_retries += 1;
+            tracing::warn!(
+                chars = content.len(),
+                "model wrote unparsable tool-call markup; replaying with a corrective note"
+            );
+            self.push_nudge();
+            return Ok(true);
+        }
+        Err(route(
+            "model kept writing its tool call as text instead of calling the tool".into(),
+        ))
+    }
+
+    fn push_nudge(&mut self) {
+        self.lane
+            .messages
+            .push(ChatMessage::user(TOOL_CALL_AS_TEXT_NUDGE.to_string()));
+    }
+
+    /// No tool calls: this round's text IS the answer. Persist it, emit `Done`, notify.
+    async fn emit_final_answer(&mut self, content: String) -> Result<RoundFlow, String> {
+        let route = |reason: String| format!("agent error: {reason}");
+        self.ctx
+            .session
+            .append(&self.session_id, ChatMessage::assistant(content.clone()))
+            .map_err(|e| route(e.to_string()))?;
+        if self.emit_done(content).await.is_err() {
+            return Ok(RoundFlow::Finished);
+        }
+        self.notify_done();
+        Ok(RoundFlow::Finished)
+    }
+
+    /// `AgentEvent::Done` carrying the run id and the provider/model that served it.
+    async fn emit_done(&mut self, final_response: String) -> Result<(), ()> {
+        let event = AgentEvent::Done {
+            run_id: Some(self.run_id.clone()),
+            final_response,
+            tool_calls: std::mem::take(&mut self.lane.all_tool_calls),
+            usage: self.lane.usage,
+            provider: Some(self.provider_name.clone()),
+            model: Some(self.lane.options.model.clone()),
+        };
+        self.reply.send(event).await.map_err(|_| ())
+    }
+
+    fn notify_done(&self) {
+        if let Some(f) = &self.on_done {
+            f(&self.session_id, self.lane.usage);
+        }
+    }
+
+    /// Run every tool call of this round in order and collect their results.
+    async fn execute_tool_calls(&mut self, tool_calls: Vec<ToolCall>) -> ToolRound {
+        let mut round: Vec<(ToolCall, String)> = Vec::with_capacity(tool_calls.len());
+        for tc in tool_calls {
+            if let Err(abort) = self.run_one_tool(tc, &mut round).await {
+                return match abort {
+                    ToolAbort::Cancelled => ToolRound::Cancelled,
+                    ToolAbort::ClientGone => ToolRound::ClientGone,
+                };
+            }
+        }
+        ToolRound::Completed(round)
+    }
+
+    async fn run_one_tool(
+        &mut self,
+        tc: ToolCall,
+        round: &mut Vec<(ToolCall, String)>,
+    ) -> Result<(), ToolAbort> {
+        let outcome = self.dispatch_tool(&tc).await?;
+        self.finish_tool(&tc, outcome, round).await
+    }
+
+    /// Ask the tool-executor module to run one call and wait for its outcome.
+    async fn dispatch_tool(
+        &mut self,
+        tc: &ToolCall,
+    ) -> Result<(String, Vec<TurnArtifact>), ToolAbort> {
+        if self
+            .reply
+            .send(AgentEvent::ToolCall(tc.clone()))
+            .await
+            .is_err()
+        {
+            return Err(ToolAbort::ClientGone);
+        }
+        self.lane.all_tool_calls.push(tc.clone());
+        let mut tool_rx = self.send_tool_request(tc).await?;
+        let picked = tokio::select! {
+            r = &mut tool_rx => Some(r),
+            _ = &mut self.cancel_rx => None,
+        };
+        self.tool_outcome(picked).await
+    }
+
+    /// Hand one call to the tool-executor module; no receiver means the client is gone.
+    async fn send_tool_request(
+        &mut self,
+        tc: &ToolCall,
+    ) -> Result<tokio::sync::oneshot::Receiver<Result<ToolExecutionOutcome, ToolError>>, ToolAbort>
+    {
+        let (tx, tool_rx) = tokio::sync::oneshot::channel();
+        let request = KernelMessage::ToolCallRequest {
+            session_id: self.session_id.clone(),
+            tool_call: tc.clone(),
+            target: self.tool_executor_id.clone(),
+            reply: Arc::new(std::sync::Mutex::new(Some(tx))),
+        };
+        if self.sender.send(request).is_err() {
+            let _ = self
+                .reply
+                .send(AgentEvent::Error("bus send failed".into()))
+                .await;
+            return Err(ToolAbort::ClientGone);
+        }
+        Ok(tool_rx)
+    }
+
+    /// Normalize whatever the executor reported into the text the model sees next round.
+    async fn tool_outcome(
+        &mut self,
+        picked: Option<Result<Result<ToolExecutionOutcome, ToolError>, oneshot_error::RecvError>>,
+    ) -> Result<(String, Vec<TurnArtifact>), ToolAbort> {
+        match picked {
+            Some(Ok(Ok(ToolExecutionOutcome { result, artifacts }))) => {
+                let text = result
+                    .as_str()
+                    .map(String::from)
+                    .unwrap_or_else(|| result.to_string());
+                Ok((text, artifacts))
+            }
+            Some(Ok(Err(e))) => Ok((format!("Error: {e}"), Vec::new())),
+            Some(Err(_)) => {
+                let _ = self
+                    .reply
+                    .send(AgentEvent::Error("tool executor dropped".into()))
+                    .await;
+                Err(ToolAbort::ClientGone)
+            }
+            None => {
+                self.lane.cancelled = true;
+                Err(ToolAbort::Cancelled)
+            }
+        }
+    }
+
+    /// Emit the tool result (truncated exactly once, at this single conversion point),
+    /// forward its artifacts, and fold the result back into the request context.
+    async fn finish_tool(
+        &mut self,
+        tc: &ToolCall,
+        outcome: (String, Vec<TurnArtifact>),
+        round: &mut Vec<(ToolCall, String)>,
+    ) -> Result<(), ToolAbort> {
+        let (tool_result, artifacts) = outcome;
+        let (tool_result, dropped) =
+            crate::budget::truncate_chars(&tool_result, self.max_tool_result_chars);
+        if !self.send_tool_result(tc, &tool_result, dropped).await {
+            return Err(ToolAbort::ClientGone);
+        }
+        let forwarded = TurnRunner::forward_artifacts(
+            &self.reply,
+            artifacts,
+            &self.run_id,
+            &self.todo_revisions,
+            &self.file_change_seqs,
+        )
+        .await;
+        if !forwarded {
+            return Err(ToolAbort::ClientGone);
+        }
+        self.pipeline
+            .reflux(&mut self.lane.messages, tc, tool_result.clone());
+        round.push((tc.clone(), tool_result));
+        Ok(())
+    }
+
+    /// Broadcast the (already truncated) result of one call; `false` = client gone.
+    async fn send_tool_result(&mut self, tc: &ToolCall, result: &str, dropped: usize) -> bool {
+        if dropped > 0 {
+            let truncated = AgentEvent::ToolResultTruncated {
+                tool_call_id: tc.id.clone(),
+                dropped_chars: dropped,
+            };
+            if self.reply.send(truncated).await.is_err() {
+                return false;
+            }
+        }
+        let event = AgentEvent::ToolResult {
+            call_id: tc.id.clone(),
+            result: result.to_string(),
+        };
+        self.reply.send(event).await.is_ok()
+    }
+
+    /// 工具往返必须落库：若只有最终一句话留在快照里，下一轮（尤其用户「继续」）模型
+    /// 看不到任何工具调用与结果，等于从零重来。落库延到整轮结束后：取消或中途失败时
+    /// 整轮不写，绝不会留下没有结果的悬空调用。@since 0.29.8
+    async fn commit_tool_round(
+        &mut self,
+        content: String,
+        round: Vec<(ToolCall, String)>,
+    ) -> Result<RoundFlow, String> {
+        let route = |reason: String| format!("agent error: {reason}");
+        let assistant = ChatMessage {
+            role: Role::Assistant,
+            content,
+            tool_call_id: None,
+            tool_calls: round.iter().map(|(tc, _)| tc.clone()).collect(),
+        };
+        self.ctx
+            .session
+            .append(&self.session_id, assistant)
+            .map_err(|e| route(e.to_string()))?;
+        for (tc, tool_result) in round {
+            self.ctx
+                .session
+                .append(
+                    &self.session_id,
+                    ChatMessage::tool_result(tc.id, tool_result),
+                )
+                .map_err(|e| route(e.to_string()))?;
+        }
+        Ok(RoundFlow::Next)
+    }
+
+    /// Cancel-aware epilogue: the tool-free conclusion pass, then persist + emit `Done`.
+    async fn finish_turn(&mut self) -> Result<(), String> {
+        let route = |reason: String| format!("agent error: {reason}");
+        let Some(conclusion) = self.conclude_turn().await? else {
+            let _ = self.reply.send(AgentEvent::Error("cancelled".into())).await;
+            return Ok(());
+        };
+        // 工具轮次用尽：此刻模型最后一句往往还是「让我再看看…」，直接报内部错误会把整轮
+        // 成果丢掉，用户也接不下去。收尾也拿不到内容才如实报错。@since 0.29.9
+        if conclusion.trim().is_empty() {
+            return Err(route(format!(
+                "max tool iterations exceeded ({}) and the model returned no conclusion",
+                self.max_iter
+            )));
+        }
+        self.ctx
+            .session
+            .append(&self.session_id, ChatMessage::assistant(conclusion.clone()))
+            .map_err(|e| route(e.to_string()))?;
+        if self.emit_done(conclusion).await.is_err() {
+            return Ok(());
+        }
+        self.notify_done();
+        Ok(())
+    }
+
+    /// 工具轮次用尽后的收尾一趟：不再提供任何工具，只允许模型基于已获得的信息作答。
+    /// `Ok(None)` 表示本轮被取消（或客户端已断开），调用方不再结算。@since 0.29.9
+    async fn conclude_turn(&mut self) -> Result<Option<String>, String> {
+        if self.lane.cancelled {
+            return Ok(None);
+        }
+        let route = |reason: String| format!("agent error: {reason}");
+        self.lane
+            .messages
+            .push(ChatMessage::user(BUDGET_EXHAUSTED_NUDGE.to_string()));
+        let messages = std::mem::take(&mut self.lane.messages);
+        TurnRunner::conclude_without_tools(
+            self.provider.as_ref(),
+            &self.pipeline,
+            messages,
+            &self.lane.options,
+            self.lane.context_budget,
+            &self.reply,
+            &mut self.cancel_rx,
+            &mut self.lane.usage,
+        )
+        .await
+        .map_err(|e| route(e.to_string()))
+    }
+}
+
+/// Fold one usage event into the turn's running total.
+fn accumulate_usage(usage: &mut Option<TokenUsage>, incoming: TokenUsage) {
+    match usage {
+        Some(acc) => acc.accumulate(incoming),
+        None => *usage = Some(incoming),
     }
 }
 

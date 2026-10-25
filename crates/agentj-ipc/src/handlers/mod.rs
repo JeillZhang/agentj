@@ -1,0 +1,11 @@
+//! Request handlers grouped by protocol domain (see `dispatch.rs` for routing).
+//!
+//! Each module holds one domain's `impl IpcServer` method block so the route
+//! table stays readable and the root file stays small.
+
+pub(crate) mod file;
+pub(crate) mod lifecycle;
+pub(crate) mod pending;
+pub(crate) mod provider;
+pub(crate) mod run;
+pub(crate) mod session;
