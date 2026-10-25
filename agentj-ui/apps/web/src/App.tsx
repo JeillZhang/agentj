@@ -405,13 +405,16 @@ export default function App() {
   const openSubscriptionSettings = useCallback(() => {
     settingsOpenerRef.current?.("subscription");
   }, []);
-  // `u` / `Shift+U` reach the usage surfaces without the mouse (design ㊺). Shift arrives as
-  // an uppercase key, so the same handler is registered under both spellings; the hook
-  // already refuses modals, editable targets and modifier combos.
+  const openUsageSettings = useCallback(() => {
+    settingsOpenerRef.current?.("usage");
+  }, []);
+  // `u` opens 用量 and `Shift+U` 订阅 without the mouse (design ㊺). Shift arrives as an
+  // uppercase key, so both are plain keys; the hook already refuses modals, editable
+  // targets and modifier combos.
   const shellRef = useRef<HTMLDivElement | null>(null);
   const shellShortcuts = useMemo(
-    () => ({ u: openSubscriptionSettings, U: openSubscriptionSettings }),
-    [openSubscriptionSettings],
+    () => ({ u: openUsageSettings, U: openSubscriptionSettings }),
+    [openUsageSettings, openSubscriptionSettings],
   );
   useShortcutScope(shellRef, shellShortcuts);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
