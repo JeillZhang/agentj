@@ -89,16 +89,26 @@ function CredentialRow({ status }: { status: AuthStatus }) {
   );
 }
 
-function UsageBlock({ usage, samples = [] }: { usage: ProviderUsage; samples?: UsageSample[] }) {
+function UsageBlock({
+  usage,
+  samples = [],
+  now = 0,
+}: {
+  usage: ProviderUsage;
+  samples?: UsageSample[];
+  /** Epoch seconds captured when the history was loaded — never read the clock while rendering. */
+  now?: number;
+}) {
   const windows = Array.isArray(usage.windows) ? [...usage.windows] : [];
   windows.sort((a, b) => WINDOW_ORDER.indexOf(a.kind) - WINDOW_ORDER.indexOf(b.kind));
   const kind = usage.error?.kind;
   const sentence = kind ? ERROR_TEXT[kind] : undefined;
+  const cutoff = now > 0 ? now : Number.MAX_SAFE_INTEGER;
   return (
     <div className="aj-sub__usage">
       {usage.stale && <p className="aj-sub__stale">显示的是缓存数据</p>}
       {windows.map((item) => {
-        const points = buildTrend(samples, item.kind, Date.now());
+        const points = buildTrend(samples, item.kind, cutoff);
         return (
           <Fragment key={item.kind}>
             <WindowRow item={item} warnPercent={usage.warn_percent} />
@@ -116,6 +126,7 @@ export default function SubscriptionPanel({ client, onClose, onLinked, onCleared
   const [status, setStatus] = useState<AuthStatus | null>(null);
   const [usage, setUsage] = useState<ProviderUsage | null>(null);
   const [samples, setSamples] = useState<UsageSample[]>([]);
+  const [historyAt, setHistoryAt] = useState(0);
   const [device, setDevice] = useState<DeviceView | null>(null);
   const [deviceMsg, setDeviceMsg] = useState<string | null>(null);
   const [key, setKey] = useState("");
@@ -151,7 +162,10 @@ export default function SubscriptionPanel({ client, onClose, onLinked, onCleared
       if (aliveRef.current) setSamples([]);
       return;
     }
-    if (aliveRef.current) setSamples(Array.isArray(res?.samples) ? res.samples : []);
+    if (!aliveRef.current) return;
+    setSamples(Array.isArray(res?.samples) ? res.samples : []);
+    // `UsageSample.at` is epoch seconds, so the cutoff uses the same unit.
+    setHistoryAt(Math.floor(Date.now() / 1000));
   };
 
   const refreshUsage = () => {
@@ -279,7 +293,7 @@ export default function SubscriptionPanel({ client, onClose, onLinked, onCleared
       </div>
       {status && <CredentialRow status={status} />}
       {usage ? (
-        <UsageBlock usage={usage} samples={samples} />
+        <UsageBlock usage={usage} samples={samples} now={historyAt} />
       ) : (
         <p className="aj-sub__hint">正在获取用量…</p>
       )}
