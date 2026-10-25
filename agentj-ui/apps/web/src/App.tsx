@@ -8,6 +8,7 @@ import {
   WebSocketTransport,
   resolveWsUrl,
   parseProgress,
+  formatContextWindow,
 } from "@agentj/sdk";
 import type { NotificationHandler } from "@agentj/sdk";
 import type { AuthSetApiKeyResult, ModelEntry as CatalogEntry } from "@agentj/protocol";
@@ -268,6 +269,26 @@ function useSharedKernel(wsUrl: string, seq: number) {
             );
             if (served.length > 0) setModels(served);
             setStatus("connected");
+            // The context window is a catalog fact (model/list), not a kernel/status one:
+            // providers that publish none leave `cap` unset and the row shows no label.
+            cli
+              .request(METHODS.modelList)
+              .then((catalog) => {
+                if (cancelled) return;
+                const list =
+                  (catalog as { models?: { id: string; context_window?: number | null }[] })
+                    .models ?? [];
+                const windows = new Map(
+                  list.map((entry) => [entry.id, entry.context_window ?? null]),
+                );
+                setModels((prev) =>
+                  prev.map((m) => {
+                    const cap = formatContextWindow(windows.get(m.name) ?? null);
+                    return cap ? { ...m, cap } : m;
+                  }),
+                );
+              })
+              .catch(() => {});
           })
           .catch(() => {
             if (cancelled) return;
