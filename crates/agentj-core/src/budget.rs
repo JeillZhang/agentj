@@ -97,7 +97,8 @@ pub fn message_tokens_with(message: &ChatMessage, counter: &dyn TokenCounter) ->
         total += counter.count_text(call);
     }
     for call in &message.tool_calls {
-        total += 8 + counter.count_text(&call.name) + counter.count_text(&call.arguments.to_string());
+        total +=
+            8 + counter.count_text(&call.name) + counter.count_text(&call.arguments.to_string());
     }
     total
 }
@@ -109,7 +110,10 @@ pub fn request_tokens(messages: &[ChatMessage]) -> usize {
 
 /// `request_tokens` against an arbitrary counter. @since 0.29.7
 pub fn request_tokens_with(messages: &[ChatMessage], counter: &dyn TokenCounter) -> usize {
-    messages.iter().map(|m| message_tokens_with(m, counter)).sum()
+    messages
+        .iter()
+        .map(|m| message_tokens_with(m, counter))
+        .sum()
 }
 
 /// Per-definition framing cost beyond its name, description and schema. @since 0.29.7
@@ -201,8 +205,8 @@ fn fit_messages_body(
         Some((first, tail)) if first.role == Role::System => (Some(first.clone()), tail.to_vec()),
         _ => (None, prepared),
     };
-    let mut total = request_tokens_with(system.as_slice(), counter)
-        + request_tokens_with(&rest, counter);
+    let mut total =
+        request_tokens_with(system.as_slice(), counter) + request_tokens_with(&rest, counter);
     let mut drop = 0usize;
     while drop + 1 < rest.len() && total > budget {
         total -= message_tokens_with(&rest[drop], counter);
@@ -296,7 +300,10 @@ mod tests {
         assert_eq!(definitions_tokens(&[]), 0);
         let one = definitions_tokens(&[def("bash")]);
         let two = definitions_tokens(&[def("bash"), def("read")]);
-        assert!(one > 100, "schema + description must cost real tokens: {one}");
+        assert!(
+            one > 100,
+            "schema + description must cost real tokens: {one}"
+        );
         assert!(two > one);
     }
 
@@ -322,11 +329,22 @@ mod tests {
         let defs: Vec<_> = (0..50).map(|i| def(&format!("tool{i}"))).collect();
         let messages = vec![ChatMessage::system("sys"), ChatMessage::user("hello")];
         let fitted = fit_messages_with(messages, &defs, MIN_CONTEXT_TOKENS, &HeuristicTokenizer);
-        assert_eq!(fitted.len(), 2, "system + newest survive even when defs blow the budget");
+        assert_eq!(
+            fitted.len(),
+            2,
+            "system + newest survive even when defs blow the budget"
+        );
         assert_eq!(fitted[0].role, Role::System);
         // body == 0 时 keep = max(2)、half = keep/2 = 1：只剩 1 个头部字符 + 截断标记 + 1 个尾部字符。
-        assert!(fitted[1].content.starts_with("h\n"), "kept: {}", fitted[1].content);
-        assert!(fitted[1].content.len() > 2, "the truncation marker is kept too");
+        assert!(
+            fitted[1].content.starts_with("h\n"),
+            "kept: {}",
+            fitted[1].content
+        );
+        assert!(
+            fitted[1].content.len() > 2,
+            "the truncation marker is kept too"
+        );
     }
 
     #[test]
@@ -418,7 +436,10 @@ mod tests {
             "shrunk args stay near the cap: {}",
             args.len()
         );
-        assert!(args.contains("…[已截断"), "the truncation marker must survive");
+        assert!(
+            args.contains("…[已截断"),
+            "the truncation marker must survive"
+        );
     }
 
     #[test]

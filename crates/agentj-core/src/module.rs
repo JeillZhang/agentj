@@ -1553,7 +1553,10 @@ mod tests {
             input_schema: serde_json::json!({}),
         }];
         let reserved = definitions_tokens(&defs);
-        assert!(reserved > 100, "fixture defs must cost something: {reserved}");
+        assert!(
+            reserved > 100,
+            "fixture defs must cost something: {reserved}"
+        );
         let with_tools = pipeline.fit_with_tools(messages.clone(), &defs, 10_000);
         let manual = pipeline.fit(messages.clone(), 10_000 - reserved);
         assert_eq!(

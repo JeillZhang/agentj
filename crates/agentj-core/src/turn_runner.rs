@@ -1928,12 +1928,17 @@ mod tests {
         for name in ["budgeted-a", "budgeted-b", "budgeted-c", "budgeted-d"] {
             ctx.tools.register(Arc::new(BudgetedTool(name.into())));
         }
-        let (messages, defs) =
-            run_capturing_turn_in_recording_defs(ctx, None, false, None).await;
+        let (messages, defs) = run_capturing_turn_in_recording_defs(ctx, None, false, None).await;
         let messages_tokens = messages[0];
         let defs_tokens = defs[0];
-        assert!(defs_tokens > 300, "fixture definitions must be a real chunk: {defs_tokens}");
-        assert!(messages_tokens > 800, "fixture must still send a body: {messages_tokens}");
+        assert!(
+            defs_tokens > 300,
+            "fixture definitions must be a real chunk: {defs_tokens}"
+        );
+        assert!(
+            messages_tokens > 800,
+            "fixture must still send a body: {messages_tokens}"
+        );
         assert!(
             messages_tokens + defs_tokens <= BUDGET,
             "request = {} messages + {} definitions exceeds the {BUDGET} token budget",

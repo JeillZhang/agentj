@@ -759,7 +759,9 @@ fn attach_deny_request(request_id: &str, id: u64) -> String {
         decision: agentj_protocol::permission::PermissionDecision::Deny,
     };
     let body = serde_json::to_string(&params).expect("a deny decision always serializes");
-    format!("{{\"jsonrpc\":\"2.0\",\"id\":{id},\"method\":\"permission/respond\",\"params\":{body}}}\n")
+    format!(
+        "{{\"jsonrpc\":\"2.0\",\"id\":{id},\"method\":\"permission/respond\",\"params\":{body}}}\n"
+    )
 }
 
 async fn run_attached(

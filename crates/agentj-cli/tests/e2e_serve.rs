@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 mod common;
 
-use common::{read_listening_addr, read_socket_line, SocketClient};
+use common::{SocketClient, read_listening_addr, read_socket_line};
 
 #[test]
 fn e2e_serve_run_result_includes_usage() {
