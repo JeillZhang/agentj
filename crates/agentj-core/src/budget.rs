@@ -80,6 +80,11 @@ fn is_cjk(c: char) -> bool {
     )
 }
 
+/// Inverse of the token-density assumption: how many characters of dense text one token
+/// buys (`HeuristicTokenizer` charges ASCII punctuation at 2.5 chars/token, so 3 is on the
+/// safe side). Shared by the shrinker so cap math stays in one unit. @since 0.29.7
+pub const CHARS_PER_TOKEN: usize = 3;
+
 /// Tokens one assembled message costs, tool-call payloads included. @since 0.29.7
 pub fn message_tokens(message: &ChatMessage) -> usize {
     message_tokens_with(message, &HeuristicTokenizer)
@@ -221,7 +226,7 @@ fn truncate(mut message: ChatMessage, cap: usize, counter: &dyn TokenCounter) ->
     if message.role == Role::System {
         return message;
     }
-    shrink_calls(&mut message, cap, counter);
+    shrink_calls(&mut message, cap);
     let tokens = message_tokens_with(&message, counter);
     if tokens <= cap {
         return message;
@@ -239,11 +244,11 @@ fn truncate(mut message: ChatMessage, cap: usize, counter: &dyn TokenCounter) ->
 }
 
 /// Replace a tool-call payload that alone exceeds `cap` tokens with a marker. @since 0.29.7
-fn shrink_calls(message: &mut ChatMessage, cap: usize, counter: &dyn TokenCounter) {
-    let max_chars = cap.saturating_mul(4);
+fn shrink_calls(message: &mut ChatMessage, cap: usize) {
+    let max_chars = cap.saturating_mul(CHARS_PER_TOKEN);
     for call in &mut message.tool_calls {
         let text = call.arguments.to_string();
-        let count = counter.count_text(&text);
+        let count = text.chars().count();
         if count > max_chars {
             call.arguments =
                 serde_json::json!({ "_truncated": format!("…[已截断 {count} 字符]…") });
@@ -394,6 +399,26 @@ mod tests {
             estimate_tokens("🚀🚀") >= legacy_estimate("🚀🚀"),
             "the legacy formula charges 1 per astral char; the new one charges 2"
         );
+    }
+
+    #[test]
+    fn shrink_calls_uses_the_shared_chars_per_token() {
+        assert_eq!(CHARS_PER_TOKEN, 3);
+        let big = serde_json::json!({"blob": "y".repeat(40_000)}).to_string();
+        let mut message = ChatMessage::user("go");
+        message.tool_calls = vec![ToolCall {
+            id: "c1".into(),
+            name: "bash".into(),
+            arguments: serde_json::Value::from(big),
+        }];
+        shrink_calls(&mut message, 200);
+        let args = message.tool_calls[0].arguments.to_string();
+        assert!(
+            args.len() <= 200 * CHARS_PER_TOKEN + 200,
+            "shrunk args stay near the cap: {}",
+            args.len()
+        );
+        assert!(args.contains("…[已截断"), "the truncation marker must survive");
     }
 
     #[test]
