@@ -446,7 +446,7 @@ impl IpcServer {
             let delivered = registry
                 .read()
                 .ok()
-                .is_some_and(|r| r.send_to(&owner_id, &msg.to_string()).is_ok());
+                .is_some_and(|r| r.deliver(&owner_id, &msg.to_string()));
             if !delivered {
                 tracing::warn!(
                     session_id = %session_id,

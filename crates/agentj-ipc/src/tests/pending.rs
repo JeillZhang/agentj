@@ -940,6 +940,45 @@ async fn approval_with_dead_owner_writer_is_denied_immediately() {
     );
 }
 
+/// A `session_owner` row can outlive the writer it pointed at, and the registry
+/// then has neither a connection nor a writer for that id. `send_to` treats that
+/// as a harmless no-op, which is wrong for approvals: reporting it as delivered
+/// is what made the caller wait out the full timeout. The notifier therefore
+/// uses `deliver`, whose `false` turns the ask into the immediate honest denial.
+#[tokio::test]
+async fn approval_with_vanished_owner_is_denied_immediately() {
+    let (server, module) = permission_server_with(std::time::Duration::from_secs(30));
+    let server = Arc::new(server);
+    server.attach_permission_notifier();
+    // Ownership survives, but no connection and no writer is registered for it —
+    // the window between the peer vanishing and `clear_owner`/`unregister`.
+    write_or_recover(&server.registry).set_session_owner(&"s1".to_string(), "tcp-gone");
+    let ctx = PermissionContext {
+        session_id: "s1".into(),
+        tool: "bash".into(),
+        source: ToolSource::Builtin,
+        args: serde_json::json!({"command": "curl x"}),
+        workspace_root: std::path::PathBuf::from("/ws"),
+    };
+    let PermissionDecision::Ask { request_id } = module.check(&ctx) else {
+        panic!("expected Ask");
+    };
+    let decision = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        module.await_approval(&request_id),
+    )
+    .await
+    .expect("an unreachable owner must settle the ask at once, not after the 30s timeout");
+    let PermissionDecision::Deny { reason } = &decision else {
+        panic!("an unreachable ask must deny, got {decision:?}");
+    };
+    assert_eq!(
+        reason,
+        agentj_permission::NO_APPROVER_REASON,
+        "a vanished owner must be reported as no approver, not as a timeout"
+    );
+}
+
 #[tokio::test]
 async fn respond_allow_records_permission_node_between_call_and_result() {
     let dir = temp_dir_traj("settle");
