@@ -716,8 +716,12 @@ for name, path in (("se", SE), ("fe", FE)):
 
 # Rows that must survive the current summary rewrite. ⑩/⑪/⑬/⑯/㉙ and ③/㉔ were
 # implemented by the structure-debt batch, so they moved to the "must be gone" lists.
-se_keep = ["⑥", "⑰"]
-se_drop = ["⑮", "⑳", "㉛", "㉜", "⑫", "㉗", "㉘", "㉚", "⑩", "⑪", "⑬", "⑯", "㉙"]
+# The usage-history / model-window / desktop-CI batch implemented ⑥, ⑰ and ㉟, so the
+# surviving rows are their successors ⑰⁺ (real tokenizer) and ㉟⁺ (macOS/Windows
+# packaging). ㉟ cannot join `se_drop` while ㉟⁺ is kept — it is a substring of it — so
+# only ⑥ is pinned as "must be gone".
+se_keep = ["⑰⁺", "㉟⁺"]
+se_drop = ["⑮", "⑳", "㉛", "㉜", "⑫", "㉗", "㉘", "㉚", "⑩", "⑪", "⑬", "⑯", "㉙", "⑥"]
 for symbol in se_keep:
     if symbol not in se:
         fail(f"se 待实施 must keep row {symbol}")
