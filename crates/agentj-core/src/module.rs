@@ -82,6 +82,20 @@ pub trait ContextPipeline: Send + Sync {
     /// budget whenever the message layout allows it (the system prompt and the newest
     /// message are always kept, so an unusually large system prompt can still exceed the
     /// budget). Override only when the pipeline knows its layout better. @since 0.29.7
+    /// Like [`fit`](Self::fit), but reserves `tool_definitions`' estimated size out of the
+    /// budget first: the definitions ride along with every request, so a body fitted to the
+    /// full budget overflows the window by exactly their size. @since 0.29.7
+    fn fit_with_tools(
+        &self,
+        messages: Vec<ChatMessage>,
+        tool_definitions: &[ToolDefinition],
+        budget_tokens: usize,
+    ) -> Vec<ChatMessage> {
+        let reserved = crate::budget::definitions_tokens(tool_definitions);
+        // Never let the definitions swallow the whole budget: the body keeps at least one
+        // token so `fit` still runs and the newest message survives.
+        self.fit(messages, budget_tokens.saturating_sub(reserved).max(1))
+    }
     fn fit(&self, messages: Vec<ChatMessage>, budget_tokens: usize) -> Vec<ChatMessage> {
         crate::budget::fit_messages(messages, budget_tokens)
     }
@@ -804,6 +818,7 @@ impl KernelMessage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::budget::{definitions_tokens, request_tokens};
     use crate::error::{ModuleError, ToolError};
 
     struct TestModule;
@@ -1520,5 +1535,35 @@ mod tests {
             }
             _ => unreachable!(),
         }
+    }
+
+    #[test]
+    fn default_fit_with_tools_subtracts_the_definition_budget() {
+        let pipeline = crate::context_pipeline::DefaultContextPipeline;
+        // The body must be long enough that truncation is budget-sensitive:
+        // `fit_messages` clamps any budget below `MIN_CONTEXT_TOKENS`, so a fixture near
+        // that floor would produce byte-identical output whether or not defs are reserved.
+        let messages = vec![
+            ChatMessage::system("sys"),
+            ChatMessage::user("x".repeat(40_000)),
+        ];
+        let defs = vec![ToolDefinition {
+            name: "bash".into(),
+            description: "d".repeat(2_000),
+            input_schema: serde_json::json!({}),
+        }];
+        let reserved = definitions_tokens(&defs);
+        assert!(reserved > 100, "fixture defs must cost something: {reserved}");
+        let with_tools = pipeline.fit_with_tools(messages.clone(), &defs, 10_000);
+        let manual = pipeline.fit(messages.clone(), 10_000 - reserved);
+        assert_eq!(
+            request_tokens(&with_tools),
+            request_tokens(&manual),
+            "fit_with_tools must defer to fit(budget - definitions_tokens)"
+        );
+        assert!(
+            request_tokens(&with_tools) < request_tokens(&pipeline.fit(messages, 10_000)),
+            "reserving the tool definitions must shrink the message body"
+        );
     }
 }

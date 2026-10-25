@@ -575,10 +575,12 @@ impl TurnState {
         &mut self,
     ) -> Result<Option<BoxStream<'static, Result<ModelEvent, ModelError>>>, String> {
         let route = |reason: String| format!("agent error: {reason}");
-        let request = self
-            .pipeline
-            .fit(self.lane.messages.clone(), self.lane.context_budget);
         let tools = self.lane.tool_defs.clone();
+        let request = self.pipeline.fit_with_tools(
+            self.lane.messages.clone(),
+            &tools,
+            self.lane.context_budget,
+        );
         let options = self.lane.options.clone();
         match self.provider.chat_stream(request, tools, options).await {
             Ok(stream) => Ok(Some(stream)),
@@ -1091,6 +1093,8 @@ mod tests {
     /// window it publishes for every model (`None` = unknown, the legacy behaviour).
     struct CapturingProvider {
         seen: Arc<StdMutex<Vec<usize>>>,
+        /// Estimated size of the tool definitions each request carried.
+        seen_defs: Arc<StdMutex<Vec<usize>>>,
         overflow: Option<ModelError>,
         always_overflow: bool,
         calls: Arc<AtomicUsize>,
@@ -1106,11 +1110,13 @@ mod tests {
         async fn chat_stream(
             &self,
             m: Vec<ChatMessage>,
-            _t: Vec<ToolDefinition>,
+            t: Vec<ToolDefinition>,
             _o: ModelOptions,
         ) -> Result<BoxStream<'static, Result<ModelEvent, ModelError>>, ModelError> {
             let call = self.calls.fetch_add(1, Ordering::SeqCst);
             crate::sync::lock_or_recover(&self.seen).push(crate::budget::request_tokens(&m));
+            crate::sync::lock_or_recover(&self.seen_defs)
+                .push(crate::budget::definitions_tokens(&t));
             if let Some(err) = &self.overflow
                 && (self.always_overflow || call == 0)
             {
@@ -1174,6 +1180,19 @@ mod tests {
         always_overflow: bool,
         window: Option<usize>,
     ) -> Vec<usize> {
+        run_capturing_turn_in_recording_defs(ctx, overflow, always_overflow, window)
+            .await
+            .0
+    }
+
+    /// As [`run_capturing_turn_in`], but also reports the estimated size of the tool
+    /// definitions each request carried: `(messages_tokens, definitions_tokens)`.
+    async fn run_capturing_turn_in_recording_defs(
+        ctx: KernelContext,
+        overflow: Option<ModelError>,
+        always_overflow: bool,
+        window: Option<usize>,
+    ) -> (Vec<usize>, Vec<usize>) {
         let (_kernel, sender) = spy_kernel_with(ToolSpy);
         let runner = TurnRunner::new(
             ctx.clone(),
@@ -1183,10 +1202,12 @@ mod tests {
             "tool_spy".into(),
         );
         let seen = Arc::new(StdMutex::new(Vec::new()));
+        let seen_defs = Arc::new(StdMutex::new(Vec::new()));
         ctx.providers.register(
             "mock".into(),
             Arc::new(CapturingProvider {
                 seen: Arc::clone(&seen),
+                seen_defs: Arc::clone(&seen_defs),
                 overflow,
                 always_overflow,
                 calls: Arc::new(AtomicUsize::new(0)),
@@ -1203,7 +1224,11 @@ mod tests {
                 break;
             }
         }
-        lock_or_recover(&seen).clone()
+        lock_or_recover(&seen)
+            .iter()
+            .copied()
+            .zip(lock_or_recover(&seen_defs).iter().copied())
+            .unzip()
     }
 
     struct MockPipeline;
@@ -1856,6 +1881,64 @@ mod tests {
         assert!(
             sizes.windows(2).all(|pair| pair[1] < pair[0]),
             "every retry must strictly shrink the request: {sizes:?}"
+        );
+    }
+
+    /// Description long enough that the definition budget is a real chunk of a 2000-token
+    /// request — the point of the fixture is that skipping it is visible.
+    const BUDGETED_DESC: &str = "runs a command inside the sandboxed project root; prefer \
+        read/grep/glob when the file is already known, keep commands idempotent, never write \
+        outside the project root because the kernel guard rejects it and wastes a round trip, \
+        prefer one command over a pipeline of throwaway greps, and report failures verbatim";
+
+    /// A tool whose only job is to own a definition worth budgeting for.
+    struct BudgetedTool(String);
+
+    impl crate::module::Tool for BudgetedTool {
+        fn name(&self) -> &str {
+            &self.0
+        }
+        fn description(&self) -> &str {
+            BUDGETED_DESC
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({
+                "type": "object",
+                "properties": {"cmd": {"type": "string"}},
+                "required": ["cmd"]
+            })
+        }
+        fn execute(
+            &self,
+            _input: serde_json::Value,
+        ) -> Result<serde_json::Value, crate::error::ToolError> {
+            Ok(serde_json::json!({"ok": true}))
+        }
+    }
+
+    /// The tool definitions shipped with every request are part of what the model has to
+    /// read, so they must be reserved out of the context budget before the body is fitted.
+    #[tokio::test]
+    async fn provider_request_keeps_room_for_the_tool_definitions() {
+        const BUDGET: usize = 2_000;
+        let history: Vec<ChatMessage> = (0..20)
+            .map(|i| ChatMessage::user(format!("msg {i}: {}", "x".repeat(1_000))))
+            .collect();
+        let ctx = budget_test_ctx(history, BUDGET);
+        for name in ["budgeted-a", "budgeted-b", "budgeted-c", "budgeted-d"] {
+            ctx.tools.register(Arc::new(BudgetedTool(name.into())));
+        }
+        let (messages, defs) =
+            run_capturing_turn_in_recording_defs(ctx, None, false, None).await;
+        let messages_tokens = messages[0];
+        let defs_tokens = defs[0];
+        assert!(defs_tokens > 300, "fixture definitions must be a real chunk: {defs_tokens}");
+        assert!(messages_tokens > 800, "fixture must still send a body: {messages_tokens}");
+        assert!(
+            messages_tokens + defs_tokens <= BUDGET,
+            "request = {} messages + {} definitions exceeds the {BUDGET} token budget",
+            messages_tokens,
+            defs_tokens
         );
     }
     #[tokio::test]
