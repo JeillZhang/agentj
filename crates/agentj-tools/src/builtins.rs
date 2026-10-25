@@ -370,8 +370,10 @@ pub struct GlobTool;
 impl GlobTool {
     /// Render the in-process walk result into the frozen `./<rel path>` shape:
     /// hits sorted, one per line, capped at 2 000 with a `# ` truncation line,
-    /// a timeout line (a tool `Err` would abort the turn), and a `no matches`
-    /// line for an empty result.
+    /// and a `no matches` line for an empty result.
+    ///
+    /// Tool errors are rendered as `Error: …` and the turn continues
+    /// (crates/agentj-core/src/turn_runner.rs:838), so timeouts surface as failures.
     fn run_in_process(
         pattern: &str,
         root: &std::path::Path,
@@ -398,10 +400,6 @@ impl GlobTool {
                 }
                 Ok(serde_json::Value::String(text))
             }
-            Err(ToolError::Timeout(t)) => Ok(serde_json::Value::String(format!(
-                "glob timed out after {}s",
-                t.as_secs().max(1)
-            ))),
             Err(e) => Err(e),
         }
     }
@@ -523,6 +521,7 @@ mod tests {
     use super::*;
     use agentj_core::error::ToolError;
     use agentj_core::module::{Tool, ToolCallContext};
+    use std::time::Duration;
 
     #[test]
     fn read_tool_reads_file() -> Result<(), ToolError> {
@@ -1008,6 +1007,24 @@ mod tests {
         let last = lines.last().copied().unwrap();
         assert_eq!(last, "# 已截断 1 条命中（上限 2000），请缩小 pattern");
         assert!(!last.starts_with("./"));
+    }
+
+    #[test]
+    fn glob_timeout_is_not_downgraded_to_a_string() {
+        let root = tempfile::TempDir::new().unwrap();
+        std::fs::write(root.path().join("a.rs"), "").unwrap();
+        let out = GlobTool::run_in_process("*.rs", root.path(), Duration::ZERO);
+        match out {
+            Err(ToolError::Timeout(d)) => assert_eq!(d, Duration::ZERO),
+            other => panic!("expected ToolError::Timeout, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn glob_timeout_message_is_the_shared_tool_error() {
+        let rendered = format!("Error: {}", ToolError::Timeout(Duration::from_secs(60)));
+        assert_eq!(rendered, "Error: tool timeout after 60s");
+        assert!(!rendered.contains("glob timed out"));
     }
 
     #[test]
