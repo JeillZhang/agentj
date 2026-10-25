@@ -121,6 +121,31 @@ describe("SubscriptionStatus", () => {
     expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
   });
 
+  it("keeps the settings entry clickable when focus moves into the panel", () => {
+    const onOpenSettings = vi.fn();
+    render(
+      <SubscriptionStatus
+        status={data({
+          state: "unknown",
+          windows: [],
+          worstPercent: null,
+          credential: null,
+          errorKind: "no_credential",
+        })}
+        onOpenSettings={onOpenSettings}
+      />,
+    );
+    const trigger = screen.getByTestId("sub-trigger");
+    fireEvent.focus(trigger);
+    const cta = screen.getByRole("button", { name: /设置.*订阅/ });
+    // Tabbing (or mousedown-ing) into the panel blurs the trigger first; the panel must
+    // survive that so the button is still there when the click lands.
+    fireEvent.blur(trigger, { relatedTarget: cta });
+    expect(screen.getByRole("tooltip")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /设置.*订阅/ }));
+    expect(onOpenSettings).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps the last numbers visible while reporting a fetch failure", () => {
     render(
       <SubscriptionStatus

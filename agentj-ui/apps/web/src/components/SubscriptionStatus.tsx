@@ -36,6 +36,11 @@ export default function SubscriptionStatus({ status, onOpenSettings }: Props) {
       data-testid="subscription-status"
       onMouseEnter={() => show(true)}
       onMouseLeave={() => show(false)}
+      // Focus leaving the trigger for the panel (Tab, or mousedown on the CTA below) must
+      // not unmount the panel — that would swallow the click before it lands.
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget)) show(false);
+      }}
     >
       <button
         type="button"
@@ -45,7 +50,6 @@ export default function SubscriptionStatus({ status, onOpenSettings }: Props) {
         aria-haspopup="true"
         aria-expanded={open}
         onFocus={() => show(true)}
-        onBlur={() => show(false)}
       >
         <span
           className="aj-status-light aj-sub-status__dot"
