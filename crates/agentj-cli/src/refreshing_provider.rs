@@ -124,6 +124,11 @@ impl ModelProvider for RefreshingProvider {
     fn models(&self) -> Vec<String> {
         self.inner().models()
     }
+
+    /// Reads the inner provider only — no refresh, no network.
+    fn context_window(&self, model: &str) -> Option<usize> {
+        self.inner().context_window(model)
+    }
 }
 
 #[cfg(test)]

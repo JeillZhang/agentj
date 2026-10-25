@@ -58,6 +58,13 @@ pub trait ModelProvider: Send + Sync {
     fn models(&self) -> Vec<String> {
         Vec::new()
     }
+
+    /// Context window in tokens this provider publishes for `model`. The default
+    /// `None` means unknown: callers must not invent one. @since 0.20.0
+    fn context_window(&self, model: &str) -> Option<usize> {
+        let _ = model;
+        None
+    }
 }
 
 /// Assembles the request context and folds tool results back into history.
@@ -536,6 +543,15 @@ impl ProviderRegistry {
             .collect();
         out.sort_by(|a, b| a.0.cmp(&b.0));
         out
+    }
+
+    /// Context window reported for `model` by the first provider that knows one.
+    /// @since 0.20.0
+    pub fn context_window(&self, model: &str) -> Option<usize> {
+        self.providers
+            .read()
+            .values()
+            .find_map(|provider| provider.context_window(model))
     }
 }
 
@@ -1391,6 +1407,38 @@ mod tests {
         let reg = ProviderRegistry::new();
         reg.register("mock".into(), Arc::new(StubProvider(None)));
         assert!(reg.get("nope").is_none());
+    }
+
+    struct WindowedProvider;
+
+    #[async_trait]
+    impl ModelProvider for WindowedProvider {
+        async fn chat_stream(
+            &self,
+            _m: Vec<ChatMessage>,
+            _t: Vec<ToolDefinition>,
+            _o: ModelOptions,
+        ) -> Result<BoxStream<'static, Result<ModelEvent, ModelError>>, ModelError> {
+            unimplemented!()
+        }
+        async fn chat(
+            &self,
+            _m: Vec<ChatMessage>,
+            _o: ModelOptions,
+        ) -> Result<ChatResponse, ModelError> {
+            stub_chat_response()
+        }
+        fn context_window(&self, model: &str) -> Option<usize> {
+            (model == "a").then_some(200_000)
+        }
+    }
+
+    #[test]
+    fn registry_reports_the_first_matching_window() {
+        let registry = ProviderRegistry::new();
+        registry.register("w".into(), Arc::new(WindowedProvider));
+        assert_eq!(registry.context_window("a"), Some(200_000));
+        assert_eq!(registry.context_window("b"), None);
     }
 
     #[test]

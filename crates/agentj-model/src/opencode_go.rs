@@ -118,6 +118,15 @@ impl ModelProvider for OpenCodeGoProvider {
     fn models(&self) -> Vec<String> {
         self.catalog.ids()
     }
+
+    /// Answers from the committed catalog overlay: `None` when models.dev publishes
+    /// no window for the id (never guessed).
+    fn context_window(&self, model: &str) -> Option<usize> {
+        self.catalog
+            .lookup(model)
+            .and_then(|entry| entry.context_window)
+            .map(|window| window as usize)
+    }
 }
 
 #[cfg(test)]
@@ -332,5 +341,15 @@ mod tests {
         let catalog = ModelCatalog::from_sources(OVERLAY_X, None);
         let provider = OpenCodeGoProvider::with_catalog("k".into(), catalog);
         assert_eq!(provider.models(), vec!["opencode-go/x"]);
+    }
+
+    #[test]
+    fn opencode_go_reports_catalog_context_windows() {
+        let catalog = ModelCatalog::from_json(
+            r#"{"base_url":"https://x","models":[{"id":"opencode-go/a","format":"openai-compat","verified":true,"context_window":200000}]}"#,
+        );
+        let provider = OpenCodeGoProvider::with_catalog("k".into(), catalog);
+        assert_eq!(provider.context_window("opencode-go/a"), Some(200_000));
+        assert_eq!(provider.context_window("opencode-go/none"), None);
     }
 }
