@@ -123,6 +123,29 @@ agentj auth login --device          # 与 --api-key 互斥
 - **上游撞墙时**：若一轮 run 收到 429 且错误文案含 `GoUsageLimitError`，Web 运行面板会在
   该消息旁给一次性提示「可能是订阅额度受限 → 设置 · 订阅」。
 
+### 历史趋势（落盘取样）
+
+内核把**每次真的向上游取数**的用量记成一条样本，`provider/usageHistory` 把这些样本读回来：
+
+- **记什么**：一条样本 = `{ at, windows }`，即该次上游返回的三个窗口（`rolling` / `weekly` /
+  `monthly`）的百分比快照。查询支持按 `provider` / `kind` / `since` / `limit` 过滤
+  （`limit` 上限 5000，只保留最靠后的一段）；回复里的 `retention_days` 是**本次实际生效**的
+  保留天数，可直接拿来标注横轴。查询是纯本地读，不触网、不需要凭据。
+- **只在真取数时记**：300s 缓存命中、`stale: true` 的回落数据、`no_credential` / 鉴权失败 /
+  网络不可达都不会产生样本——趋势画的是上游用量，不是「谁点了刷新」。
+- **落在哪**：一个 provider 一个文件（`<provider>.json`），目录按 `[web] state_dir` →
+  `$XDG_DATA_HOME/agentj/usage` → `$HOME/.local/share/agentj/usage` 解析；目录 `0700`、文件
+  `0600`，临时文件 + rename 原子替换。写历史失败只记一条警告，不影响当次用量查询。
+- **去重与裁剪**：60 秒内且三个窗口的值完全没变视为重复，不落新样本；超出保留期或条数上限的
+  旧样本自动丢弃。
+- **看得到的地方**：Web 订阅面板每个窗口行下方一条迷你曲线；TUI 订阅浮层在窗口行里追加块字符
+  曲线与首尾值（形如 `10%→30%`）。不足两条样本时**不画空图**——Web 显示「趋势需要至少两次
+  取样」、TUI 直接省略该行，刚链接订阅时看不到趋势是正常的。
+- **关掉它**：`[usage] history_enabled = false` 后内核**不再建目录、不写任何样本**，
+  `provider/usageHistory` 直接返回空数组（用量本身照常）。三个目录来源都解析不出来时，内核启动
+  会打印 `warning: no usage history directory (set XDG_DATA_HOME, HOME or [web] state_dir);
+  usage history stays in memory and is lost on restart`——此时历史只在当前进程内存里，重启即丢。
+
 ## 模型目录：三层来源
 
 `model/list` 按优先级回退，结果里的 `source` 如实标注实际层级：
@@ -177,6 +200,18 @@ console_base_url = "https://opencode.ai/console"           # 控制面基址（�
 
 `console_base_url` 默认即 `https://opencode.ai/console`（旧文档曾把它记作一个 console
 子域别名，属于误记）；只有自建代理 / 排障时才需要改。
+
+用量历史的开关与保留期在 `[usage]` 段：
+
+```toml
+[usage]
+history_enabled = true        # false = 不建目录、不落样本，provider/usageHistory 回空
+history_days = 30             # 保留天数，钳制 1..=365
+history_max_samples = 8640    # 每个 provider 的样本上限，钳制 100..=100_000
+```
+
+三项都有默认值，不写即上面这三行；越界值夹到区间内而不报错。取值含义见上面
+[历史趋势](#历史趋势落盘取样)。
 
 ## 合规请求头
 

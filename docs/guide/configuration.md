@@ -1,7 +1,7 @@
 # 配置（`config.toml`）
 
 AgentJ 使用 TOML 配置，包含 `[model]` / `[agent]` / `[permission]` / `[session]` /
-`[license]` / `[[mcp.servers]]` 等节。
+`[license]` / `[usage]` / `[[mcp.servers]]` 等节。
 
 ## 示例
 
@@ -32,6 +32,11 @@ effect = "deny"
 [session]
 dir = "/data/agentj/sessions"
 
+[usage]
+history_enabled = true     # 用量历史（provider/usageHistory）默认开
+history_days = 30          # 保留天数，1..=365
+history_max_samples = 8640 # 每个 provider 的样本上限，100..=100000
+
 [license]
 key = "base64(payload).base64(sig)"
 
@@ -45,10 +50,15 @@ env = { FOO = "bar" }
 ## `[model]`
 
 - `provider` / `default_model`：默认模型。
-- `max_context_tokens`：单次请求的近似 token 上限（默认 `128000`，钳制到
-  `1000..=10000000`）。发送前内核把会话历史与工具结果裁剪到该预算内（保留 system 与最新
-  消息；单条超长正文保留头尾并标注截断）。上游若仍报上下文超限，则按上游给出的窗口收紧
-  预算重试（最多 2 次），因此长会话不会再把 400 `context_length_exceeded` 直接抛给用户。
+- `max_context_tokens`：单次请求的**显式** token 上限（**可缺省**，钳制到
+  `1000..=10000000`）。不写时不强行用某个固定值：生效预算是逐请求算出来的
+  ——`min(显式上限, 模型上下文窗口 × 90%)`，只有两者都未知才回 `128000`。例：模型窗口 200k
+  → 实际预算 **180k**；显式给 50k 就还是 50k；上限 50k 遇上 20k 窗口 → **18k**。窗口由 provider
+  上报（opencode-go 来自目录快照，与 `model/list` 的 `context_window` 同源；未知时整键省略、
+  不猜），内核逐轮用 `ProviderRegistry::context_window` 取值。发送前内核把会话历史与工具结果
+  裁剪到该预算内（保留 system 与最新消息；单条超长正文保留头尾并标注截断）。上游若仍报上下文
+  超限，则按上游给出的窗口收紧预算重试（最多 2 次），因此长会话不会再把 400
+  `context_length_exceeded` 直接抛给用户。
 - `[[model.providers]]`：模型提供方列表。
   - `kind` 取值：`openai-compat`（OpenAI 兼容 SSE）/ `responses`（OpenAI Responses）/
     `anthropic`（Messages）/ `opencode-go`。另有内置 `Mock` 与 `Ollama`。
@@ -93,6 +103,18 @@ env = { FOO = "bar" }
 - `key`：Ed25519 许可证（`base64(payload).base64(sig)`）。
 - 亦可用环境变量 `AGENTJ_LICENSE_KEY` 覆盖；空字符串忽略。
 - `run` / `serve` / `dashboard` 按 entitlement 门控。
+
+## `[usage]`
+
+用量历史的开关与保留期（详见 [opencode-go 订阅](subscription.md) 的「历史趋势」一节）：
+
+- `history_enabled`：是否落盘用量样本（默认 `true`）。`false` 时内核不建目录、不写样本，
+  `provider/usageHistory` 直接回空数组。
+- `history_days`：保留天数（默认 `30`，钳制到 `1..=365`）。
+- `history_max_samples`：每个 provider 的样本上限（默认 `8640`，钳制到 `100..=100000`）。
+
+目录不由这里指定：它在 `[web] state_dir` → `$XDG_DATA_HOME/agentj/usage` →
+`$HOME/.local/share/agentj/usage` 中选择，与指标快照同一条链，只是多一层 `usage/`。
 
 ## `[[mcp.servers]]`
 
