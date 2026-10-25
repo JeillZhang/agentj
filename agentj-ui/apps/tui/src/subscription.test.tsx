@@ -4,7 +4,7 @@ import type { TestRendererSetup } from "@opentui/core/testing";
 import { act } from "react";
 import { METHODS } from "@agentj/sdk";
 import type { RpcClient } from "@agentj/sdk";
-import { SubscriptionOverlay } from "./subscription.tsx";
+import { SubscriptionOverlay, trendLine } from "./subscription.tsx";
 
 function getInput(setup: TestRendererSetup) {
   const input = setup.mockInput as unknown as { press?: (k: string) => void };
@@ -392,6 +392,68 @@ describe("SubscriptionOverlay link mode", () => {
     await repaint(setup);
     expect(setup.captureCharFrame()).toContain("•••");
     expect(client.calls).not.toContain(METHODS.authDeviceStart);
+    act(() => setup.renderer.destroy());
+  });
+
+  test("trendLine renders a sparkline once two samples exist", () => {
+    const samples = [
+      { at: 1, windows: [{ kind: "rolling", percent: 10 }] },
+      { at: 2, windows: [{ kind: "rolling", percent: 30 }] },
+    ];
+    expect(trendLine("rolling", samples)).toBe("rolling  ▁▃  10%→30%");
+    expect(trendLine("rolling", samples.slice(0, 1))).toBe("");
+    expect(trendLine("weekly", samples)).toBe("");
+  });
+
+  test("draws the trend line under the window it belongs to", async () => {
+    const client = fakeClient({
+      [METHODS.authStatus]: { provider: "opencode-go", authenticated: true },
+      [METHODS.providerUsage]: {
+        provider: "opencode-go",
+        fetched_at: 3,
+        windows: [{ kind: "rolling", status: "ok", percent: 30 }],
+      },
+      [METHODS.providerUsageHistory]: {
+        provider: "opencode-go",
+        retention_days: 30,
+        samples: [
+          { at: 1, windows: [{ kind: "rolling", status: "ok", percent: 10 }] },
+          { at: 2, windows: [{ kind: "rolling", status: "ok", percent: 30 }] },
+        ],
+      },
+    });
+    const setup = await testRender(<SubscriptionOverlay client={client} onClose={() => {}} />, {});
+    await act(async () => {
+      await setup.flush();
+    });
+    await setup.waitFor(() => setup.captureCharFrame().includes("10%→30%"));
+    const lines = setup.captureCharFrame().split("\n");
+    const row = lines.findIndex((line) => line.includes("5 小时"));
+    expect(row).toBeGreaterThanOrEqual(0);
+    expect(lines[row + 1]).toContain("rolling");
+    expect(lines[row + 1]).toContain("▁▃");
+    expect(client.calls).toContain(METHODS.providerUsageHistory);
+    act(() => setup.renderer.destroy());
+  });
+
+  test("leaves the overlay unchanged when the history request fails", async () => {
+    const client = fakeClient({
+      [METHODS.authStatus]: { provider: "opencode-go", authenticated: true },
+      [METHODS.providerUsage]: {
+        provider: "opencode-go",
+        fetched_at: 1,
+        windows: [{ kind: "rolling", status: "ok", percent: 30 }],
+      },
+    });
+    const setup = await testRender(<SubscriptionOverlay client={client} onClose={() => {}} />, {});
+    await act(async () => {
+      await setup.flush();
+    });
+    await setup.waitFor(() => setup.captureCharFrame().includes("5 小时"));
+    const frame = setup.captureCharFrame();
+    expect(frame).toContain("5 小时  30%");
+    expect(frame).not.toContain("rolling");
+    expect(frame).not.toContain("→");
     act(() => setup.renderer.destroy());
   });
 

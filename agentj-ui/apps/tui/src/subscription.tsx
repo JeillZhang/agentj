@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { useKeyboard } from "@opentui/react";
-import { METHODS } from "@agentj/sdk";
-import type { RpcClient } from "@agentj/sdk";
+import { METHODS, buildTrend, sparkline } from "@agentj/sdk";
+import type { RpcClient, UsageSampleLike } from "@agentj/sdk";
 
 /** Upstream window keys → the human label shown on each row (mirrors the Web panel). */
 export const WINDOW_LABEL: Record<string, string> = {
@@ -89,6 +89,26 @@ function windowLine(w: UsageWindow): string {
   return `${label}  ${pct}${limited}`;
 }
 
+/** Glyph budget of the trend line; the text pane is narrow, so cap it hard. */
+const TREND_WIDTH = 16;
+
+/**
+ * One-line trend for a single window kind: `kind  ▁▃  10%→30%`. Blank below two samples —
+ * a lone point is not a trend. Ranking and glyph bands come from the SDK helpers so the
+ * TUI, the Web panel and the kernel agree on what a sample means.
+ */
+export function trendLine(kind: string, samples: UsageSampleLike[]): string {
+  const points = buildTrend(samples, kind, Date.now(), TREND_WIDTH);
+  if (points.length < 2) return "";
+  const glyphs = sparkline(
+    points.map((p) => p.percent),
+    TREND_WIDTH,
+  );
+  const first = points[0].percent;
+  const last = points[points.length - 1].percent;
+  return `${kind}  ${glyphs}  ${first}%→${last}%`;
+}
+
 export function SubscriptionOverlay(props: SubscriptionOverlayProps): React.ReactNode {
   const { client, onClose } = props;
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -98,6 +118,7 @@ export function SubscriptionOverlay(props: SubscriptionOverlayProps): React.Reac
       timerRef.current = setTimeout(fn, ms);
     });
   const [usage, setUsage] = useState<UsageResult | null>(null);
+  const [samples, setSamples] = useState<UsageSampleLike[]>([]);
   const [status, setStatus] = useState<AuthStatus | null>(null);
   const [device, setDevice] = useState<{ user_code: string; verification_uri: string } | null>(null);
   const [deviceMsg, setDeviceMsg] = useState<string | null>(null);
@@ -106,6 +127,19 @@ export function SubscriptionOverlay(props: SubscriptionOverlayProps): React.Reac
   const [linkMsg, setLinkMsg] = useState<string | null>(null);
   const [envShadow, setEnvShadow] = useState(false);
   const cancelled = useRef(false);
+
+  // The server defaults `since` to now - retention_days, so the window is never
+  // hardcoded here; a failed history read just means no trend line is drawn.
+  const loadHistory = async (): Promise<void> => {
+    try {
+      const h = (await client.request(METHODS.providerUsageHistory, {})) as
+        | { samples?: UsageSampleLike[] }
+        | undefined;
+      if (!cancelled.current) setSamples(h?.samples ?? []);
+    } catch {
+      if (!cancelled.current) setSamples([]);
+    }
+  };
 
   const refreshAll = async (): Promise<void> => {
     try {
@@ -119,6 +153,7 @@ export function SubscriptionOverlay(props: SubscriptionOverlayProps): React.Reac
       const u = (await client.request(METHODS.providerUsage, { refresh: true })) as UsageResult;
       if (!cancelled.current) setUsage(u);
     } catch {}
+    await loadHistory();
   };
 
   useEffect(() => {
@@ -134,6 +169,7 @@ export function SubscriptionOverlay(props: SubscriptionOverlayProps): React.Reac
         if (cancelled.current) return;
         setUsage(u);
       } catch {}
+      await loadHistory();
     })();
     return () => {
       cancelled.current = true;
@@ -265,9 +301,15 @@ export function SubscriptionOverlay(props: SubscriptionOverlayProps): React.Reac
     <box flexDirection="column" border padding={1}>
       <text>订阅</text>
       {status?.credential?.key_hint ? <text>{status.credential.key_hint}</text> : null}
-      {(usage?.windows ?? []).map((w, i) => (
-        <text key={i}>{windowLine(w)}</text>
-      ))}
+      {(usage?.windows ?? []).map((w, i) => {
+        const trend = trendLine(w.kind, samples);
+        return (
+          <Fragment key={i}>
+            <text>{windowLine(w)}</text>
+            {trend.length > 0 ? <text>{trend}</text> : null}
+          </Fragment>
+        );
+      })}
       {usage?.stale ? <text>（缓存数据）</text> : null}
       {errorLine ? <text>{errorLine}</text> : null}
       {device ? <text>{device.user_code}</text> : null}
