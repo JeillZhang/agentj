@@ -168,3 +168,79 @@ jobs:
             agentj-ui/apps/desktop/src-tauri/target/release/bundle/appimage/*.AppImage
           retention-days: 7
           if-no-files-found: error
+
+  # Cross-platform bundles are label-gated and never run by default: macOS/Windows
+  # runners are ~10x the cost of `ubuntu-latest`, so they only fire when a PR carries
+  # the `desktop-package` label or the whole workflow is dispatched by hand. `dmg`/`msi`
+  # are the native installers the four-artifact contract promises.
+  desktop-package-macos:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'desktop-package')
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: agentj-ui/package-lock.json
+      - name: Install frontend dependencies
+        run: npm --prefix agentj-ui ci
+      - name: Build protocol types
+        run: npm --prefix agentj-ui run generate --workspace=@agentj/protocol
+      - name: Build sdk types
+        run: npm --prefix agentj-ui run generate --workspace=@agentj/sdk
+      - name: Build web assets
+        run: npm --prefix agentj-ui run build --workspace=@agentj/web
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: agentj-ui/apps/desktop/src-tauri -> target
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Build desktop bundles
+        run: npm --prefix agentj-ui/apps/desktop run build -- --bundles dmg
+      - name: Verify artifacts
+        shell: bash
+        run: ./agentj-ui/apps/desktop/check-artifacts.sh macos
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agentj-desktop-macos
+          path: agentj-ui/apps/desktop/src-tauri/target/release/bundle/dmg/*.dmg
+          retention-days: 7
+          if-no-files-found: error
+
+  desktop-package-windows:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'desktop-package')
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: agentj-ui/package-lock.json
+      - name: Install frontend dependencies
+        run: npm --prefix agentj-ui ci
+      - name: Build protocol types
+        run: npm --prefix agentj-ui run generate --workspace=@agentj/protocol
+      - name: Build sdk types
+        run: npm --prefix agentj-ui run generate --workspace=@agentj/sdk
+      - name: Build web assets
+        run: npm --prefix agentj-ui run build --workspace=@agentj/web
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: agentj-ui/apps/desktop/src-tauri -> target
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Build desktop bundles
+        run: npm --prefix agentj-ui/apps/desktop run build -- --bundles msi
+      - name: Verify artifacts
+        shell: bash
+        run: ./agentj-ui/apps/desktop/check-artifacts.sh windows
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agentj-desktop-windows
+          path: agentj-ui/apps/desktop/src-tauri/target/release/bundle/msi/*.msi
+          retention-days: 7
+          if-no-files-found: error
