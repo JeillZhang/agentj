@@ -275,7 +275,11 @@ type SubSnapshot = {
  * One usage read per connection open — the status line never polls. A missing or rejected
  * credential yields null so the line keeps its plain wording.
  */
-function useSubscriptionSuffix(client: RpcClient | null, status: TransportStatus): SubSuffixInput {
+function useSubscriptionSuffix(
+  client: RpcClient | null,
+  status: TransportStatus,
+  credentialSeq = 0,
+): SubSuffixInput {
   const [snapshot, setSnapshot] = useState<SubSnapshot | null>(null);
   useEffect(() => {
     // Dropping the snapshot on close matters: the numbers described the connection that
@@ -308,7 +312,9 @@ function useSubscriptionSuffix(client: RpcClient | null, status: TransportStatus
     return () => {
       alive = false;
     };
-  }, [client, status]);
+    // A credential change silently invalidates the numbers: re-read on the host's bump
+    // instead of leaving the line describing the account that was just unlinked.
+  }, [client, status, credentialSeq]);
   if (!snapshot) return null;
   return {
     windows: snapshot.windows,
@@ -509,10 +515,11 @@ function AppInner({ url, createTransport, backoffBaseMs = 1000 }: AppProps) {
   const { handleSelect, handleNew } = session;
   const { pending: permReq, respond: handlePermRespond, clear: clearPerm } = usePermissionState(client);
   const { toggle: toggleTheme, palette } = useTheme();
-  const sub = useSubscriptionSuffix(client, status);
-  const statusLine = getStatusLine(authError, status, sub);
-  // Credential changes (link / clear) alter the served model catalog: bump this to re-read it.
+  // Credential changes (link / clear) alter the served model catalog and the usage numbers:
+  // bump this to re-read both.
   const [catalogSeq, setCatalogSeq] = useState(0);
+  const sub = useSubscriptionSuffix(client, status, catalogSeq);
+  const statusLine = getStatusLine(authError, status, sub);
   const modelConfig = useModelConfig(client, catalogSeq);
   const [selectedModel, setSelectedModel] = useState<ModelEntry | null>(null);
   const [transcriptRows, setTranscriptRows] = useState<TranscriptRow[]>([]);
