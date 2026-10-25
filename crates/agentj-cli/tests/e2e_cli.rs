@@ -526,17 +526,21 @@ fn run_yes_allows_a_tool_without_a_tty() {
         "stdout={stdout}"
     );
     assert!(!stdout.contains("permission denied"), "stdout={stdout}");
+    // `--yes` IS the approver: the no-approver warning must stay silent.
+    assert!(!stderr.contains("no approver attached"), "stderr={stderr}");
 }
 
 #[test]
-// Regression: non-TTY without `--yes` must NOT auto-approve. The `bash` request
-// auto-denies at the 800 ms fixture (no human, no hang) and the run still exits 0
-// with the final response; the deny/timeout marker (absent on the `--yes` path)
-// proves the request was NOT allowed.
-fn run_without_yes_autodenies() {
+// Regression: non-TTY without `--yes` cannot attach an approver, so the ask must
+// be denied AT ONCE with an honest reason instead of stalling the run for the
+// whole approval budget (30s fixture here). The stderr warning names the cause
+// before the model output scrolls by.
+fn run_without_yes_denies_without_waiting() {
     let dir = run_temp_dir("no-yes-deny");
-    let cfg = write_run_config_with(&dir, "ask", Some(800));
+    let cfg = write_run_config_with(&dir, "ask", Some(30_000));
+    let start = std::time::Instant::now();
     let out = run_cli(&cfg, &dir, &["go"]);
+    let elapsed = start.elapsed();
     assert_eq!(
         out.status.code(),
         Some(0),
@@ -545,10 +549,23 @@ fn run_without_yes_autodenies() {
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        elapsed < std::time::Duration::from_secs(10),
+        "an undeliverable ask must be denied at once, not after the 30s budget \
+         (waited {elapsed:?}); stderr={stderr}"
+    );
     assert_eq!(last_line(&stdout), "done");
     assert!(
-        stdout.contains("permission approval timed out"),
-        "the no-`--yes` path must auto-deny at the fixture timeout; stdout={stdout} stderr={stderr}"
+        stdout.contains("permission denied: no approver"),
+        "stdout={stdout} stderr={stderr}"
+    );
+    assert!(
+        !stdout.contains("timed out"),
+        "an undeliverable ask must never surface as a timeout; stdout={stdout}"
+    );
+    assert!(
+        stderr.contains("no approver attached (non-interactive stdin, no --yes)"),
+        "stderr={stderr}"
     );
     assert!(!stderr.contains("auto-approved"), "stderr={stderr}");
 }
