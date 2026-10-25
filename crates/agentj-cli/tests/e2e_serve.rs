@@ -12,6 +12,8 @@ use std::time::{Duration, Instant};
 
 mod common;
 
+use common::{read_listening_addr, read_socket_line, SocketClient};
+
 #[test]
 fn e2e_serve_run_result_includes_usage() {
     let nanos = std::time::SystemTime::now()
@@ -80,38 +82,6 @@ fn e2e_serve_run_result_includes_usage() {
         stdout.contains(r#""completion_tokens":20"#),
         "expected completion_tokens 20, got: {stdout}"
     );
-}
-
-/// Read server stdout lines until the resident server prints `listening on
-/// <addr>`; returns the address (panics on EOF / timeout / absence).
-fn read_listening_addr<R: BufRead>(reader: &mut R) -> String {
-    let deadline = Instant::now() + Duration::from_secs(15);
-    let mut line = String::new();
-    while Instant::now() < deadline {
-        line.clear();
-        match reader.read_line(&mut line) {
-            Ok(0) => break,
-            Ok(_) => {
-                if let Some(rest) = line.trim().strip_prefix("listening on ") {
-                    return rest.trim().to_string();
-                }
-            }
-            Err(_) => break,
-        }
-    }
-    panic!("server did not print a listening address");
-}
-
-/// Read one NDJSON line from the server. Bounded by the socket's read timeout
-/// (set by the caller): a stalled or closed server fails fast with the lines
-/// seen so far instead of hanging the test.
-fn read_socket_line(reader: &mut BufReader<TcpStream>, seen: &[String]) -> String {
-    let mut line = String::new();
-    let count = reader
-        .read_line(&mut line)
-        .unwrap_or_else(|e| panic!("timed out waiting for a server line ({e}); saw {seen:?}"));
-    assert!(count > 0, "server closed the connection; saw {seen:?}");
-    line.trim_end().to_string()
 }
 
 /// Reaps the spawned server on every exit path (including test panics).
@@ -861,59 +831,6 @@ impl TempHome {
 impl Drop for TempHome {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
-/// One NDJSON JSON-RPC client over the resident server's TCP socket. Reads skip
-/// `$/progress` notifications until the response carrying the request id arrives.
-struct SocketClient {
-    writer: TcpStream,
-    reader: BufReader<TcpStream>,
-    next_id: u64,
-}
-
-impl SocketClient {
-    fn connect(addr: &str) -> Self {
-        let stream = TcpStream::connect(addr).unwrap();
-        stream
-            .set_read_timeout(Some(Duration::from_secs(20)))
-            .unwrap();
-        Self {
-            writer: stream.try_clone().unwrap(),
-            reader: BufReader::new(stream),
-            next_id: 1,
-        }
-    }
-
-    /// Send one request and return its `result`; a JSON-RPC error fails the test.
-    fn call(&mut self, method: &str, params: serde_json::Value) -> serde_json::Value {
-        let response = self.request(method, params);
-        if let Some(error) = response.get("error") {
-            panic!("{method} failed: {error}");
-        }
-        response["result"].clone()
-    }
-
-    /// Send one request and return the whole response envelope (error included).
-    fn request(&mut self, method: &str, params: serde_json::Value) -> serde_json::Value {
-        let id = self.next_id;
-        self.next_id += 1;
-        let request = serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "method": method,
-            "params": params,
-        });
-        writeln!(self.writer, "{request}").unwrap();
-        let mut seen: Vec<String> = Vec::new();
-        loop {
-            let line = read_socket_line(&mut self.reader, &seen);
-            let value: serde_json::Value = serde_json::from_str(&line).unwrap();
-            if value["id"] == id {
-                return value;
-            }
-            seen.push(line);
-        }
     }
 }
 
