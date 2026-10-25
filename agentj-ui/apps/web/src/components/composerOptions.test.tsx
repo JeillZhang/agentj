@@ -2,6 +2,7 @@ import "@testing-library/jest-dom/vitest";
 import { beforeEach, expect, test, vi } from "vitest";
 import { act, render, screen, fireEvent } from "@testing-library/react";
 import ComposerOptions, { NO_MODEL_HINT } from "./ComposerOptions";
+import type { ModelEntry } from "./ComposerOptions";
 import { createProject, setCurrentProject, updateProject } from "../projectStore";
 import { saveComposerPrefs } from "../layoutStore";
 beforeEach(() => localStorage.clear());
@@ -250,4 +251,40 @@ test("reports the provider-qualified entry through onSelect", () => {
 test("falls back to the kernel default when nothing is selected", () => {
   render(<ComposerOptions model="deepseek-chat" models={[{ name: "opencode-go/kimi-k3" }]} />);
   expect(screen.getByRole("button", { name: /deepseek-chat/ })).toBeInTheDocument();
+});
+
+test("marks an unserved selection instead of pretending it is usable", () => {
+  const served: ModelEntry = { provider: "a", name: "glm-5" };
+  const gone: ModelEntry = { provider: "a", name: "gone-model" };
+  render(<ComposerOptions model={null} models={[served]} selected={gone} />);
+  const trigger = screen.getByRole("button", { name: /gone-model/ });
+  expect(trigger).toHaveAttribute("data-served", "false");
+  expect(screen.getByText("当前未提供")).toBeInTheDocument();
+});
+
+test("does not flag a model the served list contains", () => {
+  const served: ModelEntry = { provider: "a", name: "glm-5" };
+  render(<ComposerOptions model={null} models={[served]} selected={served} />);
+  const trigger = screen.getByRole("button", { name: /glm-5/ });
+  expect(trigger).not.toHaveAttribute("data-served", "false");
+  expect(screen.queryByText("当前未提供")).not.toBeInTheDocument();
+});
+
+test("does not flag a name two providers serve as unserved", () => {
+  // Two providers offering the same default name make `resolveModelMarker` return -1 (it
+  // cannot say which provider a run would use) — that is ambiguity, not a missing model.
+  const models: ModelEntry[] = [
+    { provider: "a", name: "glm-5" },
+    { provider: "b", name: "glm-5" },
+  ];
+  render(<ComposerOptions model="glm-5" models={models} />);
+  const trigger = screen.getByRole("button", { name: /glm-5/ });
+  expect(trigger).not.toHaveAttribute("data-served", "false");
+  expect(screen.queryByText("当前未提供")).not.toBeInTheDocument();
+});
+
+test("flags a kernel default name the served list does not contain", () => {
+  render(<ComposerOptions model="opencode-go/gone" models={[{ name: "opencode-go/a" }]} />);
+  const trigger = screen.getByRole("button", { name: /opencode-go\/gone/ });
+  expect(trigger).toHaveAttribute("data-served", "false");
 });

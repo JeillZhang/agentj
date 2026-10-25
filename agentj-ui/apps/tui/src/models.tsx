@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useKeyboard } from "@opentui/react";
-import { METHODS, formatContextWindow } from "@agentj/sdk";
+import { METHODS, formatContextWindow, resolveModelMarker } from "@agentj/sdk";
 import type { RpcClient } from "@agentj/sdk";
 
 export type ModelEntry = {
@@ -85,7 +85,12 @@ async function loadContextWindows(client: RpcClient, entries: ModelEntry[]): Pro
   return catalogs.flat();
 }
 
-export function useModelConfig(client: RpcClient | null): ModelListInput {
+/**
+ * Kernel model config, re-read whenever `refreshSeq` changes: a credential change makes the
+ * served catalog different (models appear or disappear), so the caller bumps the counter
+ * instead of remounting the app.
+ */
+export function useModelConfig(client: RpcClient | null, refreshSeq = 0): ModelListInput {
   const [cfg, setCfg] = useState<ModelListInput>(MODEL_CONFIG);
   useEffect(() => {
     if (!client) return;
@@ -109,27 +114,21 @@ export function useModelConfig(client: RpcClient | null): ModelListInput {
         );
       })
       .catch(() => {});
-  }, [client]);
+  }, [client, refreshSeq]);
   return cfg;
-}
-
-/** Two providers can serve the same model name, so a row is identified by name + provider. */
-function modelKey(entry: ModelEntry): string {
-  return `${entry.provider ?? ""}\u0000${entry.name}`;
 }
 
 /**
  * Index of the row carrying the ▶ marker, or -1 when no row is authoritative:
  * an explicit pick identifies its own row, a bare default only an unambiguous name.
+ * The rule lives in the SDK so the Web picker marks rows the same way.
  */
 function markerIndex(
   providers: ModelEntry[],
   selected: ModelEntry | null | undefined,
   defaultModel: string,
 ): number {
-  if (selected) return providers.findIndex((e) => modelKey(e) === modelKey(selected));
-  const named = providers.filter((e) => e.name === defaultModel);
-  return named.length === 1 ? providers.indexOf(named[0]) : -1;
+  return resolveModelMarker(providers, selected, defaultModel).index;
 }
 
 export function renderModelList(input: ModelListInput & { selected?: ModelEntry | null }): string {

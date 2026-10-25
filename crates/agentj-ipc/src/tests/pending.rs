@@ -625,6 +625,7 @@ async fn non_owner_permission_respond_is_rejected() {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
     module.set_notifier(Arc::new(move |p: &PermissionRequestParams, _sid: &str| {
         let _ = tx.send(p.request_id.clone());
+        true // handed to the test's observer (the non-owner respond below must still be rejected)
     }));
     let new_resp = server
         .handle_request_from(r#"{"jsonrpc":"2.0","id":1,"method":"session/new"}"#, &a)
@@ -871,9 +872,110 @@ async fn approval_without_reachable_owner_is_denied_immediately() {
         reason, "timeout",
         "no reachable owner must deny at once, not time out"
     );
+    // The owner-less settlement is the disconnect path, NOT the permission
+    // module's "nobody to ask" path: the IPC notifier reports delivery = true
+    // and settles this session itself (design decision P4).
+    assert_ne!(
+        reason,
+        agentj_permission::NO_APPROVER_REASON,
+        "the IPC notifier settles via cancel_session(DISCONNECTED_REASON), not 'no approver'"
+    );
     assert!(
         module.view(&request_id).is_none(),
         "the approval must be settled, not left pending"
+    );
+}
+
+/// A row in `session_owner` is not the same thing as a reachable approver: a
+/// connection whose send channel is already gone (the disconnect race — the
+/// writer is dead but the ownership row has not been cleared yet) still owns the
+/// session. `send_to` reports that failure, so the notifier must propagate it:
+/// the ask is then undeliverable and has to be denied at once with the honest
+/// `no approver` reason instead of waiting out the whole approval timeout.
+#[tokio::test]
+async fn approval_with_dead_owner_writer_is_denied_immediately() {
+    let (server, module) = permission_server_with(std::time::Duration::from_secs(30));
+    let server = Arc::new(server);
+    server.attach_permission_notifier();
+    // The writer is registered and owns `s1`, but its channel is closed —
+    // exactly what a WS connection looks like after its peer vanished.
+    let writer = ConnectionWriter::new(
+        "tcp-A".into(),
+        TransportKind::Tcp,
+        "tcp-A".into(),
+        Arc::new(|_msg: &str| {
+            Err(agentj_core::error::IpcError::InvalidRequest(
+                "ws send channel closed".into(),
+            ))
+        }),
+    );
+    {
+        let mut reg = write_or_recover(&server.registry);
+        reg.register_writer(writer);
+        reg.set_session_owner(&"s1".to_string(), "tcp-A");
+    }
+    let ctx = PermissionContext {
+        session_id: "s1".into(),
+        tool: "bash".into(),
+        source: ToolSource::Builtin,
+        args: serde_json::json!({"command": "curl x"}),
+        workspace_root: std::path::PathBuf::from("/ws"),
+    };
+    let PermissionDecision::Ask { request_id } = module.check(&ctx) else {
+        panic!("expected Ask");
+    };
+    let decision = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        module.await_approval(&request_id),
+    )
+    .await
+    .expect("an undeliverable ask must be settled at once, not after the 30s timeout");
+    let PermissionDecision::Deny { reason } = &decision else {
+        panic!("an undeliverable ask must deny, got {decision:?}");
+    };
+    assert_eq!(
+        reason,
+        agentj_permission::NO_APPROVER_REASON,
+        "the undelivered ask must be denied as having no approver, not as a timeout"
+    );
+}
+
+/// A `session_owner` row can outlive the writer it pointed at, and the registry
+/// then has neither a connection nor a writer for that id. `send_to` treats that
+/// as a harmless no-op, which is wrong for approvals: reporting it as delivered
+/// is what made the caller wait out the full timeout. The notifier therefore
+/// uses `deliver`, whose `false` turns the ask into the immediate honest denial.
+#[tokio::test]
+async fn approval_with_vanished_owner_is_denied_immediately() {
+    let (server, module) = permission_server_with(std::time::Duration::from_secs(30));
+    let server = Arc::new(server);
+    server.attach_permission_notifier();
+    // Ownership survives, but no connection and no writer is registered for it —
+    // the window between the peer vanishing and `clear_owner`/`unregister`.
+    write_or_recover(&server.registry).set_session_owner(&"s1".to_string(), "tcp-gone");
+    let ctx = PermissionContext {
+        session_id: "s1".into(),
+        tool: "bash".into(),
+        source: ToolSource::Builtin,
+        args: serde_json::json!({"command": "curl x"}),
+        workspace_root: std::path::PathBuf::from("/ws"),
+    };
+    let PermissionDecision::Ask { request_id } = module.check(&ctx) else {
+        panic!("expected Ask");
+    };
+    let decision = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        module.await_approval(&request_id),
+    )
+    .await
+    .expect("an unreachable owner must settle the ask at once, not after the 30s timeout");
+    let PermissionDecision::Deny { reason } = &decision else {
+        panic!("an unreachable ask must deny, got {decision:?}");
+    };
+    assert_eq!(
+        reason,
+        agentj_permission::NO_APPROVER_REASON,
+        "a vanished owner must be reported as no approver, not as a timeout"
     );
 }
 
@@ -888,6 +990,7 @@ async fn respond_allow_records_permission_node_between_call_and_result() {
     module.set_notifier(Arc::new(
         move |p: &agentj_protocol::permission::PermissionRequestParams, _sid: &str| {
             let _ = ask_tx.send(p.request_id.clone());
+            true // handed to the test's observer, which answers via permission/respond
         },
     ));
     let run = tokio::spawn({
@@ -957,6 +1060,7 @@ async fn respond_deny_records_deny_and_run_still_completes() {
     module.set_notifier(Arc::new(
         move |p: &agentj_protocol::permission::PermissionRequestParams, _sid: &str| {
             let _ = ask_tx.send(p.request_id.clone());
+            true // handed to the test's observer, which answers via permission/respond
         },
     ));
     let run = tokio::spawn({

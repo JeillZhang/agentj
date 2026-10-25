@@ -58,6 +58,7 @@ fn repeating_run_server() -> (IpcServer, Arc<agentj_permission::PermissionModule
         policies,
         std::time::Duration::from_secs(10),
     ));
+    super::silent_approver(&module);
     let store: Arc<InMemoryStore> = Arc::new(InMemoryStore::new());
     let session_dyn: Arc<dyn SessionStore> = store.clone();
     let tools = Arc::new(ToolRegistry::new());
@@ -396,6 +397,7 @@ async fn cancel_request_with_session_id_routes_precisely() {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(String, String)>();
     module.set_notifier(Arc::new(move |p: &PermissionRequestParams, sid: &str| {
         let _ = tx.send((sid.to_string(), p.request_id.clone()));
+        true // handed to the test's observer, which cancels one run and answers the other
     }));
     let raw1 = r#"{"jsonrpc":"2.0","id":10,"method":"session/run","params":{"session_id":"s1","content":"run1"}}"#;
     let raw2 = r#"{"jsonrpc":"2.0","id":11,"method":"session/run","params":{"session_id":"s2","content":"run2"}}"#;

@@ -1,15 +1,15 @@
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { forwardRef, useCallback, useImperativeHandle, useRef, useState } from "react";
 import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, ReactNode } from "react";
 import { ChevronRight, Folder, FolderOpen } from "lucide-react";
-import { METHODS, buildSearchIndex, parentPath, toGitLetter } from "@agentj/sdk";
-import type { GitLetter, RawFileEntry as SharedRawFileEntry, RpcClient, SearchEntry } from "@agentj/sdk";
-import { DEMO_FILE_TREE } from "../demoData";
-import type { FileNode } from "../demoData";
+import { parentPath } from "@agentj/sdk";
+import type { GitLetter, RpcClient, SearchEntry } from "@agentj/sdk";
 import { fileIconFor } from "../fileIcons";
 import { moveSelection, tabIndexFor } from "../hooks/useRovingFocus";
-import { visiblePaths } from "./fileTreeNav";
-import { replyIsCurrent } from "./fileTreeSearch";
-import type { SearchGuard } from "./fileTreeSearch";
+import { useFileSearch } from "../hooks/useFileSearch";
+import { useFileTree } from "../hooks/useFileTree";
+import type { UseFileTreeResult } from "../hooks/useFileTree";
+import { ROOT } from "./fileTreeModel";
+import { searchHead, type SearchState } from "./fileTreeSearch";
 import "./filetree.css";
 
 export type FileTreeProps = {
@@ -27,128 +27,6 @@ export type FileTreeHandle = {
   refresh: () => void;
 };
 
-const ROOT = "";
-
-/** Wait before asking the kernel so a fast typist issues one search, not one per key. */
-const SEARCH_DEBOUNCE_MS = 150;
-
-/** Shown when the reply carries no `total`: the kernel predates `file/list { query }`. */
-const SEARCH_UNSUPPORTED_HINT = "内核不支持服务端搜索";
-
-/** One rendered row; `git` is the shared `toGitLetter` normalization of `git_status`. */
-type ViewEntry = {
-  name: string;
-  path: string;
-  kind: "file" | "dir";
-  git: GitLetter | null;
-};
-
-type RawFileEntry = {
-  name?: unknown;
-  path?: unknown;
-  kind?: unknown;
-  git_status?: unknown;
-};
-
-type FileListReply = {
-  entries?: RawFileEntry[] | null;
-  /** Server-side search only: total hit count; absent on kernels without `query`. */
-  total?: unknown;
-  truncated?: unknown;
-} | null;
-
-/**
- * Search is a separate mode, not a filter over the loaded map: the kernel ranks
- * (`file_list::search_rank`) and this component only renders what came back.
- */
-type SearchState = {
-  active: boolean;
-  query: string;
-  rows: SearchEntry[];
-  total: number;
-  truncated: boolean;
-  /** A request for the current query is scheduled or in flight; counts are not final yet. */
-  loading: boolean;
-  error: string | null;
-  /** Old-kernel notice; mutually exclusive with `error`. */
-  notice: string | null;
-};
-
-const IDLE_SEARCH: SearchState = {
-  active: false,
-  query: "",
-  rows: [],
-  total: 0,
-  truncated: false,
-  loading: false,
-  error: null,
-  notice: null,
-};
-
-type FileTreeStats = {
-  files: number;
-  changes: number;
-};
-
-/** One wire entry with the shared string/kind fallbacks applied; `git` is still raw. */
-type NormalizedEntry = {
-  name: string;
-  path: string;
-  kind: "file" | "dir";
-  git: string | null;
-};
-
-/**
- * Single normalizer for wire entries: the tree rows and the search rows differ only in how
- * they narrow `git_status` (`toGitLetter` vs. the SDK's own re-narrowing), never in parsing.
- */
-function normalizeEntry(entry: RawFileEntry): NormalizedEntry {
-  return {
-    name: String(entry.name ?? ""),
-    path: String(entry.path ?? ""),
-    kind: entry.kind === "dir" ? "dir" : "file",
-    git: typeof entry.git_status === "string" ? entry.git_status : null,
-  };
-}
-
-function toView(entry: RawFileEntry): ViewEntry {
-  const { git, ...rest } = normalizeEntry(entry);
-  return { ...rest, git: toGitLetter(git) };
-}
-
-/** Flattens the nested demo fixture into the same parent-path map the fetched tree uses. */
-function flattenDemo(nodes: FileNode[]): Map<string, ViewEntry[]> {
-  const map = new Map<string, ViewEntry[]>();
-  const walk = (parent: string, list: FileNode[]): void => {
-    map.set(
-      parent,
-      list.map((n) => ({ name: n.name, path: n.path, kind: n.kind, git: n.git ?? null })),
-    );
-    for (const n of list) {
-      if (n.kind === "dir" && n.children) walk(n.path, n.children);
-    }
-  };
-  walk(ROOT, nodes);
-  return map;
-}
-
-/** Counts files and tracked changes over the loaded map; U stays out of the change count. */
-function collectStats(entries: Map<string, ViewEntry[]>): FileTreeStats {
-  const stats: FileTreeStats = { files: 0, changes: 0 };
-  const walk = (parent: string): void => {
-    for (const entry of entries.get(parent) ?? []) {
-      if (entry.kind === "dir") {
-        walk(entry.path);
-        continue;
-      }
-      stats.files += 1;
-      if (entry.git && entry.git !== "U") stats.changes += 1;
-    }
-  };
-  walk(ROOT);
-  return stats;
-}
-
 function childGroupId(path: string): string {
   return `filetree-${path}-children`;
 }
@@ -159,85 +37,21 @@ function rowIndent(depth: number): number {
 }
 
 type NodeListProps = {
-  entries: Map<string, ViewEntry[]>;
+  tree: UseFileTreeResult;
+  tabbableIndex: number;
   parent: string;
   depth: number;
-  expanded: Set<string>;
-  loading: Set<string>;
-  errors: Map<string, string>;
-  selectedPath: string | null;
-  tabbableIndex: number;
-  indexByPath: Map<string, number>;
-  onToggle: (path: string) => void;
-  onRetry: (path: string) => void;
-  onSelect: (path: string) => void;
   onFileSelect?: (path: string) => void;
-  registerRow: (path: string, el: HTMLElement | null) => void;
 };
 
 function StatusCell({ git }: { git: GitLetter }) {
   return <span className={`status-txt status-${git}`}>{git}</span>;
 }
 
-/** Narrows one wire entry into the shared search-entry shape via [`normalizeEntry`]. */
-function toSearchEntry(entry: RawFileEntry): SharedRawFileEntry {
-  const { git, ...rest } = normalizeEntry(entry);
-  return { ...rest, git_status: git };
-}
-
-/**
- * A reply carrying `total` is a server-ranked search. Without it the kernel cannot
- * search at all — say so instead of filtering the loaded tree locally, which would
- * report a subset of a subset as if it were the whole answer.
- */
-function applySearchReply(prev: SearchState, reply: FileListReply): SearchState {
-  if (typeof reply?.total !== "number") {
-    return {
-      ...prev,
-      rows: [],
-      total: 0,
-      truncated: false,
-      loading: false,
-      error: null,
-      notice: SEARCH_UNSUPPORTED_HINT,
-    };
-  }
-  return {
-    ...prev,
-    rows: buildSearchIndex((reply.entries ?? []).map(toSearchEntry)),
-    total: reply.total,
-    truncated: Boolean(reply.truncated),
-    loading: false,
-    error: null,
-    notice: null,
-  };
-}
-
-/** Header line above the result rows. */
-function searchHead(state: SearchState): string {
-  if (state.notice) return state.notice;
-  if (state.loading) return "搜索中…";
-  if (state.query.trim().length === 0) return "输入关键字搜索文件名";
-  return `搜索到 ${state.rows.length} / ${state.total} 项${state.truncated ? " · 部分结果" : ""}`;
-}
-
 /** Renders one loaded level; dirs recurse only while expanded and drive their own load state. */
-function NodeList({
-  entries,
-  parent,
-  depth,
-  expanded,
-  loading,
-  errors,
-  selectedPath,
-  tabbableIndex,
-  indexByPath,
-  onToggle,
-  onRetry,
-  onSelect,
-  onFileSelect,
-  registerRow,
-}: NodeListProps) {
+function NodeList({ tree, tabbableIndex, parent, depth, onFileSelect }: NodeListProps) {
+  const { entries, expanded, loading, errors, selectedPath, indexByPath } = tree;
+  const { toggle, reload, setSelectedPath, registerRow } = tree;
   return (
     <>
       {(entries.get(parent) ?? []).map((node) => {
@@ -250,38 +64,27 @@ function NodeList({
           const groupId = childGroupId(node.path);
           const children = entries.get(node.path);
           let body: ReactNode = null;
-          if (open) {
-            if (loading.has(node.path)) body = <p className="aj-empty">加载中…</p>;
-            else if (errors.has(node.path)) {
-              body = (
-                <div className="aj-empty">
-                  <span>加载失败</span>
-                  <button type="button" className="aj-button--ghost" onClick={() => onRetry(node.path)}>
-                    重试
-                  </button>
-                </div>
-              );
-            } else if (children && children.length === 0) body = <p className="aj-empty">空目录</p>;
-            else if (children) {
-              body = (
-                <NodeList
-                  entries={entries}
-                  parent={node.path}
-                  depth={depth + 1}
-                  expanded={expanded}
-                  loading={loading}
-                  errors={errors}
-                  selectedPath={selectedPath}
-                  tabbableIndex={tabbableIndex}
-                  indexByPath={indexByPath}
-                  onToggle={onToggle}
-                  onRetry={onRetry}
-                  onSelect={onSelect}
-                  onFileSelect={onFileSelect}
-                  registerRow={registerRow}
-                />
-              );
-            }
+          if (open && loading.has(node.path)) body = <p className="aj-empty">加载中…</p>;
+          else if (open && errors.has(node.path)) {
+            body = (
+              <div className="aj-empty">
+                <span>加载失败</span>
+                <button type="button" className="aj-button--ghost" onClick={() => reload(node.path)}>
+                  重试
+                </button>
+              </div>
+            );
+          } else if (open && children && children.length === 0) body = <p className="aj-empty">空目录</p>;
+          else if (open && children) {
+            body = (
+              <NodeList
+                tree={tree}
+                tabbableIndex={tabbableIndex}
+                parent={node.path}
+                depth={depth + 1}
+                onFileSelect={onFileSelect}
+              />
+            );
           }
           return (
             <div className="trow-group" role="none" key={node.path}>
@@ -295,11 +98,9 @@ function NodeList({
                 aria-controls={groupId}
                 tabIndex={tabIndex}
                 data-selected={isSelected ? "true" : undefined}
-                ref={(el) => {
-                  registerRow(node.path, el);
-                }}
-                onClick={() => onToggle(node.path)}
-                onFocus={() => onSelect(node.path)}
+                ref={(el) => registerRow(node.path, el)}
+                onClick={() => toggle(node.path)}
+                onFocus={() => setSelectedPath(node.path)}
               >
                 <ChevronRight className="chev" size={12} aria-hidden="true" />
                 {open ? (
@@ -317,10 +118,6 @@ function NodeList({
           );
         }
         const { Icon, category } = fileIconFor(node.name);
-        const handleFileClick = () => {
-          onSelect(node.path);
-          onFileSelect?.(node.path);
-        };
         return (
           <div
             className="trow"
@@ -331,11 +128,12 @@ function NodeList({
             tabIndex={tabIndex}
             data-selected={isSelected ? "true" : undefined}
             data-path={node.path}
-            ref={(el) => {
-              registerRow(node.path, el);
+            ref={(el) => registerRow(node.path, el)}
+            onFocus={() => setSelectedPath(node.path)}
+            onClick={() => {
+              setSelectedPath(node.path);
+              onFileSelect?.(node.path);
             }}
-            onFocus={() => onSelect(node.path)}
-            onClick={handleFileClick}
           >
             <span className="chev" aria-hidden="true" />
             <Icon className={`file-icon file-icon--${category}`} size={13} aria-hidden="true" />
@@ -348,11 +146,7 @@ function NodeList({
   );
 }
 
-type SearchBarProps = {
-  query: string;
-  onChange: (value: string) => void;
-  onEscape: () => void;
-};
+type SearchBarProps = { query: string; onChange: (value: string) => void; onEscape: () => void };
 
 /** Debounced search input; Escape hands control back to the tree. */
 function SearchBar({ query, onChange, onEscape }: SearchBarProps) {
@@ -375,11 +169,7 @@ function SearchBar({ query, onChange, onEscape }: SearchBarProps) {
   );
 }
 
-type SearchResultsProps = {
-  state: SearchState;
-  onPick: (path: string) => void;
-  onEscape: () => void;
-};
+type SearchResultsProps = { state: SearchState; onPick: (path: string) => void; onEscape: () => void };
 
 /**
  * Result-row icon: hits are files by contract, but a dir entry must never be drawn as a file.
@@ -482,192 +272,41 @@ const FileTree = forwardRef<FileTreeHandle, FileTreeProps>(function FileTree(
   { client, sessionId, demo, onFileSelect }: FileTreeProps,
   ref,
 ) {
-  const [fetched, setFetched] = useState<Map<string, ViewEntry[]>>(new Map());
-  const [loading, setLoading] = useState<Set<string>>(new Set());
-  const [errors, setErrors] = useState<Map<string, string>>(new Map());
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  const [selectedPath, setSelectedPath] = useState<string | null>(null);
-  const rowRefs = useRef(new Map<string, HTMLElement>());
-  const [search, setSearch] = useState<SearchState>(IDLE_SEARCH);
-  /** Monotonic request id: any reply whose id is stale (query moved on, session changed) is dropped. */
-  const searchSeq = useRef(0);
-  /**
-   * Session every in-flight reply must still belong to. Assigned before paint (layout
-   * effect) instead of in the reset effect below: a reply can resolve in the microtask
-   * window before passive effects flush and would otherwise paint the previous session's
-   * rows for one frame. Microtasks never run inside a commit, so this is always current.
-   */
-  const sessionRef = useRef(sessionId);
-  useLayoutEffect(() => {
-    sessionRef.current = sessionId;
-  }, [sessionId]);
-  const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const demoEntries = useMemo(() => flattenDemo(DEMO_FILE_TREE), []);
-  const entries = demo ? demoEntries : fetched;
-
-  const loadDir = useCallback(
-    async (path: string): Promise<void> => {
-      if (!client || !sessionId) return;
-      setLoading((prev) => new Set(prev).add(path));
-      setErrors((prev) => {
-        const next = new Map(prev);
-        next.delete(path);
-        return next;
-      });
-      try {
-        const reply = (await client.request(METHODS.fileList, {
-          session_id: sessionId,
-          ...(path ? { path } : {}),
-          depth: 1,
-        })) as FileListReply;
-        const list = (reply?.entries ?? []).map(toView);
-        setFetched((prev) => new Map(prev).set(path, list));
-      } catch (e) {
-        const message = e instanceof Error ? e.message : String(e);
-        setErrors((prev) => new Map(prev).set(path, message));
-      } finally {
-        setLoading((prev) => {
-          const next = new Set(prev);
-          next.delete(path);
-          return next;
-        });
-      }
-    },
-    [client, sessionId],
-  );
-
-  const cancelSearchTimer = useCallback((): void => {
-    if (searchTimer.current === null) return;
-    clearTimeout(searchTimer.current);
-    searchTimer.current = null;
-  }, []);
-
-  // A failed search keeps its rows and error on screen; it is never resent implicitly.
-  const runSearch = useCallback(
-    async (query: string, seq: number): Promise<void> => {
-      if (!client || !sessionId) return;
-      const requestGuard: SearchGuard = { seq, session: sessionRef.current };
-      try {
-        const reply = (await client.request(METHODS.fileList, {
-          session_id: sessionId,
-          path: null,
-          query,
-        })) as FileListReply;
-        if (!replyIsCurrent(requestGuard, { seq: searchSeq.current, session: sessionRef.current })) return;
-        setSearch((prev) => (prev.active && prev.query === query ? applySearchReply(prev, reply) : prev));
-      } catch (e) {
-        if (!replyIsCurrent(requestGuard, { seq: searchSeq.current, session: sessionRef.current })) return;
-        const message = e instanceof Error ? e.message : String(e);
-        // The rows still on screen belong to the previous query: only the message is current.
-        setSearch((prev) =>
-          prev.active && prev.query === query
-            ? { ...prev, total: 0, truncated: false, loading: false, error: message, notice: null }
-            : prev,
-        );
-      }
-    },
-    [client, sessionId],
-  );
-
-  const changeQuery = useCallback(
-    (value: string): void => {
-      cancelSearchTimer();
-      searchSeq.current += 1;
-      const seq = searchSeq.current;
-      const blank = value.trim().length === 0;
-      setSearch((prev) => ({
-        ...prev,
-        active: true,
-        query: value,
-        loading: !blank,
-        error: null,
-        notice: null,
-        ...(blank ? { rows: [], total: 0, truncated: false } : {}),
-      }));
-      if (blank) return;
-      searchTimer.current = setTimeout(() => {
-        searchTimer.current = null;
-        void runSearch(value, seq);
-      }, SEARCH_DEBOUNCE_MS);
-    },
-    [cancelSearchTimer, runSearch],
-  );
-
-  const exitSearch = useCallback((): void => {
-    cancelSearchTimer();
-    searchSeq.current += 1;
-    setSearch(IDLE_SEARCH);
-  }, [cancelSearchTimer]);
-
-  useEffect(() => cancelSearchTimer, [cancelSearchTimer]);
-
-  // Root load on mount / session change; demo mode resets to fixtures with no request.
-  useEffect(() => {
-    cancelSearchTimer();
-    searchSeq.current += 1;
-    setSearch(IDLE_SEARCH);
-    setFetched(new Map());
-    setLoading(new Set());
-    setErrors(new Map());
-    setExpanded(new Set());
-    setSelectedPath(null);
-    if (demo || !client || !sessionId) return;
-    void loadDir(ROOT);
-  }, [demo, client, sessionId, loadDir, cancelSearchTimer]);
-
-  const toggle = useCallback(
-    (path: string): void => {
-      setExpanded((prev) => {
-        const next = new Set(prev);
-        if (next.has(path)) next.delete(path);
-        else next.add(path);
-        return next;
-      });
-      if (!demo && !fetched.has(path) && !loading.has(path)) void loadDir(path);
-    },
-    [demo, fetched, loading, loadDir],
-  );
-
-  const paths = useMemo(() => visiblePaths(entries, expanded), [entries, expanded]);
-  const indexByPath = useMemo(() => new Map(paths.map((path, index) => [path, index])), [paths]);
-  const entryByPath = useMemo(() => {
-    const map = new Map<string, ViewEntry>();
-    for (const list of entries.values()) for (const entry of list) map.set(entry.path, entry);
-    return map;
-  }, [entries]);
-
-  // Drop a selection whose row disappeared (e.g. a refreshed tree no longer lists it).
-  useEffect(() => {
-    if (selectedPath && !indexByPath.has(selectedPath)) setSelectedPath(null);
-  }, [selectedPath, indexByPath]);
-
-  const registerRow = useCallback((path: string, el: HTMLElement | null): void => {
-    if (el) rowRefs.current.set(path, el);
-    else rowRefs.current.delete(path);
-  }, []);
-
-  const selectPath = useCallback((path: string): void => {
-    setSelectedPath(path);
-    rowRefs.current.get(path)?.focus();
-  }, []);
+  const tree = useFileTree({ client, sessionId, demo });
+  const {
+    paths,
+    indexByPath,
+    entryByPath,
+    stats,
+    rootEntries,
+    expanded,
+    loading,
+    errors,
+    selectedPath,
+    selectPath,
+    toggle,
+    reload,
+    moveBy: moveTreeSelection,
+    refresh: refreshTree,
+  } = tree;
+  const { state: search, active: searchActive, changeQuery, exitSearch } = useFileSearch({
+    client, sessionId, demo,
+  });
 
   const moveBy = useCallback(
     (delta: number): void => {
       // The sidebar scope stays live while the search surface replaces the tree: moves would
       // silently change an invisible selection.
-      if (search.active || paths.length === 0) return;
-      const current = selectedPath ? (indexByPath.get(selectedPath) ?? -1) : -1;
-      selectPath(paths[moveSelection(current, delta, paths.length)]);
+      if (searchActive) return;
+      moveTreeSelection(delta);
     },
-    [paths, indexByPath, selectedPath, selectPath, search.active],
+    [searchActive, moveTreeSelection],
   );
 
   const refresh = useCallback((): void => {
-    if (search.active || demo || !client || !sessionId) return;
-    void loadDir(ROOT);
-    for (const path of expanded) void loadDir(path);
-  }, [demo, client, sessionId, expanded, loadDir, search.active]);
+    if (searchActive) return;
+    refreshTree();
+  }, [searchActive, refreshTree]);
 
   useImperativeHandle(ref, () => ({ moveBy, refresh }), [moveBy, refresh]);
 
@@ -718,64 +357,44 @@ const FileTree = forwardRef<FileTreeHandle, FileTreeProps>(function FileTree(
     [paths, selectedPath, entryByPath, expanded, moveBy, selectPath, toggle, indexByPath],
   );
 
-  const stats = collectStats(entries);
-  const rootEntries = entries.get(ROOT);
   const selectedIndex = selectedPath ? (indexByPath.get(selectedPath) ?? -1) : -1;
   const tabbableIndex = selectedIndex >= 0 ? selectedIndex : 0;
 
   const renderTree = (): ReactNode => (
     <div className="tree" role="tree" aria-label="文件树" tabIndex={-1} onKeyDown={handleTreeKey}>
-      <NodeList
-        entries={entries}
-        parent={ROOT}
-        depth={0}
-        expanded={expanded}
-        loading={loading}
-        errors={errors}
-        selectedPath={selectedPath}
-        tabbableIndex={tabbableIndex}
-        indexByPath={indexByPath}
-        onToggle={toggle}
-        onRetry={(p) => void loadDir(p)}
-        onSelect={setSelectedPath}
-        onFileSelect={onFileSelect}
-        registerRow={registerRow}
-      />
+      <NodeList tree={tree} tabbableIndex={tabbableIndex} parent={ROOT} depth={0} onFileSelect={onFileSelect} />
     </div>
   );
 
-  let body: ReactNode;
-  if (demo) {
-    body =
-      rootEntries && rootEntries.length > 0 ? renderTree() : <p className="aj-empty">空目录</p>;
-  } else if (!sessionId) {
-    body = <p className="aj-empty">未选择会话</p>;
-  } else if (loading.has(ROOT)) {
-    body = <p className="aj-empty">加载中…</p>;
-  } else if (errors.has(ROOT)) {
-    body = (
-      <div className="aj-empty">
-        <span>加载失败</span>
-        <button type="button" className="aj-button--ghost" onClick={() => void loadDir(ROOT)}>
-          重试
-        </button>
-      </div>
-    );
-  } else if (rootEntries && rootEntries.length > 0) {
-    body = renderTree();
-  } else if (rootEntries) {
-    body = <p className="aj-empty">空目录</p>;
-  } else {
-    body = <p className="aj-empty">加载中…</p>;
-  }
+  /** Root body ladder: the tree, or the one reason there is no tree to draw. */
+  const rootBody = (): ReactNode => {
+    if (!sessionId) return <p className="aj-empty">未选择会话</p>;
+    if (loading.has(ROOT)) return <p className="aj-empty">加载中…</p>;
+    if (errors.has(ROOT)) {
+      return (
+        <div className="aj-empty">
+          <span>加载失败</span>
+          <button type="button" className="aj-button--ghost" onClick={() => reload(ROOT)}>
+            重试
+          </button>
+        </div>
+      );
+    }
+    if (rootEntries && rootEntries.length > 0) return renderTree();
+    return <p className="aj-empty">{rootEntries ? "空目录" : "加载中…"}</p>;
+  };
+  const body = demo
+    ? rootEntries && rootEntries.length > 0
+      ? renderTree()
+      : <p className="aj-empty">空目录</p>
+    : rootBody();
 
-  const searchBar =
-    demo || !sessionId ? null : (
-      <SearchBar query={search.query} onChange={changeQuery} onEscape={exitSearch} />
-    );
+  const searchBar = !demo && sessionId ? (
+    <SearchBar query={search.query} onChange={changeQuery} onEscape={exitSearch} />
+  ) : null;
   // Search mode replaces the tree body but never unmounts its state, so Escape restores
   // the fetched/expanded tree exactly as it was.
-  const pane = search.active ? (
+  const pane = searchActive ? (
     <SearchResults state={search} onPick={(path) => onFileSelect?.(path)} onEscape={exitSearch} />
   ) : (
     body

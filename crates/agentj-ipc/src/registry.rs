@@ -161,6 +161,20 @@ impl ConnectionRegistry {
             None => Ok(()),
         }
     }
+    /// Like [`send_to`](Self::send_to), but answers whether anybody was actually
+    /// reached: an unknown id and a dead send channel both report `false`.
+    /// The approval notifier needs that distinction — "nobody is listening" has
+    /// to become an immediate `no approver` denial, not a `send_to`-style no-op
+    /// that leaves the caller waiting out the whole approval timeout.
+    pub fn deliver(&self, conn_id: &str, msg: &str) -> bool {
+        if let Some(conn) = self.conns.get(conn_id) {
+            return conn.send(msg).is_ok();
+        }
+        match self.writers.get(conn_id) {
+            Some(writer) => writer.send(msg).is_ok(),
+            None => false,
+        }
+    }
     /// Subscribe a connection to a session's broadcast channel (决策 #4).
     pub fn subscribe(&mut self, session: &SessionId, conn_id: &str) {
         self.subscribers

@@ -8,6 +8,7 @@ import type {
   MouseEvent as ReactMouseEvent,
 } from "react";
 import type { RpcClient } from "@agentj/sdk";
+import type { SubscriptionStatusData } from "../hooks/useSubscriptionStatus";
 import { loadFavorites } from "../layoutStore";
 import {
   createProject,
@@ -20,6 +21,7 @@ import type { Project } from "../projectStore";
 import { firstIndex, lastIndex, tabIndexFor, useRovingFocus } from "../hooks/useRovingFocus";
 import ModalDialog from "./ModalDialog";
 import SettingsDialog from "./SettingsDialog";
+import type { SettingsCategory } from "./SettingsDialog";
 import type { AuthSetApiKeyResult } from "@agentj/protocol";
 import "./topbarmenu.css";
 
@@ -31,6 +33,14 @@ type Props = {
   onModelsLinked?: (catalog: AuthSetApiKeyResult) => void;
   /** Forwards a confirmed credential clear, so the shell drops the linked catalog. */
   onModelsCleared?: () => void;
+  /**
+   * Installed by the shell so the topbar subscription light can jump straight to
+   * 设置 → 订阅 without the menu owning the light's state. The menu registers a
+   * callback instead of writing into a handed-down ref (the shell owns that slot).
+   */
+  onRegisterSettingsOpener?: (opener: ((tab: SettingsCategory) => void) | null) => void;
+  /** Live usage snapshot owned by the shell's hook, forwarded to the settings panel. */
+  subscription?: SubscriptionStatusData;
 };
 
 type DialogKind = null | "continue" | "addProject" | "settings";
@@ -38,9 +48,18 @@ type FlyoutKind = null | "project" | "favorites";
 
 const FLYOUT_CLOSE_DELAY_MS = 120;
 
-export default function TopbarMenu({ onConnect, onContinue, client = null, onModelsLinked, onModelsCleared }: Props) {
+export default function TopbarMenu({
+  onConnect,
+  onContinue,
+  client = null,
+  onModelsLinked,
+  onModelsCleared,
+  onRegisterSettingsOpener,
+  subscription,
+}: Props) {
   const [open, setOpen] = useState(false);
   const [dialog, setDialog] = useState<DialogKind>(null);
+  const [settingsTab, setSettingsTab] = useState<SettingsCategory>("connection");
   const [flyout, setFlyout] = useState<FlyoutKind>(null);
   const [favorites, setFavorites] = useState<string[]>(() => loadFavorites());
   const [projects, setProjects] = useState<Project[]>(() => loadProjects());
@@ -159,6 +178,18 @@ export default function TopbarMenu({ onConnect, onContinue, client = null, onMod
     setFlyout(null);
     setDialog(kind);
   }, []);
+
+  // The shell needs a way to open 设置 on a specific tab (the subscription light's
+  // "设置 → 订阅" entry). Registering a callback keeps the dialog state local: no
+  // controlled-dialog plumbing, no effect-driven setState, no prop mutation.
+  useEffect(() => {
+    if (!onRegisterSettingsOpener) return undefined;
+    onRegisterSettingsOpener((tab: SettingsCategory) => {
+      setSettingsTab(tab);
+      setDialog("settings");
+    });
+    return () => onRegisterSettingsOpener(null);
+  }, [onRegisterSettingsOpener]);
 
   const pickFavorite = useCallback(
     (id: string) => {
@@ -384,7 +415,7 @@ export default function TopbarMenu({ onConnect, onContinue, client = null, onMod
             )}
           </div>
 
-          <button type="button" role="menuitem" className="aj-menu__item" onClick={() => openDialog("settings")}>
+          <button type="button" role="menuitem" className="aj-menu__item" onClick={() => { setSettingsTab("connection"); openDialog("settings"); }}>
             设置…
           </button>
           <button type="button" role="menuitem" className="aj-menu__item" onClick={() => setOpen(false)}>
@@ -400,6 +431,8 @@ export default function TopbarMenu({ onConnect, onContinue, client = null, onMod
           client={client}
           onModelsLinked={onModelsLinked}
           onModelsCleared={onModelsCleared}
+          initialCategory={settingsTab}
+          subscription={subscription}
         />
       )}
 

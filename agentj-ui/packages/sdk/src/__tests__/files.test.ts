@@ -3,6 +3,7 @@
 // source for both the TUI and the Web file tree.
 import { describe, expect, it } from "vitest";
 import {
+  MAX_INDENT_DEPTH,
   buildFileNode,
   buildSearchIndex,
   clampSelection,
@@ -254,5 +255,18 @@ describe("search helpers", () => {
     expect(plain.letter).toBeNull();
     expect(plain.body).toBe("● main.md docs/".padEnd(28));
     expect(plain.body.length).toBeLessThanOrEqual(28);
+  });
+
+  it("pins MAX_INDENT_DEPTH", () => {
+    expect(MAX_INDENT_DEPTH).toBe(6);
+  });
+
+  it("patches a nested node without touching siblings", () => {
+    const tree = [buildFileNode({ name: "src", path: "src", kind: "dir" }), n("README.md")];
+    tree[0] = { ...tree[0], children: [buildFileNode({ name: "main.rs", path: "src/main.rs", kind: "file" })] };
+    const next = updateNode(tree, "src/main.rs", (x) => ({ ...x, gitStatus: "M" }));
+    expect(next[0].children?.[0].gitStatus).toBe("M");
+    expect(next[1]).toBe(tree[1]);
+    expect(tree[0].children?.[0].gitStatus).toBeNull();
   });
 });

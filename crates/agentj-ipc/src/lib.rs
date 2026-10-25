@@ -199,6 +199,11 @@ impl Drop for RunGuard {
 /// away. Mirrors the `cancelled` reason that `$/cancelRequest` uses.
 pub(crate) const DISCONNECTED_REASON: &str = "disconnected";
 
+/// Delivery signal handed to `agentj_permission`: does an approver that can
+/// actually answer this ask exist, and did the request reach it? `false` makes
+/// the module deny at once instead of waiting out the approval timeout.
+type ApprovalNotifier = Arc<dyn Fn(&PermissionRequestParams, &str) -> bool + Send + Sync>;
+
 impl IpcServer {
     pub fn new(mut kernel: Kernel, session_store: Arc<dyn SessionStore>) -> Self {
         let kernel_handle = kernel.start();
@@ -395,39 +400,62 @@ impl IpcServer {
     /// entry point.
     pub(crate) fn attach_permission_notifier(&self) {
         if let Some(module) = &self.permission_module {
-            let registry = Arc::clone(&self.registry);
-            let permission = Arc::clone(module);
-            let notifier = Arc::new(move |p: &PermissionRequestParams, session_id: &str| {
-                let key = session_id.to_string();
-                let owner = registry
-                    .read()
-                    .ok()
-                    .and_then(|r| r.session_owner(&key).cloned());
-                let msg = serde_json::json!({
-                    "jsonrpc": "2.0",
-                    "method": "$/permissionRequest",
-                    "params": {
-                        "request_id": p.request_id,
-                        "tool": p.tool,
-                        "args": p.args,
-                        "reason": p.reason,
-                        "origin_client": owner.clone(),
-                        "session_id": p.session_id,
-                    },
-                });
-                if owner.is_none() {
-                    // 设计决策 #5: only the owner connection may answer, so with no
-                    // owner at all the request can never be resolved — deny it now
-                    // instead of letting the run wait out the whole timeout.
-                    permission.cancel_session(session_id, DISCONNECTED_REASON);
-                } else if let Some(owner_id) = owner
-                    && let Ok(r) = registry.read()
-                {
-                    let _ = r.send_to(&owner_id, &msg.to_string());
-                }
-            });
-            module.set_notifier(notifier);
+            module.set_notifier(self.permission_notifier(Arc::clone(module)));
         }
+    }
+
+    /// The owner-directed notifier closure: it answers "was this approval
+    /// request delivered to somebody who can answer it?". A registered owner
+    /// row is not proof of a live approver, so the registry's real send result
+    /// is propagated — `register_ask` turns `false` into an immediate
+    /// `no approver` denial instead of waiting out the approval timeout.
+    fn permission_notifier(&self, permission: Arc<PermissionModule>) -> ApprovalNotifier {
+        let registry = Arc::clone(&self.registry);
+        Arc::new(move |p: &PermissionRequestParams, session_id: &str| {
+            let key = session_id.to_string();
+            let owner = registry
+                .read()
+                .ok()
+                .and_then(|r| r.session_owner(&key).cloned());
+            let msg = serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "$/permissionRequest",
+                "params": {
+                    "request_id": p.request_id,
+                    "tool": p.tool,
+                    "args": p.args,
+                    "reason": p.reason,
+                    "origin_client": owner.clone(),
+                    "session_id": p.session_id,
+                },
+            });
+            let Some(owner_id) = owner else {
+                // 设计决策 #5: only the owner connection may answer, so with no
+                // owner at all the request can never be resolved — deny it now
+                // instead of letting the run wait out the whole timeout.
+                permission.cancel_session(session_id, DISCONNECTED_REASON);
+                // Reported as delivered on purpose: the `cancel_session` above
+                // is already this ask's single settlement, so `false` would
+                // settle it a second time (idempotent, but it would relabel the
+                // decision as "no approver" and muddy the log attribution).
+                return true;
+            };
+            // An ownership row is not proof of a live approver: the writer can
+            // be gone (disconnect race) and the send then fails. That failure IS
+            // the answer "nobody can resolve this", so it has to be reported.
+            let delivered = registry
+                .read()
+                .ok()
+                .is_some_and(|r| r.deliver(&owner_id, &msg.to_string()));
+            if !delivered {
+                tracing::warn!(
+                    session_id = %session_id,
+                    owner = %owner_id,
+                    "approval request could not reach the session owner"
+                );
+            }
+            delivered
+        })
     }
 
     /// Route $/askQuestion notifications to the session owner through the

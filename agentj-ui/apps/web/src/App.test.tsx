@@ -10,6 +10,7 @@ const shared = vi.hoisted(() => ({
   initVersion: { value: "0.12.1" },
   serverInfoVersion: { value: "0.0.1-test" },
   shouldFail: { value: false },
+  authenticated: { value: false },
   newSessionId: { value: "s9" },
   statusShouldFail: { value: false },
   statusError: { value: "archived" },
@@ -119,7 +120,7 @@ vi.mock("@agentj/sdk", async () => {
         }
         return shared.modelListResult.value ?? { models: [] };
       }
-      if (method === "auth/status") return { provider: "opencode-go", authenticated: false };
+      if (method === "auth/status") return { provider: "opencode-go", authenticated: shared.authenticated.value };
       if (method === "provider/usage") return { provider: "opencode-go", windows: [] };
       if (method === "auth/setApiKey") return shared.authSetApiKeyResult.value;
       if (method === "auth/clearCredential") return { provider: "opencode-go", cleared: true };
@@ -351,6 +352,7 @@ describe("App with mocked SDK transport", () => {
     shared.initVersion.value = "0.12.1";
     shared.serverInfoVersion.value = "0.0.1-test";
     shared.shouldFail.value = false;
+    shared.authenticated.value = false;
     shared.newSessionId.value = "s9";
     shared.statusShouldFail.value = false;
     shared.statusError.value = "archived";
@@ -376,6 +378,31 @@ describe("App with mocked SDK transport", () => {
     );
     fireEvent.mouseEnter(screen.getByTestId("connection-status"));
     expect(await screen.findByText("test-mod: running")).toBeInTheDocument();
+  });
+
+  it("mounts the subscription light once in the topbar and fetches usage once", async () => {
+    shared.authenticated.value = true;
+    render(<App />);
+    await waitFor(() =>
+      expect(document.querySelector('.aj-status-light[data-state="connected"]')).not.toBeNull(),
+    );
+    const lights = await screen.findAllByRole("button", { name: /订阅/ });
+    expect(lights).toHaveLength(1);
+    expect(document.querySelector(".aj-topbar__brand")?.contains(lights[0])).toBe(true);
+    await waitFor(() =>
+      expect(shared.requests.value.filter((m) => m === "provider/usage")).toHaveLength(1),
+    );
+  });
+
+  it("routes the light's settings entry to the 订阅 tab", async () => {
+    render(<App />);
+    await waitFor(() =>
+      expect(document.querySelector('.aj-status-light[data-state="connected"]')).not.toBeNull(),
+    );
+    fireEvent.mouseEnter(await screen.findByTestId("subscription-status"));
+    fireEvent.click(screen.getByRole("button", { name: /设置.*订阅/ }));
+    const tab = await screen.findByRole("tab", { name: "订阅" });
+    expect(tab).toHaveAttribute("aria-selected", "true");
   });
 
   it("shows connected status after successful kernel/status", async () => {
@@ -1475,6 +1502,7 @@ describe("run_id capture and history filtering", () => {
   beforeEach(() => {
     shared.initVersion.value = "0.12.1";
     shared.shouldFail.value = false;
+    shared.authenticated.value = false;
     shared.newSessionId.value = "s1";
     shared.runId.value = null;
     shared.requests.value = [];

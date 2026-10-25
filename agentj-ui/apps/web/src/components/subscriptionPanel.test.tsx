@@ -4,6 +4,8 @@ import { fireEvent, render, screen, act, waitFor } from "@testing-library/react"
 import type { RpcClient } from "@agentj/sdk";
 import { METHODS } from "@agentj/sdk";
 import type { AuthSetApiKeyResult } from "@agentj/protocol";
+import type { UsageWindow } from "@agentj/protocol";
+import type { SubscriptionStatusData } from "../hooks/useSubscriptionStatus";
 import SubscriptionPanel from "./SubscriptionPanel";
 
 const client = (responses: Record<string, unknown>, sequences: Record<string, unknown[]> = {}) => {
@@ -29,6 +31,37 @@ it("renders three windows, marks the exhausted one and shows the key hint", asyn
   expect(await screen.findByText("5 小时")).toBeInTheDocument();
   expect(screen.getByText("…1234")).toBeInTheDocument();
   expect(screen.getByTestId("window-monthly")).toHaveClass("aj-window--warn");
+});
+
+it("renders an injected snapshot without a second usage fetch", async () => {
+  const c = client({
+    [METHODS.authStatus]: { provider: "opencode-go", authenticated: true },
+    [METHODS.providerUsage]: { provider: "opencode-go", fetched_at: 1, stale: false, warn_percent: 80,
+      windows: [{ kind: "rolling", status: "ok", percent: 4 }] },
+  });
+  const window40 = { kind: "rolling", status: "ok", percent: 40 } as unknown as UsageWindow;
+  const status: SubscriptionStatusData = {
+    state: "warn",
+    windows: [window40],
+    worstPercent: 40,
+    fetchedAt: Date.now(),
+    credential: { kind: "api_key", key_hint: "…1234" },
+    warnPercent: 30,
+    stale: false,
+    errorKind: null,
+    error: null,
+    loading: false,
+    refresh: async () => {},
+  };
+  render(<SubscriptionPanel client={c} onClose={() => {}} status={status} />);
+  expect(await screen.findByText("40%")).toBeInTheDocument();
+  expect(screen.getByTestId("window-rolling")).toHaveClass("aj-window--warn");
+  // The shell already fetched usage: the panel must not fetch it a second time.
+  expect(c.requests.filter((m) => m === METHODS.providerUsage)).toHaveLength(0);
+  // History still belongs to the panel (it is what feeds the trend line).
+  await waitFor(() =>
+    expect(c.requests).toContain(METHODS.providerUsageHistory),
+  );
 });
 
 it("lists each domain error without inventing percentages", async () => {

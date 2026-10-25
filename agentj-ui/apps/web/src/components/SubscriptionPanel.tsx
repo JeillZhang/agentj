@@ -1,7 +1,9 @@
-import { Fragment, useEffect, useRef, useState } from "react";
-import { METHODS, RpcClient, buildTrend } from "@agentj/sdk";
+import { useEffect, useRef, useState } from "react";
+import { METHODS, RpcClient } from "@agentj/sdk";
 import type { AuthSetApiKeyResult, ProviderUsageHistoryResult, UsageSample, UsageWindow } from "@agentj/protocol";
-import UsageSparkline from "./UsageSparkline";
+import SubscriptionUsage, { CredentialRow } from "./SubscriptionUsage";
+import { ERROR_TEXT } from "./subscriptionModel";
+import type { SubscriptionStatusData } from "../hooks/useSubscriptionStatus";
 import "./subscriptionPanel.css";
 
 type Props = {
@@ -10,6 +12,11 @@ type Props = {
   onLinked?: (result: AuthSetApiKeyResult) => void;
   /** Fired once the kernel removed a stored credential, so the shell drops its catalog. */
   onCleared?: () => void;
+  /**
+   * Injected snapshot from the topbar light's hook. When present the panel renders that
+   * snapshot instead of fetching usage itself: one owner for the polling contract.
+   */
+  status?: SubscriptionStatusData;
 };
 
 type ProviderUsage = {
@@ -28,20 +35,20 @@ type DeviceStart = { device_code: string; user_code: string; verification_uri: s
 type DevicePoll = { state: string; interval?: number | null };
 type DeviceView = { user_code: string; verification_uri: string };
 
-const ERROR_TEXT: Record<string, string> = {
-  no_credential: "尚未登录：点击下方按钮用设备码登录",
-  expired: "订阅凭据已失效：请重新登录",
-  unauthorized: "密钥无效或已被撤销：请重新登录",
-  entitlement: "该工作区没有 OpenCode Go 订阅",
-  unavailable: "用量暂时无法获取（上游响应无法识别）",
-  network: "网络不可达，已显示缓存数据",
-};
-const WINDOW_LABEL: Record<string, string> = { rolling: "5 小时", weekly: "本周", monthly: "本月" };
-const WINDOW_ORDER = ["rolling", "weekly", "monthly"];
 const LINK_OUTCOME_TEXT: Record<string, string> = {
   verified: "已链接：密钥已保存并验证通过",
   unverified: "密钥已保存，但未校验：上游暂时无法确认，首次使用时才会暴露问题",
 };
+
+/** Project the shell's snapshot into the shape the read-only usage block renders. */
+function usageFromStatus(status: SubscriptionStatusData): ProviderUsage {
+  return {
+    windows: status.windows,
+    warn_percent: status.warnPercent,
+    stale: status.stale,
+    error: status.error ? { kind: status.errorKind ?? "unavailable", message: status.error } : null,
+  };
+}
 
 // A rejected link carries the upstream reason as a Kind the shared ERROR_TEXT table already maps.
 function linkResultText(res: AuthSetApiKeyResult): string {
@@ -56,78 +63,9 @@ function linkClearText(cleared: boolean): string {
   return cleared ? "已解除链接；模型列表回退到公开目录" : "当前没有已保存的凭据";
 }
 
-function isWarn(item: UsageWindow, warnPercent: number | null | undefined): boolean {
-  if (item.status === "rate-limited") return true;
-  return typeof warnPercent === "number" && (item.percent ?? 0) >= warnPercent;
-}
-
-function WindowRow({ item, warnPercent }: { item: UsageWindow; warnPercent?: number | null }) {
-  const warn = isWarn(item, warnPercent);
-  return (
-    <div data-testid={`window-${item.kind}`} className={`aj-window${warn ? " aj-window--warn" : ""}`}>
-      <span className="aj-window__label">{WINDOW_LABEL[item.kind] ?? item.kind}</span>
-      {item.percent != null && <span className="aj-window__pct">{item.percent}%</span>}
-      {item.percent !== 0 && item.resets_at && (
-        <span className="aj-window__reset">重置于 {item.resets_at}</span>
-      )}
-    </div>
-  );
-}
-
-function CredentialRow({ status }: { status: AuthStatus }) {
-  if (!status.authenticated) {
-    return <p className="aj-sub__cred aj-sub__cred--muted">未认证：请使用设备码登录</p>;
-  }
-  const cred = status.credential ?? null;
-  if (!cred) return <p className="aj-sub__cred">已认证</p>;
-  return (
-    <p className="aj-sub__cred">
-      <span className="aj-sub__cred-kind">{cred.kind === "oauth" ? "OAuth" : "API Key"}</span>
-      {cred.key_hint && <span className="aj-sub__cred-hint">{cred.key_hint}</span>}
-      {cred.org_id && <span className="aj-sub__cred-org">{cred.org_id}</span>}
-    </p>
-  );
-}
-
-function UsageBlock({
-  usage,
-  samples = [],
-  now = 0,
-}: {
-  usage: ProviderUsage;
-  samples?: UsageSample[];
-  /** Epoch seconds captured when the history was loaded — never read the clock while rendering. */
-  now?: number;
-}) {
-  const windows = Array.isArray(usage.windows) ? [...usage.windows] : [];
-  windows.sort((a, b) => WINDOW_ORDER.indexOf(a.kind) - WINDOW_ORDER.indexOf(b.kind));
-  const kind = usage.error?.kind;
-  const sentence = kind ? ERROR_TEXT[kind] : undefined;
-  const cutoff = now > 0 ? now : Number.MAX_SAFE_INTEGER;
-  return (
-    <div className="aj-sub__usage">
-      {usage.stale && <p className="aj-sub__stale">显示的是缓存数据</p>}
-      {windows.map((item) => {
-        const points = buildTrend(samples, item.kind, cutoff);
-        return (
-          <Fragment key={item.kind}>
-            <WindowRow item={item} warnPercent={usage.warn_percent} />
-            {points.length >= 2 ? (
-              <UsageSparkline points={points} />
-            ) : (
-              <p className="aj-sub__hint">趋势需要至少两次取样</p>
-            )}
-          </Fragment>
-        );
-      })}
-      {sentence && <p className="aj-sub__error">{sentence}</p>}
-    </div>
-  );
-}
-
-export default function SubscriptionPanel({ client, onClose, onLinked, onCleared }: Props) {
-  const [status, setStatus] = useState<AuthStatus | null>(null);
-  const [usage, setUsage] = useState<ProviderUsage | null>(null);
+export default function SubscriptionPanel({ client, onClose, onLinked, onCleared, status }: Props) {
+  const [auth, setAuth] = useState<AuthStatus | null>(null);
+  const [ownUsage, setOwnUsage] = useState<ProviderUsage | null>(null);
   const [samples, setSamples] = useState<UsageSample[]>([]);
   const [historyAt, setHistoryAt] = useState(0);
   const [device, setDevice] = useState<DeviceView | null>(null);
@@ -148,7 +86,7 @@ export default function SubscriptionPanel({ client, onClose, onLinked, onCleared
   const loadUsage = async (refresh: boolean) => {
     try {
       const res = (await client.request(METHODS.providerUsage, { refresh })) as ProviderUsage;
-      if (aliveRef.current) setUsage(res);
+      if (aliveRef.current) setOwnUsage(res);
     } catch {
       /* keep the previous snapshot on a transport failure */
     }
@@ -174,13 +112,17 @@ export default function SubscriptionPanel({ client, onClose, onLinked, onCleared
   const refreshUsage = () => {
     // Serialise the two calls: the live fetch may write a fresh sample, and the history read
     // has to see it or the chart lags one refresh behind.
+    if (status) {
+      void status.refresh().then(() => loadHistory());
+      return;
+    }
     void loadUsage(true).then(() => loadHistory());
   };
 
   const loadStatus = async () => {
     try {
       const res = (await client.request(METHODS.authStatus, {})) as AuthStatus;
-      if (aliveRef.current) setStatus(res);
+      if (aliveRef.current) setAuth(res);
     } catch {
       /* keep the previous status on a transport failure */
     }
@@ -278,7 +220,9 @@ export default function SubscriptionPanel({ client, onClose, onLinked, onCleared
   useEffect(() => {
     aliveRef.current = true;
     void loadStatus();
-    void loadUsage(false);
+    // Injected mode: the shell's hook already owns the usage fetch, so asking twice would
+    // double the upstream call on every settings open.
+    if (!status) void loadUsage(false);
     void loadHistory();
     return () => {
       aliveRef.current = false;
@@ -286,6 +230,8 @@ export default function SubscriptionPanel({ client, onClose, onLinked, onCleared
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const usage = status ? usageFromStatus(status) : ownUsage;
 
   return (
     <div className="aj-sub">
@@ -295,9 +241,9 @@ export default function SubscriptionPanel({ client, onClose, onLinked, onCleared
           关闭
         </button>
       </div>
-      {status && <CredentialRow status={status} />}
+      {auth && <CredentialRow status={auth} />}
       {usage ? (
-        <UsageBlock usage={usage} samples={samples} now={historyAt} />
+        <SubscriptionUsage usage={usage} samples={samples} now={historyAt} />
       ) : (
         <p className="aj-sub__hint">正在获取用量…</p>
       )}
@@ -331,7 +277,7 @@ export default function SubscriptionPanel({ client, onClose, onLinked, onCleared
         <p className="aj-sub__hint">
           API Key 只保存在所连接的内核主机（auth.json），不会写入浏览器存储。
         </p>
-        {status?.credential?.kind === "oauth" && (
+        {auth?.credential?.kind === "oauth" && (
           <p className="aj-sub__error">将替换现有 OAuth 凭据</p>
         )}
         {envShadow && (

@@ -126,7 +126,8 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
 - `agentj-config`：TOML 配置
   （[model]/[agent]/[permission]/[session]/[license]/[usage]/[[mcp.servers]]；
   `[permission] timeout_ms` 调整 `ask` 自动拒绝等待预算（缺省 60s，钳制 100..=600_000，
-  越界钳制并告警；e2e fixture 调至 800ms）；
+  越界钳制并告警；e2e fixture 调至 800ms）；仅覆盖**已投递给活审批器**却无人回答的请求，
+  没人可挂时当场以 `no approver` 拒绝、不消耗该预算；
   `[model] max_context_tokens` 显式请求 token 上限（可缺省 = 预算只由模型窗口决定，
   钳制 1k..=10M）；
   `[agent] max_tool_iterations` 调整单轮工具调用轮数（默认 50，钳制 1..=1000；
@@ -146,8 +147,9 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
 - `agentj-session`：会话生命周期（InMemoryStore/FileBackedStore + 过期清理
   + 会话级 `project_root` 持久化，serde default 兼容旧快照）。
 - `agentj-permission`：权限系统（决策引擎 + 60s 超时 + allow_always；
+  `Notifier` 返回 `bool`（投递成功与否），投递失败即按 `NO_APPROVER_REASON` 当场拒绝；
   `respond`/`cancel_session` 只投递决定、保留待决条目至工具消费，`PENDING_TTL` 300s 回收；
-  重复/迟到答复返回 `false` 不覆盖首次决定）。
+  结算只发生在 `finished` 抢占成功的一方，重复/迟到答复返回 `false` 不覆盖首次决定）。
 - `agentj-question`：提问通道（`QuestionModule` + `AskTool`，镜像 permission 的
   pending/owner 归属；`ask_blocking` 阻塞等待、`respond` 幂等 `accepted:false`、
   `timeout_s` 可空、`set_notifier`/`set_settle_hook` 统一结算一次）。
@@ -192,7 +194,7 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
     `DispatchError`）+ `registry`（`Connection` / `ConnectionRegistry`）+ `frames`（帧构造与
     artifact wire 映射）+ `stdio` / `tcp` / `web` / `ws` + `tests/*`（按域分文件）。
     两道防漂移 pin：`DISPATCH_METHODS` ↔ `protocol/methods.json` 双向；`tests/pins.rs` 断言
-    已搬走的符号不再回潮到 `lib.rs` / `web.rs` / `tcp.rs` / `ws.rs`。
+    已搬走的符号不再回潮到 `lib.rs` / `web/` / `tcp.rs` / `ws.rs`。
   - `web` 子模块（同端口静态托管 + 混合鉴权）：`WebConfig` + `build_router`
     （`/ws` + `/login`/`/logout` + 静态 `ServeDir`/SPA fallback；两静态服务各自
     包裹 cache 层与登录门，避免 `Router::layer` 波及 `/ws`）+ 不透明会话 cookie

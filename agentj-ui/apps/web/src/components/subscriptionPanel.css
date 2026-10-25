@@ -196,8 +196,85 @@
   color: var(--aj-textMuted);
 }
 
+/* Topbar subscription light: the hit area, tooltip shell and rows come from the
+   shared .aj-status-* block in layout.css; only the graded dot colors are new. */
+.aj-sub-status__dot[data-state="ok"] { background: var(--aj-success); }
+.aj-sub-status__dot[data-state="warn"] { background: var(--aj-warning); }
+.aj-sub-status__dot[data-state="error"],
+.aj-sub-status__dot[data-state="invalid"] { background: var(--aj-error); }
+.aj-sub-status__dot[data-state="unknown"] { background: var(--aj-textCaption); }
+/* Desaturated = the numbers are older than the freshness window (or upstream cached). */
+.aj-sub-status__dot[data-stale="true"] { opacity: 0.55; }
+
+.aj-status-dot[data-state="ok"] { background: var(--aj-success); }
+.aj-status-dot[data-state="warn"] { background: var(--aj-warning); }
+.aj-status-dot[data-state="error"],
+.aj-status-dot[data-state="invalid"] { background: var(--aj-error); }
+.aj-status-dot[data-state="unknown"] { background: var(--aj-textCaption); }
+
+.aj-sub-status__row {
+  justify-content: space-between;
+  gap: var(--aj-space-2);
+}
+
+.aj-sub-status__age {
+  color: var(--aj-textCaption);
+}
+
+.aj-sub-status__error {
+  color: var(--aj-error);
+}
+
+.aj-sub-status__link {
+  align-self: flex-start;
+  margin-top: 2px;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .aj-sub__btn {
     transition: none;
   }
+}
+
+/* Trend chart: one hit band per sample, plus a keyboard-reachable inspection row. */
+.aj-spark-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  outline: none;
+}
+
+.aj-spark-wrap:focus-visible {
+  outline: 1px solid var(--aj-accent);
+  outline-offset: 2px;
+}
+
+.aj-spark-hit {
+  pointer-events: all;
+  cursor: crosshair;
+}
+
+.aj-spark-tip {
+  position: absolute;
+  bottom: calc(100% + 4px);
+  transform: translateX(-50%);
+  padding: 2px 6px;
+  background: var(--aj-raised);
+  border: 1px solid var(--aj-border);
+  border-radius: 4px;
+  color: var(--aj-text);
+  font-size: var(--aj-font-sm);
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 1;
+}
+
+/* Visual readout lives in the tooltip; this copy only feeds the live region. */
+.aj-spark-live {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }

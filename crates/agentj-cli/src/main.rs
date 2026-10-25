@@ -1203,6 +1203,7 @@ async fn run_agent(
         }
         return Ok(());
     }
+    warn_if_no_approver(yes);
     attach_approver(&wiring.permission_module, yes);
     let ipc_server = build_ipc_server(
         wiring.kernel,
@@ -1230,9 +1231,23 @@ async fn run_agent(
     Ok(())
 }
 
+/// Say up front that nothing can approve tools for this run: the permission
+/// module denies each approval-required tool at once (reason `no approver`),
+/// and a piped run's reader never sees the tool results.
+fn warn_if_no_approver(yes: bool) {
+    if yes || std::io::stdin().is_terminal() {
+        return;
+    }
+    eprintln!(
+        "warning: no approver attached (non-interactive stdin, no --yes); \
+         approval-required tools will be denied"
+    );
+}
+
 /// Approval path: `--yes` auto-approves; a TTY spawns a thread that owns stdin and
-/// answers y/n; a non-TTY without `--yes` attaches nothing and the pending request
-/// auto-denies at the timeout (today's behaviour — no stdin read on the request path).
+/// answers y/n; without either nothing is attached, and the permission module then
+/// denies each approval-required tool at once with reason `no approver` (no stdin
+/// read on the request path, no wait for the approval timeout).
 fn attach_approver(permission_module: &Arc<agentj_permission::PermissionModule>, yes: bool) {
     if yes {
         let module = Arc::clone(permission_module);
@@ -1242,6 +1257,8 @@ fn attach_approver(permission_module: &Arc<agentj_permission::PermissionModule>,
                 &agentj_core::permission::PermissionRequestId(req.request_id.clone()),
                 agentj_permission::ApprovalDecision::Allow,
             );
+            // Delivered: the ask was answered synchronously above.
+            true
         }));
     } else if std::io::stdin().is_terminal() {
         let module = Arc::clone(permission_module);
@@ -1257,6 +1274,8 @@ fn attach_approver(permission_module: &Arc<agentj_permission::PermissionModule>,
                 let decision = read_decision_from_stdin();
                 let _ = module.respond(&request_id, decision);
             });
+            // Delivered: a stdin reader owns this request from here on.
+            true
         }));
     }
 }

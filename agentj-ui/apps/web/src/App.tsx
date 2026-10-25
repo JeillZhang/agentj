@@ -19,6 +19,9 @@ import RunPanel from "./RunPanel";
 import type { ModelEntry } from "./components/ComposerOptions";
 import TopbarMenu from "./components/TopbarMenu";
 import ConnectionStatus from "./components/ConnectionStatus";
+import SubscriptionStatus from "./components/SubscriptionStatus";
+import type { SettingsCategory } from "./components/SettingsDialog";
+import { useSubscriptionStatus } from "./hooks/useSubscriptionStatus";
 import UnifiedSidebar from "./components/UnifiedSidebar";
 import WorkspaceShell from "./components/WorkspaceShell";
 import RightPanel, { groupByRunId } from "./components/RightPanel";
@@ -386,6 +389,21 @@ export default function App() {
   const [connectSeq, setConnectSeq] = useState(0);
   const { client: sharedClient, modules, status, banner, unreachable, modelName, models, serverVersion } =
     useSharedKernel(wsUrl, connectSeq);
+  // The subscription light is the only owner of the usage polling contract: one hook per
+  // shell, hydration handed down to the settings panel (no second fetcher).
+  const subscription = useSubscriptionStatus(sharedClient);
+  const settingsOpenerRef = useRef<((tab: SettingsCategory) => void) | null>(null);
+  // Registration instead of handing the bare slot down: the shell owns the ref, so the
+  // topbar never mutates a prop (react/immutability).
+  const registerSettingsOpener = useCallback(
+    (opener: ((tab: SettingsCategory) => void) | null) => {
+      settingsOpenerRef.current = opener;
+    },
+    [],
+  );
+  const openSubscriptionSettings = useCallback(() => {
+    settingsOpenerRef.current?.("subscription");
+  }, []);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [selectedModel, setSelectedModel] = useState<ModelEntry | null>(null);
   // The linked account catalog overrides the kernel-served opencode-go rows; the kernel
@@ -677,6 +695,7 @@ export default function App() {
             uiVersion={VERSION}
             serverVersion={serverVersion}
           />
+          <SubscriptionStatus status={subscription} onOpenSettings={openSubscriptionSettings} />
         </div>
         <div className="aj-topbar__center" aria-hidden="true" />
         <div className="aj-topbar__actions">
@@ -686,6 +705,8 @@ export default function App() {
             client={sharedClient}
             onModelsLinked={applyLinkedCatalog}
             onModelsCleared={dropLinkedCatalog}
+            onRegisterSettingsOpener={registerSettingsOpener}
+            subscription={subscription}
           />
           <button type="button" aria-label="toggle sessions" className="aj-button aj-drawer-toggle" aria-expanded={drawerOpen} aria-controls="aj-sidebar" onClick={() => setDrawerOpen((o) => !o)}><Menu size={16} aria-hidden="true" /></button>
           <button type="button" aria-label="toggle theme" className="aj-icon-btn" onClick={() => setTheme((t) => THEME_CYCLE[t])}>

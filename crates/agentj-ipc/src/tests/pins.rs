@@ -51,9 +51,11 @@ const MOVED_OUT_OF_ROOT: [&str; 42] = [
 
 /// The per-area pins only proved a moved symbol was gone from `../lib.rs`, so a
 /// symbol re-added to one of the other root-level modules still passed. Pin the
-/// whole table against the root modules that must stay clear of it: `web.rs`,
-/// `tcp.rs` and `ws.rs` (transports and the HTTP surface). `lib.rs` itself is
-/// covered by the per-area tests.
+/// whole table against the root modules that must stay clear of it: the HTTP
+/// surface (`web/mod.rs` plus every module it was split into — scanning only the
+/// thin root would make the assertion vacuous, since the symbols would merely
+/// have landed next door) and the transports (`tcp.rs`, `ws.rs`). `lib.rs`
+/// itself is covered by the per-area tests.
 ///
 /// The destination modules (`dispatch.rs`, `handlers/*`, `frames.rs`,
 /// `stdio.rs`, `rpc.rs`, `registry.rs`, `tests/*`) and the other narrow root
@@ -67,7 +69,14 @@ const MOVED_OUT_OF_ROOT: [&str; 42] = [
 #[test]
 fn moved_symbols_absent_from_sibling_root_modules() {
     let files = [
-        ("web.rs", include_str!("../web.rs")),
+        ("web/mod.rs", include_str!("../web/mod.rs")),
+        ("web/integrity.rs", include_str!("../web/integrity.rs")),
+        ("web/config.rs", include_str!("../web/config.rs")),
+        ("web/persist.rs", include_str!("../web/persist.rs")),
+        ("web/auth.rs", include_str!("../web/auth.rs")),
+        ("web/router.rs", include_str!("../web/router.rs")),
+        ("web/endpoints.rs", include_str!("../web/endpoints.rs")),
+        ("web/prometheus.rs", include_str!("../web/prometheus.rs")),
         ("tcp.rs", include_str!("../tcp.rs")),
         ("ws.rs", include_str!("../ws.rs")),
     ];

@@ -78,8 +78,16 @@ pub struct PendingView {
     pub session_id: String,
 }
 
+/// Deny reason for an ask nobody can answer: no notifier installed, or the
+/// installed notifier reported the request as undeliverable. Model-visible, so
+/// it says what happened instead of blaming a timeout.
+pub const NO_APPROVER_REASON: &str = "no approver";
+
 /// Notification sink for Ask requests (set once at startup by the IPC layer).
-type Notifier = Arc<dyn Fn(&PermissionRequestParams, &str) + Send + Sync>;
+/// Returns `true` when the request reached a potential approver, `false` when
+/// it did not — an undeliverable ask is denied at once rather than waiting out
+/// the approval timeout. Must not call `set_notifier` (it runs under that lock).
+type Notifier = Arc<dyn Fn(&PermissionRequestParams, &str) -> bool + Send + Sync>;
 
 #[cfg(test)]
 type SettleGate = Box<dyn Fn(&PermissionRequestId)>;
@@ -179,56 +187,102 @@ impl PermissionModule {
     /// them (PENDING_TTL sweep). Claiming first would burn the flag without
     /// delivering anything — `cancel_session` / `clear_all` then no-op on the
     /// already-true flag and the waiter waits out `timeout_ms`.
+    ///
+    /// The claim itself lives in `settle_with`, the one path every settler
+    /// (`respond` / `cancel_session` / `clear_all` / the undeliverable-ask
+    /// denial) shares.
     pub fn respond(&self, request_id: &PermissionRequestId, decision: ApprovalDecision) -> bool {
-        let Some(req) = self.pending.get(request_id) else {
-            return false; // unknown (or already consumed/pruned) request id
-        };
-        #[cfg(test)]
-        run_settle_gate(request_id);
-        let Some(session_id) = self.pending.session_of(request_id) else {
-            return false; // swept between the two lookups: nothing to deliver to
-        };
-        if req.finished.swap(true, Ordering::AcqRel) {
-            return false; // already settled (another respond / cancel_session / shutdown)
-        }
-        let resolved = match decision {
+        self.settle_with(request_id, |req, session_id| match decision {
             ApprovalDecision::Allow => PermissionDecision::Allow,
             ApprovalDecision::Deny => PermissionDecision::Deny {
                 reason: "denied by user".into(),
             },
+            // Granted only after the claim is won, so a refused duplicate
+            // respond cannot widen the session allow-list.
             ApprovalDecision::AllowAlways => {
-                let key = rule_key_for(&req.tool, &req.args);
                 self.session_state.grant(
-                    &session_id,
+                    session_id,
                     RuleFingerprint {
                         tool: req.tool.clone(),
-                        rule_key: key,
+                        rule_key: rule_key_for(&req.tool, &req.args),
                     },
                 );
                 PermissionDecision::Allow
             }
+        })
+    }
+
+    /// Resolve a pending entry and its owning session. The two lookups are
+    /// separate lock acquisitions, so an entry can vanish between them (the
+    /// registry's PENDING_TTL sweep); callers must therefore treat `None` as
+    /// "nothing to deliver to" and leave the claim flag untouched.
+    fn resolve(&self, request_id: &PermissionRequestId) -> Option<(PendingRequest, String)> {
+        let req = self.pending.get(request_id)?;
+        #[cfg(test)]
+        run_settle_gate(request_id);
+        let session_id = self.pending.session_of(request_id)?;
+        Some((req, session_id))
+    }
+
+    /// Claim the single-winner flag of an entry `resolve` already validated.
+    /// `true` = this call owns the settlement.
+    fn claim(&self, req: &PendingRequest) -> bool {
+        !req.finished.swap(true, Ordering::AcqRel)
+    }
+
+    /// The ONE settlement path: resolve, claim, deliver. Every settler
+    /// (`respond` / `cancel_session` / `clear_all`) delegates here, so exactly
+    /// one caller per request can ever deliver, and the claim is taken only
+    /// after both the entry and its owning session resolved.
+    ///
+    /// The decision is derived AFTER the claim, so a losing settler runs no
+    /// side effects (an `allow_always` grant, say) for a request it did not
+    /// settle. The entry is not removed: the waiter consumes it in
+    /// `await_approval`.
+    fn settle_with(
+        &self,
+        request_id: &PermissionRequestId,
+        make_decision: impl FnOnce(&PendingRequest, &str) -> PermissionDecision,
+    ) -> bool {
+        let Some((req, session_id)) = self.resolve(request_id) else {
+            return false; // unknown, consumed, or swept between the lookups
         };
-        let _ = req.decision.send(Some(resolved));
+        if !self.claim(&req) {
+            return false; // already settled (respond / cancel_session / shutdown)
+        }
+        let _ = req.decision.send(Some(make_decision(&req, &session_id)));
         true
     }
 
+    /// Settle one request with a fixed decision (owner disconnect / shutdown).
+    fn settle(&self, request_id: &PermissionRequestId, decision: PermissionDecision) -> bool {
+        self.settle_with(request_id, |_, _| decision)
+    }
+
     /// Resolve ALL pending approvals for a session to Deny (session
-    /// termination / $/cancelRequest / client disconnect). The entries stay
-    /// until their tool loop consumes the decision, so the waiter reports the
-    /// real reason instead of a missing request. Claims each entry with the same
-    /// `finished` flag as `respond`, so a disconnect Deny and a user Allow can
-    /// never both settle one request.
+    /// termination / $/cancelRequest / client disconnect). Returns how many of
+    /// this owner's entries were still pending and are settled by this call.
+    ///
+    /// The entries stay until their tool loop consumes the decision, so the
+    /// waiter reports the real reason instead of a missing request. Every entry
+    /// goes through `settle`, the same claim `respond` and `clear_all` use, so a
+    /// disconnect Deny and a user Allow can never both settle one request.
     pub fn cancel_session(&self, session_id: &str, reason: &str) -> usize {
-        let mut n = 0;
-        self.pending.for_session(session_id, |_, req| {
-            if !req.finished.swap(true, Ordering::AcqRel) {
-                let _ = req.decision.send(Some(PermissionDecision::Deny {
-                    reason: reason.to_string(),
-                }));
-                n += 1;
-            }
-        });
-        n
+        // Collect first: `for_session` holds the registry lock while its
+        // callback runs, and `settle` takes that same lock.
+        let mut ids: Vec<PermissionRequestId> = Vec::new();
+        self.pending
+            .for_session(session_id, |key, _| ids.push(key.clone()));
+        ids.into_iter()
+            .filter(|id| {
+                self.settle(
+                    id,
+                    PermissionDecision::Deny {
+                        reason: reason.to_string(),
+                    },
+                )
+            })
+            .count()
     }
 
     fn eval(&self, ctx: &PermissionContext) -> PermissionDecision {
@@ -339,12 +393,42 @@ impl PermissionModule {
             origin_client: None,
             session_id: Some(ctx.session_id.clone()),
         };
-        if let Ok(guard) = self.notifier.lock()
-            && let Some(f) = guard.clone()
-        {
-            f(&params, &ctx.session_id);
+        // Delivery decides the fate of the ask: nobody to ask means the
+        // request can never be answered, so settle it now with an honest
+        // reason instead of letting the tool loop wait out `timeout`.
+        if !self.notify_ask(&params, &ctx.session_id) {
+            self.deny_without_approver(&request_id, &ctx.tool);
         }
         PermissionDecision::Ask { request_id }
+    }
+
+    /// Hand the ask to the installed notifier and report whether it reached a
+    /// potential approver. `None` (no notifier) counts as undelivered. The
+    /// notifier runs while its slot is locked, so it must not call
+    /// `set_notifier`; `--yes` re-enters `respond`, which only takes the
+    /// pending-table lock.
+    fn notify_ask(&self, params: &PermissionRequestParams, session_id: &str) -> bool {
+        lock_or_recover(&self.notifier)
+            .as_ref()
+            .is_some_and(|f| f(params, session_id))
+    }
+
+    /// Deny an ask nobody could answer. The reason is mirrored into the log
+    /// because a batch run (`agentj run` on a pipe) never shows the tool
+    /// result — this line is the operator's only trace of why it was denied.
+    fn deny_without_approver(&self, request_id: &PermissionRequestId, tool: &str) {
+        tracing::warn!(
+            request_id = %request_id.0,
+            tool = %tool,
+            "permission denied: {}",
+            NO_APPROVER_REASON
+        );
+        self.settle(
+            request_id,
+            PermissionDecision::Deny {
+                reason: NO_APPROVER_REASON.into(),
+            },
+        );
     }
 }
 
@@ -490,19 +574,27 @@ impl KernelModule for PermissionModule {
 }
 
 impl PermissionModule {
-    /// Clear session grants and resolve every pending approval to Deny.
+    /// Clear session grants and resolve every pending approval to Deny
+    /// (shutdown breadth: all sessions, not just one owner's). Settles through
+    /// the same `settle` claim as `respond` / `cancel_session`.
     pub fn clear_all(&self) {
         self.session_state.clear_all();
-        // `false` = never prune: entries stay readable until their tool loop
-        // consumes them (same contract as `cancel_session`).
-        self.pending.prune_where(|_, req| {
-            if !req.finished.swap(true, Ordering::AcqRel) {
-                let _ = req.decision.send(Some(PermissionDecision::Deny {
+        // Entries stay readable until their tool loop consumes them (same
+        // contract as `cancel_session`: settle never prunes).
+        let ids: Vec<PermissionRequestId> = self
+            .pending
+            .snapshot()
+            .into_iter()
+            .map(|(key, _, _)| key)
+            .collect();
+        for id in ids {
+            self.settle(
+                &id,
+                PermissionDecision::Deny {
                     reason: "shutdown".into(),
-                }));
-            }
-            false
-        });
+                },
+            );
+        }
     }
 
     /// Entries currently registered: awaiting a decision, or settled and still
@@ -541,7 +633,9 @@ mod tests {
     use std::sync::{Arc, Barrier, Mutex};
     use std::time::Duration;
 
-    fn module() -> PermissionModule {
+    /// One `bash` policy in Ask mode plus an allow command rule — the shape
+    /// most tests below drive.
+    fn ask_policies() -> std::collections::HashMap<String, ToolPolicy> {
         let mut policies = std::collections::HashMap::new();
         policies.insert(
             "bash".to_string(),
@@ -554,7 +648,107 @@ mod tests {
                 }],
             },
         );
-        PermissionModule::new(policies, Duration::from_millis(50))
+        policies
+    }
+
+    /// A module whose notifier reports every ask as delivered — for tests that
+    /// play the approver themselves through `respond` / `cancel_session`.
+    fn delivering(
+        policies: std::collections::HashMap<String, ToolPolicy>,
+        timeout: Duration,
+    ) -> PermissionModule {
+        let m = PermissionModule::new(policies, timeout);
+        m.set_notifier(Arc::new(|_: &PermissionRequestParams, _: &str| true));
+        m
+    }
+
+    fn delivering_module(timeout: Duration) -> PermissionModule {
+        delivering(ask_policies(), timeout)
+    }
+
+    /// The standard test module: `bash` in Ask mode, a 50 ms approval budget,
+    /// and an approver that reports the request as delivered (the tests below
+    /// play the approver through `respond` / `cancel_session`, so the ask must
+    /// stay pending instead of being denied as undeliverable).
+    fn module() -> PermissionModule {
+        delivering_module(Duration::from_millis(50))
+    }
+
+    /// Same policies, explicit approval timeout, NO approver attached — the
+    /// shape of a non-TTY `agentj run` without `--yes` (or a bare module).
+    fn module_with_timeout(timeout: Duration) -> PermissionModule {
+        PermissionModule::new(ask_policies(), timeout)
+    }
+
+    /// Register one Ask through `check` and return its request id.
+    fn ask_once(m: &PermissionModule, cmd: &str) -> PermissionRequestId {
+        match m.check(&ctx(m, cmd)) {
+            PermissionDecision::Ask { request_id } => request_id,
+            other => panic!("expected Ask, got {other:?}"),
+        }
+    }
+
+    /// Ask once, await the settlement, and return the deny reason.
+    async fn ask_and_await_reason(m: &PermissionModule, cmd: &str) -> String {
+        let id = ask_once(m, cmd);
+        match m.await_approval(&id).await {
+            PermissionDecision::Deny { reason } => reason,
+            other => panic!("expected Deny, got {other:?}"),
+        }
+    }
+
+    /// No notifier installed means nobody can ever answer: the ask must be
+    /// denied with the no-approver reason immediately, not after the timeout
+    /// (a non-TTY `agentj run` used to stall for the whole budget).
+    #[tokio::test]
+    async fn ask_without_notifier_denies_immediately() {
+        let m = module_with_timeout(Duration::from_secs(30));
+        let start = std::time::Instant::now();
+        let reason = ask_and_await_reason(&m, "curl http://example.com").await;
+        assert_eq!(reason, NO_APPROVER_REASON);
+        assert!(
+            start.elapsed() < Duration::from_secs(1),
+            "waited {:?}",
+            start.elapsed()
+        );
+    }
+
+    /// A notifier that reports `false` (could not deliver) is the same as no
+    /// notifier at all, and must not log the timeout warning on the way.
+    #[tokio::test]
+    async fn ask_with_undeliverable_notifier_denies_immediately() {
+        let m = module_with_timeout(Duration::from_secs(30));
+        m.set_notifier(Arc::new(|_: &PermissionRequestParams, _: &str| false));
+        assert_eq!(
+            ask_and_await_reason(&m, "curl http://example.com").await,
+            NO_APPROVER_REASON
+        );
+    }
+
+    /// A delivered ask keeps the timeout budget: the notifier covered.
+    #[tokio::test]
+    async fn ask_with_delivering_notifier_still_times_out() {
+        let m = module_with_timeout(Duration::from_millis(50));
+        m.set_notifier(Arc::new(|_: &PermissionRequestParams, _: &str| true));
+        assert_eq!(
+            ask_and_await_reason(&m, "curl http://example.com").await,
+            "timeout"
+        );
+    }
+
+    /// The immediate denial is a REAL settlement: a later respond cannot
+    /// overwrite it, and the first decision stands at the waiter.
+    #[tokio::test]
+    async fn undelivered_ask_keeps_a_single_settlement() {
+        let m = module_with_timeout(Duration::from_secs(30));
+        let id = ask_once(&m, "curl http://example.com");
+        assert!(!m.respond(&id, ApprovalDecision::Allow));
+        assert_eq!(
+            m.await_approval(&id).await,
+            PermissionDecision::Deny {
+                reason: NO_APPROVER_REASON.into()
+            }
+        );
     }
 
     fn ctx(_module: &PermissionModule, cmd: &str) -> PermissionContext {
@@ -761,6 +955,109 @@ mod tests {
         );
     }
 
+    /// `settle` is the one arbitration point every settler goes through: the
+    /// first call delivers, the next is refused, and the waiter reads the
+    /// winner's decision (never a coin flip between two settlers).
+    #[tokio::test]
+    async fn settle_delivers_exactly_one_decision() {
+        let m = delivering_module(Duration::from_secs(30));
+        let id = ask_once(&m, "curl http://example.com");
+        assert!(m.settle(
+            &id,
+            PermissionDecision::Deny {
+                reason: "first".into()
+            }
+        ));
+        assert!(!m.settle(
+            &id,
+            PermissionDecision::Deny {
+                reason: "second".into()
+            }
+        ));
+        assert_eq!(
+            m.await_approval(&id).await,
+            PermissionDecision::Deny {
+                reason: "first".into()
+            }
+        );
+    }
+
+    /// `respond` and `cancel_session` share the same claim: once `respond` has
+    /// settled the entry, a later owner-disconnect sweep reports zero and the
+    /// first decision stands.
+    #[tokio::test]
+    async fn settle_is_the_only_single_winner_path() {
+        let m = delivering_module(Duration::from_secs(30));
+        let id = ask_once(&m, "curl http://example.com");
+        assert!(m.respond(&id, ApprovalDecision::Deny));
+        assert_eq!(m.cancel_session("s1", "disconnected"), 0, "settled once");
+        assert_eq!(
+            m.await_approval(&id).await,
+            PermissionDecision::Deny {
+                reason: "denied by user".into()
+            }
+        );
+    }
+
+    /// Owner-disconnect breadth: the sweep settles THIS session's entries only,
+    /// so another session's ask is still pending (and still answerable) after
+    /// it (plan decision P4).
+    #[tokio::test]
+    async fn cancel_session_settles_only_its_own_session() {
+        let m = delivering_module(Duration::from_secs(30));
+        let mine = ask_once(&m, "curl a");
+        let mut other = ctx(&m, "curl b");
+        other.session_id = "s2".into();
+        let PermissionDecision::Ask { request_id: theirs } = m.check(&other) else {
+            panic!("expected Ask");
+        };
+        assert_eq!(m.cancel_session("s1", "disconnected"), 1);
+        assert_eq!(
+            m.await_approval(&mine).await,
+            PermissionDecision::Deny {
+                reason: "disconnected".into()
+            }
+        );
+        assert_eq!(
+            m.cancel_session("s2", "disconnected"),
+            1,
+            "another session's ask must still be pending"
+        );
+        assert_eq!(
+            m.await_approval(&theirs).await,
+            PermissionDecision::Deny {
+                reason: "disconnected".into()
+            }
+        );
+    }
+
+    /// Shutdown breadth: `clear_all` settles every session's pending ask
+    /// through the same one-decision path, while the owner-disconnect sweep
+    /// above stays session-scoped (plan decision P4).
+    #[tokio::test]
+    async fn clear_all_settles_every_session() {
+        let m = delivering_module(Duration::from_secs(30));
+        let mine = ask_once(&m, "curl a");
+        let mut other = ctx(&m, "curl b");
+        other.session_id = "s2".into();
+        let PermissionDecision::Ask { request_id: theirs } = m.check(&other) else {
+            panic!("expected Ask");
+        };
+        m.clear_all();
+        assert_eq!(
+            m.await_approval(&mine).await,
+            PermissionDecision::Deny {
+                reason: "shutdown".into()
+            }
+        );
+        assert_eq!(
+            m.await_approval(&theirs).await,
+            PermissionDecision::Deny {
+                reason: "shutdown".into()
+            }
+        );
+    }
+
     /// Settled requests are consumed by their waiter; anything nobody ever
     /// consumed (late respond after the timeout, cancelled run) is pruned so the
     /// pending map cannot grow without bound.
@@ -878,7 +1175,7 @@ mod tests {
     /// the session would be allowed.
     #[tokio::test]
     async fn allow_always_scoped_to_exact_command() {
-        let m = PermissionModule::new(bash_deny_policy(), Duration::from_millis(50));
+        let m = delivering(bash_deny_policy(), Duration::from_millis(50));
         let c = ctx(&m, "npm test");
         if let PermissionDecision::Ask { request_id } = m.check(&c) {
             let handle = tokio::spawn({
@@ -919,7 +1216,7 @@ mod tests {
                 command_rules: vec![],
             },
         );
-        let m = PermissionModule::new(policies, Duration::from_millis(50));
+        let m = delivering(policies, Duration::from_millis(50));
         let c1 = PermissionContext {
             session_id: "s1".into(),
             tool: "grep".into(),
@@ -974,7 +1271,7 @@ mod tests {
                 command_rules: vec![],
             },
         );
-        let m = PermissionModule::new(policies, Duration::from_millis(50));
+        let m = delivering(policies, Duration::from_millis(50));
         let c1 = PermissionContext {
             session_id: "s1".into(),
             tool: "glob".into(),
@@ -1018,7 +1315,7 @@ mod tests {
                 command_rules: vec![],
             },
         );
-        let m = PermissionModule::new(policies, Duration::from_millis(50));
+        let m = delivering(policies, Duration::from_millis(50));
         let c1 = PermissionContext {
             session_id: "s1".into(),
             tool: "read".into(),
@@ -1259,7 +1556,7 @@ mod tests {
 
     #[tokio::test]
     async fn session_of_peeks_pending_request_session() {
-        let module = PermissionModule::new(HashMap::new(), Duration::from_secs(1));
+        let module = delivering(HashMap::new(), Duration::from_secs(1));
         let ctx = PermissionContext {
             session_id: "s-1".into(),
             tool: "bash".into(),
@@ -1410,6 +1707,7 @@ mod tests {
         let seen2 = Arc::clone(&seen);
         module.set_notifier(Arc::new(move |p: &PermissionRequestParams, _sid: &str| {
             *lock_or_recover(&seen2) = p.session_id.clone();
+            true // the test observer is the approver here (nothing answers, so it settles by timeout)
         }));
         let ctx = PermissionContext {
             session_id: "s-9".into(),
@@ -1424,7 +1722,7 @@ mod tests {
 
     #[tokio::test]
     async fn view_peeks_without_consuming() {
-        let module = PermissionModule::new(HashMap::new(), Duration::from_secs(1));
+        let module = delivering(HashMap::new(), Duration::from_secs(1));
         let ctx = PermissionContext {
             session_id: "s-1".into(),
             tool: "bash".into(),

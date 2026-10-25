@@ -28,6 +28,8 @@ import { useFileTree } from "./files.tsx";
 import { DEFAULT_PROJECT_KEY } from "./filetreePrefs.ts";
 import { buildSearchIndex, clampSelection, flattenVisible, moveSelection, parentPath } from "./files.ts";
 import type { RawFileEntry, SearchEntry } from "./files.ts";
+import { formatSubSuffix, getStatusLine } from "./status.ts";
+import type { SubSuffixInput } from "./status.ts";
 export interface TransportHandle {
   onStatusChange?: (s: TransportStatus) => void;
   close(): void;
@@ -261,6 +263,66 @@ function useTransportLifecycle(
   ]);
 }
 
+const SUB_FRESH_MS = 300_000;
+
+type SubSnapshot = {
+  windows: { percent?: number | null }[];
+  fetchedAt: number;
+  stale: boolean;
+};
+
+/**
+ * One usage read per connection open — the status line never polls. A missing or rejected
+ * credential yields null so the line keeps its plain wording.
+ */
+function useSubscriptionSuffix(
+  client: RpcClient | null,
+  status: TransportStatus,
+  credentialSeq = 0,
+): SubSuffixInput {
+  const [snapshot, setSnapshot] = useState<SubSnapshot | null>(null);
+  useEffect(() => {
+    // Dropping the snapshot on close matters: the numbers described the connection that
+    // just went away, and `stale` is recomputed from a render-time clock, so keeping them
+    // would let the line read `kernel unreachable · sub 40%` — and flip arbitrarily.
+    if (!client || status !== "open") {
+      setSnapshot(null);
+      return;
+    }
+    let alive = true;
+    void (async () => {
+      try {
+        const auth = (await client.request(METHODS.authStatus)) as { authenticated?: boolean } | null;
+        if (!alive) return;
+        if (!auth?.authenticated) {
+          setSnapshot(null);
+          return;
+        }
+        const usage = (await client.request(METHODS.providerUsage, { refresh: false })) as {
+          windows?: { percent?: number | null }[] | null;
+          stale?: boolean;
+        } | null;
+        if (!alive) return;
+        setSnapshot({ windows: usage?.windows ?? [], fetchedAt: Date.now(), stale: usage?.stale === true });
+      } catch {
+        // A failed read is not a credential problem: drop the suffix rather than guess.
+        if (alive) setSnapshot(null);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+    // A credential change silently invalidates the numbers: re-read on the host's bump
+    // instead of leaving the line describing the account that was just unlinked.
+  }, [client, status, credentialSeq]);
+  if (!snapshot) return null;
+  return {
+    windows: snapshot.windows,
+    fetchedAt: snapshot.fetchedAt,
+    stale: snapshot.stale || Date.now() - snapshot.fetchedAt > SUB_FRESH_MS,
+  };
+}
+
 function useBackoffTimer(
   status: TransportStatus,
   authError: string | null,
@@ -390,12 +452,6 @@ function useAppHandlers(client: RpcClient | null, st: SessionState) {
   return { handleSelect, handleNew, projectRoot: session.projectRoot };
 }
 
-function getStatusLine(authError: string | null, status: TransportStatus): string {
-  if (authError) return `auth error: ${authError}`;
-  if (status === "open") return "connected";
-  if (status === "closed") return "kernel unreachable";
-  return "connecting...";
-}
 function usePaletteControl(onThemeToggle?: () => void, disabled = false) {
   const [paletteQuery, setPaletteQuery] = useState<string | null>(null);
   const [modelOpen, setModelOpen] = useState(false);
@@ -459,8 +515,13 @@ function AppInner({ url, createTransport, backoffBaseMs = 1000 }: AppProps) {
   const { handleSelect, handleNew } = session;
   const { pending: permReq, respond: handlePermRespond, clear: clearPerm } = usePermissionState(client);
   const { toggle: toggleTheme, palette } = useTheme();
-  const statusLine = getStatusLine(authError, status);
-  const modelConfig = useModelConfig(client);
+  // Credential changes (link / clear) alter the served model catalog and the usage numbers:
+  // bump this to re-read both.
+  const [catalogSeq, setCatalogSeq] = useState(0);
+  const sub = useSubscriptionSuffix(client, status, catalogSeq);
+  const statusLine = getStatusLine(authError, status, sub);
+  const subTone = formatSubSuffix(sub).tone;
+  const modelConfig = useModelConfig(client, catalogSeq);
   const [selectedModel, setSelectedModel] = useState<ModelEntry | null>(null);
   const [transcriptRows, setTranscriptRows] = useState<TranscriptRow[]>([]);
   const [todos, setTodos] = useState<TodoState>(EMPTY_TODOS);
@@ -664,7 +725,13 @@ function AppInner({ url, createTransport, backoffBaseMs = 1000 }: AppProps) {
     [client, st, selectedModel],
   );
   const statusColor =
-    authError !== null ? palette.error : status === "open" ? palette.success : palette.warning;
+    authError !== null || subTone === "error"
+      ? palette.error
+      : subTone === "warning"
+        ? palette.warning
+        : status === "open"
+          ? palette.success
+          : palette.warning;
   const sidebarEntries = useMemo(() => {
     const entries: Array<{ kind: "project"; id: string } | { kind: "session"; id: string; projectId: string }> = [];
     if (projects.length === 0) {
@@ -864,7 +931,11 @@ function AppInner({ url, createTransport, backoffBaseMs = 1000 }: AppProps) {
         />
       ) : null}
       {paletteCtrl.subOpen && client ? (
-        <SubscriptionOverlay client={client} onClose={paletteCtrl.handleSubClose} />
+        <SubscriptionOverlay
+          client={client}
+          onClose={paletteCtrl.handleSubClose}
+          onCredentialChange={() => setCatalogSeq((n) => n + 1)}
+        />
       ) : null}
       {paletteCtrl.paletteQuery !== null && !paletteCtrl.modelOpen ? (
         <Palette

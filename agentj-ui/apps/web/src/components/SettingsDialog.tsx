@@ -8,6 +8,7 @@ import ModalDialog from "./ModalDialog";
 import SettingsDisplayPanel from "./SettingsDisplayPanel";
 import SettingsProjectPanel from "./SettingsProjectPanel";
 import SubscriptionPanel from "./SubscriptionPanel";
+import type { SubscriptionStatusData } from "../hooks/useSubscriptionStatus";
 import type { AuthSetApiKeyResult } from "@agentj/protocol";
 import "./settingsDialog.css";
 
@@ -19,9 +20,14 @@ type Props = {
   onModelsLinked?: (catalog: AuthSetApiKeyResult) => void;
   /** Forwards a confirmed credential clear, so the shell drops the linked catalog. */
   onModelsCleared?: () => void;
+  /** Tab to open on mount — lets the topbar light land on 订阅 directly. */
+  initialCategory?: CategoryId;
+  /** Shell-owned usage snapshot; the panel renders it instead of fetching again. */
+  subscription?: SubscriptionStatusData;
 };
 
 type CategoryId = "connection" | "display" | "project" | "demo" | "subscription";
+export type SettingsCategory = CategoryId;
 type Category = { id: CategoryId; label: string };
 
 const CATEGORIES: Category[] = [
@@ -40,8 +46,16 @@ function tabId(id: CategoryId): string {
   return `aj-settings-tab-${id}`;
 }
 
-export default function SettingsDialog({ onConnect, onClose, client = null, onModelsLinked, onModelsCleared }: Props) {
-  const [active, setActive] = useState<CategoryId>("connection");
+export default function SettingsDialog({
+  onConnect,
+  onClose,
+  client = null,
+  onModelsLinked,
+  onModelsCleared,
+  initialCategory = "connection",
+  subscription,
+}: Props) {
+  const [active, setActive] = useState<CategoryId>(initialCategory);
   const [demo, setDemo] = useState(isDemoEnabled);
   const tabRefs = useRef(new Map<CategoryId, HTMLButtonElement | null>());
   const activeIndex = CATEGORIES.findIndex((category) => category.id === active);
@@ -129,7 +143,7 @@ export default function SettingsDialog({ onConnect, onClose, client = null, onMo
           {active === "subscription" &&
             (client ? (
               <SubscriptionPanel client={client} onClose={onClose} onLinked={onModelsLinked}
-                onCleared={onModelsCleared} />
+                onCleared={onModelsCleared} status={subscription} />
             ) : (
               <p className="aj-hint">先连接内核</p>
             ))}
