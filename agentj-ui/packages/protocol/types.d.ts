@@ -230,6 +230,11 @@ export interface AuthSetApiKeyResult {
  * @since 0.17.0
  */
 export interface ModelEntry {
+  /**
+   * Context window in tokens; absent when upstream metadata does not publish a window.
+   * @since 0.20.0
+   */
+  context_window?: number | null;
   format: string;
   id: string;
   verified: boolean;
@@ -823,6 +828,68 @@ export interface ProviderUsageError {
 }
 
 /**
+ * Quota window kind. `Unknown` tolerates forward values. @since 0.17.0
+ */
+export type UsageWindowKind = "rolling" | "weekly" | "monthly";
+
+/**
+ * Query parameters for `provider/usageHistory`. Every field is optional so an empty
+ * `params` object means "default provider, all kinds, full retention window". @since 0.20.0
+ */
+export interface ProviderUsageHistoryParams {
+  kind?: UsageWindowKind | null;
+  limit?: number | null;
+  provider?: string | null;
+  since?: number | null;
+  [k: string]: unknown;
+}
+
+/**
+ * Quota window kind. `Unknown` tolerates forward values. @since 0.17.0
+ */
+/**
+ * Window status. `Unknown` tolerates forward values. @since 0.17.0
+ */
+export type UsageWindowStatus = "ok" | "rate-limited";
+
+/**
+ * Result of `provider/usageHistory`, samples ordered by `at` ascending. @since 0.20.0
+ */
+export interface ProviderUsageHistoryResult {
+  provider: string;
+  /**
+   * Retention actually applied by the kernel, so a client can label the axis.
+   */
+  retention_days: number;
+  samples: UsageSample[];
+  [k: string]: unknown;
+}
+/**
+ * One persisted sampling of every usage window the provider reported. @since 0.20.0
+ */
+export interface UsageSample {
+  at: number;
+  windows: UsageWindow[];
+  [k: string]: unknown;
+}
+/**
+ * One quota window. `percent` is the *used* percentage. @since 0.17.0
+ */
+export interface UsageWindow {
+  kind: UsageWindowKind;
+  /**
+   * `None` when upstream's value was absent or not an integer. @since 0.17.0
+   */
+  percent?: number | null;
+  /**
+   * Omitted when `percent == 0` (upstream placeholder is dropped). @since 0.17.0
+   */
+  resets_at?: string | null;
+  status: UsageWindowStatus;
+  [k: string]: unknown;
+}
+
+/**
  * `provider/usage` params. @since 0.17.0
  */
 export interface ProviderUsageParams {
@@ -840,11 +907,9 @@ export interface ProviderUsageParams {
 /**
  * Quota window kind. `Unknown` tolerates forward values. @since 0.17.0
  */
-export type UsageWindowKind = "rolling" | "weekly" | "monthly";
 /**
  * Window status. `Unknown` tolerates forward values. @since 0.17.0
  */
-export type UsageWindowStatus = "ok" | "rate-limited";
 
 /**
  * `provider/usage` result. Domain failures travel in `error` (success response).
@@ -876,19 +941,6 @@ export interface ProviderUsageResult {
 /**
  * One quota window. `percent` is the *used* percentage. @since 0.17.0
  */
-export interface UsageWindow {
-  kind: UsageWindowKind;
-  /**
-   * `None` when upstream's value was absent or not an integer. @since 0.17.0
-   */
-  percent?: number | null;
-  /**
-   * Omitted when `percent == 0` (upstream placeholder is dropped). @since 0.17.0
-   */
-  resets_at?: string | null;
-  status: UsageWindowStatus;
-  [k: string]: unknown;
-}
 
 /**
  * `question/respond` params (`answers` are option ids or `other:`-prefixed
@@ -1235,6 +1287,20 @@ export interface ToolDefinition {
   [k: string]: unknown;
 }
 
+
+/**
+ * Quota window kind. `Unknown` tolerates forward values. @since 0.17.0
+ */
+/**
+ * Window status. `Unknown` tolerates forward values. @since 0.17.0
+ */
+
+/**
+ * One persisted sampling of every usage window the provider reported. @since 0.20.0
+ */
+/**
+ * One quota window. `percent` is the *used* percentage. @since 0.17.0
+ */
 
 /**
  * Quota window kind. `Unknown` tolerates forward values. @since 0.17.0

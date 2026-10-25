@@ -37,6 +37,7 @@ mod logging;
 mod provider_service;
 mod providers;
 mod refreshing_provider;
+mod usage_history;
 
 #[derive(Parser)]
 #[command(name = "agentj", version, about = "AgentJ — AI coding agent")]
@@ -296,6 +297,52 @@ fn metrics_state_warning(dir: Option<&Path>) -> Option<String> {
     })
 }
 
+/// `[web] state_dir` → `$XDG_DATA_HOME/agentj/usage` → `$HOME/.local/share/agentj/usage`.
+/// Mirrors `metrics_state_dir_from`; the extra `usage/` keeps the sample files out of the
+/// metrics directory, and `usage.history_enabled = false` means "no directory at all".
+fn usage_history_dir_from(
+    cfg: &agentj_config::Config,
+    xdg: Option<&str>,
+    home: Option<&str>,
+) -> Option<std::path::PathBuf> {
+    if cfg.get_bool("usage.history_enabled") == Some(false) {
+        return None;
+    }
+    metrics_state_dir_from(cfg, xdg, home).map(|dir| dir.join("usage"))
+}
+
+fn resolve_usage_history_dir(cfg: &agentj_config::Config) -> Option<std::path::PathBuf> {
+    usage_history_dir_from(
+        cfg,
+        std::env::var("XDG_DATA_HOME").ok().as_deref(),
+        std::env::var("HOME").ok().as_deref(),
+    )
+}
+
+/// `usage.history_days` / `usage.history_max_samples` with the store's own defaults as the
+/// fallback; `UsageHistory::with_limits` clamps whatever the config supplied.
+fn usage_history_limits(cfg: &agentj_config::Config) -> (i64, usize) {
+    let days = cfg
+        .get_int("usage.history_days")
+        .unwrap_or(usage_history::DEFAULT_RETENTION_DAYS);
+    let max_samples = cfg
+        .get_int("usage.history_max_samples")
+        .and_then(|value| usize::try_from(value).ok())
+        .unwrap_or(usage_history::DEFAULT_MAX_SAMPLES);
+    (days, max_samples)
+}
+
+fn usage_history_warning(cfg: &agentj_config::Config, dir: Option<&Path>) -> Option<String> {
+    if cfg.get_bool("usage.history_enabled") == Some(false) || dir.is_some() {
+        return None;
+    }
+    Some(
+        "warning: no usage history directory (set XDG_DATA_HOME, HOME or [web] state_dir); \
+         usage history is disabled until one exists"
+            .to_string(),
+    )
+}
+
 fn record_completed_turn(
     collector: &agentj_core::UsageCollector,
     sid: String,
@@ -433,6 +480,9 @@ struct TcpServeOptions {
     secure_cookies: bool,
     /// `[web] state_dir` (or the XDG/HOME fallback) for the persisted limiter state.
     metrics_state_dir: Option<std::path::PathBuf>,
+    /// Startup warning when the persisted usage history has no directory; it rides the same
+    /// `[web] state_dir` chain, under `usage/`.
+    usage_history_warning: Option<String>,
     /// Optional subscription handle (design D4); `run` passes none.
     provider_service: Option<Arc<dyn agentj_ipc::ProviderService>>,
     /// `[web]` spot cadence + per-request verification knobs.
@@ -516,9 +566,7 @@ async fn serve_tcp(
     options: TcpServeOptions,
     mcp_manager: Arc<McpConnectionManager>,
 ) -> anyhow::Result<()> {
-    let warning = insecure_bind_warning(&options.host, options.token.as_deref());
-    let state_warning = metrics_state_warning(options.metrics_state_dir.as_deref());
-    let trust_warning = proxy_trust_warning(&options.host, options.trust_proxy_headers);
+    let warnings = serve_warnings(&options);
     let web_dist = discover_web_dist(options.web_dist.clone());
     let mut tcp = agentj_ipc::tcp::TcpIpcServer::bind(
         &format!("{}:{}", bracket_ipv6(&options.host), options.port),
@@ -551,7 +599,7 @@ async fn serve_tcp(
         &web_dist,
         &options.host,
         local.port(),
-        [warning, state_warning, trust_warning],
+        warnings,
     );
     // Resident mode: exits when the last client disconnects or a shutdown
     // request arrives (design #3, on-demand resident).
@@ -560,16 +608,27 @@ async fn serve_tcp(
     shutdown_tcp_server(&tcp, signal_task, &mcp_manager, run_result).await
 }
 
+/// The config-level startup warnings in banner order: insecure bind, metrics state,
+/// proxy trust, usage history.
+fn serve_warnings(options: &TcpServeOptions) -> [Option<String>; 4] {
+    [
+        insecure_bind_warning(&options.host, options.token.as_deref()),
+        metrics_state_warning(options.metrics_state_dir.as_deref()),
+        proxy_trust_warning(&options.host, options.trust_proxy_headers),
+        options.usage_history_warning.clone(),
+    ]
+}
+
 /// Print the readiness banner (websocket + resolved web-dist line) and the
 /// config-level warnings in the order the CLI has always emitted them:
 /// websocket → dist → web config, then the optional warnings in
-/// [insecure-bind, metrics-state, proxy-trust] order.
+/// [insecure-bind, metrics-state, proxy-trust, usage-history] order.
 fn emit_serve_banner(
     web: &agentj_ipc::web::WebConfig,
     web_dist: &Option<std::path::PathBuf>,
     host: &str,
     port: u16,
-    warnings: [Option<String>; 3],
+    warnings: [Option<String>; 4],
 ) {
     println!("websocket on ws://{}:{}/ws", bracket_ipv6(host), port);
     match web_dist {
@@ -926,6 +985,7 @@ fn build_provider_service(
     }
     let store = agentj_auth::AuthStore::with_default_path().map_err(|e| anyhow::anyhow!("{e}"))?;
     let default_model = config.get_str("model.default_model").unwrap_or_default();
+    let (history_days, history_max_samples) = usage_history_limits(config);
     let svc = provider_service::CliProviderService::new(
         store,
         provider_cfgs(config),
@@ -934,7 +994,9 @@ fn build_provider_service(
         config.get_int("model.quota_warn_percent").unwrap_or(80) as u8,
         Arc::clone(providers),
     )
-    .with_default_model(default_model);
+    .with_default_model(default_model)
+    .with_history_dir(resolve_usage_history_dir(config))
+    .with_history_limits(history_days, history_max_samples);
     Ok(Some(Arc::new(svc)))
 }
 
@@ -959,6 +1021,7 @@ struct WebSettings {
     trust_proxy_headers: bool,
     secure_cookies: bool,
     metrics_state_dir: Option<std::path::PathBuf>,
+    usage_history_warning: Option<String>,
     integrity: agentj_ipc::web::IntegrityOptions,
 }
 
@@ -969,6 +1032,10 @@ impl WebSettings {
             trust_proxy_headers: web.is_some_and(|web| web.trust_proxy_headers),
             secure_cookies: web.is_some_and(|web| web.secure_cookies),
             metrics_state_dir: resolve_metrics_state_dir(config),
+            usage_history_warning: usage_history_warning(
+                config,
+                resolve_usage_history_dir(config).as_deref(),
+            ),
             integrity: resolve_integrity_options(config),
         }
     }
@@ -1256,6 +1323,7 @@ async fn run_serve(
         trust_proxy_headers: web.trust_proxy_headers,
         secure_cookies: web.secure_cookies,
         metrics_state_dir: web.metrics_state_dir,
+        usage_history_warning: web.usage_history_warning,
         provider_service: wiring.provider_service,
         integrity: web.integrity,
     };
@@ -1993,6 +2061,68 @@ mod tests {
         assert_eq!(metrics_state_dir_from(&cfg, None, None), None);
         assert!(metrics_state_warning(None).is_some());
         assert!(metrics_state_warning(Some(std::path::Path::new("/tmp/x"))).is_none());
+    }
+
+    #[test]
+    fn usage_history_dir_prefers_state_dir_then_xdg_then_home() {
+        let cfg = config_with_web(Some("/tmp/aj"));
+        assert_eq!(
+            usage_history_dir_from(&cfg, Some("/xdg"), Some("/home/u")),
+            Some(std::path::PathBuf::from("/tmp/aj/usage")),
+            "[web] state_dir wins, and the store appends its own subdirectory"
+        );
+        let cfg = config_with_web(None);
+        assert_eq!(
+            usage_history_dir_from(&cfg, Some("/xdg"), Some("/home/u")),
+            Some(std::path::PathBuf::from("/xdg/agentj/usage"))
+        );
+        assert_eq!(
+            usage_history_dir_from(&cfg, None, Some("/home/u")),
+            Some(std::path::PathBuf::from(
+                "/home/u/.local/share/agentj/usage"
+            ))
+        );
+        assert_eq!(usage_history_dir_from(&cfg, None, None), None);
+    }
+
+    #[test]
+    fn usage_history_dir_is_none_when_history_is_disabled() {
+        let cfg = config_with_web_body("[usage]\nhistory_enabled = false\n");
+        assert_eq!(
+            usage_history_dir_from(&cfg, Some("/xdg"), Some("/home/u")),
+            None,
+            "a disabled store must not get a directory at all"
+        );
+    }
+
+    #[test]
+    fn usage_history_warning_names_every_fallback() {
+        let cfg = config_with_web(None);
+        let warn = usage_history_warning(&cfg, None).expect("warning expected");
+        assert!(warn.contains("XDG_DATA_HOME"), "{warn}");
+        assert!(warn.contains("HOME"), "{warn}");
+        assert!(warn.contains("state_dir"), "{warn}");
+        assert!(warn.contains("usage history is disabled"), "{warn}");
+        assert!(usage_history_warning(&cfg, Some(Path::new("/tmp/x"))).is_none());
+        let disabled = config_with_web_body("[usage]\nhistory_enabled = false\n");
+        assert!(
+            usage_history_warning(&disabled, None).is_none(),
+            "a disabled store must not warn"
+        );
+    }
+
+    #[test]
+    fn usage_history_limits_fall_back_to_the_store_defaults() {
+        let cfg = config_with_web_body("[permission]\ntimeout_ms = 800\n");
+        assert_eq!(
+            usage_history_limits(&cfg),
+            (
+                usage_history::DEFAULT_RETENTION_DAYS,
+                usage_history::DEFAULT_MAX_SAMPLES
+            )
+        );
+        let cfg = config_with_web_body("[usage]\nhistory_days = 7\nhistory_max_samples = 500\n");
+        assert_eq!(usage_history_limits(&cfg), (7, 500));
     }
 
     #[test]

@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "UsageSample",
+  "description": "One persisted sampling of every usage window the provider reported. @since 0.20.0",
+  "type": "object",
+  "properties": {
+    "at": {
+      "type": "integer",
+      "format": "int64"
+    },
+    "windows": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/UsageWindow"
+      }
+    }
+  },
+  "required": [
+    "at",
+    "windows"
+  ],
+  "$defs": {
+    "UsageWindow": {
+      "description": "One quota window. `percent` is the *used* percentage. @since 0.17.0",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/UsageWindowKind"
+        },
+        "percent": {
+          "description": "`None` when upstream's value was absent or not an integer. @since 0.17.0",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0
+        },
+        "resets_at": {
+          "description": "Omitted when `percent == 0` (upstream placeholder is dropped). @since 0.17.0",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "$ref": "#/$defs/UsageWindowStatus"
+        }
+      },
+      "required": [
+        "kind",
+        "status"
+      ]
+    },
+    "UsageWindowKind": {
+      "description": "Quota window kind. `Unknown` tolerates forward values. @since 0.17.0",
+      "type": "string",
+      "enum": [
+        "rolling",
+        "weekly",
+        "monthly"
+      ]
+    },
+    "UsageWindowStatus": {
+      "description": "Window status. `Unknown` tolerates forward values. @since 0.17.0",
+      "type": "string",
+      "enum": [
+        "ok",
+        "rate-limited"
+      ]
+    }
+  }
+}

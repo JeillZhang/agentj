@@ -2,6 +2,7 @@ import { describe, expect, it, mock } from "bun:test";
 import { testRender } from "@opentui/react/test-utils";
 import type { TestRendererSetup } from "@opentui/core/testing";
 import { act } from "react";
+import { METHODS, formatContextWindow } from "@agentj/sdk";
 import type { RpcClient } from "@agentj/sdk";
 import {
   MODEL_CONFIG,
@@ -9,6 +10,7 @@ import {
   providersFromStatus,
   renderModelList,
   useModelConfig,
+  withContextWindows,
 } from "./models";
 import type { ModelListInput } from "./models";
 
@@ -21,6 +23,9 @@ const DUP_PROVIDERS = [
 
 type ConfigControl = { current: ModelListInput | null };
 
+/** The `model/list` leg of `useModelConfig`: a reply to resolve, or an Error to reject it. */
+type ModelListStub = { models?: Array<{ id: string; context_window?: number | null }> } | Error;
+
 function ModelConfigProbe({ client, control }: {
   client: RpcClient | null;
   control: ConfigControl;
@@ -32,12 +37,25 @@ function ModelConfigProbe({ client, control }: {
 
 async function renderConfigProbe(
   data: Record<string, unknown>,
+  modelList: ModelListStub = { models: [] },
+  byProvider: Record<string, ModelListStub> = {},
 ): Promise<{ cfg: () => ModelListInput; setup: TestRendererSetup }> {
   let settle: (value: unknown) => void = () => {};
   const pending = new Promise<unknown>((resolve) => {
     settle = resolve;
   });
-  const client = { request: () => pending } as unknown as RpcClient;
+  const client = {
+    request: (method: string, params?: Record<string, unknown>) => {
+      if (method === METHODS.modelList) {
+        // `model/list` is provider-scoped; a per-provider stub answers each fan-out leg.
+        const provider = params?.["provider"];
+        const stub =
+          (typeof provider === "string" ? byProvider[provider] : undefined) ?? modelList;
+        return stub instanceof Error ? Promise.reject(stub) : Promise.resolve(stub);
+      }
+      return pending;
+    },
+  } as unknown as RpcClient;
   const control: ConfigControl = { current: null };
   const setup = await testRender(<ModelConfigProbe client={client} control={control} />, {});
   await act(async () => {
@@ -128,6 +146,25 @@ describe("renderModelList", () => {
     const out = renderModelList({ default_model: "a", providers: [{ name: "a" }] });
     expect(out).not.toContain("重启内核生效");
     expect(out).toContain("Enter");
+  });
+});
+
+describe("withContextWindows", () => {
+  it("appends the formatted context window to the model row", () => {
+    const rows = withContextWindows(
+      [{ name: "opencode-go/a" }],
+      [{ id: "opencode-go/a", context_window: 1_048_576 }],
+    );
+    expect(rows[0].cap).toBe("1.0M");
+    expect(renderModelList({ default_model: "opencode-go/a", providers: rows })).toContain(
+      "▶ opencode-go/a  1.0M",
+    );
+  });
+
+  it("leaves a row without a window untouched", () => {
+    const rows = withContextWindows([{ name: "m" }], [{ id: "other", context_window: 8192 }]);
+    expect(rows[0]).toEqual({ name: "m" });
+    expect(renderModelList({ default_model: "m", providers: rows })).toContain("▶ m\n");
   });
 });
 
@@ -249,6 +286,50 @@ describe("useModelConfig", () => {
     const { cfg, setup } = await renderConfigProbe({ default_model: "deepseek-chat" });
     expect(cfg().providers).toEqual(MODEL_CONFIG.providers.map(({ name }) => ({ name })));
     expect(cfg().default_model).toBe("deepseek-chat");
+    act(() => setup.renderer.destroy());
+  });
+
+  it("labels kernel providers with the catalog context window", async () => {
+    const { cfg, setup } = await renderConfigProbe(
+      { providers: [{ id: "opencode-go", models: ["opencode-go/a"] }] },
+      { models: [{ id: "opencode-go/a", context_window: 1_048_576 }] },
+    );
+    expect(cfg().providers).toEqual([
+      { name: "opencode-go/a", provider: "opencode-go", cap: "1.0M" },
+    ]);
+    act(() => setup.renderer.destroy());
+  });
+
+  it("labels each row from its own provider's catalog", async () => {
+    const { cfg, setup } = await renderConfigProbe(
+      {
+        default_model: "deepseek-chat",
+        providers: [
+          { id: "deepseek", models: ["deepseek-chat"] },
+          { id: "opencode-go", models: ["opencode-go/kimi-k3"] },
+        ],
+      },
+      { models: [] },
+      {
+        deepseek: { models: [{ id: "deepseek-chat", context_window: null }] },
+        "opencode-go": {
+          models: [{ id: "opencode-go/kimi-k3", context_window: 204_800 }],
+        },
+      },
+    );
+    expect(cfg().providers).toEqual([
+      { name: "deepseek-chat", provider: "deepseek" },
+      { name: "opencode-go/kimi-k3", provider: "opencode-go", cap: formatContextWindow(204_800)! },
+    ]);
+    act(() => setup.renderer.destroy());
+  });
+
+  it("keeps the provider list when the catalog request fails", async () => {
+    const { cfg, setup } = await renderConfigProbe(
+      { providers: [{ id: "opencode-go", models: ["opencode-go/a"] }] },
+      new Error("model/list failed"),
+    );
+    expect(cfg().providers).toEqual([{ name: "opencode-go/a", provider: "opencode-go" }]);
     act(() => setup.renderer.destroy());
   });
 });

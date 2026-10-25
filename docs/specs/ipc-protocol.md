@@ -2,7 +2,7 @@
 
 > 本文档是 AgentJ 内核对外暴露的统一 UI 接口协议（IPC）的**人类可读权威规范**。
 > 机器可读工件（`schemas/*.json` 与 `protocol/methods.json`）是本规范的机器事实来源，见 [机器可读模型](#10-机器可读模型)。
-> 协议当前版本：`0.19.0`。
+> 协议当前版本：`0.20.0`。
 
 ## 1. 范围与一致性
 
@@ -10,7 +10,7 @@
 
 - **传输层**：每种传输各自的帧格式（stdio / TCP 使用 NDJSON，WebSocket 使用原生帧）。
 - **基础协议**：传输无关的 JSON-RPC 2.0 消息信封、错误对象与错误码。
-- **方法面**：本规范支持的 28 个方法（21 个既有 + 5 个订阅方法 + 2 个凭据链接方法；注册表 `protocol/methods.json` 收录全部方法，含 `session/subscribe` / `session/unsubscribe`（见 8.11 / 8.12）、`session/list`（8.18）、`session/history`（8.19）、`file/list`（8.20）、`$/askQuestion`（8.21）、`question/respond`（8.22）、`model/list`（8.23）、`auth/status`（8.24）、`provider/usage`（8.25）、`auth/deviceStart`（8.26）、`auth/devicePoll`（8.27）、`auth/setApiKey`（8.28）、`auth/clearCredential`（8.29））及其参数 / 结果结构。
+- **方法面**：本规范支持的 29 个方法（21 个既有 + 6 个订阅方法 + 2 个凭据链接方法；注册表 `protocol/methods.json` 收录全部方法，含 `session/subscribe` / `session/unsubscribe`（见 8.11 / 8.12）、`session/list`（8.18）、`session/history`（8.19）、`file/list`（8.20）、`$/askQuestion`（8.21）、`question/respond`（8.22）、`model/list`（8.23）、`auth/status`（8.24）、`provider/usage`（8.25）、`auth/deviceStart`（8.26）、`auth/devicePoll`（8.27）、`auth/setApiKey`（8.28）、`auth/clearCredential`（8.29）、`provider/usageHistory`（8.30））及其参数 / 结果结构。
 
 本文档适用于所有传输。任何传输都必须遵循基础协议与方法面的全部规则。
 
@@ -194,7 +194,7 @@ WebSocket 与 raw TCP 同端口共存，通过连接分类器按首字节区分 
 协议扩展（`0.17.0`）**不新增任何错误码**：订阅面的 5 个方法（`model/list` / `auth/status` / `provider/usage` / `auth/deviceStart` / `auth/devicePoll`）复用既有码，并以 `error.data.reason` 区分两类拒绝：
 
 - **未知 provider 名**（不在已注册 provider 中）→ `-32602 InvalidParams` + `error.data = { "field": "provider", "reason": "unknown_provider", "registered": ["<名>", …] }`。
-- **provider 已知但不支持该能力**（如对非 opencode-go 调 `provider/usage` / `auth/deviceStart`）→ `-32602 InvalidParams` + `error.data = { "field": "provider", "reason": "unsupported_provider", "capability": "<usage|device_flow>" }`。
+- **provider 已知但不支持该能力**（如对非 opencode-go 调 `provider/usage` / `auth/deviceStart`）→ `-32602 InvalidParams` + `error.data = { "field": "provider", "reason": "unsupported_provider", "capability": "<usage|usage_history|device_flow|api_key>" }`。取值与内核 `require_kind` 的实参一一对应：`provider/usage` → `usage`、`provider/usageHistory` → `usage_history`、`auth/deviceStart` / `auth/devicePoll` → `device_flow`、`auth/setApiKey` / `auth/clearCredential` → `api_key`（`usage_history` 与 `api_key` 为后续版本加性补充，见 §8.30 / §8.28）。
 - **`provider_service` handle 未注入**（如 `run --attach` 连接远端内核）→ `-32603 Internal error` + `error.data = { "reason": "provider_service_unavailable" }`。
 
 上游 / 凭据失败（未登录、401、403、5xx、网络）是**领域失败**，**不占错误码**：以**成功响应**的结果数据表达（`ProviderUsageResult.error.kind`、`AuthDevicePollResult.state`），使客户端能同时拿到「上次快照 + 失败原因」（`stale: true`，见 §8.25 / §8.27）。
@@ -415,7 +415,7 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 
 ### 8.1 方法总表
 
-与 `protocol/methods.json` 一致（注册表收录全部 28 个方法）：
+与 `protocol/methods.json` 一致（注册表收录全部 29 个方法）：
 
 | 方法 | 类型 | 方向 | params | result | 说明 |
 |------|------|------|--------|--------|------|
@@ -447,6 +447,7 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 | `auth/devicePoll` | request | C→S | AuthDevicePollParams | AuthDevicePollResult | 设备码轮询状态（`@since 0.17.0`，见 8.27） |
 | `auth/setApiKey` | request | C→S | AuthSetApiKeyParams | AuthSetApiKeyResult | 链接 API Key 并触发运行期激活（`@since 0.18.0`，见 8.28） |
 | `auth/clearCredential` | request | C→S | AuthClearCredentialParams | AuthClearCredentialResult | 解除已存凭据并收敛注册（`@since 0.18.0`，见 8.29） |
+| `provider/usageHistory` | request | C→S | ProviderUsageHistoryParams | ProviderUsageHistoryResult | 持久化用量样本的纯读（`@since 0.20.0`，见 8.30） |
 
 ### 8.2 initialize（请求，见 §4.1）
 
@@ -1218,6 +1219,62 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 - **部分结果**：无。
 - **error.data**：未知 provider → `-32602` + `{ "field": "provider", "reason": "unknown_provider", "registered": ["<名>", …] }`；provider 已知但非 opencode-go → `-32602` + `{ "field": "provider", "reason": "unsupported_provider", "capability": "api_key" }`（**凭据与注册表均不被触碰**，与 §8.28 同值）；params 结构畸形 → `-32602` + `{ "reason": "invalid_params", "detail": "<原文>" }`；凭据文件不可读 / 权限不合规 / 落盘失败 → `-32603` + `{ "reason": "<原文>" }`；收敛（注销 / 重建注册）失败 → `-32603` + `{ "reason": "activation_failed", "detail": "<自产原因>" }`；handle 未注入 → `-32603` + `{ "reason": "provider_service_unavailable" }`。
 
+### 8.30 provider/usageHistory（请求，`@since 0.20.0`）
+
+- **能力声明**：订阅能力（用量历史），**仅 opencode-go** 支持（不支持时 `capability` 为 `usage_history`）。需注入 `provider_service` handle；未注入 → `-32603` + `data{reason:"provider_service_unavailable"}`。**纯读**：不发网络请求、不需要凭据。
+- **请求**：`ProviderUsageHistoryParams`（四个字段均可选；`params` 整体缺省等价于 `{}`，即默认 provider、不过滤窗口、完整保留窗口、默认页大小）。
+
+```json
+{ "jsonrpc": "2.0", "id": 19, "method": "provider/usageHistory", "params": {
+  "provider": "opencode-go",
+  "kind": "weekly",
+  "since": 1700000000,
+  "limit": 200
+} }
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `provider` | string | 否 | provider 名；省略 / `null` = 内核配置的默认 provider；非 opencode-go → `-32602` + `reason:"unsupported_provider"` |
+| `kind` | UsageWindowKind | 否 | 只保留**报告了该窗口**的样本（样本内其余窗口原样保留）；省略 = 不过滤；未知取值（反序列化为 `Unknown`）**同样不参与过滤**（否则会静默返回空序列） |
+| `since` | integer | 否 | 起始时刻（epoch **秒**，int64，**闭区间**）；省略 = `now − retention_days × 86400` |
+| `limit` | integer | 否 | 保留**最新** N 条；省略 = **2000**；超界按 **1..=5000** 钳制（**不报错**） |
+
+- **响应**：`ProviderUsageHistoryResult`（**历史为空也是成功响应**）。
+
+```json
+{ "jsonrpc": "2.0", "id": 19, "result": {
+  "provider": "opencode-go",
+  "retention_days": 30,
+  "samples": [
+    { "at": 1700000000, "windows": [
+      { "kind": "rolling", "status": "ok", "percent": 4, "resets_at": "2026-08-13T16:27:38Z" },
+      { "kind": "weekly", "status": "ok", "percent": 3, "resets_at": "2026-08-17T00:00:00Z" }
+    ] }
+  ]
+} }
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `provider` | string | 是 | 实际查询的 provider 名 |
+| `retention_days` | integer | 是 | 内核**实际生效**的保留天数（`[usage] history_days`，默认 **30**，钳制 **1..=365**），客户端据此标注时间轴；历史功能未启用 / 无可用目录时为 **0** |
+| `samples` | UsageSample[] | 是 | 按 `at` **升序**；空历史 / 功能关闭时为空数组（**不编造样本**） |
+
+- **UsageSample**：
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `at` | integer | 是 | 采样时刻（epoch **秒**，int64，即该次上游取数的时刻） |
+| `windows` | UsageWindow[] | 是 | 该次取数得到的窗口快照，结构与 `provider/usage` 的 `windows` 逐字相同（见 §8.25） |
+
+- **只记录真实上游取数**：仅当 `provider/usage` **真的打到上游且解析成功**时才落一条样本。以下情况**从不落样本**：**300s** 进程内缓存命中（取数前即返回）、失败路径复用的 `stale:true` 旧快照、以及 `no_credential` / `expired` / `unauthorized` / `entitlement` / `unavailable` / `network` 任一领域失败。因此该序列回答的是「上游用量的历史」，而不是「谁点了几次刷新」。
+- **存储位置与权限**：每个 provider 一个文件 `<dir>/<provider>.json`，`<dir>` 依次取 `[web] state_dir` → `$XDG_DATA_HOME/agentj/usage` → `$HOME/.local/share/agentj/usage`；目录 **0700**、文件 **0600**，写入走同目录 `*.json.tmp` + `rename` **原子替换**（任何失败只 `warn` 并删除 tmp，**绝不**阻断触发它的那次 `provider/usage`）；JSON 顶层带 `version: 1`。provider 名不能安全用作文件名（仅允许 `[a-z0-9._-]`、非空、≤ 64 字节）时不落盘。文件缺失按首次运行处理（不告警）；损坏 / 不可读 → 告警一次并从空历史开始。
+- **关闭即空**：`[usage] history_enabled = false`，或三级目录来源全部落空（启动时 `warn` 提示设置 `XDG_DATA_HOME` / `HOME` / `[web] state_dir`）→ 完全不落盘**且不做内存兜底**，本方法返回 `samples: []` + `retention_days: 0`。
+- **去重与保留**：与最新样本相隔 **< 60s** 且窗口完全相同的采样**不写盘**（相隔恰 60s 视为不同样本）；写入时先剪掉早于 `now − history_days × 86400` 的样本（边界值保留），再按 `[usage] history_max_samples`（默认 **8640**，钳制 **100..=100_000**）只留最新 N 条。
+- **部分结果**：无。
+- **error.data**：未知 provider → `-32602` + `{ "field": "provider", "reason": "unknown_provider", "registered": ["<名>", …] }`；provider 已知但非 opencode-go → `-32602` + `{ "field": "provider", "reason": "unsupported_provider", "capability": "usage_history" }`；params 结构畸形（如 `limit` 为字符串）→ `-32602` + `{ "reason": "invalid_params", "detail": "<原文>" }`（此时不调用 provider service）；handle 未注入 → `-32603` + `{ "reason": "provider_service_unavailable" }`。历史文件缺失 / 损坏 / 功能关闭**不是错误**（见上）。
+
 ## 9. 值枚举与未知值宽容
 
 ### 9.1 值枚举
@@ -1237,8 +1294,8 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 | `ModelSource` | `account` \| `live` \| `overlay` \| `static` | `model/list` 目录来源层级（`@since 0.17.0`，见 8.23） |
 | `CredentialKind` | `api_key` \| `oauth` | `auth/status` 凭据种类（`@since 0.17.0`，见 8.24；`oauth` 即 `auth.json` 中 `type:"oauth"` 的 OAuth 条目） |
 | `CredentialSource` | `flag` \| `env` \| `file` | 凭据来源（`@since 0.17.0`，见 8.24；本期内核实现只产生 `env` / `file`，`flag` 为加性预留） |
-| `UsageWindowKind` | `rolling` \| `weekly` \| `monthly` | 用量窗口种类（`@since 0.17.0`，见 8.25） |
-| `UsageWindowStatus` | `ok` \| `rate-limited` | 用量窗口状态（`@since 0.17.0`，见 8.25） |
+| `UsageWindowKind` | `rolling` \| `weekly` \| `monthly` | 用量窗口种类（`@since 0.17.0`，见 8.25 / 8.30） |
+| `UsageWindowStatus` | `ok` \| `rate-limited` | 用量窗口状态（`@since 0.17.0`，见 8.25 / 8.30） |
 | `DeviceAuthState` | `pending` \| `slow_down` \| `authorized` \| `expired` \| `denied` \| `error` | 设备码轮询状态（`@since 0.17.0`，见 8.27） |
 | `ApiKeyOutcome` | `verified` \| `unverified` \| `rejected` | `auth/setApiKey` 链接结果（`@since 0.18.0`，见 8.28） |
 
@@ -1263,7 +1320,7 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 
 ## 10. 机器可读模型
 
-- **`protocol/methods.json`**：方法注册表，捕获 JSON Schema 表达不了的方法语义（method 字符串 ↔ params/result schema 引用、方向、类型）。当前收录 28 个方法，`protocol_version` 为 `0.19.0`。
+- **`protocol/methods.json`**：方法注册表，捕获 JSON Schema 表达不了的方法语义（method 字符串 ↔ params/result schema 引用、方向、类型）。当前收录 29 个方法，`protocol_version` 为 `0.20.0`。
 
 对应关系：
 
@@ -1297,8 +1354,9 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 | `auth/devicePoll` | `AuthDevicePollParams.json` | `AuthDevicePollResult.json` |
 | `auth/setApiKey` | `AuthSetApiKeyParams.json` | `AuthSetApiKeyResult.json` |
 | `auth/clearCredential` | `AuthClearCredentialParams.json` | `AuthClearCredentialResult.json` |
+| `provider/usageHistory` | `ProviderUsageHistoryParams.json` | `ProviderUsageHistoryResult.json` |
 
-信封与公共类型见 `RequestMessage.json`、`NotificationMessage.json`、`ResponseMessage.json`、`ErrorObject.json`、`Id.json`、`ProgressToken.json`、`ProgressValue.json`、`Role.json`、`PermissionDecision.json` 等；协议扩展（0.13.0）新增 / 更新的公共类型见 `SessionNewParams.json`、`SessionSummary.json`、`FileListParams.json`、`FileListResult.json`、`FileEntry.json`、`FileKind.json`、`AskQuestionParams.json`、`AskOption.json`、`QuestionRespondParams.json`、`QuestionRespondResult.json`、`TodoItem.json`、`TodoStatus.json`、`FileChange.json`、`FileChangeKind.json`、`UsageInfo.json`。协议扩展（0.14.0）不新增 schema，仅向既有 schema 追加字段：`FileListParams.json`（`query`）、`FileListResult.json`（`total`）、`SessionNewResult.json` 与 `SessionStatusResult.json`（`project_root`）；协议扩展（0.15.0）新增 `FileChangeSource.json` 一个 schema（`FileChange`/`ProgressValue`/`TrajectoryValue`/`SessionHistoryParams`/`SessionRunResult` 的 `run_id`/`seq`/`source`/`total_bytes` 为加性字段）；协议扩展（0.16.0）不新增 schema，仅向既有 `SessionRunParams.json` 追加 `provider` / `model` 两个加性可选字段；协议扩展（0.17.0）新增 **20 个 schema**（`ModelListParams` / `ModelListResult` / `ModelEntry` / `ModelSource`；`AuthStatusParams` / `AuthStatusResult` / `CredentialInfo` / `CredentialKind` / `CredentialSource`；`ProviderUsageParams` / `ProviderUsageResult` / `ProviderUsageError` / `UsageWindow` / `UsageWindowKind` / `UsageWindowStatus`；`AuthDeviceStartParams` / `AuthDeviceStartResult` / `AuthDevicePollParams` / `AuthDevicePollResult` / `DeviceAuthState`），并新增 `ModelSource` / `CredentialKind` / `CredentialSource` / `UsageWindowKind` / `UsageWindowStatus` / `DeviceAuthState` 六个值枚举（均带 `Unknown` 容忍前向值）；schema 总数 52 → **72**。协议扩展（0.18.0）新增 **6 个 schema**（`AuthSetApiKeyParams` / `AuthSetApiKeyResult` / `ApiKeyLinkError` / `ApiKeyOutcome`；`AuthClearCredentialParams` / `AuthClearCredentialResult`），并新增 `ApiKeyOutcome` 一个值枚举（带 `Unknown` 容忍前向值，见 §9.1）；schema 总数 72 → **78**。
+信封与公共类型见 `RequestMessage.json`、`NotificationMessage.json`、`ResponseMessage.json`、`ErrorObject.json`、`Id.json`、`ProgressToken.json`、`ProgressValue.json`、`Role.json`、`PermissionDecision.json` 等；协议扩展（0.13.0）新增 / 更新的公共类型见 `SessionNewParams.json`、`SessionSummary.json`、`FileListParams.json`、`FileListResult.json`、`FileEntry.json`、`FileKind.json`、`AskQuestionParams.json`、`AskOption.json`、`QuestionRespondParams.json`、`QuestionRespondResult.json`、`TodoItem.json`、`TodoStatus.json`、`FileChange.json`、`FileChangeKind.json`、`UsageInfo.json`。协议扩展（0.14.0）不新增 schema，仅向既有 schema 追加字段：`FileListParams.json`（`query`）、`FileListResult.json`（`total`）、`SessionNewResult.json` 与 `SessionStatusResult.json`（`project_root`）；协议扩展（0.15.0）新增 `FileChangeSource.json` 一个 schema（`FileChange`/`ProgressValue`/`TrajectoryValue`/`SessionHistoryParams`/`SessionRunResult` 的 `run_id`/`seq`/`source`/`total_bytes` 为加性字段）；协议扩展（0.16.0）不新增 schema，仅向既有 `SessionRunParams.json` 追加 `provider` / `model` 两个加性可选字段；协议扩展（0.17.0）新增 **20 个 schema**（`ModelListParams` / `ModelListResult` / `ModelEntry` / `ModelSource`；`AuthStatusParams` / `AuthStatusResult` / `CredentialInfo` / `CredentialKind` / `CredentialSource`；`ProviderUsageParams` / `ProviderUsageResult` / `ProviderUsageError` / `UsageWindow` / `UsageWindowKind` / `UsageWindowStatus`；`AuthDeviceStartParams` / `AuthDeviceStartResult` / `AuthDevicePollParams` / `AuthDevicePollResult` / `DeviceAuthState`），并新增 `ModelSource` / `CredentialKind` / `CredentialSource` / `UsageWindowKind` / `UsageWindowStatus` / `DeviceAuthState` 六个值枚举（均带 `Unknown` 容忍前向值）；schema 总数 52 → **72**。协议扩展（0.18.0）新增 **6 个 schema**（`AuthSetApiKeyParams` / `AuthSetApiKeyResult` / `ApiKeyLinkError` / `ApiKeyOutcome`；`AuthClearCredentialParams` / `AuthClearCredentialResult`），并新增 `ApiKeyOutcome` 一个值枚举（带 `Unknown` 容忍前向值，见 §9.1）；schema 总数 72 → **78**。协议扩展（0.20.0）新增 **3 个 schema**（`ProviderUsageHistoryParams` / `ProviderUsageHistoryResult` / `UsageSample`；`UsageSample.windows` 复用既有 `UsageWindow`，不新增值枚举），并向共用条目 `ModelEntry` 追加加性字段 `context_window`（`@since 0.20.0`，故 `ModelEntry.json` / `ModelListResult.json` / `AuthSetApiKeyResult.json` 三份内容同步更新，无新文件）；schema 总数 78 → **81**。
 
 一致性锚点：Rust 侧 `schemars` 生成 `schemas/*.json` 并提交，契约测试断言实际 wire 输出与 Schema 一致，CI 漂移门禁在生成结果与提交版本不一致时失败。
 
@@ -1306,7 +1364,7 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 
 ### 11.1 版本策略
 
-协议版本遵循语义化版本（semver），规则见 §4.3：major 破坏 / minor 加方法或加性字段 / patch 修 bug。当前版本 `0.19.0`（`protocol/methods.json` 中 `protocol_version` 字段为准）。
+协议版本遵循语义化版本（semver），规则见 §4.3：major 破坏 / minor 加方法或加性字段 / patch 修 bug。当前版本 `0.20.0`（`protocol/methods.json` 中 `protocol_version` 字段为准）。
 
 ### 11.2 命名归一化决策（v0.1.0 记录）
 
@@ -1374,12 +1432,16 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 - **文件树目录聚合状态**：`file/list` 结果的目录项填充**既有可选字段** `FileEntry.git_status`（后裔前缀聚合，优先级 `U > D > M > A`），schema 与 wire 契约零变化。
 - 全部为 HTTP 层新增 + 存量可选字段填充，此前客户端零破坏；工作区 `0.18.1 → 0.19.0`。
 
-#### 0.20.0（内核托管面加固 + TUI 文件视图：HTTP 面与构建工具链）
+#### 0.20.0（用量历史 `provider/usageHistory` + 模型上下文窗口）
 
-- **wire 零变化**：方法面、`schemas/*` 与 `PROTOCOL_VERSION`（保持 `0.13.0`）均不变；新增能力全部位于 **HTTP 层与构建工具链**（`GET /version` 为 HTTP 静态面路由，**非** JSON-RPC 方法）。
-- **HTTP 面新增**：`GET /version` 未鉴权版本探针（`200 application/json` + `Cache-Control: no-store`，返回内核 `product_version`/`protocol_version` 与 dist 版本事实 `dist_present`/`dist`；显式路由优先于 SPA fallback、不置于登录门后）；`/login` POST 登录限流（按来源 IP 计数，第 5 次失败起指数锁定 30s ×2 封顶 15min，`429 + Retry-After`（秒、向上取整、≥1），锁定期不校验 token 且新尝试升级锁定，成功清零）。
+- **方法面 28 → 29**：新增 1 个请求方法 `provider/usageHistory`（持久化用量样本的**纯读**：不发网络请求、不需要凭据，样本仅在**真实上游取数**时落盘）；参数 / 结果契约见 §8.30，§8.1 方法总表与 §10 映射表补齐至 29 行。
+- **新 schema（3 个）**：`ProviderUsageHistoryParams` / `ProviderUsageHistoryResult` / `UsageSample`（`UsageSample.windows` 复用既有 `UsageWindow`，**不新增值枚举**）；schema 总数 78 → **81**。
+- **加性字段 `ModelEntry.context_window?`**（integer，`@since 0.20.0`）：模型上下文窗口（token 数）；上游未发布窗口时**整键省略**，不猜。`ModelEntry` 同时被 `ModelListResult.models[]` 与 `AuthSetApiKeyResult.models[]` 引用，故三份 schema 内容同步更新（无新文件）。
+- **不新增错误码**（见 §3.4）：`provider/usageHistory` 复用 `-32602`（`reason` ∈ `invalid_params` / `unknown_provider` / `unsupported_provider`，后者 `capability:"usage_history"`）与 `-32603`（`provider_service_unavailable`）；历史存储缺失 / 关闭 / 损坏**不是错误**，以 `samples: []` + `retention_days: 0` 的成功响应表达。
+- **HTTP 面新增（wire 零变化，非 JSON-RPC 方法面）**：`GET /version` 未鉴权版本探针（`200 application/json` + `Cache-Control: no-store`，返回内核 `product_version`/`protocol_version` 与 dist 版本事实 `dist_present`/`dist`；显式路由优先于 SPA fallback、不置于登录门后）；`/login` POST 登录限流（按来源 IP 计数，第 5 次失败起指数锁定 30s ×2 封顶 15min，`429 + Retry-After`（秒、向上取整、≥1），锁定期不校验 token 且新尝试升级锁定，成功清零）。
 - **构建工具链新增**：web 构建生成 `dist/version.json`（`product_version`/`protocol_version`/`build_time`）并向入口 HTML 同源引用注入 `sha384` `integrity`（本地引用缺失即构建失败）；内核启动比对 dist 版本，缺失/不可解析/不一致 → 启动警告（**不阻断服务**）。
-- 另含**纯前端** TUI 侧栏 `Files` 视图（复用既有 `file/list`，无 wire 变化）；全部为 HTTP 层与构建期新增，此前客户端零破坏；工作区 `0.19.0 → 0.20.0`。
+- 另含**纯前端** TUI 侧栏 `Files` 视图（复用既有 `file/list`，无 wire 变化）；上述 HTTP 层与构建期改动不触及方法面与 `schemas/*`。
+- 协议版本 minor 递增 `0.19.0 → 0.20.0`；工作区版本不变（仍 `0.1.0`）；此前客户端零破坏（新方法为加性，`context_window` 未知时整键省略）。
 
 #### 0.21.0（限流可观测 + 资产完整性 + TUI 搜索 + Web 焦点作用域：HTTP 层与前端）
 

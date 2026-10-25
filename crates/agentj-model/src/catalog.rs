@@ -33,6 +33,9 @@ pub struct CatalogEntry {
     pub format: WireFormat,
     /// False for live-discovered ids whose wire format was synthesized (design D3).
     pub verified: bool,
+    /// Upstream context window in tokens. `None` when models.dev does not publish
+    /// one for this id — never guessed (design D2).
+    pub context_window: Option<u32>,
 }
 
 /// Committed opencode-go model catalog (design 4.1): model id → wire format/endpoint.
@@ -58,6 +61,8 @@ impl ModelCatalog {
             format: String,
             #[serde(default = "default_true")]
             verified: bool,
+            #[serde(default)]
+            context_window: Option<u32>,
         }
         #[derive(Deserialize)]
         struct RawCatalog {
@@ -77,6 +82,7 @@ impl ModelCatalog {
                             id: m.id,
                             format,
                             verified: m.verified,
+                            context_window: m.context_window,
                         },
                     )
                 })
@@ -132,6 +138,7 @@ impl ModelCatalog {
                 id: id.clone(),
                 format: WireFormat::OpenAiCompat,
                 verified: false,
+                context_window: None,
             });
             entries.insert(id, entry);
         }
@@ -191,7 +198,6 @@ mod tests {
         for (id, format) in [
             ("opencode-go/kimi-k3", WireFormat::OpenAiCompat),
             ("opencode-go/longcat-2.0", WireFormat::OpenAiCompat),
-            ("opencode-go/grok-4.5", WireFormat::Responses),
             ("opencode-go/grok-4.7", WireFormat::Responses),
             ("opencode-go/gpt-6-luna", WireFormat::Responses),
             (
@@ -210,10 +216,58 @@ mod tests {
     }
 
     #[test]
+    fn context_window_is_parsed_and_omitted_when_unknown() {
+        let json = r#"{"base_url":"https://x","models":[{"id":"opencode-go/a","format":"openai-compat","verified":true,"context_window":1048576},{"id":"opencode-go/b","format":"anthropic","verified":true}]}"#;
+        let cat = ModelCatalog::from_json(json);
+        assert_eq!(
+            cat.lookup("opencode-go/a").unwrap().context_window,
+            Some(1_048_576)
+        );
+        assert_eq!(cat.lookup("opencode-go/b").unwrap().context_window, None);
+    }
+
+    #[test]
+    fn builtin_snapshot_carries_context_windows() {
+        let cat = ModelCatalog::builtin();
+        let windows: Vec<u32> = cat
+            .entries
+            .values()
+            .filter_map(|e| e.context_window)
+            .collect();
+        assert!(
+            windows.len() >= 28,
+            "only {} entries carry a window",
+            windows.len()
+        );
+        assert!(windows.iter().all(|w| *w > 0));
+    }
+
+    #[test]
+    fn overlay_json_emits_context_window_only_when_known() {
+        let entries = vec![
+            CatalogEntry {
+                id: "opencode-go/a".into(),
+                format: WireFormat::OpenAiCompat,
+                verified: true,
+                context_window: Some(200_000),
+            },
+            CatalogEntry {
+                id: "opencode-go/b".into(),
+                format: WireFormat::OpenAiCompat,
+                verified: false,
+                context_window: None,
+            },
+        ];
+        let out = crate::catalog_gen::overlay_json(OPENCODE_GO_BASE, &entries);
+        assert!(out.contains("\"context_window\": 200000"), "{out}");
+        assert_eq!(out.matches("context_window").count(), 1);
+    }
+
+    #[test]
     fn catalog_builtin_marks_unresolved_ids_unverified() {
         let catalog = ModelCatalog::builtin();
         // Ids `GET /v1/models` still advertises but models.dev does not cover.
-        for id in ["opencode-go/glm-5", "opencode-go/omen-alpha"] {
+        for id in ["opencode-go/gemini-4-argon", "opencode-go/omen-alpha"] {
             let entry = catalog.lookup(id).expect(id);
             assert_eq!(entry.format, WireFormat::OpenAiCompat);
             assert!(!entry.verified, "{id} must stay unverified");

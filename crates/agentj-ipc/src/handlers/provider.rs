@@ -1,5 +1,5 @@
-//! `model/list`, `provider/usage` and the `auth/*` handlers, plus the kernel model
-//! info probe that feeds `kernel/status`.
+//! `model/list`, `provider/usage`, `provider/usageHistory` and the `auth/*` handlers, plus the
+//! kernel model info probe that feeds `kernel/status`.
 //!
 //! Verbatim move out of `lib.rs`: signatures, error codes (`-32603
 //! provider_service_unavailable`) and control flow are unchanged; only
@@ -67,6 +67,15 @@ impl IpcServer {
         let svc = self.provider_service()?;
         let params = self.provider_params(req)?;
         provider_result(svc.usage(params).await?)
+    }
+
+    pub(crate) async fn dispatch_provider_usage_history(
+        &self,
+        req: &JsonRpcRequest,
+    ) -> Result<Value, DispatchError> {
+        let svc = self.provider_service()?;
+        let params = self.provider_params(req)?;
+        provider_result(svc.usage_history(params).await?)
     }
 
     pub(crate) async fn dispatch_device_start(

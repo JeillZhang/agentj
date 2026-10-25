@@ -11,9 +11,9 @@ fixture() {
   rm -rf "$TMP"/*
   mk Cargo.toml '[workspace.package]\nversion = "0.1.0"\n'
   mk agentj-ui/packages/sdk/src/config.ts \
-    'export const VERSION = "0.1.0";\nexport const PROTOCOL_VERSION = "0.19.0";\n'
-  mk crates/agentj-protocol/src/lib.rs 'pub const PROTOCOL_VERSION: &str = "0.19.0";\n'
-  mk protocol/methods.json '{"protocol_version": "0.19.0"}'
+    'export const VERSION = "0.1.0";\nexport const PROTOCOL_VERSION = "0.20.0";\n'
+  mk crates/agentj-protocol/src/lib.rs 'pub const PROTOCOL_VERSION: &str = "0.20.0";\n'
+  mk protocol/methods.json '{"protocol_version": "0.20.0"}'
   mk agentj-ui/package.json '{"version": "0.1.0"}'
   mk agentj-ui/apps/web/package.json '{"version": "0.1.0"}'
   mk agentj-ui/apps/tui/package.json '{"version": "0.1.0"}'

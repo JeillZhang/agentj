@@ -5,7 +5,7 @@
 set -euo pipefail
 
 ROOT="${AGENTJ_ROOT:-$(cd -- "$(dirname "$0")/../.." && pwd)}"
-CHECKS=(harness ci-jobs coverage-gate frontend-job governance-files hygiene docs-summaries docs-agents)
+CHECKS=(harness ci-jobs coverage-gate frontend-job desktop-package-job governance-files hygiene docs-summaries docs-agents)
 
 # --- Check inventory contract (maintained by hand, NOT a cache) ---------------
 # EXPECTED_* lists the check inventory each harness is required to expose. It is a
@@ -16,7 +16,7 @@ CHECKS=(harness ci-jobs coverage-gate frontend-job governance-files hygiene docs
 # so "one check silently dropped" can no longer look like "everything green".
 EXPECTED_UI_CHECKS="ui-manifests lockfile-root single-lockfile"
 EXPECTED_CARGO_CHECKS="cargo-root crate-inheritance licenses deny-config lockfile-locked fn-length"
-EXPECTED_CI_CHECKS="harness ci-jobs coverage-gate frontend-job governance-files hygiene docs-summaries docs-agents"
+EXPECTED_CI_CHECKS="harness ci-jobs coverage-gate frontend-job desktop-package-job governance-files hygiene docs-summaries docs-agents"
 
 bad() { printf 'FAIL %s: %s\n' "$1" "$2"; return 1; }
 ok() { printf 'PASS %s\n' "$1"; }
@@ -103,7 +103,7 @@ if not path.is_file():
     err("missing .github/workflows/ci.yml")
 wf = yaml.safe_load(path.read_text())
 jobs = wf.get("jobs") or {}
-needed = {"lint", "test", "coverage", "deny", "cross-platform"}
+needed = {"lint", "test", "coverage", "deny", "cross-platform", "desktop-package"}
 missing = sorted(needed - set(jobs))
 if missing:
     err("ci.yml is missing jobs: " + ", ".join(missing))
@@ -353,6 +353,70 @@ if observed != EXPECTED:
 pkg = json.loads((root / "agentj-ui" / "packages" / "protocol" / "package.json").read_text())
 if pkg.get("scripts", {}).get("test") != "vitest run":
     err("@agentj/protocol package.json must define \"test\": \"vitest run\"")
+print("ok")
+PY
+  ); then
+    bad "$name" "$out"
+    return 1
+  fi
+  ok "$name"
+}
+
+check_desktop_package_job() {
+  local name=desktop-package-job
+  if ! have_pyyaml; then
+    bad "$name" "python3 PyYAML is required to parse .github/workflows/ci.yml"
+    return 1
+  fi
+  local out
+  if ! out=$(python3 - "$ROOT" <<'PY'
+import pathlib
+import sys
+import yaml
+
+root = pathlib.Path(sys.argv[1])
+
+
+def err(msg):
+    print(msg)
+    sys.exit(1)
+
+
+path = root / ".github" / "workflows" / "ci.yml"
+if not path.is_file():
+    err("missing .github/workflows/ci.yml")
+wf = yaml.safe_load(path.read_text())
+job = (wf.get("jobs") or {}).get("desktop-package")
+if job is None:
+    err("missing job desktop-package")
+if job.get("runs-on") != "ubuntu-latest":
+    err("desktop-package must run on ubuntu-latest")
+timeout = job.get("timeout-minutes")
+if not isinstance(timeout, int) or timeout > 45:
+    err("desktop-package must set timeout-minutes <= 45")
+steps = job.get("steps") or []
+names = [str(step.get("name", "")) for step in steps]
+runs = " ".join(str(step.get("run", "")) for step in steps)
+for needed in (
+    "generate --workspace=@agentj/protocol",
+    "generate --workspace=@agentj/sdk",
+    "build --workspace=@agentj/web",
+):
+    if needed not in runs:
+        err(f"desktop-package is missing the `{needed}` step")
+if "--bundles deb,appimage" not in runs:
+    err("desktop-package must bundle `--bundles deb,appimage`")
+if "check-artifacts.sh linux" not in runs:
+    err("desktop-package must verify the linux artifacts")
+if "cargo test" in runs:
+    err("desktop-package must not run the test suite")
+expected_order = ("Build web assets", "Build desktop bundles", "Verify artifacts")
+observed_order = [n for n in names if n in expected_order]
+if observed_order != list(expected_order):
+    err(
+        "desktop-package must build the web dist, then the bundles, then verify them "
+        f"(got {' -> '.join(observed_order) or 'none of those steps'})"
+    )
 print("ok")
 PY
   ); then
@@ -652,8 +716,12 @@ for name, path in (("se", SE), ("fe", FE)):
 
 # Rows that must survive the current summary rewrite. ⑩/⑪/⑬/⑯/㉙ and ③/㉔ were
 # implemented by the structure-debt batch, so they moved to the "must be gone" lists.
-se_keep = ["⑥", "⑰"]
-se_drop = ["⑮", "⑳", "㉛", "㉜", "⑫", "㉗", "㉘", "㉚", "⑩", "⑪", "⑬", "⑯", "㉙"]
+# The usage-history / model-window / desktop-CI batch implemented ⑥, ⑰ and ㉟, so the
+# surviving rows are their successors ⑰⁺ (real tokenizer) and ㉟⁺ (macOS/Windows
+# packaging). ㉟ cannot join `se_drop` while ㉟⁺ is kept — it is a substring of it — so
+# only ⑥ is pinned as "must be gone".
+se_keep = ["⑰⁺", "㉟⁺"]
+se_drop = ["⑮", "⑳", "㉛", "㉜", "⑫", "㉗", "㉘", "㉚", "⑩", "⑪", "⑬", "⑯", "㉙", "⑥"]
 for symbol in se_keep:
     if symbol not in se:
         fail(f"se 待实施 must keep row {symbol}")

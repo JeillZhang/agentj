@@ -6,7 +6,7 @@ use futures::stream::BoxStream;
 use tokio::sync::mpsc;
 
 use crate::artifacts::TurnArtifact;
-use crate::budget::{self, DEFAULT_CONTEXT_TOKENS, MAX_OVERFLOW_RETRIES};
+use crate::budget::{self, MAX_OVERFLOW_RETRIES};
 use crate::error::{ModelError, ModuleError, ToolError};
 use crate::kernel::KernelSender;
 use crate::module::{
@@ -515,13 +515,15 @@ impl TurnState {
             ..Default::default()
         };
         // 上下文预算（design §上下文预算）：发送前把装配好的请求裁到预算内，上游报
-        // context 超限时收紧预算重试，而不是把 400 直接抛给用户。@since 0.29.7
-        self.lane.context_budget = self
+        // context 超限时收紧预算重试，而不是把 400 直接抛给用户。预算按本次请求的模型
+        // 重新计算——显式上限与模型窗口取较小者，窗口只信 90%。@since 0.29.7
+        let cap = self
             .ctx
             .config
             .get_int("model.max_context_tokens")
-            .and_then(|value| usize::try_from(value).ok())
-            .map_or(DEFAULT_CONTEXT_TOKENS, budget::clamp_budget);
+            .and_then(|budget| usize::try_from(budget).ok());
+        let window = self.ctx.providers.context_window(&self.lane.options.model);
+        self.lane.context_budget = budget::effective_budget(cap, window);
         Ok(())
     }
 
@@ -1063,30 +1065,44 @@ mod tests {
         }
     }
 
-    /// Context whose session already holds `history` and whose budget is `budget` tokens.
-    fn budget_test_ctx(history: Vec<ChatMessage>, budget: usize) -> KernelContext {
+    /// Context whose session already holds `history`, with `config` answering the budget key.
+    fn budget_test_ctx_with(
+        history: Vec<ChatMessage>,
+        config: Arc<dyn ConfigProvider>,
+    ) -> KernelContext {
         KernelContext {
             session: Arc::new(MockSession {
                 history: StdMutex::new(history),
             }),
             tools: Arc::new(ToolRegistry::new()),
             providers: Arc::new(ProviderRegistry::new()),
-            config: Arc::new(BudgetConfig(budget as i64)),
+            config,
         }
+    }
+
+    /// Context whose session already holds `history` and whose budget is `budget` tokens.
+    fn budget_test_ctx(history: Vec<ChatMessage>, budget: usize) -> KernelContext {
+        budget_test_ctx_with(history, Arc::new(BudgetConfig(budget as i64)))
     }
 
     /// Records the estimated token size of every request it is asked to serve. Fails with
     /// `overflow` when set — on every call when `always_overflow` is set, else only on the
-    /// first — mimicking an upstream context-window rejection.
+    /// first — mimicking an upstream context-window rejection. `window` is the context
+    /// window it publishes for every model (`None` = unknown, the legacy behaviour).
     struct CapturingProvider {
         seen: Arc<StdMutex<Vec<usize>>>,
         overflow: Option<ModelError>,
         always_overflow: bool,
         calls: Arc<AtomicUsize>,
+        window: Option<usize>,
     }
 
     #[async_trait]
     impl crate::module::ModelProvider for CapturingProvider {
+        fn context_window(&self, _model: &str) -> Option<usize> {
+            self.window
+        }
+
         async fn chat_stream(
             &self,
             m: Vec<ChatMessage>,
@@ -1147,6 +1163,17 @@ mod tests {
         always_overflow: bool,
     ) -> Vec<usize> {
         let ctx = budget_test_ctx(history, budget);
+        run_capturing_turn_in(ctx, overflow, always_overflow, None).await
+    }
+
+    /// Drive one turn over `ctx` with a provider publishing `window`, and return the
+    /// estimated token size of every request it saw.
+    async fn run_capturing_turn_in(
+        ctx: KernelContext,
+        overflow: Option<ModelError>,
+        always_overflow: bool,
+        window: Option<usize>,
+    ) -> Vec<usize> {
         let (_kernel, sender) = spy_kernel_with(ToolSpy);
         let runner = TurnRunner::new(
             ctx.clone(),
@@ -1163,6 +1190,7 @@ mod tests {
                 overflow,
                 always_overflow,
                 calls: Arc::new(AtomicUsize::new(0)),
+                window,
             }),
         );
         let sid = runner.create_session().unwrap();
@@ -1762,6 +1790,25 @@ mod tests {
             sizes[0] <= BUDGET,
             "request estimated at {} tokens, budget is {BUDGET}",
             sizes[0]
+        );
+    }
+
+    /// A model that publishes a context window sizes the budget even when no explicit cap
+    /// is configured: the request must fit 90% of that window, not the 128k default.
+    #[tokio::test]
+    async fn budget_uses_the_model_window_when_the_cap_is_unset() {
+        const WINDOW: usize = 4_000;
+        let history: Vec<ChatMessage> = (0..40)
+            .map(|i| ChatMessage::user(format!("message {i}: {}", "lorem ipsum ".repeat(150))))
+            .collect();
+        let ctx = budget_test_ctx_with(history, Arc::new(MockConfig));
+        let sizes = run_capturing_turn_in(ctx, None, false, Some(WINDOW)).await;
+        assert_eq!(sizes.len(), 1, "one model call expected");
+        assert!(
+            sizes[0] <= WINDOW * 9 / 10,
+            "request estimated at {} tokens, 90% of the {WINDOW} window is {}",
+            sizes[0],
+            WINDOW * 9 / 10
         );
     }
 

@@ -1,6 +1,6 @@
 # AGENTS.md
 
-> **当前版本 0.1.0** · `PROTOCOL_VERSION` **0.19.0**（28 方法 / 78 schemas / 15 crates）
+> **当前版本 0.1.0** · `PROTOCOL_VERSION` **0.20.0**（29 方法 / 81 schemas / 15 crates）
 > 本文件只记录**约束、入口与基线**（Setup / Commands / Architecture / Conventions / Rules）。
 > **逐版本变更与历史决策不写在这里** —— 见 [`docs/changelog/`](docs/changelog/)、
 > [`docs/guide/`](docs/guide/)、[`docs/specs/`](docs/specs/) 与 `.agents/summary/`。
@@ -58,7 +58,7 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
 - `python3 scripts/tests/fn-length.py [PATH…]` — 逐个 `fn` 计 body 行数，>50 行即失败并列出
   `file:line: fn name = N lines`（目录参数自动展开；`/tests/` 段跳过并打印
   `scanned N file(s), skipped M test file(s)`；空目标集 `rc=2` 拒绝空过）。
-- `bash scripts/tests/assert-{ui,cargo,ci}.sh all` — 仓库不变量断言（17 个 check：UI 清单 /
+- `bash scripts/tests/assert-{ui,cargo,ci}.sh all` — 仓库不变量断言（18 个 check：UI 清单 /
   单一 lockfile / Cargo 工作区策略 / 15 crate 继承 / LICENSE / deny.toml / lockfile 一致性 /
   函数长度 / CI 作业契约 / 覆盖率棘轮 / 治理文件 / 卫生 / summary / 文档基线 —— 文档基线一项
   同时断言这里的 check 数与三个脚本实际注册的一致）。`<check>` 单跑、
@@ -85,6 +85,9 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
     protocol 测试 → SDK 生成 + 漂移门禁 → sdk / tokens / web 测试 → web 构建 →
     `dist/version.json` 与 `protocol/methods.json` 协议版本一致 → oxlint → TUI（bun）测试 →
     `check-desktop-ui.mjs` → `check-version.sh` → `check-relocate.mjs`
+  - `desktop-package`：Linux 打包（唯一跑 `tauri build` 的作业）—— protocol / SDK 类型生成 →
+    web 构建 → `--bundles deb,appimage` → `check-artifacts.sh linux` → 上传产物；
+    `timeout-minutes: 45`，不含测试套件
 - `.github/workflows/smoke.yml` — 冒烟（PR + push main + 手动）：
   `cargo build --release` + `agentj --version/--help` 断言 + `cargo test -p agentj-core -- smoke`
 - `.github/workflows/e2e.yml` — E2E（main 合并后 + 手动）：
@@ -98,11 +101,13 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
 > 下文 `agentj-*` 均为 `crates/agentj-*`，`@agentj/*` 为 `agentj-ui` 包。
 
 - `agentj-protocol`（leaf）：IPC 协议权威 wire 类型（JSON-RPC 2.0、错误码、
-  28 方法 params/result、流式/订阅/权限/提问/文件列举/订阅服务类型），serde + schemars，
-  零内核耦合。协议版本 `0.19.0`，78 schemas。
+  29 方法 params/result、流式/订阅/权限/提问/文件列举/订阅服务/用量历史
+  （`ProviderUsageHistoryParams`/`ProviderUsageHistoryResult`/`UsageSample`）类型），
+  serde + schemars，零内核耦合。协议版本 `0.20.0`，81 schemas。
 - `agentj-core`（内核）：Kernel 混合总线 + 模块 trait 注册表
   + ServiceRegistry（同步/异步） + TurnRunner 总线化 turn 编排
   + `budget`（请求 token 预算：`estimate_tokens` 估算 + `fit_messages` 裁剪
+  + `effective_budget` 逐请求取 min(显式上限, 模型窗口 × 90%)
   + 上游超限时 `retry_budget` 收紧重试，`ContextPipeline::fit` 默认接入）
   + `ToolCallContext`（会话根上下文，工具相对路径重定基）
   + `text_tool_call`（把模型写成纯文本方言的工具调用还原成真正的调用；无法无歧义还原时
@@ -118,15 +123,19 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
   + `context_pipeline`（`DefaultContextPipeline`：装配/回流纯函数；预算裁剪由 `budget` 统一下发）
   + `usage_stats`（`UsageCollector`/`SessionUsage` 用量统计）
   + `skills`（`.aj` > `.agents` > `.claude` skills 加载器）。
-- `agentj-config`：TOML 配置（[model]/[agent]/[permission]/[session]/[license]/[[mcp.servers]]；
+- `agentj-config`：TOML 配置
+  （[model]/[agent]/[permission]/[session]/[license]/[usage]/[[mcp.servers]]；
   `[permission] timeout_ms` 调整 `ask` 自动拒绝等待预算（缺省 60s，钳制 100..=600_000，
   越界钳制并告警；e2e fixture 调至 800ms）；
-  `[model] max_context_tokens` 调整单次请求 token 预算（默认 128k，钳制 1k..=10M）；
+  `[model] max_context_tokens` 显式请求 token 上限（可缺省 = 预算只由模型窗口决定，
+  钳制 1k..=10M）；
   `[agent] max_tool_iterations` 调整单轮工具调用轮数（默认 50，钳制 1..=1000；
   用尽后内核改为无工具收尾要结论）；
   `[agent] max_tool_result_chars` 调整单个工具结果字符上限（默认 100_000，
   钳制 1_000..=1_000_000）；`[agent] question_timeout_s` 调整提问默认超时
   （默认 600s，钳制 1..=86_400）；
+  `[usage] history_enabled`/`history_days`/`history_max_samples` 调整用量历史持久化
+  （默认 true / 30 天 / 8640 条，钳制 1..=365 天 / 100..=100_000 条）；
   `toml_edit` 定点写回 `[model]` 保留注释）。
 - `agentj-auth`：订阅凭据（`Credential` api_key/oauth + `AuthStore`
   XDG 路径 / 目录 0700 / 文件 0600 / 原子写 / 权限与 JSON 校验拒绝降级
@@ -147,7 +156,10 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
   + `console_catalog`（`GET /api/v2/config` 账号级目录，失败即 Err 以便回退）
   + `catalog`（`data/opencode-go.json` 为 `gen_opencode_catalog` 由 live `/v1/models` 与
   models.dev `provider.npm` 生成的**路由快照**，经 `from_overlay_and_live` 与 live 合并；
-  models.dev 未收录的 id 一律 `openai-compat` + `verified:false`，不猜路由）
+  models.dev 未收录的 id 一律 `openai-compat` + `verified:false`，不猜路由；
+  `context_window` 同源 models.dev，快照 38 个模型中 31 个有窗口，未知留空不猜）
+  + `ModelProvider::context_window`（默认 `None`）+ `ProviderRegistry::context_window`
+  查询模型窗口，预算层据此收窄
   + `gateway_error`（三 wire 共用错误映射：429 → `RateLimited`、上下文超限 →
   `TokenLimitExceeded { used, max }`、其余 → `Api { status, message }`）
   + `retry`（`temperature` 被拒时去参数重试一次）。
@@ -212,9 +224,9 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
   （显式 flag → cwd `agentj-ui/apps/web/dist` → exe 相对两档四级发现），
   启动打印 `http://<host>:<port>/` 并输出 `web_config().startup_warnings()`。
 - `agentj-plugin-fixture`（dev-only）：插件 cdylib 测试夹具。
-- `schemas/*.json`：78 JSON Schema（schemars 生成，提交件 + drift 门禁）。
-- `protocol/methods.json`：方法注册表（method ↔ schema/方向/类型；28 方法，
-  protocol_version 0.19.0）。
+- `schemas/*.json`：81 JSON Schema（schemars 生成，提交件 + drift 门禁）。
+- `protocol/methods.json`：方法注册表（method ↔ schema/方向/类型；29 方法，
+  protocol_version 0.20.0）。
 - `docs/specs/ipc-protocol.md`：人类可读协议规范——**错误码表、WS/HTTP 鉴权
   通道、各方法参数/结果契约的权威来源**。
 

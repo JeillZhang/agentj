@@ -37,11 +37,13 @@ pub struct ModelSection {
     /// opencode-go Console base URL (device flow + account catalog). @since 0.27.0
     #[serde(default = "default_console_base_url")]
     pub console_base_url: String,
-    /// Upper bound (approximate tokens) for an assembled request; the kernel trims the
-    /// session history and tool results to fit before calling a provider.
-    /// @since 0.29.7
-    #[serde(default = "default_max_context_tokens")]
-    pub max_context_tokens: i64,
+    /// Optional upper bound (approximate tokens) for an assembled request; the kernel trims
+    /// the session history and tool results to fit before calling a provider. Clamped to
+    /// `MIN_CONTEXT_TOKENS..=MAX_CONTEXT_TOKENS` by the accessor. `None` means the key is
+    /// absent, so the model's own window decides the budget — that is not the same as an
+    /// explicit value. @since 0.29.7
+    #[serde(default)]
+    pub max_context_tokens: Option<i64>,
 }
 
 fn default_model() -> String {
@@ -58,13 +60,6 @@ pub fn default_console_base_url() -> String {
     "https://opencode.ai/console".into()
 }
 
-/// Default per-request context budget (approximate tokens), kept well below every window
-/// in the catalog so a request is almost always accepted. Single source of truth lives in
-/// `agentj_core::budget`. @since 0.29.7
-pub fn default_max_context_tokens() -> i64 {
-    agentj_core::budget::DEFAULT_CONTEXT_TOKENS as i64
-}
-
 impl Default for ModelSection {
     fn default() -> Self {
         Self {
@@ -73,7 +68,7 @@ impl Default for ModelSection {
             default_model: default_model(),
             quota_warn_percent: default_quota_warn_percent(),
             console_base_url: default_console_base_url(),
-            max_context_tokens: default_max_context_tokens(),
+            max_context_tokens: None,
         }
     }
 }
@@ -292,6 +287,62 @@ impl WebSection {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+pub struct UsageSection {
+    /// Whether the kernel persists per-provider usage samples into the history file.
+    #[serde(default = "default_true")]
+    pub history_enabled: bool,
+    /// How many days of samples the history keeps. Clamped to
+    /// `MIN_HISTORY_DAYS..=MAX_HISTORY_DAYS` by the accessor.
+    #[serde(default = "default_history_days")]
+    pub history_days: i64,
+    /// Upper bound on samples retained by the history. Clamped to
+    /// `MIN_HISTORY_SAMPLES..=MAX_HISTORY_SAMPLES` by the accessor.
+    #[serde(default = "default_history_max_samples")]
+    pub history_max_samples: i64,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_history_days() -> i64 {
+    30
+}
+
+fn default_history_max_samples() -> i64 {
+    8_640
+}
+
+impl Default for UsageSection {
+    fn default() -> Self {
+        Self {
+            history_enabled: default_true(),
+            history_days: default_history_days(),
+            history_max_samples: default_history_max_samples(),
+        }
+    }
+}
+
+/// Lower bound of `usage.history_days` (a zero-day window would drop every sample).
+pub const MIN_HISTORY_DAYS: i64 = 1;
+/// Upper bound of `usage.history_days` (one year).
+pub const MAX_HISTORY_DAYS: i64 = 365;
+/// Lower bound of `usage.history_max_samples` (a history shorter than a day is useless).
+pub const MIN_HISTORY_SAMPLES: i64 = 100;
+/// Upper bound of `usage.history_max_samples`.
+pub const MAX_HISTORY_SAMPLES: i64 = 100_000;
+
+/// Clamp a configured history window into the supported range.
+pub fn clamp_history_days(value: i64) -> i64 {
+    value.clamp(MIN_HISTORY_DAYS, MAX_HISTORY_DAYS)
+}
+
+/// Clamp a configured history sample budget into the supported range.
+pub fn clamp_history_samples(value: i64) -> i64 {
+    value.clamp(MIN_HISTORY_SAMPLES, MAX_HISTORY_SAMPLES)
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub struct AgentJConfig {
     #[serde(default)]
     pub model: ModelSection,
@@ -307,6 +358,8 @@ pub struct AgentJConfig {
     pub mcp: Option<McpConfig>,
     #[serde(default)]
     pub web: Option<WebSection>,
+    #[serde(default)]
+    pub usage: Option<UsageSection>,
 }
 
 impl Default for AgentJConfig {
@@ -323,7 +376,7 @@ impl Default for AgentJConfig {
                 default_model: default_model(),
                 quota_warn_percent: default_quota_warn_percent(),
                 console_base_url: default_console_base_url(),
-                max_context_tokens: default_max_context_tokens(),
+                max_context_tokens: None,
             },
             agent: AgentSection::default(),
             permission: None,
@@ -331,6 +384,7 @@ impl Default for AgentJConfig {
             license: None,
             mcp: None,
             web: None,
+            usage: None,
         }
     }
 }
@@ -398,10 +452,29 @@ impl ConfigProvider for Config {
             "agent.question_timeout_s" => Some(clamp_question_timeout_s(
                 self.inner.agent.question_timeout_s,
             )),
-            "model.max_context_tokens" => Some(self.inner.model.max_context_tokens.clamp(
-                agentj_core::budget::MIN_CONTEXT_TOKENS as i64,
-                agentj_core::budget::MAX_CONTEXT_TOKENS as i64,
+            "model.max_context_tokens" => self.inner.model.max_context_tokens.map(|v| {
+                v.clamp(
+                    agentj_core::budget::MIN_CONTEXT_TOKENS as i64,
+                    agentj_core::budget::MAX_CONTEXT_TOKENS as i64,
+                )
+            }),
+            "usage.history_days" => Some(clamp_history_days(
+                self.inner.usage.as_ref().map_or(30, |u| u.history_days),
             )),
+            "usage.history_max_samples" => Some(clamp_history_samples(
+                self.inner
+                    .usage
+                    .as_ref()
+                    .map_or(8_640, |u| u.history_max_samples),
+            )),
+            _ => None,
+        }
+    }
+    fn get_bool(&self, key: &str) -> Option<bool> {
+        match key {
+            "usage.history_enabled" => {
+                Some(self.inner.usage.as_ref().is_none_or(|u| u.history_enabled))
+            }
             _ => None,
         }
     }
@@ -937,7 +1010,7 @@ mod tests {
             Config::load(Some(p.clone()))
                 .unwrap()
                 .get_int("model.max_context_tokens"),
-            Some(128_000)
+            None
         );
         std::fs::write(
             &p,
@@ -961,6 +1034,32 @@ mod tests {
                 .get_int("model.max_context_tokens"),
             Some(1_000)
         );
+    }
+
+    #[test]
+    fn usage_section_defaults_and_clamps() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("config.toml");
+        std::fs::write(&p, "[model]\nprovider = \"deepseek\"\n").unwrap();
+        let cfg = Config::load(Some(p.clone())).unwrap();
+        assert_eq!(cfg.get_bool("usage.history_enabled"), Some(true));
+        assert_eq!(cfg.get_int("usage.history_days"), Some(30));
+        assert_eq!(cfg.get_int("usage.history_max_samples"), Some(8_640));
+        std::fs::write(
+            &p,
+            r#"[model]
+provider = "deepseek"
+[usage]
+history_enabled = false
+history_days = 0
+history_max_samples = 5
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load(Some(p)).unwrap();
+        assert_eq!(cfg.get_bool("usage.history_enabled"), Some(false));
+        assert_eq!(cfg.get_int("usage.history_days"), Some(1));
+        assert_eq!(cfg.get_int("usage.history_max_samples"), Some(100));
     }
 
     #[test]

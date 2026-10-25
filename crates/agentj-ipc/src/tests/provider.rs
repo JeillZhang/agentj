@@ -49,6 +49,17 @@ impl ProviderService for Recording {
             error: None,
         })
     }
+    async fn usage_history(
+        &self,
+        _p: ProviderUsageHistoryParams,
+    ) -> Result<ProviderUsageHistoryResult, DispatchError> {
+        lock_or_recover(&self.calls).push("usage_history".into());
+        Ok(ProviderUsageHistoryResult {
+            provider: "opencode-go".into(),
+            retention_days: 0,
+            samples: vec![],
+        })
+    }
     async fn device_start(
         &self,
         _p: AuthDeviceStartParams,
@@ -127,6 +138,24 @@ async fn handle_is_optional_and_the_trait_is_object_safe() {
         "opencode-go"
     );
     assert_eq!(lock_or_recover(&rec.calls).as_slice(), ["model_list"]);
+
+    let hist_double = Arc::new(Recording::default());
+    let hist_svc: Arc<dyn ProviderService> = hist_double.clone();
+    let hist = hist_svc
+        .usage_history(ProviderUsageHistoryParams {
+            provider: None,
+            kind: None,
+            since: None,
+            limit: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(hist.provider, "opencode-go");
+    assert!(hist.samples.is_empty());
+    assert_eq!(
+        lock_or_recover(&hist_double.calls).as_slice(),
+        ["usage_history"]
+    );
 }
 
 #[tokio::test]
@@ -149,6 +178,11 @@ async fn subscription_methods_forward_to_the_service() {
     for (method, params, name) in [
         ("model/list", serde_json::json!({}), "model_list"),
         ("provider/usage", serde_json::json!({}), "usage"),
+        (
+            "provider/usageHistory",
+            serde_json::json!({}),
+            "usage_history",
+        ),
         ("auth/deviceStart", serde_json::json!({}), "device_start"),
         (
             "auth/devicePoll",
@@ -223,6 +257,7 @@ async fn missing_service_is_internal_error_and_bad_params_are_invalid_params() {
         "model/list",
         "auth/status",
         "provider/usage",
+        "provider/usageHistory",
         "auth/deviceStart",
         "auth/devicePoll",
         "auth/setApiKey",
@@ -270,6 +305,51 @@ async fn missing_service_is_internal_error_and_bad_params_are_invalid_params() {
 
     let v = call(&server, "no/such/method", serde_json::json!({})).await;
     assert_eq!(v["error"]["code"], -32601);
+}
+
+#[tokio::test]
+async fn usage_history_round_trips_through_dispatch() {
+    let mut server = stub_server();
+    let rec = Arc::new(Recording::default());
+    let svc: Arc<dyn ProviderService> = rec.clone();
+    server.provider_service = Some(svc);
+
+    let v = call(
+        &server,
+        "provider/usageHistory",
+        serde_json::json!({"limit": 5}),
+    )
+    .await;
+    assert!(v.get("error").is_none(), "{v}");
+    assert_eq!(v["result"]["provider"], "opencode-go");
+    assert_eq!(v["result"]["samples"], serde_json::json!([]));
+    assert!(v["result"].get("retention_days").is_some(), "{v}");
+    assert!(
+        lock_or_recover(&rec.calls)
+            .iter()
+            .any(|c| c == "usage_history")
+    );
+}
+
+#[tokio::test]
+async fn usage_history_rejects_malformed_params() {
+    let mut server = stub_server();
+    let rec = Arc::new(Recording::default());
+    let svc: Arc<dyn ProviderService> = rec.clone();
+    server.provider_service = Some(svc);
+
+    let v = call(
+        &server,
+        "provider/usageHistory",
+        serde_json::json!({"limit": "five"}),
+    )
+    .await;
+    assert_eq!(v["error"]["code"], -32602);
+    assert_eq!(v["error"]["data"]["reason"], "invalid_params");
+    assert!(
+        lock_or_recover(&rec.calls).is_empty(),
+        "service must not be called on bad params"
+    );
 }
 
 #[derive(Debug)]

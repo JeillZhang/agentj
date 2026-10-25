@@ -25,10 +25,12 @@ pub fn build_overlay(live_ids: &[String], models_dev: &serde_json::Value) -> Vec
                 Some(format) => (format, true),
                 None => (WireFormat::OpenAiCompat, false),
             };
+            let context_window = dev_context_window(models_dev, &id);
             CatalogEntry {
                 id,
                 format,
                 verified,
+                context_window,
             }
         })
         .collect()
@@ -46,6 +48,14 @@ fn dev_format(dev: &serde_json::Value, id: &str) -> Option<WireFormat> {
     npm_wire_format(npm)
 }
 
+/// models.dev `limit.context` for a namespaced id. `None` when models.dev does not list the
+/// id or publishes no positive window — an unknown window stays unknown (design D2).
+fn dev_context_window(dev: &serde_json::Value, id: &str) -> Option<u32> {
+    let bare = id.strip_prefix("opencode-go/")?;
+    let context = dev[DEV_PROVIDER]["models"].get(bare)?["limit"]["context"].as_u64()?;
+    u32::try_from(context).ok().filter(|window| *window > 0)
+}
+
 /// AI SDK package → wire format; the package names are what the endpoint table publishes.
 fn npm_wire_format(npm: &str) -> Option<WireFormat> {
     match npm {
@@ -61,11 +71,17 @@ pub fn overlay_json(base_url: &str, entries: &[CatalogEntry]) -> String {
     let models: Vec<serde_json::Value> = entries
         .iter()
         .map(|e| {
-            serde_json::json!({
+            // Unknown windows stay absent from the committed overlay: a guessed default would
+            // silently shrink the request budget for models we know nothing about (design D2).
+            let mut obj = serde_json::json!({
                 "id": e.id,
                 "format": format_name(e.format),
                 "verified": e.verified,
-            })
+            });
+            if let Some(window) = e.context_window {
+                obj["context_window"] = serde_json::json!(window);
+            }
+            obj
         })
         .collect();
     serde_json::to_string_pretty(&serde_json::json!({
@@ -141,6 +157,30 @@ mod tests {
     }
 
     #[test]
+    fn build_overlay_copies_the_models_dev_context_window() {
+        let dev = serde_json::json!({"opencode-go": {"npm": "@ai-sdk/openai-compatible", "models": {
+            "big": {"provider": {"npm": "@ai-sdk/openai-compatible"}, "limit": {"context": 1048576, "output": 65536}},
+            "no-limit": {"provider": {"npm": "@ai-sdk/openai-compatible"}},
+            "zero": {"provider": {"npm": "@ai-sdk/openai-compatible"}, "limit": {"context": 0}}
+        }}});
+        let ids: Vec<String> = ["big", "no-limit", "zero"]
+            .iter()
+            .map(|n| format!("opencode-go/{n}"))
+            .collect();
+        let entries = build_overlay(&ids, &dev);
+        let window = |n: &str| {
+            entries
+                .iter()
+                .find(|e| e.id == format!("opencode-go/{n}"))
+                .unwrap()
+                .context_window
+        };
+        assert_eq!(window("big"), Some(1_048_576));
+        assert_eq!(window("no-limit"), None);
+        assert_eq!(window("zero"), None);
+    }
+
+    #[test]
     fn unknown_npm_falls_back_to_unverified() {
         let dev =
             serde_json::json!({"opencode-go": {"npm": "@ai-sdk/whatever", "models": {"x": {}}}});
@@ -164,6 +204,7 @@ mod tests {
             id: "opencode-go/x".into(),
             format: WireFormat::Anthropic,
             verified: true,
+            context_window: None,
         }];
         let json = overlay_json("https://example.test", &entries);
         let parsed = crate::catalog::ModelCatalog::from_json(&json);

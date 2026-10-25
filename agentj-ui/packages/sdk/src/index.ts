@@ -39,4 +39,7 @@ export type {
   VisibleRowNote,
 } from "./files.js";
 export { toolSummary } from "./toolSummary.js";
+export { formatContextWindow } from "./modelMeta.js";
+export { buildTrend, sparkline } from "./usageTrend.js";
+export type { TrendPoint, UsageSampleLike } from "./usageTrend.js";
 // TcpTransport is Node-only (node:net) — import via "@agentj/sdk/src/transports/tcp.js" for Node consumers.

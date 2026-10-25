@@ -13,7 +13,7 @@ fn registry_lists_all_v01_methods() {
     )
     .unwrap();
     let methods = reg["methods"].as_array().unwrap();
-    assert_eq!(methods.len(), 28, "unexpected method count");
+    assert_eq!(methods.len(), 29, "unexpected method count");
     let find = |name: &str| {
         methods
             .iter()
@@ -61,6 +61,11 @@ fn registry_lists_all_v01_methods() {
             "AuthClearCredentialParams",
             "AuthClearCredentialResult",
         ),
+        (
+            "provider/usageHistory",
+            "ProviderUsageHistoryParams",
+            "ProviderUsageHistoryResult",
+        ),
     ] {
         let m = find(name);
         assert_eq!(m["kind"], "request", "{name} kind");
@@ -68,7 +73,7 @@ fn registry_lists_all_v01_methods() {
         assert_eq!(m["params"], params, "{name} params");
         assert_eq!(m["result"], result, "{name} result");
     }
-    assert_eq!(reg["protocol_version"], "0.19.0");
+    assert_eq!(reg["protocol_version"], "0.20.0");
 }
 
 #[test]
@@ -116,16 +121,16 @@ fn registry_extension_method_shapes() {
     assert_eq!(clear["result"], "AuthClearCredentialResult");
 
     assert_eq!(find("session/new")["params"], "SessionNewParams");
-    assert_eq!(reg["protocol_version"], "0.19.0");
+    assert_eq!(reg["protocol_version"], "0.20.0");
 }
 
 #[test]
 fn protocol_version_and_new_methods_are_registered() {
     let raw = include_str!("../../../protocol/methods.json");
     let reg: serde_json::Value = serde_json::from_str(raw).unwrap();
-    assert_eq!(reg["protocol_version"], "0.19.0");
+    assert_eq!(reg["protocol_version"], "0.20.0");
     let methods = reg["methods"].as_array().unwrap();
-    assert_eq!(methods.len(), 28, "unexpected method count");
+    assert_eq!(methods.len(), 29, "unexpected method count");
     let names: Vec<&str> = methods
         .iter()
         .map(|m| m["method"].as_str().unwrap())
@@ -190,7 +195,7 @@ fn registry_directions_are_valid() {
 fn protocol_version_is_additive_minor() {
     // Pin the const against a literal: reverting `PROTOCOL_VERSION` must fail the suite,
     // not stay green because every other assertion compares against the const itself.
-    assert_eq!(agentj_protocol::PROTOCOL_VERSION, "0.19.0");
+    assert_eq!(agentj_protocol::PROTOCOL_VERSION, "0.20.0");
 }
 
 #[test]

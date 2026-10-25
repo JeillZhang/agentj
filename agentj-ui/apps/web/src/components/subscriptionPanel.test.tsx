@@ -252,3 +252,30 @@ it("clears the pending poll timer on unmount", async () => {
     vi.useRealTimers();
   }
 });
+
+it("renders a sparkline per window when history has at least two points", async () => {
+  const c = client({
+    [METHODS.providerUsage]: { windows: [{ kind: "rolling", status: "ok", percent: 30 }] },
+    [METHODS.providerUsageHistory]: {
+      provider: "opencode-go",
+      retention_days: 30,
+      samples: [
+        { at: 1, windows: [{ kind: "rolling", status: "ok", percent: 10 }] },
+        { at: 2, windows: [{ kind: "rolling", status: "ok", percent: 30 }] },
+      ],
+    },
+  });
+  render(<SubscriptionPanel client={c} onClose={() => {}} />);
+  await waitFor(() => expect(document.querySelectorAll("svg.aj-spark")).toHaveLength(1));
+  expect(c.requests).toContain(METHODS.providerUsageHistory);
+});
+
+it("shows the empty hint instead of an empty chart", async () => {
+  const c = client({
+    [METHODS.providerUsage]: { windows: [{ kind: "rolling", status: "ok", percent: 30 }] },
+    [METHODS.providerUsageHistory]: { provider: "opencode-go", retention_days: 30, samples: [] },
+  });
+  render(<SubscriptionPanel client={c} onClose={() => {}} />);
+  await waitFor(() => expect(screen.getByText("趋势需要至少两次取样")).toBeTruthy());
+  expect(document.querySelector("svg.aj-spark")).toBeNull();
+});

@@ -1,5 +1,5 @@
 #!/bin/sh
-# Single version baseline: workspace 0.1.0 + protocol 0.19.0 must agree across
+# Single version baseline: workspace 0.1.0 + protocol 0.20.0 must agree across
 # Rust, the SDK, the protocol registry and every UI package. `AGENTJ_ROOT`
 # overrides the repository root (used by scripts/test-check-version.sh).
 set -eu
@@ -16,11 +16,11 @@ require_line() {
 require_line Cargo.toml 'version = "0.1.0"' 'version = "0.1.0"'
 require_line agentj-ui/packages/sdk/src/config.ts 'export const VERSION = "0.1.0"' \
   'VERSION = "0.1.0"'
-require_line agentj-ui/packages/sdk/src/config.ts 'PROTOCOL_VERSION = "0.19.0"' \
-  'PROTOCOL_VERSION = "0.19.0"'
-require_line crates/agentj-protocol/src/lib.rs 'PROTOCOL_VERSION: &str = "0.19.0"' \
-  'PROTOCOL_VERSION = "0.19.0"'
-require_line protocol/methods.json '"protocol_version": "0.19.0"' '"protocol_version": "0.19.0"'
+require_line agentj-ui/packages/sdk/src/config.ts 'PROTOCOL_VERSION = "0.20.0"' \
+  'PROTOCOL_VERSION = "0.20.0"'
+require_line crates/agentj-protocol/src/lib.rs 'PROTOCOL_VERSION: &str = "0.20.0"' \
+  'PROTOCOL_VERSION = "0.20.0"'
+require_line protocol/methods.json '"protocol_version": "0.20.0"' '"protocol_version": "0.20.0"'
 require_line agentj-ui/package.json '"version": "0.1.0"' '"version": "0.1.0"'
 require_line agentj-ui/apps/web/package.json '"version": "0.1.0"' '"version": "0.1.0"'
 require_line agentj-ui/apps/tui/package.json '"version": "0.1.0"' '"version": "0.1.0"'

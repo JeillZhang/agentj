@@ -16,15 +16,19 @@ use agentj_model::catalog::ModelCatalog;
 use agentj_model::usage as mu;
 use agentj_protocol::provider::*;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use crate::activation;
+use crate::usage_history::UsageHistory;
 use agentj_core::sync::lock_or_recover;
 
 const USAGE_TTL_SECS: i64 = 300;
 const MODEL_TTL_SECS: i64 = 60;
 /// OAuth credentials are flagged `expiring_soon` below this many seconds of life.
 const EXPIRING_SOON_SECS: i64 = 120;
+/// Default `provider/usageHistory` page size (design 4.1.5).
+const DEFAULT_QUERY_LIMIT: u32 = 2000;
 
 fn now_epoch() -> i64 {
     agentj_auth::oauth::now_epoch()
@@ -50,6 +54,7 @@ pub struct CliProviderService {
     registry: Arc<ProviderRegistry>,
     usage_cache: Mutex<HashMap<String, (ProviderUsageResult, i64)>>,
     model_cache: Mutex<HashMap<String, (ModelListResult, i64)>>,
+    history: Option<UsageHistory>,
 }
 
 impl CliProviderService {
@@ -71,7 +76,24 @@ impl CliProviderService {
             registry,
             usage_cache: Mutex::new(HashMap::new()),
             model_cache: Mutex::new(HashMap::new()),
+            history: None,
         }
+    }
+
+    /// Attach the persisted sampler. `None` disables history entirely (no `[usage]`
+    /// directory, or `history_enabled = false`). @since 0.20.0
+    pub fn with_history_dir(mut self, dir: Option<PathBuf>) -> Self {
+        self.history = dir.map(UsageHistory::new);
+        self
+    }
+
+    /// Apply the configured retention window and sample cap (`usage.history_days` /
+    /// `usage.history_max_samples`); a no-op when no history dir is attached. @since 0.20.0
+    pub fn with_history_limits(mut self, retention_days: i64, max_samples: usize) -> Self {
+        self.history = self
+            .history
+            .map(|history| history.with_limits(retention_days, max_samples));
+        self
     }
 
     /// Set the configured default model id (reported by `model/list`).
@@ -225,14 +247,22 @@ impl CliProviderService {
                 self.stale_usage(&cfg.name),
             ),
             Some(k) => match mu::fetch_usage(&cfg.base_url, Some(k)).await {
-                Ok(w) => ProviderUsageResult {
-                    provider: cfg.name.clone(),
-                    fetched_at: now,
-                    stale: false,
-                    warn_percent: self.warn_percent,
-                    windows: w.iter().map(map_window).collect(),
-                    error: None,
-                },
+                // Only a real upstream answer is sampled: `usage_error` never records, and a
+                // cache hit returns before this point (design 4.1.1).
+                Ok(w) => {
+                    let out = ProviderUsageResult {
+                        provider: cfg.name.clone(),
+                        fetched_at: now,
+                        stale: false,
+                        warn_percent: self.warn_percent,
+                        windows: w.iter().map(map_window).collect(),
+                        error: None,
+                    };
+                    if let Some(h) = &self.history {
+                        h.record(&cfg.name, now, &out.windows);
+                    }
+                    out
+                }
                 Err(e) => Self::usage_error(
                     &cfg.name,
                     self.warn_percent,
@@ -244,6 +274,33 @@ impl CliProviderService {
         };
         lock_or_recover(&self.usage_cache).insert(cfg.name.clone(), (result.clone(), now));
         Ok(result)
+    }
+
+    /// Pure read of the persisted samples: never contacts the upstream, never needs a key.
+    pub async fn usage_history(
+        &self,
+        p: ProviderUsageHistoryParams,
+    ) -> Result<ProviderUsageHistoryResult, DispatchError> {
+        let cfg = self
+            .require_kind(self.cfg(p.provider.as_deref())?, "usage_history")?
+            .clone();
+        let retention = self
+            .history
+            .as_ref()
+            .map_or(0, UsageHistory::retention_days);
+        let since = p
+            .since
+            .unwrap_or_else(|| now_epoch() - i64::from(retention) * 86_400);
+        let limit = p.limit.unwrap_or(DEFAULT_QUERY_LIMIT);
+        let samples = match &self.history {
+            Some(h) => h.query(&cfg.name, p.kind, since, limit),
+            None => Vec::new(),
+        };
+        Ok(ProviderUsageHistoryResult {
+            provider: cfg.name,
+            retention_days: retention,
+            samples,
+        })
     }
 
     pub async fn auth_status(
@@ -327,6 +384,7 @@ impl CliProviderService {
                         id,
                         verified: true,
                         format: cfg.kind.clone(),
+                        context_window: None,
                     })
                     .collect(),
             }
@@ -680,6 +738,12 @@ impl ProviderService for CliProviderService {
     async fn usage(&self, p: ProviderUsageParams) -> Result<ProviderUsageResult, DispatchError> {
         CliProviderService::usage(self, p).await
     }
+    async fn usage_history(
+        &self,
+        p: ProviderUsageHistoryParams,
+    ) -> Result<ProviderUsageHistoryResult, DispatchError> {
+        CliProviderService::usage_history(self, p).await
+    }
     async fn device_start(
         &self,
         p: AuthDeviceStartParams,
@@ -840,6 +904,12 @@ fn format_name(f: agentj_model::catalog::WireFormat) -> String {
     .into()
 }
 
+/// The window a catalog entry publishes; `None` when the id is unknown or the entry publishes
+/// no window (absence is reported, never guessed).
+fn catalog_window(catalog: &ModelCatalog, id: &str) -> Option<u32> {
+    catalog.lookup(id).and_then(|entry| entry.context_window)
+}
+
 /// Maps ids through the overlay: a hit keeps its format/verified; a miss is synthesized as
 /// `openai-compat` + `verified: false` (phase-1 D3 — never guess a route from the id).
 fn entries_of(ids: &[String], overlay: &agentj_model::catalog::ModelCatalog) -> Vec<ModelEntry> {
@@ -849,11 +919,13 @@ fn entries_of(ids: &[String], overlay: &agentj_model::catalog::ModelCatalog) -> 
                 id: id.clone(),
                 verified: e.verified,
                 format: format_name(e.format),
+                context_window: catalog_window(overlay, id),
             },
             None => ModelEntry {
                 id: id.clone(),
                 verified: false,
                 format: "openai-compat".into(),
+                context_window: None,
             },
         })
         .collect()
@@ -1008,6 +1080,31 @@ mod tests {
         }
     }
 
+    #[test]
+    fn catalog_window_is_read_from_the_entry() {
+        let catalog = ModelCatalog::from_json(
+            r#"{"base_url":"https://x","models":[{"id":"opencode-go/a","format":"openai-compat","verified":true,"context_window":200000}]}"#,
+        );
+        assert_eq!(catalog_window(&catalog, "opencode-go/a"), Some(200_000));
+        assert_eq!(catalog_window(&catalog, "opencode-go/missing"), None);
+    }
+
+    #[test]
+    fn model_list_entries_carry_catalog_windows_and_none_for_unknown_ids() {
+        let catalog = ModelCatalog::from_json(
+            r#"{"base_url":"https://x","models":[{"id":"opencode-go/a","format":"openai-compat","verified":true,"context_window":200000}]}"#,
+        );
+        let models = entries_of(
+            &["opencode-go/a".into(), "opencode-go/missing".into()],
+            &catalog,
+        );
+        assert_eq!(models[0].context_window, Some(200_000));
+        assert_eq!(
+            models[1].context_window, None,
+            "an unpublished window is never invented"
+        );
+    }
+
     #[tokio::test]
     async fn usage_is_cached_and_refresh_bypasses_the_cache() {
         let dir = tempfile::tempdir().unwrap();
@@ -1099,6 +1196,149 @@ mod tests {
             .unwrap();
         assert_eq!(r.error.unwrap().kind, "no_credential");
         assert_eq!(server.received_requests().await.unwrap().len(), before);
+    }
+
+    #[tokio::test]
+    async fn usage_records_a_sample_only_when_upstream_answers() {
+        let server = wiremock::MockServer::start().await;
+        mount_usage(
+            &server,
+            200,
+            serde_json::json!({"usage": {
+                "rolling": {"percent": 37},
+                "weekly": {"percent": 12}}}),
+        )
+        .await;
+        let dir = tempfile::tempdir().unwrap();
+        let svc = svc(store_with_api_key(dir.path(), "k"), &server.uri())
+            .with_history_dir(Some(dir.path().join("usage")));
+        let live = svc
+            .usage(ProviderUsageParams {
+                provider: None,
+                refresh: Some(true),
+            })
+            .await
+            .unwrap();
+        assert_eq!(live.windows.len(), 2);
+        let hist = svc
+            .usage_history(ProviderUsageHistoryParams {
+                provider: None,
+                kind: None,
+                since: None,
+                limit: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(hist.provider, "opencode-go");
+        assert_eq!(hist.retention_days, 30);
+        assert_eq!(hist.samples.len(), 1);
+        assert_eq!(
+            hist.samples[0].windows.len(),
+            2,
+            "a sample keeps every window"
+        );
+    }
+
+    #[tokio::test]
+    async fn usage_history_stays_empty_when_upstream_fails() {
+        let server = wiremock::MockServer::start().await;
+        mount_usage(&server, 500, serde_json::json!({})).await;
+        let dir = tempfile::tempdir().unwrap();
+        let svc = svc(store_with_api_key(dir.path(), "k"), &server.uri())
+            .with_history_dir(Some(dir.path().join("usage")));
+        let err = svc
+            .usage(ProviderUsageParams {
+                provider: None,
+                refresh: Some(true),
+            })
+            .await
+            .unwrap();
+        assert!(err.error.is_some());
+        let hist = svc
+            .usage_history(ProviderUsageHistoryParams {
+                provider: None,
+                kind: None,
+                since: None,
+                limit: None,
+            })
+            .await
+            .unwrap();
+        assert!(
+            hist.samples.is_empty(),
+            "a failed fetch must not be recorded"
+        );
+    }
+
+    #[tokio::test]
+    async fn usage_cache_hit_does_not_append_another_sample() {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/v1/usage"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"usage": {"rolling": {"percent": 37}}})),
+            )
+            .expect(1) // exactly one upstream call, so the second request is a cache hit
+            .mount(&server)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let svc = svc(store_with_api_key(dir.path(), "k"), &server.uri())
+            .with_history_dir(Some(dir.path().join("usage")));
+        for _ in 0..2 {
+            svc.usage(ProviderUsageParams {
+                provider: None,
+                refresh: None,
+            })
+            .await
+            .unwrap();
+        }
+        let hist = svc
+            .usage_history(ProviderUsageHistoryParams {
+                provider: None,
+                kind: None,
+                since: None,
+                limit: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(hist.samples.len(), 1, "cache hits are not new samples");
+    }
+
+    #[tokio::test]
+    async fn usage_history_is_empty_without_a_history_dir() {
+        let svc = svc_with_console("https://unused.test")
+            .0
+            .with_history_dir(None);
+        let hist = svc
+            .usage_history(ProviderUsageHistoryParams {
+                provider: None,
+                kind: None,
+                since: None,
+                limit: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(hist.retention_days, 0);
+        assert!(hist.samples.is_empty());
+    }
+
+    #[tokio::test]
+    async fn with_history_limits_sets_the_reported_retention() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = svc_with_console("https://unused.test")
+            .0
+            .with_history_dir(Some(dir.path().join("usage")))
+            .with_history_limits(7, 500);
+        let hist = svc
+            .usage_history(ProviderUsageHistoryParams {
+                provider: None,
+                kind: None,
+                since: None,
+                limit: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(hist.retention_days, 7);
     }
 
     #[tokio::test]
