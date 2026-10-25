@@ -235,6 +235,10 @@ fn resolve_session_dir(cfg: &agentj_config::Config) -> std::path::PathBuf {
 /// Pure resolution of the metrics state directory (design D4): an explicit
 /// `[web] state_dir` wins, then `$XDG_DATA_HOME/agentj`, then
 /// `$HOME/.local/share/agentj`; `None` means "keep the counters in memory".
+///
+/// An *empty* configured `state_dir` is treated as unset: `PathBuf::from("")` is not a
+/// directory anyone can write to, but it used to win the chain and silently hand the
+/// callers a path that resolves to the process CWD.
 fn metrics_state_dir_from(
     cfg: &agentj_config::Config,
     xdg: Option<&str>,
@@ -244,7 +248,8 @@ fn metrics_state_dir_from(
         .inner()
         .web
         .as_ref()
-        .and_then(|web| web.state_dir.clone());
+        .and_then(|web| web.state_dir.clone())
+        .filter(|dir| !dir.as_os_str().is_empty());
     if let Some(dir) = explicit {
         return Some(dir);
     }
@@ -2201,6 +2206,20 @@ mod tests {
     }
 
     #[test]
+    fn state_dir_empty_string_is_not_a_path() {
+        let cfg = config_with_web(Some(""));
+        assert_eq!(
+            metrics_state_dir_from(&cfg, Some("/xdg"), Some("/home/u")),
+            Some(std::path::PathBuf::from("/xdg/agentj")),
+            "an empty configured state_dir must behave like an absent one"
+        );
+        assert_eq!(
+            usage_history_dir_from(&cfg, Some("/xdg"), Some("/home/u")),
+            Some(std::path::PathBuf::from("/xdg/agentj/usage"))
+        );
+    }
+
+    #[test]
     fn state_dir_falls_back_to_xdg_then_home() {
         let cfg = config_with_web(None);
         assert_eq!(
@@ -2216,6 +2235,13 @@ mod tests {
             Some(std::path::PathBuf::from("/home/u/.local/share/agentj")),
             "an empty XDG_DATA_HOME is not a path"
         );
+    }
+
+    #[test]
+    fn state_dir_empty_string_without_env_warns() {
+        let cfg = config_with_web(Some(""));
+        assert_eq!(metrics_state_dir_from(&cfg, None, None), None);
+        assert!(metrics_state_warning(None).is_some());
     }
 
     #[test]
