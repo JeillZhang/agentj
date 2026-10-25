@@ -26,6 +26,7 @@ export const METHODS = {
   modelList: "model/list",
   authStatus: "auth/status",
   providerUsage: "provider/usage",
+  providerUsageHistory: "provider/usageHistory",
   authDeviceStart: "auth/deviceStart",
   authDevicePoll: "auth/devicePoll",
   authSetApiKey: "auth/setApiKey",

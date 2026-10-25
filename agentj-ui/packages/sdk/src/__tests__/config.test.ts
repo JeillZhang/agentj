@@ -23,21 +23,22 @@ describe("config", () => {
     expect(resolveWsUrl({ envUrl: "ws://host:1/ws" })).toBe("ws://host:1/ws");
   });
 
-  it("methods cover the 28-method registry", () => {
+  it("methods cover the 29-method registry", () => {
     expect(METHODS.kernelStatus).toBe("kernel/status");
-    expect(Object.keys(METHODS)).toHaveLength(28);
+    expect(Object.keys(METHODS)).toHaveLength(29);
     expect(METHODS.fileList).toBe("file/list");
     expect(METHODS.askQuestion).toBe("$/askQuestion");
     expect(METHODS.questionRespond).toBe("question/respond");
     expect(METHODS.modelList).toBe("model/list");
     expect(METHODS.authStatus).toBe("auth/status");
     expect(METHODS.providerUsage).toBe("provider/usage");
+    expect(METHODS.providerUsageHistory).toBe("provider/usageHistory");
     expect(METHODS.authDeviceStart).toBe("auth/deviceStart");
     expect(METHODS.authDevicePoll).toBe("auth/devicePoll");
   });
 
   it("registers the two new methods", () => {
-    expect(Object.keys(METHODS)).toHaveLength(28);
+    expect(Object.keys(METHODS)).toHaveLength(29);
     expect(METHODS.authSetApiKey).toBe("auth/setApiKey");
     expect(METHODS.authClearCredential).toBe("auth/clearCredential");
   });
