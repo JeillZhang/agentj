@@ -22,9 +22,9 @@ CLI、TUI、Web、Desktop 均作为协议消费者接入，任意语言可开发
 
 **内核与协议**
 
-- [x] **IPC 协议契约**：JSON-RPC 2.0 信封 + 错误码 + 28 方法
+- [x] **IPC 协议契约**：JSON-RPC 2.0 信封 + 错误码 + 29 方法
   （lifecycle / session / kernel / 通知 / 权限 / 提问 / 文件列举 / 订阅服务）
-- [x] **JSON Schema**：78 Schema（schemars 生成，提交件 + 漂移门禁）
+- [x] **JSON Schema**：81 Schema（schemars 生成，提交件 + 漂移门禁）
 - [x] **方法注册表** `protocol/methods.json` + 跨语言类型绑定 `agentj-ui/packages/protocol`
 - [x] **内核与模块注册表**：Kernel 混合总线 + `ServiceRegistry`（同步/异步）
 - [x] **事件总线**：`EventBus` 订阅/发布 + 重入防护（`MAX_EVENT_DEPTH=16`）
@@ -92,7 +92,7 @@ agentj-ui/                 # 前端 monorepo（npm workspaces，frontend stays i
     web/                   # Web 三栏工作台
     tui/                   # TUI（Bun + @opentui/react）
     desktop/               # Tauri 壳（套 web/dist）
-schemas/                   # 78 JSON Schema（机器事实来源）
+schemas/                   # 81 JSON Schema（机器事实来源）
 protocol/                  # methods.json 方法注册表
 docs/                      # 用户指南（guide/）+ 变更记录（changelog/）+ 规范（specs/）+ 设计（superpowers/）
 ```
@@ -176,21 +176,23 @@ env = { FOO = "bar" }
 ## Protocol
 
 - 规范：`docs/specs/ipc-protocol.md`
-- Schema：`schemas/*.json`（78 个）
-- 方法注册表：`protocol/methods.json`（28 方法）
+- Schema：`schemas/*.json`（81 个）
+- 方法注册表：`protocol/methods.json`（29 方法）
 - 方法面：`initialize` / `initialized` / `shutdown` / `exit` /
   `session/new` / `session/run` / `session/status` / `session/archive` /
   `session/delete` / `session/subscribe` / `session/unsubscribe` /
   `session/list` / `session/history` / `kernel/status` /
   `$/cancelRequest` / `$/progress` / `$/askQuestion` / `$/permissionRequest` /
   `permission/respond` / `file/list` / `question/respond` /
-  `model/list` / `auth/status` / `provider/usage` / `auth/deviceStart` / `auth/devicePoll` /
+  `model/list` / `auth/status` / `provider/usage` / `provider/usageHistory` /
+  `auth/deviceStart` / `auth/devicePoll` /
   `auth/setApiKey` / `auth/clearCredential`
 - 传输：stdio（单客户端）+ TCP（NDJSON 多客户端）+ WebSocket `/ws`
   （同端口分类器；`?token=` + `initialize.token` + 登录 cookie 三通道鉴权）
 - HTTP 面（内核托管）：`/`（Web UI）+ `/assets` + `/login` / `/logout` +
   `GET /version` + `GET /metrics`（详见 [HTTP 面与鉴权](docs/guide/http-and-auth.md)）
-- 协议版本：`initialize` 握手 + 语义化版本 + 加性纪律（只加不改；未知能力/枚举值容忍）
+- 协议版本：`0.20.0`（`initialize` 握手 + 语义化版本 + 加性纪律：只加不改；
+  未知能力/枚举值容忍）
 
 ## Development
 
