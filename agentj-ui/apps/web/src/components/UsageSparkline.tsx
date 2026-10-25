@@ -91,7 +91,7 @@ export default function UsageSparkline({ points, width = 120 }: Props): ReactEle
         <path d={d} fill="none" stroke="currentColor" strokeWidth="1.5" />
         {points.map((p, i) => (
           <rect
-            key={p.at}
+            key={`${p.at}-${i}`}
             className="aj-spark-hit"
             data-testid="spark-hit"
             x={Math.max(0, i * step - step / 2)}

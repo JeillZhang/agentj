@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 import UsageSparkline from "./UsageSparkline";
@@ -20,6 +20,28 @@ describe("UsageSparkline", () => {
     render(<UsageSparkline points={[pt(0, 10), pt(60, 55)]} />);
     expect(screen.getByRole("img")).toHaveAttribute("aria-label", expect.stringContaining("55%"));
     expect(document.querySelectorAll("title")).toHaveLength(2);
+  });
+
+  it("keeps both hit bands when two samples share one timestamp", () => {
+    // `buildTrend` sorts by `at` without deduping, so two samples in the same second are
+    // legal data. Keying the bands by `at` alone makes React see a duplicate key (its
+    // reconciler then reuses whichever band it likes), so each band is keyed by position.
+    const warnings: string[] = [];
+    const spy = vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+      warnings.push(args.map((a) => String(a)).join(" "));
+    });
+    try {
+      render(<UsageSparkline points={[pt(60, 20), pt(60, 45), pt(120, 55)]} />);
+      const bands = screen.getAllByTestId("spark-hit");
+      expect(bands).toHaveLength(3);
+      expect(warnings.filter((line) => line.includes("same key"))).toEqual([]);
+      fireEvent.mouseEnter(bands[1]);
+      expect(screen.getByRole("tooltip")).toHaveTextContent("45%");
+      fireEvent.mouseEnter(bands[0]);
+      expect(screen.getByRole("tooltip")).toHaveTextContent("20%");
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it("renders nothing below two points", () => {
