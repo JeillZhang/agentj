@@ -25,11 +25,12 @@ pub fn build_overlay(live_ids: &[String], models_dev: &serde_json::Value) -> Vec
                 Some(format) => (format, true),
                 None => (WireFormat::OpenAiCompat, false),
             };
+            let context_window = dev_context_window(models_dev, &id);
             CatalogEntry {
                 id,
                 format,
                 verified,
-                context_window: None,
+                context_window,
             }
         })
         .collect()
@@ -45,6 +46,14 @@ fn dev_format(dev: &serde_json::Value, id: &str) -> Option<WireFormat> {
         .as_str()
         .or_else(|| provider["npm"].as_str())?;
     npm_wire_format(npm)
+}
+
+/// models.dev `limit.context` for a namespaced id. `None` when models.dev does not list the
+/// id or publishes no positive window — an unknown window stays unknown (design D2).
+fn dev_context_window(dev: &serde_json::Value, id: &str) -> Option<u32> {
+    let bare = id.strip_prefix("opencode-go/")?;
+    let context = dev[DEV_PROVIDER]["models"].get(bare)?["limit"]["context"].as_u64()?;
+    u32::try_from(context).ok().filter(|window| *window > 0)
 }
 
 /// AI SDK package → wire format; the package names are what the endpoint table publishes.
@@ -145,6 +154,30 @@ mod tests {
         let entries = build_overlay(&["opencode-go/unknown".into()], &dev());
         assert_eq!(entries[0].format, WireFormat::OpenAiCompat);
         assert!(!entries[0].verified);
+    }
+
+    #[test]
+    fn build_overlay_copies_the_models_dev_context_window() {
+        let dev = serde_json::json!({"opencode-go": {"npm": "@ai-sdk/openai-compatible", "models": {
+            "big": {"provider": {"npm": "@ai-sdk/openai-compatible"}, "limit": {"context": 1048576, "output": 65536}},
+            "no-limit": {"provider": {"npm": "@ai-sdk/openai-compatible"}},
+            "zero": {"provider": {"npm": "@ai-sdk/openai-compatible"}, "limit": {"context": 0}}
+        }}});
+        let ids: Vec<String> = ["big", "no-limit", "zero"]
+            .iter()
+            .map(|n| format!("opencode-go/{n}"))
+            .collect();
+        let entries = build_overlay(&ids, &dev);
+        let window = |n: &str| {
+            entries
+                .iter()
+                .find(|e| e.id == format!("opencode-go/{n}"))
+                .unwrap()
+                .context_window
+        };
+        assert_eq!(window("big"), Some(1_048_576));
+        assert_eq!(window("no-limit"), None);
+        assert_eq!(window("zero"), None);
     }
 
     #[test]
