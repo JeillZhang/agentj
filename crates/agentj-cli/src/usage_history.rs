@@ -109,6 +109,9 @@ impl UsageHistory {
         since: Option<i64>,
         limit: Option<u32>,
     ) -> Vec<UsageSample> {
+        // `Unknown` is what a forward client's unrecognized kind deserializes to; treating it as
+        // a window subset would silently return no samples, so it filters nothing.
+        let kind = kind.filter(|k| *k != UsageWindowKind::Unknown);
         let mut out: Vec<UsageSample> = samples
             .into_iter()
             .filter(|s| kind.is_none_or(|k| s.windows.iter().any(|w| w.kind == k)))
@@ -255,7 +258,12 @@ fn open_private(tmp: &Path) -> std::io::Result<std::fs::File> {
 }
 
 fn discard_tmp(tmp: &Path, error: std::io::Error) -> std::io::Error {
-    let _ = std::fs::remove_file(tmp);
+    // Cleanup failures must not mask the original error, but they are not silent either.
+    if let Err(remove) = std::fs::remove_file(tmp)
+        && remove.kind() != std::io::ErrorKind::NotFound
+    {
+        tracing::warn!("usage history tmp cleanup failed ({tmp:?}): {remove}");
+    }
     error
 }
 
@@ -378,6 +386,25 @@ mod tests {
             vec![20, 30],
             "limit keeps the newest"
         );
+    }
+
+    #[test]
+    fn unknown_kind_filters_nothing() {
+        let h = UsageHistory::new(PathBuf::from("/tmp/unused"));
+        let samples = vec![
+            UsageSample {
+                at: 10,
+                windows: vec![window(1)],
+            },
+            UsageSample {
+                at: 20,
+                windows: vec![weekly(2)],
+            },
+        ];
+        // A forward client may send a kind this build does not know; it deserializes to
+        // `Unknown`, which must not silently drop every sample (未知即不过滤).
+        let out = h.filter(samples, Some(UsageWindowKind::Unknown), None, None);
+        assert_eq!(out.iter().map(|s| s.at).collect::<Vec<_>>(), vec![10, 20]);
     }
 
     #[test]

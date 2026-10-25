@@ -27,7 +27,7 @@
   + `buildTrend(samples, kind, now, max = 2000)`——空 `kind` 不过滤（取首个带数值百分比的窗口），
   未来样本 / 异类窗口 / 无数值占比一律**丢弃而非画成 0**，升序后等距降采样（保留首尾）；
   + `sparkline(values, width)`（`GLYPHS = "▁▂▃▄▅▆▇█"`，0% = `▁`，100% = `█`，等距取样不补齐）。
-- `src/modelLabel.ts`：`formatContextWindow(tokens)` → `205k` / `1.0M` 风格标签（Web 与 TUI 共用）。
+- `src/modelMeta.ts`：`formatContextWindow(tokens)` → `205k` / `1.0M` 风格标签（Web 与 TUI 共用）。
 - `src/methods.ts` 重新生成：新增 `METHODS.providerUsageHistory`。
 - `packages/protocol/types.d.ts` 重新生成（+81/−15）：`UsageWindowKind` / `UsageWindowStatus` /
   `UsageWindow` / `UsageSample` / `ProviderUsageHistoryParams` / `ProviderUsageHistoryResult`，

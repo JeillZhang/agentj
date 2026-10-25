@@ -288,7 +288,7 @@ impl WebSection {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct UsageSection {
-    /// Whether the kernel persists per-model usage samples into the history file.
+    /// Whether the kernel persists per-provider usage samples into the history file.
     #[serde(default = "default_true")]
     pub history_enabled: bool,
     /// How many days of samples the history keeps. Clamped to

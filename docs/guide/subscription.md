@@ -142,9 +142,12 @@ agentj auth login --device          # 与 --api-key 互斥
   曲线与首尾值（形如 `10%→30%`）。不足两条样本时**不画空图**——Web 显示「趋势需要至少两次
   取样」、TUI 直接省略该行，刚链接订阅时看不到趋势是正常的。
 - **关掉它**：`[usage] history_enabled = false` 后内核**不再建目录、不写任何样本**，
-  `provider/usageHistory` 直接返回空数组（用量本身照常）。三个目录来源都解析不出来时，内核启动
-  会打印 `warning: no usage history directory (set XDG_DATA_HOME, HOME or [web] state_dir);
-  usage history stays in memory and is lost on restart`——此时历史只在当前进程内存里，重启即丢。
+  `provider/usageHistory` 直接返回空数组（用量本身照常）。三个目录来源都解析不出来时，历史
+  **整体禁用**（没有内存兜底，也不会在重启后凭空出现），内核启动会打印
+  `warning: no usage history directory (set XDG_DATA_HOME, HOME or [web] state_dir);
+  usage history is disabled until one exists`。
+- **并发写是「后写者胜」**：同一目录下两个进程（例如不同端口的两个 `serve`）同时落盘时，
+  后一次 `rename` 会覆盖前一次刚记的样本——丢一条取样而不是写坏文件；下一次真取数会补回来。
 
 ## 模型目录：三层来源
 

@@ -112,11 +112,14 @@ function UsageBlock({
         return (
           <Fragment key={item.kind}>
             <WindowRow item={item} warnPercent={usage.warn_percent} />
-            <UsageSparkline points={points} />
+            {points.length >= 2 ? (
+              <UsageSparkline points={points} />
+            ) : (
+              <p className="aj-sub__hint">趋势需要至少两次取样</p>
+            )}
           </Fragment>
         );
       })}
-      {samples.length < 2 && <p className="aj-sub__hint">趋势需要至少两次取样</p>}
       {sentence && <p className="aj-sub__error">{sentence}</p>}
     </div>
   );
@@ -169,8 +172,9 @@ export default function SubscriptionPanel({ client, onClose, onLinked, onCleared
   };
 
   const refreshUsage = () => {
-    void loadUsage(true);
-    void loadHistory();
+    // Serialise the two calls: the live fetch may write a fresh sample, and the history read
+    // has to see it or the chart lags one refresh behind.
+    void loadUsage(true).then(() => loadHistory());
   };
 
   const loadStatus = async () => {

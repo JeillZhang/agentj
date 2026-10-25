@@ -42,8 +42,9 @@ node agentj-ui/apps/desktop/check-desktop-ui.mjs        # 前端产物/配置一
 `check-artifacts.sh linux` 校验后把 `*.deb` / `*.AppImage` 作为 `agentj-desktop-linux` 上传
 （保留 7 天）。作业不跑测试套件，有 45 分钟超时。
 
-- **`dmg` / `msi` 不在 CI 里，需手动构建**：GitHub 的 macOS / Windows runner 没装打包所需的
-  签名 / WiX 工具链，跨平台作业（`cross-platform`）只做 `cargo build --workspace`，**不打包**。
+- **`dmg` / `msi` 不在 CI 里，需手动构建**：仓库没有配置 macOS 签名 / 公证证书与 Windows
+  代码签名（`windows-latest` 自带 WiX，缺的是证书），跨平台作业（`cross-platform`）只做
+  `cargo build --workspace`，**不打包**。
   要发这两个包就在对应平台的机器上跑上面那两条 `--bundles dmg` / `--bundles msi` 命令，再
   用 `check-artifacts.sh macos` / `check-artifacts.sh windows` 自检。
 - **CI 绿不等于四件套齐全**：它只保证 Linux 的 `deb` + `AppImage` 能构建、能通过存在性校验。

@@ -338,7 +338,7 @@ fn usage_history_warning(cfg: &agentj_config::Config, dir: Option<&Path>) -> Opt
     }
     Some(
         "warning: no usage history directory (set XDG_DATA_HOME, HOME or [web] state_dir); \
-         usage history stays in memory and is lost on restart"
+         usage history is disabled until one exists"
             .to_string(),
     )
 }
@@ -2102,7 +2102,7 @@ mod tests {
         assert!(warn.contains("XDG_DATA_HOME"), "{warn}");
         assert!(warn.contains("HOME"), "{warn}");
         assert!(warn.contains("state_dir"), "{warn}");
-        assert!(warn.contains("usage history stays in memory"), "{warn}");
+        assert!(warn.contains("usage history is disabled"), "{warn}");
         assert!(usage_history_warning(&cfg, Some(Path::new("/tmp/x"))).is_none());
         let disabled = config_with_web_body("[usage]\nhistory_enabled = false\n");
         assert!(
