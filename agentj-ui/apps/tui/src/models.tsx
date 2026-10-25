@@ -1,12 +1,16 @@
 import { useEffect, useState } from "react";
 import { useKeyboard } from "@opentui/react";
-import { METHODS } from "@agentj/sdk";
+import { METHODS, formatContextWindow } from "@agentj/sdk";
 import type { RpcClient } from "@agentj/sdk";
 
 export type ModelEntry = {
   name: string;
   provider?: string;
+  cap?: string;
 };
+
+/** One `model/list` row, narrowed to the field the picker labels rows with. */
+type ModelWindow = { id: string; context_window?: number | null };
 
 export type ModelListInput = {
   default_model: string;
@@ -42,6 +46,21 @@ export function providersFromStatus(data: Record<string, unknown>): ModelEntry[]
   return kernelModelEntries(data) ?? staticEntries();
 }
 
+/**
+ * Labels entries with the catalog context window. A model the catalog omits (or
+ * reports no window for) keeps its entry object untouched, so its row is unchanged.
+ */
+export function withContextWindows(entries: ModelEntry[], models: ModelWindow[]): ModelEntry[] {
+  const windows = new Map<string, number>();
+  for (const model of models) {
+    if (typeof model.context_window === "number") windows.set(model.id, model.context_window);
+  }
+  return entries.map((e) => {
+    const label = formatContextWindow(windows.get(e.name) ?? null);
+    return label ? { ...e, cap: label } : e;
+  });
+}
+
 export function useModelConfig(client: RpcClient | null): ModelListInput {
   const [cfg, setCfg] = useState<ModelListInput>(MODEL_CONFIG);
   useEffect(() => {
@@ -56,7 +75,19 @@ export function useModelConfig(client: RpcClient | null): ModelListInput {
         const providers = kernelModelEntries(data);
         if (!providers) return;
         const dm = data?.["default_model"];
-        setCfg({ default_model: typeof dm === "string" ? dm : "", providers });
+        // The context window is a catalog fact (model/list), not a kernel/status one, so
+        // it rides a second request; a failing catalog leg drops the labels rather than
+        // blanking the list, hence `.catch` on that leg only.
+        return client
+          .request(METHODS.modelList)
+          .then((list) => (list as { models?: ModelWindow[] }).models ?? [])
+          .catch(() => [])
+          .then((models) =>
+            setCfg({
+              default_model: typeof dm === "string" ? dm : "",
+              providers: withContextWindows(providers, models),
+            }),
+          );
       })
       .catch(() => {});
   }, [client]);
@@ -84,7 +115,9 @@ function markerIndex(
 
 export function renderModelList(input: ModelListInput & { selected?: ModelEntry | null }): string {
   const marker = markerIndex(input.providers, input.selected, input.default_model);
-  const rows = input.providers.map((e, i) => (i === marker ? `▶ ${e.name}` : `  ${e.name}`));
+  const rows = input.providers.map(
+    (e, i) => (i === marker ? `▶ ${e.name}` : `  ${e.name}`) + (e.cap ? `  ${e.cap}` : ""),
+  );
   return [...rows, MODEL_LIST_HINT].join("\n");
 }
 
