@@ -9,7 +9,7 @@ describe("config", () => {
     const workspace = /^version = "([^"]+)"/m.exec(cargo)?.[1];
     expect(workspace).toBeTruthy();
     expect(VERSION).toBe(workspace);
-    expect(PROTOCOL_VERSION).toBe("0.20.0");
+    expect(PROTOCOL_VERSION).toBe("0.21.0");
   });
 
 

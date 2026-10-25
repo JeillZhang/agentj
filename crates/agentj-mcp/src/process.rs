@@ -47,7 +47,12 @@ mod tests {
         }
         match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
             Ok(stat) => {
-                let state = stat.rsplit(')').next().unwrap_or("").split_whitespace().next();
+                let state = stat
+                    .rsplit(')')
+                    .next()
+                    .unwrap_or("")
+                    .split_whitespace()
+                    .next();
                 state != Some("Z")
             }
             Err(_) => false,

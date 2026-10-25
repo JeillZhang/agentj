@@ -22,6 +22,10 @@ use std::sync::Mutex as StdMutex;
 #[derive(Default)]
 struct RunAccum {
     text: String,
+    /// Characters the kernel dropped per call id (design ㊵). The core sends
+    /// `ToolResultTruncated` *before* the matching `ToolResult`, so the count is waiting
+    /// here when the result is fanned out.
+    truncated: std::collections::HashMap<String, usize>,
     tool_calls: Vec<CoreToolCall>,
     usage: Option<UsageInfo>,
     run_id: Option<String>,
@@ -146,7 +150,12 @@ impl IpcServer {
             AgentEvent::ToolResult { call_id, result } => {
                 self.emit_tool_result(sid, token, acc, call_id, result);
             }
-            AgentEvent::ToolResultTruncated { .. } => {}
+            AgentEvent::ToolResultTruncated {
+                tool_call_id,
+                dropped_chars,
+            } => {
+                acc.truncated.insert(tool_call_id, dropped_chars);
+            }
             AgentEvent::Done {
                 run_id,
                 tool_calls,
@@ -232,6 +241,7 @@ impl IpcServer {
             &agentj_protocol::streaming::ProgressValue::ToolResult {
                 tool_call_id: call_id.clone(),
                 content: result.clone(),
+                truncated_chars: acc.truncated.remove(&call_id),
             },
         );
         self.broadcast_progress(sid, &frame);

@@ -372,7 +372,11 @@ mod tests {
     fn bounded_definitions_keeps_the_first_definition_even_under_a_tiny_cap() {
         let defs: Vec<ToolDefinition> = (0..8).map(|i| fat(&format!("tool{i}"))).collect();
         let kept = bounded_definitions(&defs, MIN_CONTEXT_TOKENS);
-        assert_eq!(kept.len(), 1, "an over-budget set keeps the first tool only");
+        assert_eq!(
+            kept.len(),
+            1,
+            "an over-budget set keeps the first tool only"
+        );
         assert_eq!(kept[0].name, "tool0");
     }
 

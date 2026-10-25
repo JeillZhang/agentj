@@ -711,6 +711,12 @@ export type ProgressValue =
       content: string;
       kind: "tool_result";
       tool_call_id: string;
+      /**
+       * Characters the kernel dropped from this result (design ㊵). Absent on the wire
+       * when nothing was truncated, so an untruncated frame is byte-identical to 0.20.0.
+       * @since 0.21.0
+       */
+      truncated_chars?: number | null;
       [k: string]: unknown;
     }
   | {

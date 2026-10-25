@@ -721,10 +721,15 @@ fn run_error_line(v: &serde_json::Value) -> Option<String> {
 /// being mistaken for a fresh request (and denied again, forever).
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum AttachAction {
-    DenyApproval { request_id: String, tool: String },
+    DenyApproval {
+        request_id: String,
+        tool: String,
+    },
     /// The kernel is waiting on an `ask` tool; attach is not an interactive client, so it
     /// settles the question as skipped instead of letting the 600s timeout run.
-    SkipQuestion { question_id: String },
+    SkipQuestion {
+        question_id: String,
+    },
     Reply(String),
     Fail(String),
     Ignore,
@@ -801,7 +806,9 @@ fn attach_skip_question_request(question_id: &str, id: u64) -> String {
         skipped: true,
     };
     let body = serde_json::to_string(&params).expect("a skipped answer always serializes");
-    format!("{{\"jsonrpc\":\"2.0\",\"id\":{id},\"method\":\"question/respond\",\"params\":{body}}}\n")
+    format!(
+        "{{\"jsonrpc\":\"2.0\",\"id\":{id},\"method\":\"question/respond\",\"params\":{body}}}\n"
+    )
 }
 
 /// The line `run --attach` prints when the remote kernel asks a question: attach answers it
@@ -2444,7 +2451,9 @@ mod tests {
             "the serve banner must surface a silently clamped knob"
         );
         assert!(
-            WebSettings::resolve(&load_test_config("")).config_warnings.is_empty(),
+            WebSettings::resolve(&load_test_config(""))
+                .config_warnings
+                .is_empty(),
             "an in-range config stays quiet"
         );
     }

@@ -1000,6 +1000,85 @@ impl agentj_core::module::ModelProvider for PerCallScriptProvider {
     }
 }
 
+/// Tool whose result is far over the 100_000-char default cap, so the kernel's single
+/// truncation point fires (design ㊵).
+struct HugeTool;
+
+impl agentj_core::module::Tool for HugeTool {
+    fn name(&self) -> &str {
+        "huge"
+    }
+    fn description(&self) -> &str {
+        "test huge"
+    }
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({"type": "object"})
+    }
+    fn execute(
+        &self,
+        _input: serde_json::Value,
+    ) -> Result<serde_json::Value, agentj_core::error::ToolError> {
+        Ok(serde_json::Value::String("x".repeat(150_000)))
+    }
+}
+
+/// After truncation the UI has to be able to say how much went missing: the tool_result
+/// `$/progress` frame carries the count the kernel dropped.
+#[tokio::test]
+async fn tool_result_frame_reports_the_truncated_char_count() {
+    let provider = PerCallScriptProvider::new(vec![
+        vec![Ok(ModelEvent::ToolCall(ToolCall {
+            id: "call_huge".into(),
+            name: "huge".into(),
+            arguments: serde_json::json!({}),
+        }))],
+        vec![Ok(ModelEvent::Done)],
+    ]);
+    let server = Arc::new(run_server_with_provider(Arc::new(provider), |reg| {
+        reg.register(Arc::new(HugeTool));
+    }));
+    let run_conn = register_fake_conn(&server);
+    let sub_conn = register_fake_conn(&server);
+    let new_resp = server
+        .handle_request_from(
+            r#"{"jsonrpc":"2.0","id":1,"method":"session/new"}"#,
+            &run_conn,
+        )
+        .await
+        .unwrap();
+    let sid = extract_sid(&new_resp);
+    server
+        .handle_request_from(
+            &format!(
+                r#"{{"jsonrpc":"2.0","id":2,"method":"session/subscribe","params":{{"session_id":"{sid}"}}}}"#
+            ),
+            &sub_conn,
+        )
+        .await
+        .unwrap();
+    server
+        .handle_request_from(
+            &format!(
+                r#"{{"jsonrpc":"2.0","id":3,"method":"session/run","params":{{"session_id":"{sid}","content":"hi"}}}}"#
+            ),
+            &run_conn,
+        )
+        .await
+        .unwrap();
+    let frames = progress_frames(&server, &sub_conn);
+    let frame = frames
+        .iter()
+        .find(|f| f["params"]["value"]["kind"] == "tool_result")
+        .expect("the subscriber must see a tool_result frame");
+    let dropped = frame["params"]["value"]["truncated_chars"]
+        .as_u64()
+        .expect("a truncated result must report how much was dropped");
+    assert_eq!(
+        dropped, 50_000,
+        "150_000 chars minus the 100_000 default cap"
+    );
+}
+
 /// `kind` of every `$/progress` frame, in the order the subscriber received them.
 fn frame_kinds(frames: &[serde_json::Value]) -> Vec<String> {
     frames

@@ -29,6 +29,11 @@ pub enum ProgressValue {
     ToolResult {
         tool_call_id: String,
         content: String,
+        /// Characters the kernel dropped from this result (design ㊵). Absent on the wire
+        /// when nothing was truncated, so an untruncated frame is byte-identical to 0.20.0.
+        /// @since 0.21.0
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        truncated_chars: Option<usize>,
     },
     /// Token-usage settlement emitted once per run at Done (design D1 结算行). @since 0.12.0
     Usage {
@@ -209,10 +214,47 @@ mod tests {
         let v = ProgressValue::ToolResult {
             tool_call_id: "c1".into(),
             content: "ok".into(),
+            truncated_chars: None,
         };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(json["kind"], "tool_result");
         assert_eq!(json["tool_call_id"], "c1");
+        assert!(
+            json.get("truncated_chars").is_none(),
+            "an untruncated frame stays byte-identical to 0.20.0"
+        );
+    }
+
+    #[test]
+    fn progress_value_tool_result_carries_the_dropped_char_count() {
+        let v = ProgressValue::ToolResult {
+            tool_call_id: "c1".into(),
+            content: "ok".into(),
+            truncated_chars: Some(1_200),
+        };
+        let json = serde_json::to_value(&v).unwrap();
+        assert_eq!(json["truncated_chars"], 1_200);
+        let back: ProgressValue = serde_json::from_value(json).unwrap();
+        assert!(matches!(
+            back,
+            ProgressValue::ToolResult {
+                truncated_chars: Some(1_200),
+                ..
+            }
+        ));
+        let legacy: ProgressValue = serde_json::from_value(serde_json::json!({
+            "kind": "tool_result",
+            "tool_call_id": "c1",
+            "content": "ok"
+        }))
+        .unwrap();
+        assert!(matches!(
+            legacy,
+            ProgressValue::ToolResult {
+                truncated_chars: None,
+                ..
+            }
+        ));
     }
 
     #[test]

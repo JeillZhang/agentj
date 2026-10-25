@@ -1,7 +1,7 @@
 import "@testing-library/jest-dom/vitest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, fireEvent, within, act, waitFor } from "@testing-library/react";
-import RunPanel, { ConversationFeed, failRun, fmtDuration, reduceRunFeed, type RunEntry } from "./RunPanel.tsx";
+import RunPanel, { ConversationFeed, failRun, fmtDuration, formatDropped, reduceRunFeed, type RunEntry } from "./RunPanel.tsx";
 import { createProject, setCurrentProject } from "./projectStore";
 import { setDemoEnabled } from "./demoData";
 import { formatUsageTitle } from "./tokenUsage";
@@ -46,6 +46,29 @@ describe("reduceRunFeed", () => {
     expect(t.state).toBe("ok");
     expect(t.output).toBe("auth.rs\n");
   });
+  it("carries the dropped char count onto the settled tool entry", () => {
+    const out = reduceRunFeed([user("go"), tool("c1", "bash")], {
+      kind: "tool_result",
+      call_id: "c1",
+      content: "auth.rs",
+      truncated: 50_000,
+    } as ProgressFrame);
+    expect((out[1] as { dropped?: number }).dropped).toBe(50_000);
+  });
+  it("an untruncated result carries no dropped count", () => {
+    const out = reduceRunFeed([user("go"), tool("c1", "bash")], {
+      kind: "tool_result",
+      call_id: "c1",
+      content: "auth.rs",
+    } as ProgressFrame);
+    expect((out[1] as { dropped?: number }).dropped).toBeUndefined();
+  });
+  it("formatDropped keeps short counts exact and abbreviates large ones", () => {
+    expect(formatDropped(42)).toBe("42");
+    expect(formatDropped(1_500)).toBe("1.5k");
+    expect(formatDropped(50_000)).toBe("50k");
+    expect(formatDropped(1_200_000)).toBe("1.2M");
+  });
   it("unmatched tool_result settles the newest running entry without crashing", () => {
     const out = reduceRunFeed([user("go"), tool("c1", "bash")], {
       kind: "tool_result",
@@ -54,6 +77,14 @@ describe("reduceRunFeed", () => {
     } as ProgressFrame);
     expect((out[1] as { state: string }).state).toBe("ok");
     expect(out).toHaveLength(2);
+  });
+  it("a truncated tool card says how much was dropped", () => {
+    const entries: RunEntry[] = [
+      user("go"),
+      { kind: "tool", id: "c1", name: "bash", args: null, state: "ok", output: "auth.rs", dropped: 50_000 },
+    ];
+    render(<ConversationFeed entries={entries} />);
+    expect(screen.getByRole("status")).toHaveTextContent("结果已截断 50k 字符");
   });
   it("deny permission settles the newest running entry of that tool", () => {
     const out = reduceRunFeed([user("go"), tool("c1", "bash")], {

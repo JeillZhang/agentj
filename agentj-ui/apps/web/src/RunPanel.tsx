@@ -28,7 +28,16 @@ import {
 export type RunEntry =
   | { kind: "user"; text: string }
   | { kind: "ai"; text: string }
-  | { kind: "tool"; id: string; name: string; args: unknown; state: "running" | "ok" | "denied" | "failed"; output?: string }
+  | {
+      kind: "tool";
+      id: string;
+      name: string;
+      args: unknown;
+      state: "running" | "ok" | "denied" | "failed";
+      output?: string;
+      /** Characters the kernel dropped from this result (design ㊵). */
+      dropped?: number;
+    }
   | { kind: "usage"; prompt_tokens: number; completion_tokens: number }
   | { kind: "qa"; id: string; question: string; answer: string }
   | { kind: "error"; text: string };
@@ -49,7 +58,7 @@ export function reduceRunFeed(entries: RunEntry[], frame: ProgressFrame): RunEnt
     case "tool_result": {
       const settle = (t: Extract<RunEntry, { kind: "tool" }>, j: number): RunEntry[] => {
         const state: "ok" | "failed" = frame.content.startsWith("Error:") ? "failed" : "ok";
-        const next: RunEntry = { ...t, state, output: frame.content };
+        const next: RunEntry = { ...t, state, output: frame.content, dropped: frame.truncated };
         return [...entries.slice(0, j), next, ...entries.slice(j + 1)];
       };
       const i = entries.findIndex((e) => e.kind === "tool" && e.id === frame.call_id);
@@ -181,6 +190,13 @@ export function toolGlyph(entry: Extract<RunEntry, { kind: "tool" }>, pending: b
   return pending ? <Clock size={16} aria-hidden="true" /> : <Minus size={16} aria-hidden="true" />;
 }
 
+/** Compact char count for the truncation notice: `1_500` → `1.5k`, `1_200_000` → `1.2M`. */
+export function formatDropped(chars: number): string {
+  if (chars >= 1_000_000) return `${(chars / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`;
+  if (chars >= 1_000) return `${(chars / 1_000).toFixed(1).replace(/\.0$/, "")}k`;
+  return String(chars);
+}
+
 export function ToolCard({
   entry,
   pending,
@@ -210,6 +226,11 @@ export function ToolCard({
         </button>
       )}
       {shown !== "" && <pre className="aj-tool-output">{shown}{folded ? " …" : ""}</pre>}
+      {entry.dropped !== undefined && entry.dropped > 0 && (
+        <span className="aj-tool-truncated" role="status">
+          {`结果已截断 ${formatDropped(entry.dropped)} 字符`}
+        </span>
+      )}
     </section>
   );
 }

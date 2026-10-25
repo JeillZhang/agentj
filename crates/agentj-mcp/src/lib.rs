@@ -124,9 +124,7 @@ async fn prepare_call(command: &str, name: &str) -> Result<McpTransport, ToolErr
         .stderr(std::process::Stdio::inherit())
         .kill_on_drop(true); // lifecycle: no orphan MCP server processes on drop
     process::isolate_group(&mut cmd);
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| call_failed(name, e.to_string()))?;
+    let mut child = cmd.spawn().map_err(|e| call_failed(name, e.to_string()))?;
     let stdin = child.stdin.take().unwrap();
     let stdout = child.stdout.take().unwrap();
     let mut transport = McpTransport::new(stdin, stdout, child);
