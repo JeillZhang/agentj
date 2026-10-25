@@ -4,6 +4,7 @@ import OptionPopover from "./OptionPopover";
 import { COMPOSER_KEYS, loadComposerPrefs, saveComposerPrefs } from "../layoutStore";
 import type { ComposerAgent, ComposerPermission, ComposerPrefs } from "../layoutStore";
 import { loadCurrentProject, loadProjects } from "../projectStore";
+import { modelKey, resolveModelMarker } from "@agentj/sdk";
 import "./options.css";
 
 type OpenId = "model" | "agent" | "entropy" | "permission" | null;
@@ -68,11 +69,6 @@ function entropyShortLabel(entropy: number): string {
 function permissionIndex(mode: ComposerPermission): number {
   const index = PERMISSION_MODES.findIndex((entry) => entry.id === mode);
   return index < 0 ? 0 : index;
-}
-
-/** Two providers can serve the same model name, so a row is identified by name + provider. */
-function modelKey(entry: ModelEntry): string {
-  return `${entry.provider ?? ""}\u0000${entry.name}`;
 }
 
 /**
@@ -150,15 +146,13 @@ export default function ComposerOptions({
       ? null
       : prefs.model;
   const modelName = selected?.name ?? model ?? prefsModel;
-  // An explicit pick identifies its own row; without one only an unambiguous name can
-  // (a name served by several providers cannot say which provider a run would use).
-  const nameMatches = modelOptions.filter((entry) => entry.name === modelName);
-  const pickedKey = selected ? modelKey(selected) : null;
-  const selectedModelIndex = pickedKey
-    ? modelOptions.findIndex((entry) => modelKey(entry) === pickedKey)
-    : nameMatches.length === 1
-      ? modelOptions.indexOf(nameMatches[0])
-      : -1;
+  // Row resolution comes from the SDK: an explicit pick identifies its own row, without one
+  // only an unambiguous name can (a name served by several providers cannot say which
+  // provider a run would use) — the TUI picker resolves its marker the same way.
+  const { index: selectedModelIndex } = resolveModelMarker(modelOptions, selected, modelName);
+  // A name no served row carries is still shown (it is what the kernel reports), but the
+  // trigger says so instead of implying the run could pick it.
+  const unserved = modelName != null && selectedModelIndex < 0;
   const triggerRefs = {
     model: modelRef,
     agent: agentRef,
@@ -245,12 +239,14 @@ export default function ComposerOptions({
           className="sel"
           aria-haspopup="listbox"
           aria-expanded={openId === "model"}
+          data-served={unserved ? "false" : undefined}
           onClick={() =>
             openPanel("model", selectedModelIndex < 0 ? 0 : selectedModelIndex)
           }
         >
           <span className="g">◆</span>
           {modelName ?? "模型"}
+          {unserved && <span className="aj-composer__unserved">当前未提供</span>}
           <span className="cv">⌄</span>
         </button>
         <OptionPopover

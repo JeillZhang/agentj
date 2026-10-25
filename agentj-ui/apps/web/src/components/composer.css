@@ -105,6 +105,12 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* Trigger badge: the shown model is not in the kernel-served list, so a run cannot pick it. */
+.aj-composer__unserved {
+  color: var(--aj-textCaption);
+  font-size: 0.85em;
+}
+
 .aj-composer__picker-wrap {
   position: relative;
   display: inline-flex;
