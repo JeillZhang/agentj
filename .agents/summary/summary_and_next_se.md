@@ -29,8 +29,10 @@
   `HeuristicTokenizer.count_text`（签名不变，既有调用点零改动）。
 - 旁路辅助：`message_tokens_with` / `request_tokens_with`（`budget.rs`）接受任意 counter，
   原 `message_tokens` / `request_tokens` 委托给 `HeuristicTokenizer`。
-- 共享反比常量 `pub const CHARS_PER_TOKEN: usize = 3`（`budget.rs:86`）替代工具调用收缩器里
-  硬编码的 `4`：`shrink_calls` 走同一常数，估算侧与裁剪侧不再各写一个换算率。
+- 工具调用收缩器**按 token 计量**（`budget.rs` 的 `shrink_calls`）：此前用 `cap × 4` 字符判断，
+  与估算侧各写一份换算率，且一个 chars-per-token 常数盖不住字符类差异（密标点 2.5、CJK 1.25、
+  ASCII 词 4）。现在直接 `estimate_tokens(payload) > cap` 才换成标记；评审期加的
+  `CHARS_PER_TOKEN` 常量与对应测试已删除（它撑不住「收缩后不超预算」的承诺）。
 
 **B. 工具定义占用预算（`budget.rs` + `ContextPipeline::fit_with_tools` + turn runner）**
 
@@ -91,7 +93,9 @@
 
 - core：`TokenCounter` 分类校准（ASCII / 标点 / CJK / 星平面各自的边界值）、
   `definitions_tokens` 覆盖 name/description/schema + overhead、`fit_with_tools` 等价于
-  `fit(budget - definitions_tokens)` 且零预算有下限、`CHARS_PER_TOKEN` 与收缩器一致。
+  `fit(budget - definitions_tokens)` 且零预算有下限、`shrink_calls` 按 token 计量（密标点 JSON
+  超 cap 即被替换、40k 字符 payload 收缩后 `estimate_tokens <= cap`）、
+  `DefaultContextPipeline::fit_with_tools` 把预留记在总量上（`body + reserved <= budget`）。
 - tools：grep 进程内回退在 deadline 到点时返回 `Timeout`（不返回部分结果）。
 - cli 单测：`attach_deny_request` 序列化出 `PermissionDecision::Deny`、attach 告警行文案、
   `state_dir_empty_string_is_not_a_path` / `state_dir_empty_string_without_env_warns`。
@@ -140,9 +144,11 @@
 - **工具定义只做「预留」不参与裁剪**：`fit_with_tools` 只在预算里扣掉定义开销；若定义本身就
   超过窗口（超多 MCP 工具），`fit` 拿到的预算会被下限钳到 1，请求仍会超限——该情形目前靠上游
   400 + `retry_budget` 收尾，没有「按需裁工具」的策略。
-- **`CHARS_PER_TOKEN = 3` 是保守反比**：`HeuristicTokenizer` 对标点按 2.5 chars/token 计费，
-  收缩器取 3 表示「每个 token 至少对应 3 字符」，因此收缩后的字节数可能比允许的更小（更保守，
-  不会超预算）。
+- **收缩器的粒度仍是「整体替换」**：`shrink_calls` 超 cap 时把整个参数替换成 `_truncated` 标记，
+  不做部分保留（部分保留会产出模型无法执行的半截 JSON）；被标记的调用通常直接失败，由模型重试。
+- **`fit_with_tools` 的预留记在总量上**：`DefaultContextPipeline` 走 `fit_messages_with`，body 可被
+  压到 0（只留系统提示 + 最新一条）；继承默认实现的第三方 pipeline 仍可能因自己的 `fit` 下限顶回
+  总量——trait 文档已写明该注意点。
 - **attach 侧仍是单向**：`run --attach` 只会 deny，不能批准，也不能应答 `$/askQuestion`
   （提问只能等远端 `[agent] question_timeout_s` 或 owner 客户端回答）。见待实施 ㊱⁺b。
 - **`dmg` / `msi` 未签名未公证**：作业只构建并校验产物存在；macOS 用户需右键打开或

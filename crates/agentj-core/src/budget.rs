@@ -80,11 +80,6 @@ fn is_cjk(c: char) -> bool {
     )
 }
 
-/// Inverse of the token-density assumption: how many characters of dense text one token
-/// buys (`HeuristicTokenizer` charges ASCII punctuation at 2.5 chars/token, so 3 is on the
-/// safe side). Shared by the shrinker so cap math stays in one unit. @since 0.29.7
-pub const CHARS_PER_TOKEN: usize = 3;
-
 /// Tokens one assembled message costs, tool-call payloads included. @since 0.29.7
 pub fn message_tokens(message: &ChatMessage) -> usize {
     message_tokens_with(message, &HeuristicTokenizer)
@@ -249,13 +244,15 @@ fn truncate(mut message: ChatMessage, cap: usize, counter: &dyn TokenCounter) ->
 
 /// Replace a tool-call payload that alone exceeds `cap` tokens with a marker. @since 0.29.7
 fn shrink_calls(message: &mut ChatMessage, cap: usize) {
-    let max_chars = cap.saturating_mul(CHARS_PER_TOKEN);
     for call in &mut message.tool_calls {
-        let text = call.arguments.to_string();
-        let count = text.chars().count();
-        if count > max_chars {
+        // Charge the payload with the same counter that will measure it later: a chars-per-token
+        // constant cannot cover both ASCII words (4 chars/token) and dense punctuation
+        // (2.5) or CJK (1.25), so a char cap either waves an over-budget payload through or
+        // throws away payloads that would have fitted.
+        let tokens = estimate_tokens(&call.arguments.to_string());
+        if tokens > cap {
             call.arguments =
-                serde_json::json!({ "_truncated": format!("…[已截断 {count} 字符]…") });
+                serde_json::json!({ "_truncated": format!("…[已截断 {tokens} tokens]…") });
         }
     }
 }
@@ -420,8 +417,7 @@ mod tests {
     }
 
     #[test]
-    fn shrink_calls_uses_the_shared_chars_per_token() {
-        assert_eq!(CHARS_PER_TOKEN, 3);
+    fn shrink_calls_measures_the_payload_in_tokens() {
         let big = serde_json::json!({"blob": "y".repeat(40_000)}).to_string();
         let mut message = ChatMessage::user("go");
         message.tool_calls = vec![ToolCall {
@@ -430,15 +426,34 @@ mod tests {
             arguments: serde_json::Value::from(big),
         }];
         shrink_calls(&mut message, 200);
-        let args = message.tool_calls[0].arguments.to_string();
         assert!(
-            args.len() <= 200 * CHARS_PER_TOKEN + 200,
-            "shrunk args stay near the cap: {}",
-            args.len()
+            estimate_tokens(&message.tool_calls[0].arguments.to_string()) <= 200,
+            "the shrunk payload must fit the token cap"
         );
         assert!(
-            args.contains("…[已截断"),
+            message.tool_calls[0].arguments["_truncated"].is_string(),
             "the truncation marker must survive"
+        );
+    }
+
+    #[test]
+    fn shrink_calls_counts_dense_punctuation_as_tokens_not_chars() {
+        // 320 punctuation chars are 320 chars but 128 tokens: a char-based cap of 100 tokens
+        // (300 chars) would wave this through and leave the message 28% over budget.
+        let blob = "{}[]()<>,;:!?".repeat(20);
+        let payload = serde_json::json!({ "q": blob }).to_string();
+        assert!(payload.chars().count() <= 300 + 16, "fixture stays under the char cap");
+        assert!(estimate_tokens(&payload) > 100, "fixture must exceed the token cap");
+        let mut message = ChatMessage::user("go");
+        message.tool_calls = vec![ToolCall {
+            id: "c1".into(),
+            name: "grep".into(),
+            arguments: serde_json::Value::from(payload),
+        }];
+        shrink_calls(&mut message, 100);
+        assert!(
+            message.tool_calls[0].arguments["_truncated"].is_string(),
+            "a payload over the token cap must be shrunk"
         );
     }
 
