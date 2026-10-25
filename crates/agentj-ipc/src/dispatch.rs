@@ -91,6 +91,7 @@ impl IpcServer {
             "model/list" => self.dispatch_model_list(req).await,
             "auth/status" => self.dispatch_auth_status(req).await,
             "provider/usage" => self.dispatch_provider_usage(req).await,
+            "provider/usageHistory" => self.dispatch_provider_usage_history(req).await,
             "auth/deviceStart" => self.dispatch_device_start(req).await,
             "auth/devicePoll" => self.dispatch_device_poll(req).await,
             "auth/setApiKey" => self.dispatch_set_api_key(req).await,

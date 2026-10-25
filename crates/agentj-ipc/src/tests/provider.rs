@@ -178,6 +178,11 @@ async fn subscription_methods_forward_to_the_service() {
     for (method, params, name) in [
         ("model/list", serde_json::json!({}), "model_list"),
         ("provider/usage", serde_json::json!({}), "usage"),
+        (
+            "provider/usageHistory",
+            serde_json::json!({}),
+            "usage_history",
+        ),
         ("auth/deviceStart", serde_json::json!({}), "device_start"),
         (
             "auth/devicePoll",
@@ -252,6 +257,7 @@ async fn missing_service_is_internal_error_and_bad_params_are_invalid_params() {
         "model/list",
         "auth/status",
         "provider/usage",
+        "provider/usageHistory",
         "auth/deviceStart",
         "auth/devicePoll",
         "auth/setApiKey",
@@ -299,6 +305,51 @@ async fn missing_service_is_internal_error_and_bad_params_are_invalid_params() {
 
     let v = call(&server, "no/such/method", serde_json::json!({})).await;
     assert_eq!(v["error"]["code"], -32601);
+}
+
+#[tokio::test]
+async fn usage_history_round_trips_through_dispatch() {
+    let mut server = stub_server();
+    let rec = Arc::new(Recording::default());
+    let svc: Arc<dyn ProviderService> = rec.clone();
+    server.provider_service = Some(svc);
+
+    let v = call(
+        &server,
+        "provider/usageHistory",
+        serde_json::json!({"limit": 5}),
+    )
+    .await;
+    assert!(v.get("error").is_none(), "{v}");
+    assert_eq!(v["result"]["provider"], "opencode-go");
+    assert_eq!(v["result"]["samples"], serde_json::json!([]));
+    assert!(v["result"].get("retention_days").is_some(), "{v}");
+    assert!(
+        lock_or_recover(&rec.calls)
+            .iter()
+            .any(|c| c == "usage_history")
+    );
+}
+
+#[tokio::test]
+async fn usage_history_rejects_malformed_params() {
+    let mut server = stub_server();
+    let rec = Arc::new(Recording::default());
+    let svc: Arc<dyn ProviderService> = rec.clone();
+    server.provider_service = Some(svc);
+
+    let v = call(
+        &server,
+        "provider/usageHistory",
+        serde_json::json!({"limit": "five"}),
+    )
+    .await;
+    assert_eq!(v["error"]["code"], -32602);
+    assert_eq!(v["error"]["data"]["reason"], "invalid_params");
+    assert!(
+        lock_or_recover(&rec.calls).is_empty(),
+        "service must not be called on bad params"
+    );
 }
 
 #[derive(Debug)]
