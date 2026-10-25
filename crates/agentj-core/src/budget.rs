@@ -114,17 +114,47 @@ pub fn request_tokens_with(messages: &[ChatMessage], counter: &dyn TokenCounter)
 /// Per-definition framing cost beyond its name, description and schema. @since 0.29.7
 const TOOL_DEF_OVERHEAD: usize = 12;
 
+/// Tokens one tool definition costs. @since 0.29.7
+pub fn definition_tokens(def: &ToolDefinition) -> usize {
+    estimate_tokens(&def.name)
+        + estimate_tokens(&def.description)
+        + estimate_tokens(&def.input_schema.to_string())
+        + TOOL_DEF_OVERHEAD
+}
+
 /// Tokens the tool definitions in a request cost. They are never dropped by the trimmer, but
 /// they do occupy the window, so `fit_messages_with` reserves room for them first. @since 0.29.7
 pub fn definitions_tokens(defs: &[ToolDefinition]) -> usize {
-    defs.iter()
-        .map(|d| {
-            estimate_tokens(&d.name)
-                + estimate_tokens(&d.description)
-                + estimate_tokens(&d.input_schema.to_string())
-                + TOOL_DEF_OVERHEAD
-        })
-        .sum()
+    defs.iter().map(definition_tokens).sum()
+}
+
+/// Share of the request budget the tool definitions may claim (3 of 10). Past it the body is
+/// charged for tools it never gets to use, which is the failure mode this cap removes.
+const DEFINITION_SHARE_NUM: usize = 3;
+/// Denominator of [`DEFINITION_SHARE_NUM`].
+const DEFINITION_SHARE_DEN: usize = 10;
+
+/// Ceiling `budget_tokens` allows for the whole definition set.
+fn definition_ceiling(budget_tokens: usize) -> usize {
+    clamp_budget(budget_tokens) * DEFINITION_SHARE_NUM / DEFINITION_SHARE_DEN
+}
+
+/// Trim a definition set so it cannot claim more than 30% of the request budget: definitions
+/// are dropped from the tail (registration order is a proxy for usefulness), and the first one
+/// always survives, so a request never goes out with an empty tool list.
+pub fn bounded_definitions(defs: &[ToolDefinition], budget_tokens: usize) -> Vec<ToolDefinition> {
+    let ceiling = definition_ceiling(budget_tokens);
+    let mut kept: Vec<ToolDefinition> = Vec::new();
+    let mut used = 0;
+    for def in defs {
+        let cost = definition_tokens(def);
+        if !kept.is_empty() && used + cost > ceiling {
+            break;
+        }
+        used += cost;
+        kept.push(def.clone());
+    }
+    kept
 }
 
 /// Clamp a configured or upstream-reported budget into the supported range. @since 0.29.7
@@ -329,6 +359,53 @@ mod tests {
             "schema + description must cost real tokens: {one}"
         );
         assert!(two > one);
+    }
+
+    /// A definition as expensive as a real MCP tool schema, so the ceiling bites.
+    fn fat(name: &str) -> ToolDefinition {
+        let mut d = def(name);
+        d.description = "d".repeat(4_000);
+        d
+    }
+
+    #[test]
+    fn bounded_definitions_keeps_the_first_definition_even_under_a_tiny_cap() {
+        let defs: Vec<ToolDefinition> = (0..8).map(|i| fat(&format!("tool{i}"))).collect();
+        let kept = bounded_definitions(&defs, MIN_CONTEXT_TOKENS);
+        assert_eq!(kept.len(), 1, "an over-budget set keeps the first tool only");
+        assert_eq!(kept[0].name, "tool0");
+    }
+
+    #[test]
+    fn bounded_definitions_drops_from_the_tail_at_the_ceiling() {
+        let defs: Vec<ToolDefinition> = (0..40).map(|i| fat(&format!("tool{i:02}"))).collect();
+        let budget = 20_000;
+        let kept = bounded_definitions(&defs, budget);
+        assert!(kept.len() < defs.len(), "the cap must bite: {}", kept.len());
+        assert_eq!(kept[0].name, "tool00", "the head of the list survives");
+        assert!(
+            definitions_tokens(&kept) <= budget * 3 / 10,
+            "kept {} tokens against a {} ceiling",
+            definitions_tokens(&kept),
+            budget * 3 / 10
+        );
+        let last = kept.last().expect("at least one definition").name.clone();
+        let expected_next = format!("tool{:02}", kept.len());
+        assert_eq!(last, format!("tool{:02}", kept.len() - 1));
+        assert_ne!(last, expected_next);
+    }
+
+    #[test]
+    fn bounded_definitions_is_a_noop_below_the_ceiling() {
+        let defs = vec![def("bash"), def("read"), def("write")];
+        let kept = bounded_definitions(&defs, MAX_CONTEXT_TOKENS);
+        assert_eq!(
+            kept.iter().map(|d| d.name.clone()).collect::<Vec<_>>(),
+            vec!["bash", "read", "write"],
+            "a small definition set is returned unchanged"
+        );
+        assert_eq!(definition_tokens(&defs[0]), definition_tokens(&kept[0]));
+        assert!(bounded_definitions(&[], MAX_CONTEXT_TOKENS).is_empty());
     }
 
     #[test]
