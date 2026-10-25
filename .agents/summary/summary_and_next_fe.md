@@ -8,78 +8,81 @@
 > 待实施），不得随内容替换而删除；仅当该特性实际实施完成后才能移除（移入功能记录）。
 > 后端总结独立存放于 `summary_and_next_se.md`；两文件内容隔离，互不写入对方文件。
 
-本文件当前记录**用量历史趋势 + 模型上下文窗口标签（前端侧）**——Web 面板画趋势、三端共用一个
-窗口格式化函数、TUI 模型列表显示真实窗口；协议加性 `0.20.0` 的消费侧。
+本文件当前记录**结构债收敛与三端纯函数共享（前端侧）**——后端同批次见
+`summary_and_next_se.md`；逐任务执行记录见 `.superpowers/sdd/progress.md`（本地文件，不入库）。
 
-> 当前功能：**用量历史 · 模型窗口 · Desktop 打包验证（前端侧）** —— 分支
-> `feat/usage-history-model-window-desktop-ci`（自 `bd97a64` 起；前端为 T10–T13 / T22–T26）。
-> `PROTOCOL_VERSION` **0.19.0 → 0.20.0**（29 方法 / 81 schemas），`VERSION` 仍 **0.1.0**。
-> 后端同批次记录见 `summary_and_next_se.md`；逐任务执行记录见 `.superpowers/sdd/progress.md`
-> （本地文件，不入库）。
+> 当前功能：**结构债收敛批次（前端侧）** —— 分支 `refactor/structure-debt-consistency-batch`，
+> 前端侧为 T16–T30 + T32。`VERSION` 仍 **0.1.0**，`PROTOCOL_VERSION` **0.20.0**（wire 无变更）。
+> `agentj-ui/packages/protocol` 与 `methods.ts` 未重新生成（协议未动）。
 
-## 用量历史趋势 + 模型窗口标签（前端侧） ✅
+## 结构债收敛批次（前端侧） ✅
 
 ### 交付
 
-**A. `@agentj/sdk`（三端唯一真源）**
+**A. Web `FileTree.tsx` 拆分（T16–T19）**
 
-- `src/usageTrend.ts`：`TrendPoint{at,percent}` + `UsageSampleLike{at,windows[{kind,percent?}]}`
-  + `buildTrend(samples, kind, now, max = 2000)`——空 `kind` 不过滤（取首个带数值百分比的窗口），
-  未来样本 / 异类窗口 / 无数值占比一律**丢弃而非画成 0**，升序后等距降采样（保留首尾）；
-  + `sparkline(values, width)`（`GLYPHS = "▁▂▃▄▅▆▇█"`，0% = `▁`，100% = `█`，等距取样不补齐）。
-- `src/modelMeta.ts`：`formatContextWindow(tokens)` → `205k` / `1.0M` 风格标签（Web 与 TUI 共用）。
-- `src/methods.ts` 重新生成：新增 `METHODS.providerUsageHistory`。
-- `packages/protocol/types.d.ts` 重新生成（+81/−15）：`UsageWindowKind` / `UsageWindowStatus` /
-  `UsageWindow` / `UsageSample` / `ProviderUsageHistoryParams` / `ProviderUsageHistoryResult`，
-  以及 `ModelEntry.context_window?: number | null`（`types.d.ts:237`）。
+- 796 行 → 415 行组件；纯逻辑与状态机各自独立：
+  `components/fileTreeModel.ts`（normalize / toView / flatten / collectStats）、
+  `components/fileTreeSearch.ts`（搜索状态机，与既有代际守卫同处一文件）、
+  `hooks/useFileTree.ts`（懒加载 + 折叠保留子树 + 根/已展开刷新）、
+  `hooks/useFileSearch.ts`（150ms 防抖的服务端搜索）。
+- 行为不变：文件树相关 36 个用例原样通过；web 测试 706 → 723。
+- 取舍：`NodeList` 改为接收 `UseFileTreeResult` 对象（原来是逐个回调 prop，拆分后 prop 爆炸）；
+  `useFileSearch` 在渲染期复位搜索态以守住 oxlint 告警预算。
 
-**B. Web**
+**B. TUI 测试收窄 + SDK 补齐（T20）**
 
-- `src/components/UsageSparkline.tsx`：`<svg className="aj-spark" width={120} height={16} role="img"
-  aria-label="用量趋势">` + `<path stroke="currentColor">`；少于两点返回 `null`，颜色继承所在行
-  （无硬编码色值，跟着 token 走）。
-- `SubscriptionPanel.tsx`：`samples` 状态 + `loadHistory()`（`provider/usageHistory` 传 `{}`，
-  让服务端按自身保留期补 `since`；失败置空数组、不弹错误条）+ 刷新按钮与设备授权路径都走
-  `refreshUsage()`；`UsageBlock` 每个 `WindowRow` 下渲染一条 `buildTrend(samples, item.kind, cutoff)`，
-  `samples.length < 2` 时提示「趋势需要至少两次取样」。
-- **趋势截止时间取自加载时刻**（提交 `fe4e323`）：`historyAt` 状态在 history 落库回调里写
-  `Math.floor(Date.now() / 1000)`（`UsageSample.at` 是 epoch 秒），渲染期不再读时钟——
-  oxlint `react(purity)` 从 1 条新增警告回到 48 条基线。
-- 模型下拉/输入区显示 `formatContextWindow` 标签（数据来自既有 `model/list`，
-  未扩展 `kernel/status`）。
+- `agentj-ui/apps/tui/src/files.test.ts` 169 行 / 12 用例 → 21 行 / 2 用例：只留「barrel 表层 pin」+
+  冒烟（十个 describe 原本与 SDK 重复）。
+- 迁移缺失覆盖到 SDK：`MAX_INDENT_DEPTH` 常量 pin + 嵌套 `updateNode` patch 用例。
+- tui 201 → 192，sdk 82 → 84（净减少是去重，不是丢覆盖）。
 
-**C. TUI**
+**C. 模型标记语义统一（T21–T24）**
 
-- 用量浮层内 `trendLine`：`buildTrend` + `sparkline` 渲染块状字符趋势。
-- 模型列表每行显示 `formatContextWindow(entry.context_window)`（窗口未知则不显示，不猜）。
+- `agentj-ui/packages/sdk/src/modelMeta.ts`：导出 `modelKey`（`provider\0name`）与
+  `resolveModelMarker(providers, selected, defaultModel) -> { index, match }`——显式带 provider 的
+  选择优先；否则只有「唯一一个 provider 提供该默认模型名」才标记；都不成立返回 `-1`。
+- Web `ComposerOptions.tsx` 删掉本地副本改为消费 SDK；选中模型不在列表内时显示「当前未提供」
+  （`data-served=false`），不再假装第 0 行就是选中项。
+- TUI `models.tsx` 同样改为 `resolveModelMarker`；`useModelConfig(client, refreshSeq)` 在
+  `auth/setApiKey` 成功或 `clearCredential` 后经 `catalogSeq` 递增重取 `model/list`，
+  不必重启就能看到新目录。
 
-**D. Desktop / CI 的产物校验脚本（前端仓内）**
+**D. 订阅状态常驻指示 + 趋势图交互（T25–T30）**
 
-- `agentj-ui/apps/desktop/check-artifacts.sh` 新增 `linux-deb` 档（只校验 deb）：
-  `{linux,linux-deb,macos,windows}` 四档；CI 的 `desktop-package` 作业用它校验
-  `cargo tauri build --bundles deb,appimage` 的产物。
+- `hooks/useSubscriptionStatus.ts`（238 行）：每个 shell 一份、**无任何定时器**；焦点只在距上次取数
+  > 300s（`SUBSCRIPTION_FRESH_MS`）时补一次；`!authenticated` 归 `unknown` 且不发请求；
+  取最差窗口分级 ok / warn(≥70) / error(≥90)；重取失败保留上次窗口并转 `error`，凭据失效单独归
+  `invalid`（`errorKind: "unavailable"` 用于传输失败）。
+- `components/SubscriptionStatus.tsx`（105 行）：顶栏指示灯，`data-state` 分级、陈旧加 `~` 与
+  「N 分钟前」、未链接凭据显示「未链接凭据」并可跳到 设置 → 订阅；打开时才 `role="tooltip"`。
+  打开时刻在 hover/focus 处理器里取（`openedAt`），渲染期不跑时钟。
+- `components/SubscriptionPanel.tsx` 363 → 309 行：接受注入的 `status`（共享同一份快照，不再每次
+  挂载都自称取数），只读用量块拆到 `SubscriptionUsage.tsx`(84) + `subscriptionModel.ts`(63)，
+  窗口文案与错误表三处共用一份。
+- `components/UsageSparkline.tsx` 35 → 123 行：逐点命中带（`<title>` 显示百分比 + 本地时刻）、
+  `role="tooltip"` 读数；键盘路径（`role="group"` + `tabIndex=0`，默认停最新样本，`←/→` 逐点、
+  `Home/End` 首尾、`Esc`/失焦收起）+ `aria-live` 复述摘要；样本不足两条仍不画图。
+- TUI `status.ts`(66) + `app.tsx`：状态行追加 `· sub 12%/40%`（最差窗口、陈旧加 `~`、≥70/≥90 变色），
+  每个连接开启时读一次（无轮询）。
 
-### 验证（全绿）
+**E. 文档（T32）**
 
-- `npm --prefix agentj-ui test --workspace=@agentj/sdk` → **82 passed**
-- `npm --prefix agentj-ui test --workspace=@agentj/tokens` → **11 passed**
-- `npm --prefix agentj-ui test --workspace=@agentj/web` → **706 passed / 55 files**
-  （其中 `subscriptionPanel` 16 passed）
-- `bun --cwd agentj-ui/apps/tui test` → **200 passed / 22 files**
-- `npm --prefix agentj-ui test --workspace=@agentj/protocol` → 4 passed；
-  `... run build --workspace=@agentj/protocol`（`tsc --noEmit`）通过
-- `npm --prefix agentj-ui run build --workspace=@agentj/web` → `tsc -b && vite build` 通过
-- `npm --prefix agentj-ui run lint --workspace=@agentj/web` → **0 error / 48 warning**（全部既有）
-- `node agentj-ui/apps/desktop/check-desktop-ui.mjs` → `desktop-ui-ok`
-- `bash scripts/tests/assert-ui.sh all` → 3 passed
+- `docs/guide/cli.md` / `configuration.md`：无审批器当场拒绝 + 那行 stderr 警告，`timeout_ms` 只管
+  「已投递未回答」；`docs/guide/subscription.md`：新增「常驻状态指示灯」小节（无轮询 / 年龄可见 /
+  300s 焦点补取）替换掉旧的「不做常驻徽标」非目标，并补趋势图的悬停 + 键盘读值。
 
-### 决策与偏离（可追溯）
+### 门禁
 
-- **趋势纯函数只放 SDK**：Web 与 TUI 都不再各自实现取样/降采样，避免第三份实现。
-- **计划里的 T12 测试夹具需补 `provider/usage` stub**：面板的行来自 `usage.windows`，只 stub
-  history 时 `WindowRow` 不存在，趋势无从断言（已按 supervisor 批准的夹具补一行）。
-- **tokens 未新增**：趋势图形状靠既有布局与 `currentColor`，没有引入新 CSS 变量。
-- **`context_window` 缺席即不显示标签**：不猜窗口、不按模型名硬编码，未知一律留空。
+web 750 测试 / 61 文件、sdk 89、tui 202 / 23 文件；`vite build` 通过；`oxlint` **0 error / 48 warning**
+（与基线持平——`TopbarMenu` 改为「注册回调」而不是写穿父级 ref，消掉了一条 `react(immutability)`）。
+`tokens` 未新增任何变量；`check-version.sh` / `check-desktop-ui.mjs` / `assert-ui.sh all` 全过。
+
+## 归档：用量历史趋势 + 模型窗口标签（前端侧） ✅
+
+SDK 增 `formatContextWindow` / 趋势格式化；Web 订阅面板每窗口行下加迷你曲线、模型列表显示真实窗口；
+TUI 订阅浮层追加块字符曲线与首尾值；`check-artifacts.sh linux-deb` 档 + 与 `0.20.0` 同步的
+`types.d.ts` / `methods.ts`。详见 `docs/changelog/v0.1.md`。
 
 ## 归档：依赖刷新批次（前端）✅
 
@@ -287,8 +290,8 @@
 
 ## 待实施（跨阶段保留：未实施不得删除）
 
-> 本批次把「用量历史趋势」与「模型窗口标签」实施完毕（本表无对应条目）；当前表中暂无前端条目——
-> 下一特性由 `jskill-feature-next` 合并 `_se.md` 待实施表选取。
+> 本批次把「FileTree 拆分 / TUI 测试收窄 / 模型标记统一 / 订阅指示与趋势交互」实施完毕（本表无对应
+> 条目）；当前表中暂无前端条目——下一特性由 `jskill-feature-next` 合并 `_se.md` 待实施表选取。
 
 | # | 特性 | 内容 | 依赖 | 状态 |
 |---|------|------|------|------|
@@ -299,12 +302,13 @@
 
 ## 下一步
 
-- 本批次（⑥ / ⑰ / ㉟）前端侧已收尾：SDK 趋势与窗口格式化、Web 趋势条与窗口标签、TUI 趋势与
-  模型列表标签、`check-artifacts.sh linux-deb` 档、以及与 `0.20.0` 协议同步的 `types.d.ts` /
-  `methods.ts` 重新生成；分支推送 `origin` 与 `gitcode`，PR 开在 `origin`（用户负责合并）。
-- 前端候选：`useFileSearch` 提取（FileTree 两套状态机分离）；TUI `files.test.ts` 收窄为表层断言 +
-  冒烟；订阅状态常驻指示；TUI `/models` 与 Web 选择语义对齐；趋势图交互（hover 显示百分比/时间）。
-- 后端候选见 `summary_and_next_se.md`。
+- 本批次（结构债收敛，前端侧 T16–T30 + T32）已收尾：FileTree 拆分、TUI 测试收窄、模型标记语义统一、
+  订阅状态常驻指示 + 趋势图交互、文档同步；门禁全绿（web 750 / sdk 89 / tui 202，oxlint 0 error / 48
+  warning，vite build 过）；分支推送 `origin` 与 `gitcode`，PR 开在 `origin`（用户负责合并）。
+- 表外可选改进：`SubscriptionPanel.tsx` 仍有 309 行（下一步可把「历史抽屉 + 凭据卡片」再分一层）；
+  `SubscriptionStatus` 目前只在 shell 顶栏，尚无键盘直达设置页的快捷键；`UsageSparkline` 的命中带
+  在极窄宽度下点距 < 8px 时只做钳制、未做密度降级。
+- 后端候选见 `summary_and_next_se.md`（⑰⁺ / ㉟⁺ / ㊱⁺ / ㊲⁺）。
 
 > 远端：`origin`（GitHub `JeillZhang/agentj`）是唯一权威远端，PR 只在此创建与合并；
 > `gitcode` 是只读镜像（快进推送同步，不再开 MR）。feature 分支两远端同推同一 SHA。

@@ -7,111 +7,67 @@
 > 待实施），不得随内容替换而删除；仅当该特性实际实施完成后才能移除（移入功能记录）。
 > 前端总结独立存放于 `summary_and_next_fe.md`；两文件内容隔离，互不写入对方文件。
 
-本文件当前记录**结构债收敛与三端纯函数共享（后端侧）**——七个结构债项一次收尾，wire 面零变更。
+本文件当前记录**结构债收敛与三端纯函数共享（后端侧）**——wire 面零变更，工作区版本仍 `0.1.0`。
 
-本文件当前记录**用量历史 · 模型上下文窗口 · Desktop 打包验证**三件一起交付的后端侧内容
-（分支 `feat/usage-history-model-window-desktop-ci`，32 提交，31 任务 / 4 阶段）。
+> 当前功能：**结构债收敛批次（后端侧）** —— 分支
+> `refactor/structure-debt-consistency-batch`，计划 33 任务，后端侧为 T1–T15 + T31。
+> `PROTOCOL_VERSION` 不变（无 wire 变更），`schemas/` 与 `protocol/methods.json` 未改。
+> 设计与计划是本地文档（`docs/superpowers/{specs,plans}/2026-10-25-structure-debt-*`，不入库）。
 
-> 当前功能：**⑥ 用量历史 + ⑰ 模型窗口预算 + ㉟ desktop 打包验证** —— 三件待实施项一次收尾。
-> 协议 `0.19.0 → 0.20.0`（加性：29 方法 / 81 schemas），工作区版本仍 **0.1.0**（未按用户要求，不动）。
-> 设计 spec 与计划为本地文档：`docs/superpowers/specs|plans/2026-10-25-*`（不入库）。
-
-## 用量历史 + 模型窗口预算 + Desktop 打包验证（后端侧） ✅
+## 结构债收敛批次（后端侧） ✅
 
 ### 交付
 
-**A. ⑥ 用量历史（服务端持久化 + 加性协议）**
+**A. `agentj-ipc/src/web.rs` 文件级拆分（T1–T10）**
 
-- 协议：新方法 `provider/usageHistory`（`ProviderUsageHistoryParams { provider?, kind?, since?,
-  limit? }` → `ProviderUsageHistoryResult { provider, retention_days, samples: [{ at, windows }] }`），
-  `UsageWindow` 补 `PartialEq`；`schemas/` 78 → 81；`protocol/methods.json` 28 → 29。
-- 存储：`crates/agentj-cli/src/usage_history.rs` —— `UsageHistory::{new, with_limits, record, query,
-  filter, retention_days}` + 纯函数 `file_name` / `prune` / `cap_len` / `merge` / `is_repeat`；
-  目录 `0700`、文件 `0600`、`<provider>.json.tmp` + rename、失败只 `warn!` 不中断请求；
-  provider 名先过滤 `[a-z0-9._-]`，未知名字**不落盘**。
-- 采样归属：`CliProviderService` 只在**真实上游应答**的 `Ok(w)` 分支记录——缓存命中、
-  `stale` 回退、`no_credential` 一律不采样（单测用 wiremock `.expect(1)` 钉死）。
-- 配置 `[usage]`：`history_enabled`（默认 true）、`history_days`（30，钳 1..=365）、
-  `history_max_samples`（8640，钳 100..=100_000）；`ConfigProvider` 新增 `get_bool` 默认方法。
-- 目录解析：`[web] state_dir/usage` → `$XDG_DATA_HOME/agentj/usage` → `$HOME/.local/share/agentj/usage`，
-  复用 `metrics_state_dir_from`；无目录时启动横幅给出三种设置方式；`history_enabled = false` 时
-  不解析目录也不告警、查询返回空。
+- 4032 行单文件 → `crates/agentj-ipc/src/web/`：`mod.rs`（73 行，只声明模块与再导出）+
+  `integrity.rs`(329) + `config.rs`(482) + `persist.rs`(104) + `auth.rs`(213) + `router.rs`(219) +
+  `endpoints.rs`(158) + `prometheus.rs`(351)。对外路径 `agentj_ipc::web::*` 与 wire 行为不变。
+- 84 个内联测试按域分到 `web/tests/`：`support.rs`（255 行共享夹具）+ `config` / `auth` /
+  `router` / `endpoints` / `prometheus` / `persist` / `integrity` 七个文件，另加 `structure.rs`
+  薄根 pin；`crates/agentj-ipc/src/tests/pins.rs` 的「已搬走符号不回潮」pin 现覆盖全部 8 个
+  web 文件（防止逻辑回流 `mod.rs`）。ipc 测试 310 → 311。
 
-**B. ⑰ 模型上下文窗口 → token 预算**
+**B. 权限结算单次化 + 无审批器立即拒绝（T12–T15）**
 
-- `CatalogEntry.context_window: Option<u32>`（`data/opencode-go.json` 由 `gen_opencode_catalog`
-  从 live `/v1/models` + models.dev 生成，**只有 models.dev 给出 `limit.context` 才写**）；
-  重新生成后 38 个模型、31 个带窗口、7 个留空。
-- `ModelEntry.context_window`（加性 wire，`skip_serializing_if` 省略未知）由 `model/list` 三层
-  （console / live / overlay）统一经 `entries_of` + `catalog_window` 填充。
-- `ModelProvider::context_window(&self, model: &str) -> Option<usize>`（默认 `None`）+
-  `ProviderRegistry::context_window`；`OpenCodeGoProvider` 读目录，`RefreshingProvider` 只转发。
-- `model.max_context_tokens` 改为 `Option<i64>`（缺省 ≠ 显式值，`merge` 用 `is_some()` 判覆盖）；
-  `agentj-core/src/budget.rs::effective_budget(cap, window)` = `min(显式上限, 窗口 × 90%)`，
-  两者皆缺才回落到 128k；每轮 `prepare_turn` 现算，不缓存（200k → 180k、显式 50k 保持 50k、
-  20k 窗口配 50k 上限 → 18k，均有单测）。
+- `Notifier` 由 `Arc<dyn Fn(&PermissionRequestParams, &str)>` 改为返回 `bool`（是否投递成功）。
+  `register_ask` 投递失败时立即以 `NO_APPROVER_REASON`（`no approver attached`）拒绝并退回占用；
+  `settle` 只在 `finished.swap(true)` 抢占成功的一方产生副作用，因此重复/迟到答复既不能重复通知、
+  也不能凭 `AllowAlways` 扩权。`cancel_session` 以断连理由结算并返回「该 owner 仍待决的条数」，
+  `clear_all` 也会通知，但 owner 断连不动 session 级条目（沿用 P4 归属语义）。
+- `agentj-cli`：非 TTY 且未加 `--yes` 时先打印一行
+  `warning: no approver attached (non-interactive stdin, no --yes); approval-required tools will be denied`，
+  随后当场拒绝，不再空等 `[permission] timeout_ms`；TTY 与 `--yes` 路径逐字节不变。`--attach`
+  不走本机这条路径（审批归远端内核的订阅客户端）。`[permission] timeout_ms` 的语义收窄为
+  「仅覆盖已投递但无人回答的请求」。
+- `agentj-ipc` 单测夹具新增 `silent_approver()`（审批器在线但不答复），7 个原本依赖「无审批器
+  保持待决」的夹具改用它；owner 断连测试断言拒绝理由不是 no-approver 文本。permission 单测
+  58 → 66，ipc lib 305 + 6 集成，`cargo test -p agentj-cli --locked` 全绿（含 `e2e_permission`）。
 
-**C. ㉟ Desktop 打包验证**
+**C. `glob` 超时改为结构化错误（T11）**
 
-- 新 CI 作业 `desktop-package`（ubuntu、`timeout-minutes: 45`）：protocol 生成 → web dist →
-  `cargo tauri build --bundles deb,appimage` → `check-artifacts.sh linux` → 上传产物；
-  任一步缺失即失败。`cross-platform` 仍只 `cargo build`（断言脚本继续拒绝 tauri 步骤）。
-- `check-artifacts.sh` 增 `linux-deb`（只要求 `.deb`），`linux` 仍要求 deb + AppImage。
-- 仓库不变量 17 → 18 个 check（`assert-ci.sh` 新增 `desktop-package-job`，AGENTS.md 计数同步）。
+- `crates/agentj-tools/src/builtins.rs` 删掉 `Err(ToolError::Timeout)` → `Ok(String)` 的降级分支：
+  超时与 bash/grep 一致按 `Error: tool timeout after Ns` 上抛，已走出的部分匹配一并丢弃，
+  不再把失败伪装成一条成功的文本结果。
 
-**D. 协议与文档同步**
+**D. 文档（T31）**
 
-- `PROTOCOL_VERSION = 0.20.0`、`protocol/methods.json`、SDK `config.ts`、`scripts/check-version.sh`
-  与其正负样例、`registry.rs` 的 4 处协议字面量、SDK 两个 `PROTOCOL_VERSION` 断言全部同步。
-- `docs/changelog/v0.1.md` 新增本批次 Added/Changed（含上游漂移如实记录）；
-  `docs/guide/subscription.md`（历史趋势 + `[usage]`）、`docs/guide/desktop.md`（CI 只验证 Linux、
-  `--bundles` 差异、`check-artifacts.sh` 四档）、`docs/guide/configuration.md`（预算规则 + `[usage]`）。
-- `AGENTS.md` / `README.md` 只改基线（0.20.0 / 29 方法 / 81 schemas / `[usage]` 节 / 窗口钩子 /
-  desktop-package 作业），不加版本叙事。
+- `docs/guide/tools.md` 重写 glob 超时段落（超时会让本次调用失败、部分匹配丢弃）；
+  `docs/changelog/v0.1.md` 补 Changed（web 拆分）与 Fixed（glob 超时、无审批器立即拒绝）。
 
-### 验证
+### 门禁
 
-- `cargo test --workspace` → 1,193 passed / 0 failed（含 e2e_cli / e2e_permission / e2e_serve /
-  e2e_ws / e2e_http_static）。
-- `cargo clippy --workspace --all-targets -- -D warnings` → 零警告；`cargo fmt --all -- --check` 通过。
-- `python3 scripts/tests/fn-length.py crates …` → 130 文件 0 个超 50 行函数。
-- `bash scripts/tests/assert-ui.sh all` 3/3、`assert-cargo.sh all` 6/6、`assert-ci.sh all` 9/9；
-  `./scripts/check-version.sh` = `version-ok`；`check-desktop-ui.mjs` = `desktop-ui-ok`。
-- 前端：`@agentj/sdk` 82 passed、`@agentj/tokens` 11 passed、`@agentj/web` 706 passed、
-  TUI（bun）200 passed；web `vite build` 通过；oxlint 0 error / 48 warning（与基线持平）。
+`cargo test --workspace --locked` 全绿（1204 项）、`clippy --workspace --all-targets -- -D warnings`
+零警告、`cargo fmt --all --check` 干净、`fn-length` 0 违规、`assert-{cargo,ui,ci}.sh all` 全 PASS、
+`check-version.sh` version-ok。
 
-### 决策与偏差（本批次）
+## 归档：用量历史 + 模型窗口预算 + Desktop 打包验证 ✅
 
-- **上游漂移照实收录**（T16）：重生成快照后 13 个 id 已不在 live 列表、新增 6 个 id；
-  `opencode-go/grok-4.6` 因 models.dev 下架而失去 `responses` 路由（降为 `openai-compat` +
-  `verified:false`），`kimi-k2.6` / `qwen3.6-plus` / `qwen3.7-max` 的 `verified` true→false。
-  一律不猜路由、不手改 JSON；两个旧测试断言（`grok-4.5`、`glm-5`）随之改指现有 id。
-- **`agentj-cli` 是 binary-only**：T03/T04 提交时 `usage_history` 尚未接线，`clippy -D warnings`
-  必然因 `dead_code` 报红，故这两提交的 clippy 门禁**延后**到 T05/T06/T09 接线后跑；
-  未加任何 `#[allow]`，最终工作区 `-D warnings` 清零。
-- **T09 计划外补充**：计划未把 `[usage]` 的保留期/上限接到存储上，若不接 `with_limits` 会永久
-  `dead_code`；因此在 `build_provider_service` 里补 `.with_history_limits(days, max_samples)`。
-- **协议 TS 类型再生成了**（计划漏项）：T01/T17 改了 schemas 却没有任何任务跑
-  `@agentj/protocol` 生成，`types.d.ts` 会滞后并让 frontend drift 门禁失败；补了独立提交
-  `chore(protocol): regenerate TS types …`（+81/−15）。
-- **计划测试的两处事实错误**：T12 的 fixture 只桩 `provider/usageHistory` 而面板行来自
-  `provider/usage`（补一行 `providerUsage` 桩）；T13 期望 `10%→30%` 渲染成 `▁▄`，而 SDK 的
-  `sparkline` 对 30% 给 `▃`（以 SDK 单测为准）。
-- **Web 趋势截止时间**：`buildTrend(..., Date.now())` 在 render 中取时钟触发 oxlint
-  `react(purity)`；改为取样时记一次 epoch 秒并下传（warning 回到基线 48）。
-
-### 遗留问题 / 已知限制（本批次）
-
-- **`estimate_tokens` 仍是字符启发式**：窗口只把「天花板」变准，单条消息的 token 估算仍是
-  「ASCII/4 + 非 ASCII×1」；真 tokenizer 未做（⑥/⑰ 只承诺窗口接线）。
-- **窗口只覆盖目录内模型**：live `/v1/models` 出现但目录（含 models.dev）没有的 id 一律
-  `context_window: None` → 退回显式上限或 128k；不做任何猜测。
-- **历史查询无分页**：`limit` 默认 2000（上限 `MAX_QUERY_LIMIT`），`since` 缺省按保留期回推；
-  超出即截断，结果里不带「已截断」标志。
-- **`grok-4.6` 路由降级**待上游 models.dev 修复（本仓库不覆盖种子）。
-- **desktop 只验证 Linux**：`dmg` / `msi` 仍需本地手动 `--bundles`（无签名/公证策略）。
-- **`check-artifacts.sh` 四档**：`linux` 严格（deb+AppImage）、`linux-deb` 宽松（仅 deb）；
-  CI 用严格档，宽松档供局部调试。
+协议 `0.19.0 → 0.20.0`（加性）：`provider/usageHistory`（78 → 81 schemas、28 → 29 方法）+
+`crates/agentj-cli/src/usage_history.rs`（真实上游应答才落盘，目录 0700 / 文件 0600）+
+`[usage]` 三项配置；`context_window` 贯通 `CatalogEntry`/`ModelEntry` 并由
+`budget::effective_budget`（`min(显式上限, 窗口 × 90%)`）逐轮生效；CI 新增 `desktop-package`
+（`tauri build` + `check-artifacts.sh linux`），仓库不变量 17 → 18。详见 `docs/changelog/v0.1.md`。
 
 ## 归档：依赖刷新批次 ✅
 
@@ -522,6 +478,16 @@
   入参 `timeout_ms`（上限 600s）覆盖，默认值是否上调待观察。
 - **不泄露**：结果只经 `redact()` 暴露 `key_hint`；完整 key 不出现在结果 / 日志 / 错误文案 /
   前端持久化中；两个 auth 方法**不新增权限门**。
+- **`cancel_session` / `clear_all` 必须先收集再结算**（本批实现取舍）：
+  `PendingRegistry::for_session` / `prune_where` 持注册表锁执行回调，回调里若直接 `settle` / `get`
+  会自锁，故 `crates/agentj-permission/src/module.rs` 先收集 request id 再逐个结算；后续若要在这两个
+  入口加带副作用的谓词需沿用同一步骤。
+- **no-approver 只在投递那一刻判定一次**：审批器投递成功后才断连的情形仍按 `timeout_ms` 到期拒绝
+  （`--attach` 断连改走 `cancel_session` 的断连理由）；日志可区分
+  `permission denied: no approver` 与 `permission approval timed out`。
+- **`web` 拆分后的运行期盲点**：`crates/agentj-ipc/src/web/` 现按域分层，跨域行为（例如 metrics 落盘
+  ↔ 限流计数）仍需在 `web/tests/integrity.rs` 与 `web/tests/persist.rs` 两侧同时改动；`structure.rs`
+  只钉薄根，不阻止域内继续变胖（最大 `config.rs` 482 行）。
 - **不做**：多账号 / 账号切换（同 provider 重复链接 = 替换）；OS keyring；不做「从解析层 `Err`
   反推 entitlement」（`rejected` 仅由明确 401/403 触发）。
 
@@ -529,8 +495,10 @@
 
 | # | 特性 | 内容 | 依赖 | 状态 |
 |---|------|------|------|------|
-| ⑰⁺ | 真 tokenizer | 把 `estimate_tokens` 的「ASCII/4 + 非 ASCII×1」启发式换成真 tokenizer（本批只接了模型窗口，估算本身仍是启发式） | 需引入分词器依赖 / 体积权衡 | 待实施 |
-| ㉟⁺ | 【债】macOS / Windows 打包链路 | 本批只让 CI 真实构建并校验 Linux deb/AppImage；`dmg` / `msi` 仍无 CI 回归保护 | 需 macOS/Windows runner + 签名/公证策略 | 待实施 |
+| ⑰⁺ | 真 tokenizer | 把 `estimate_tokens` 的「ASCII/4 + 非 ASCII×1」启发式换成真 tokenizer（已接模型窗口，估算本身仍是启发式） | 需引入分词器依赖 / 体积权衡 | 待实施 |
+| ㉟⁺ | 【债】macOS / Windows 打包链路 | CI 只真实构建并校验 Linux deb/AppImage；`dmg` / `msi` 仍无 CI 回归保护 | 需 macOS/Windows runner + 签名/公证策略 | 待实施 |
+| ㊱⁺ | 【债】`run --attach` 的审批归属回归 | `--attach` 的审批归远端内核订阅客户端，本进程不打印 no-approver 告警；owner 断连后重新认领、以及「投递失败但会话仍在」的组合无专门 e2e | 需要跨进程审批会话夹具 | 待实施 |
+| ㊲⁺ | 【债】`grep` 进程内检索的时间预算 | 无 `rg` 时的 `search_native` 只有 2000 条命中上限，没有像 `glob` 那样的 60s deadline，超大树上可能长时间不退 | 把 `glob` 的 deadline 模式移植到进程内检索 | 待实施 |
 
 > 类型标记：`【债】` = 工程债 / 质量门禁，`【修复】` = 已确认缺陷或元数据不一致；无标记 = 特性。
 > 规则：本表条目在未实施时必须**跨阶段保留**（不得随内容替换删除）；实施完成后从本表移除，
@@ -538,16 +506,14 @@
 
 ## 下一步
 
-- 本批次（⑥ / ⑰ / ㉟）已收尾：代码、门禁、文档、summary 全部落地；分支推送 `origin` 与
-  `gitcode`，PR 开在 `origin`（用户负责合并）。
-- 下一批候选：⑰⁺ 真 tokenizer（估算仍是字符启发式）；㉟⁺ macOS / Windows 打包链路
-  （需 runner 与签名策略）；以及表外技术债（`agentj-ipc/src/web.rs` 文件级拆分、Web
-  `FileTree.tsx` 的 `useFileSearch` 提取、TUI `files.test.ts` 与 SDK 测试的重复）。
-- 用量历史后续可选改进（非阻塞）：分页 / 截断标志、按 provider 的保留期差异、
-  历史文件大小上限与压缩。
-- 可选跟进（run 可靠性批次遗留）：非 TTY 未加 `--yes` 改为**立即**拒绝（现等
-  `timeout_ms` 预算）；`glob` 超时由文本结果改为结构化 Err；把「工具结果已截断」作为可观测事件
-  透出（当前仅内核内 `AgentEvent::ToolResultTruncated`）。
+- 本批次（结构债收敛，后端侧 T1–T15 + T31）已收尾：`web.rs` 拆分、权限单次结算 + 无审批器立即
+  拒绝、`glob` 超时结构化、文档同步全部落地并过门禁；分支推送 `origin` 与 `gitcode`，
+  PR 开在 `origin`（用户负责合并）。
+- 下一批候选（见上表）：⑰⁺ 真 tokenizer、㉟⁺ macOS/Windows 打包链路、㊱⁺ `--attach` 审批归属回归、
+  ㊲⁺ `grep` 进程内检索 deadline。
+- 表外可选改进：用量历史分页 / 截断标志 / 按 provider 的保留期差异；`[web] state_dir = ""` 归为
+  `None` 并复用「无状态目录」告警；`flush_metrics_state` 快照与 `mark_clean()` 之间的理论竞态；
+  把「工具结果已截断」作为可观测事件透出（当前仅内核内 `AgentEvent::ToolResultTruncated`）。
 
 > 远端提示：本机 `git fetch gitcode` 若报 `fatal: couldn't find remote ref gitcode`，按纪律
 > 不 `--force`；分支照常 `git push gitcode <branch>:<branch>`，失败即如实记录。
