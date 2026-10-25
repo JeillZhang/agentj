@@ -49,10 +49,19 @@ agentj run --attach tcp://127.0.0.1:4096 --provider opencode-go "hi"   # 附着�
 
 - **`--yes`**：自动批准、不进入交互，每次批准在 stderr 打印 `auto-approved <tool> (--yes)`。
 
-- **非 TTY 且未加 `--yes`**：不读 stdin、也不挂审批器，待决请求仍按 `[permission] timeout_ms`
-  预算自动拒绝（管道 / CI 环境下不会挂起等待人工输入，但要等到该预算耗尽才拒绝）。
+- **非 TTY 且未加 `--yes`**：没有可挂的审批器，`ask` 请求**当场拒绝**——不读 stdin、
+  也不占用审批等待预算，工具收到的拒绝理由是 `no approver`。运行开始时 stderr 先打印一行
+  说明原因：
 
-- **`[permission] timeout_ms`**：审批等待预算（毫秒；省略 = `60000`）。越界值钳制到
+  ```text
+  warning: no approver attached (non-interactive stdin, no --yes); approval-required tools will be denied
+  ```
+
+  管道 / CI 环境下不会挂起等人工输入，也不会把「没人可批」伪装成一次超时。
+  `--attach` 不走本机这条路径：那个会话的审批归远端内核的订阅客户端，本进程不打印这行。
+
+- **`[permission] timeout_ms`**：审批等待预算（毫秒；省略 = `60000`）。它只对**已经投递给
+  活审批器**的请求计时；没人可挂的请求按上一条立即拒绝，不走这个预算。越界值钳制到
   `100..=600_000`（如 `0` 钳到 `100`、超大值钳到 `600_000`），越界时在 stderr 打印
   `warning: permission.timeout_ms <原始值> clamped to <钳制值>`，不视为错误。
 

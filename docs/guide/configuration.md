@@ -81,7 +81,11 @@ env = { FOO = "bar" }
 ## `[permission]`
 
 - 全局与逐工具 `mode`（如 `ask`）。
-- `timeout_ms`：`ask` 审批的自动拒绝等待预算（毫秒；默认 `60000`）。越界值钳制到
+- `timeout_ms`：`ask` 审批的自动拒绝等待预算（毫秒；默认 `60000`）。它仅覆盖**已经
+  投递给活审批器**却一直无人回答的请求；没人可挂审批器时（非交互 stdin 且未加 `--yes`，
+  或通知投递失败）请求**当场拒绝**、拒绝理由是 `no approver`，CLI 另在 stderr 打印一行
+  `warning: no approver attached (non-interactive stdin, no --yes); approval-required tools will be denied`
+  ——「没人可批」不会被报成超时，也不必空等这个预算。越界值钳制到
   `100..=600000` 并在 stderr 打印一行
   `warning: permission.timeout_ms <原始值> clamped to <钳制值>`——负值与 `0` 同样按钳制处理
   （警告里回显的是**原始值**，不会被归零），不视为配置错误。取值须落在 64 位有符号整数范围内；
