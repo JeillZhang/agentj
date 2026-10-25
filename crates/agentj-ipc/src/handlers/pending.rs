@@ -208,19 +208,42 @@ impl IpcServer {
             .ok()
             .map(|r| r.sessions_owned_by(conn_id))
             .unwrap_or_default();
+        self.settle_sessions(conn_id, owned);
+    }
+
+    /// Settle an ownership snapshot taken just before this call. Split out so the window between
+    /// "snapshot" and "settle" is explicit: `owned` can already be stale.
+    pub(crate) fn settle_sessions(&self, conn_id: &str, owned: Vec<agentj_core::types::SessionId>) {
         if let Ok(mut reg) = self.registry.write() {
             reg.clear_owner(conn_id);
         }
+        // `owned` is a snapshot taken before the write: another client may have claimed one of
+        // these sessions in between (`session/run` claims unconditionally). Cancelling then would
+        // kill an approval the *new* owner just raised, so re-check ownership and only settle
+        // sessions nobody owns now.
+        let orphaned = self.still_ownerless(&owned);
         if let Some(module) = &self.question_module {
-            for sid in &owned {
+            for sid in &orphaned {
                 let _ = module.cancel_session(sid);
             }
         }
         if let Some(module) = &self.permission_module {
-            for sid in &owned {
+            for sid in &orphaned {
                 module.cancel_session(sid, DISCONNECTED_REASON);
             }
         }
+    }
+
+    /// Filter a pre-clear ownership snapshot down to the sessions that are still unowned.
+    fn still_ownerless(&self, owned: &[String]) -> Vec<String> {
+        let Ok(reg) = self.registry.read() else {
+            return Vec::new();
+        };
+        owned
+            .iter()
+            .filter(|sid| reg.session_owner(sid).is_none())
+            .cloned()
+            .collect()
     }
 
     /// Owner-directed question notifier; the returned bool is the module's

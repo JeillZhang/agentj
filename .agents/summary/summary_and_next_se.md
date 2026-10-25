@@ -145,6 +145,11 @@
 - **工具定义只做「预留」不参与裁剪**：`fit_with_tools` 只在预算里扣掉定义开销；若定义本身就
   超过窗口（超多 MCP 工具），`fit` 拿到的预算会被下限钳到 1，请求仍会超限——该情形目前靠上游
   400 + `retry_budget` 收尾，没有「按需裁工具」的策略。
+- **owner 断连的结算快照可能过期**：`settle_sessions` 现在在 `clear_owner` 之后重新判定归属，
+  只结算仍无人认领的会话；快照与结算之间的窗口由 `settle_sessions(conn_id, owned)` 显式拆开，
+  单测直接喂一个过期快照驱动真实路径。
+- **`serve` 的「最后一个连接」判定看登记表**：e2e 里 B 连上后必须做一次往返（`session/list`）
+  才能确保它已被登记，否则 A 的 EOF 先到会让内核以为无人连接而收尾（表现为 B 写请求 BrokenPipe）。
 - **收缩器的粒度仍是「整体替换」**：`shrink_calls` 超 cap 时把整个参数替换成 `_truncated` 标记，
   不做部分保留（部分保留会产出模型无法执行的半截 JSON）；被标记的调用通常直接失败，由模型重试。
 - **`fit_with_tools` 的预留记在总量上**：`DefaultContextPipeline` 走 `fit_messages_with`，body 可被
