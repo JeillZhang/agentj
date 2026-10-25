@@ -181,7 +181,8 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
   两个进程型工具（`bash` / `grep`）统一经 `ToolExecutor`（`executor.rs`）以独立进程组
   执行，超时杀整组并按工具默认值（`bash` 120s、`grep` 60s）生效，可经入参 `timeout_ms`
   覆盖（钳制 1s–600s）；`grep` 无 `rg` 时的进程内回退（`search_native`）同样受同一 deadline
-  约束，超期按 `ToolError::Timeout` 失败而非返回部分结果。
+  约束（入口 / 每个 entry / `fs::read` 之前 / 文件内每 512 行），超期按 `ToolError::Timeout`
+  失败而非返回部分结果。
 - `agentj-license`：Ed25519 许可证校验（entitlements + free mode）。
 - `agentj-mcp`：MCP 客户端 + McpConnectionManager 长驻连接
   （McpServerSpec + close_all）。

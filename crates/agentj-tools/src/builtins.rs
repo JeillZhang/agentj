@@ -269,6 +269,11 @@ impl GrepTool {
         timeout: std::time::Duration,
     ) -> Result<String, ToolError> {
         let deadline = std::time::Instant::now() + timeout;
+        // An already-spent budget must not report "no matches": an empty result from a walk
+        // that was never allowed to run is exactly the lie this deadline exists to prevent.
+        if std::time::Instant::now() >= deadline {
+            return Err(ToolError::Timeout(timeout));
+        }
         let re = regex::Regex::new(pattern).map_err(|e| ToolError::ExecutionFailed {
             name: "grep".into(),
             reason: format!("invalid regex: {e}"),
@@ -312,6 +317,10 @@ impl GrepTool {
     ) -> Result<bool, ToolError> {
         if !entry.file_type().is_file() {
             return Ok(false);
+        }
+        // Checked before the read: a 1 MiB file can otherwise eat whatever budget is left.
+        if std::time::Instant::now() >= deadline {
+            return Err(ToolError::Timeout(timeout));
         }
         if entry.metadata().map(|m| m.len()).unwrap_or(u64::MAX) > Self::MAX_FILE_BYTES {
             return Ok(false);
@@ -1132,6 +1141,20 @@ mod tests {
         assert!(
             matches!(err, ToolError::Timeout(_)),
             "zero budget must time out structurally: {err}"
+        );
+    }
+
+    #[test]
+    fn native_search_times_out_before_the_walk_starts() {
+        let root = tempfile::TempDir::new().unwrap();
+        // A root the walker never yields (it does not exist) is the case the per-entry guard
+        // cannot cover: without a pre-walk check the call reports "no matches" with a spent
+        // budget.
+        let missing = root.path().join("does-not-exist");
+        let err = GrepTool::search_native("needle", "*", &missing, Duration::ZERO).unwrap_err();
+        assert!(
+            matches!(err, ToolError::Timeout(_)),
+            "a spent budget must time out, not report zero matches: {err}"
         );
     }
 
