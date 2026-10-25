@@ -737,6 +737,12 @@ impl ProviderService for CliProviderService {
     async fn usage(&self, p: ProviderUsageParams) -> Result<ProviderUsageResult, DispatchError> {
         CliProviderService::usage(self, p).await
     }
+    async fn usage_history(
+        &self,
+        p: ProviderUsageHistoryParams,
+    ) -> Result<ProviderUsageHistoryResult, DispatchError> {
+        CliProviderService::usage_history(self, p).await
+    }
     async fn device_start(
         &self,
         p: AuthDeviceStartParams,

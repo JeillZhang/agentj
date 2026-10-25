@@ -49,6 +49,17 @@ impl ProviderService for Recording {
             error: None,
         })
     }
+    async fn usage_history(
+        &self,
+        _p: ProviderUsageHistoryParams,
+    ) -> Result<ProviderUsageHistoryResult, DispatchError> {
+        lock_or_recover(&self.calls).push("usage_history".into());
+        Ok(ProviderUsageHistoryResult {
+            provider: "opencode-go".into(),
+            retention_days: 0,
+            samples: vec![],
+        })
+    }
     async fn device_start(
         &self,
         _p: AuthDeviceStartParams,
@@ -127,6 +138,24 @@ async fn handle_is_optional_and_the_trait_is_object_safe() {
         "opencode-go"
     );
     assert_eq!(lock_or_recover(&rec.calls).as_slice(), ["model_list"]);
+
+    let hist_double = Arc::new(Recording::default());
+    let hist_svc: Arc<dyn ProviderService> = hist_double.clone();
+    let hist = hist_svc
+        .usage_history(ProviderUsageHistoryParams {
+            provider: None,
+            kind: None,
+            since: None,
+            limit: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(hist.provider, "opencode-go");
+    assert!(hist.samples.is_empty());
+    assert_eq!(
+        lock_or_recover(&hist_double.calls).as_slice(),
+        ["usage_history"]
+    );
 }
 
 #[tokio::test]

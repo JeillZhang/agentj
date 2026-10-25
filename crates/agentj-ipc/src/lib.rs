@@ -42,7 +42,8 @@ use agentj_protocol::provider::{
     AuthClearCredentialParams, AuthClearCredentialResult, AuthDevicePollParams,
     AuthDevicePollResult, AuthDeviceStartParams, AuthDeviceStartResult, AuthSetApiKeyParams,
     AuthSetApiKeyResult, AuthStatusParams, AuthStatusResult, ModelListParams, ModelListResult,
-    ProviderUsageParams, ProviderUsageResult,
+    ProviderUsageHistoryParams, ProviderUsageHistoryResult, ProviderUsageParams,
+    ProviderUsageResult,
 };
 use agentj_question::QuestionModule;
 use async_trait::async_trait;
@@ -101,6 +102,11 @@ pub trait ProviderService: Send + Sync {
         &self,
         params: ProviderUsageParams,
     ) -> Result<ProviderUsageResult, DispatchError>;
+    /// Persisted usage samples; a pure read that never contacts the upstream. @since 0.20.0
+    async fn usage_history(
+        &self,
+        params: ProviderUsageHistoryParams,
+    ) -> Result<ProviderUsageHistoryResult, DispatchError>;
     async fn device_start(
         &self,
         params: AuthDeviceStartParams,
