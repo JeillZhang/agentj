@@ -9,7 +9,7 @@ pub mod session_allow;
 
 pub use engine::PermissionEngine;
 pub use error::PermissionError;
-pub use module::{ApprovalDecision, PermissionModule};
+pub use module::{ApprovalDecision, NO_APPROVER_REASON, PermissionModule};
 pub use policy::{
     CommandRule, PathRule, PermissionConfig, PermissionEffect, PermissionMode, ToolPolicy,
     builtin_default_mode,

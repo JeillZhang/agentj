@@ -425,6 +425,11 @@ impl IpcServer {
                 {
                     let _ = r.send_to(&owner_id, &msg.to_string());
                 }
+                // Always "delivered": the no-owner branch above already settled the
+                // ask through `cancel_session(DISCONNECTED_REASON)`; reporting `false`
+                // would settle it a second time (idempotent, but it would relabel the
+                // decision as "no approver" and muddy the log attribution).
+                true
             });
             module.set_notifier(notifier);
         }
