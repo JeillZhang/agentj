@@ -151,8 +151,10 @@ export default function ComposerOptions({
   // provider a run would use) — the TUI picker resolves its marker the same way.
   const { index: selectedModelIndex } = resolveModelMarker(modelOptions, selected, modelName);
   // A name no served row carries is still shown (it is what the kernel reports), but the
-  // trigger says so instead of implying the run could pick it.
-  const unserved = modelName != null && selectedModelIndex < 0;
+  // trigger says so instead of implying the run could pick it. Detection is by name: a name
+  // two providers serve also yields `index === -1` (ambiguous, not unserved), so the marker
+  // index cannot answer this question.
+  const unserved = modelName != null && !modelOptions.some((entry) => entry.name === modelName);
   const triggerRefs = {
     model: modelRef,
     agent: agentRef,

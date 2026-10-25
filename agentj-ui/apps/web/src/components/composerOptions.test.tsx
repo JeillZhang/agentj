@@ -270,6 +270,19 @@ test("does not flag a model the served list contains", () => {
   expect(screen.queryByText("当前未提供")).not.toBeInTheDocument();
 });
 
+test("does not flag a name two providers serve as unserved", () => {
+  // Two providers offering the same default name make `resolveModelMarker` return -1 (it
+  // cannot say which provider a run would use) — that is ambiguity, not a missing model.
+  const models: ModelEntry[] = [
+    { provider: "a", name: "glm-5" },
+    { provider: "b", name: "glm-5" },
+  ];
+  render(<ComposerOptions model="glm-5" models={models} />);
+  const trigger = screen.getByRole("button", { name: /glm-5/ });
+  expect(trigger).not.toHaveAttribute("data-served", "false");
+  expect(screen.queryByText("当前未提供")).not.toBeInTheDocument();
+});
+
 test("flags a kernel default name the served list does not contain", () => {
   render(<ComposerOptions model="opencode-go/gone" models={[{ name: "opencode-go/a" }]} />);
   const trigger = screen.getByRole("button", { name: /opencode-go\/gone/ });
