@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ProviderUsageHistoryParams",
+  "description": "Query parameters for `provider/usageHistory`. Every field is optional so an empty\n`params` object means \"default provider, all kinds, full retention window\". @since 0.20.0",
+  "type": "object",
+  "properties": {
+    "kind": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/UsageWindowKind"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "limit": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint32",
+      "minimum": 0
+    },
+    "provider": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "since": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "int64"
+    }
+  },
+  "$defs": {
+    "UsageWindowKind": {
+      "description": "Quota window kind. `Unknown` tolerates forward values. @since 0.17.0",
+      "type": "string",
+      "enum": [
+        "rolling",
+        "weekly",
+        "monthly"
+      ]
+    }
+  }
+}

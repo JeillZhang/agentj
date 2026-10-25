@@ -139,7 +139,7 @@ pub struct ProviderUsageResult {
 }
 
 /// One quota window. `percent` is the *used* percentage. @since 0.17.0
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct UsageWindow {
     pub kind: UsageWindowKind,
     pub status: UsageWindowStatus,
@@ -182,6 +182,36 @@ pub enum UsageWindowStatus {
 pub struct ProviderUsageError {
     pub kind: String,
     pub message: String,
+}
+
+/// Query parameters for `provider/usageHistory`. Every field is optional so an empty
+/// `params` object means "default provider, all kinds, full retention window". @since 0.20.0
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ProviderUsageHistoryParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<UsageWindowKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+}
+
+/// One persisted sampling of every usage window the provider reported. @since 0.20.0
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct UsageSample {
+    pub at: i64,
+    pub windows: Vec<UsageWindow>,
+}
+
+/// Result of `provider/usageHistory`, samples ordered by `at` ascending. @since 0.20.0
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ProviderUsageHistoryResult {
+    pub provider: String,
+    /// Retention actually applied by the kernel, so a client can label the axis.
+    pub retention_days: u32,
+    pub samples: Vec<UsageSample>,
 }
 
 /// `auth/deviceStart` params. @since 0.17.0
@@ -502,5 +532,59 @@ mod tests {
         let r: ProviderUsageResult = serde_json::from_value(v).unwrap();
         assert!(matches!(r.windows[0].status, UsageWindowStatus::Unknown));
         assert_eq!(r.windows[0].percent, Some(9));
+    }
+
+    #[test]
+    fn usage_history_params_omit_absent_fields() {
+        let params = ProviderUsageHistoryParams {
+            provider: None,
+            kind: None,
+            since: None,
+            limit: None,
+        };
+        let json = serde_json::to_value(&params).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({}),
+            "all-absent params serialize to {{}}"
+        );
+        let parsed: ProviderUsageHistoryParams =
+            serde_json::from_value(serde_json::json!({"provider": "opencode-go", "limit": 10}))
+                .unwrap();
+        assert_eq!(parsed.provider.as_deref(), Some("opencode-go"));
+        assert_eq!(parsed.limit, Some(10));
+    }
+
+    #[test]
+    fn usage_sample_roundtrips_its_windows() {
+        let sample = UsageSample {
+            at: 1_790_000_000,
+            windows: vec![UsageWindow {
+                kind: UsageWindowKind::Rolling,
+                status: UsageWindowStatus::Ok,
+                percent: Some(37),
+                resets_at: None,
+            }],
+        };
+        let encoded = serde_json::to_string(&sample).unwrap();
+        assert!(
+            encoded.starts_with(r#"{"at":1790000000,"windows":["#),
+            "got {encoded}"
+        );
+        let decoded: UsageSample = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, sample);
+    }
+
+    #[test]
+    fn usage_history_result_keeps_the_retention_window() {
+        let out = ProviderUsageHistoryResult {
+            provider: "opencode-go".into(),
+            retention_days: 30,
+            samples: vec![],
+        };
+        assert_eq!(
+            serde_json::to_value(&out).unwrap(),
+            serde_json::json!({"provider": "opencode-go", "retention_days": 30, "samples": []})
+        );
     }
 }

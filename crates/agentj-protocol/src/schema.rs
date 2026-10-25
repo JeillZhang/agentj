@@ -17,8 +17,9 @@ use crate::provider::{
     AuthDevicePollParams, AuthDevicePollResult, AuthDeviceStartParams, AuthDeviceStartResult,
     AuthSetApiKeyParams, AuthSetApiKeyResult, AuthStatusParams, AuthStatusResult, CredentialInfo,
     CredentialKind, CredentialSource, DeviceAuthState, ModelEntry, ModelListParams,
-    ModelListResult, ModelSource, ProviderUsageError, ProviderUsageParams, ProviderUsageResult,
-    UsageWindow, UsageWindowKind, UsageWindowStatus,
+    ModelListResult, ModelSource, ProviderUsageError, ProviderUsageHistoryParams,
+    ProviderUsageHistoryResult, ProviderUsageParams, ProviderUsageResult, UsageSample, UsageWindow,
+    UsageWindowKind, UsageWindowStatus,
 };
 use crate::question::{AskOption, AskQuestionParams, QuestionRespondParams, QuestionRespondResult};
 use crate::session::{
@@ -171,6 +172,13 @@ fn usage_targets() -> Vec<(&'static str, SchemaFn)> {
         ("UsageWindowKind", || schema_for!(UsageWindowKind)),
         ("UsageWindowStatus", || schema_for!(UsageWindowStatus)),
         ("ProviderUsageError", || schema_for!(ProviderUsageError)),
+        ("ProviderUsageHistoryParams", || {
+            schema_for!(ProviderUsageHistoryParams)
+        }),
+        ("UsageSample", || schema_for!(UsageSample)),
+        ("ProviderUsageHistoryResult", || {
+            schema_for!(ProviderUsageHistoryResult)
+        }),
     ]
 }
 
