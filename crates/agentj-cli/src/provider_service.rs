@@ -87,6 +87,15 @@ impl CliProviderService {
         self
     }
 
+    /// Apply the configured retention window and sample cap (`usage.history_days` /
+    /// `usage.history_max_samples`); a no-op when no history dir is attached. @since 0.20.0
+    pub fn with_history_limits(mut self, retention_days: i64, max_samples: usize) -> Self {
+        self.history = self
+            .history
+            .map(|history| history.with_limits(retention_days, max_samples));
+        self
+    }
+
     /// Set the configured default model id (reported by `model/list`).
     pub fn with_default_model(mut self, model: String) -> Self {
         self.default_model = model;
@@ -1271,6 +1280,25 @@ mod tests {
             .unwrap();
         assert_eq!(hist.retention_days, 0);
         assert!(hist.samples.is_empty());
+    }
+
+    #[tokio::test]
+    async fn with_history_limits_sets_the_reported_retention() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = svc_with_console("https://unused.test")
+            .0
+            .with_history_dir(Some(dir.path().join("usage")))
+            .with_history_limits(7, 500);
+        let hist = svc
+            .usage_history(ProviderUsageHistoryParams {
+                provider: None,
+                kind: None,
+                since: None,
+                limit: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(hist.retention_days, 7);
     }
 
     #[tokio::test]
