@@ -53,7 +53,9 @@
 ### 超时
 
 `glob` 接受可选入参 `timeout_ms`：默认 **60 秒**，可设范围 **1–600 秒**（超出即钳制）。
-超时**不报错**，而是返回文本结果 `glob timed out after Ns`，模型可据此缩小 pattern 后重试。
+超时**会让本次调用失败**，与 `bash` / `grep` 一致：模型看到的是错误文本
+`Error: tool timeout after Ns`，同时**部分匹配一并丢弃**（不会返回已走过的半份清单）。
+据此缩小 pattern 或调大 `timeout_ms` 后重试。
 
 ## 下一步
 
