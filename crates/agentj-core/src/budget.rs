@@ -7,7 +7,7 @@
 //! result) was forwarded verbatim until the provider answered
 //! `[context_length_exceeded] ... resulted in 3904559 tokens`.
 
-use crate::types::{ChatMessage, Role};
+use crate::types::{ChatMessage, Role, ToolDefinition};
 
 /// Budget used when `[model] max_context_tokens` is unset. @since 0.29.7
 pub const DEFAULT_CONTEXT_TOKENS: usize = 128_000;
@@ -82,17 +82,45 @@ fn is_cjk(c: char) -> bool {
 
 /// Tokens one assembled message costs, tool-call payloads included. @since 0.29.7
 pub fn message_tokens(message: &ChatMessage) -> usize {
-    let calls: usize = message
-        .tool_calls
-        .iter()
-        .map(|call| estimate_tokens(&call.name) + estimate_tokens(&call.arguments.to_string()) + 8)
-        .sum();
-    estimate_tokens(&message.content) + calls + 4
+    message_tokens_with(message, &HeuristicTokenizer)
+}
+
+/// `message_tokens` against an arbitrary counter. @since 0.29.7
+pub fn message_tokens_with(message: &ChatMessage, counter: &dyn TokenCounter) -> usize {
+    let mut total = counter.count_text(&message.content) + 4;
+    if let Some(call) = &message.tool_call_id {
+        total += counter.count_text(call);
+    }
+    for call in &message.tool_calls {
+        total += 8 + counter.count_text(&call.name) + counter.count_text(&call.arguments.to_string());
+    }
+    total
 }
 
 /// Tokens an assembled request costs. @since 0.29.7
 pub fn request_tokens(messages: &[ChatMessage]) -> usize {
-    messages.iter().map(message_tokens).sum()
+    request_tokens_with(messages, &HeuristicTokenizer)
+}
+
+/// `request_tokens` against an arbitrary counter. @since 0.29.7
+pub fn request_tokens_with(messages: &[ChatMessage], counter: &dyn TokenCounter) -> usize {
+    messages.iter().map(|m| message_tokens_with(m, counter)).sum()
+}
+
+/// Per-definition framing cost beyond its name, description and schema. @since 0.29.7
+const TOOL_DEF_OVERHEAD: usize = 12;
+
+/// Tokens the tool definitions in a request cost. They are never dropped by the trimmer, but
+/// they do occupy the window, so `fit_messages_with` reserves room for them first. @since 0.29.7
+pub fn definitions_tokens(defs: &[ToolDefinition]) -> usize {
+    defs.iter()
+        .map(|d| {
+            estimate_tokens(&d.name)
+                + estimate_tokens(&d.description)
+                + estimate_tokens(&d.input_schema.to_string())
+                + TOOL_DEF_OVERHEAD
+        })
+        .sum()
 }
 
 /// Clamp a configured or upstream-reported budget into the supported range. @since 0.29.7
@@ -136,20 +164,43 @@ pub fn retry_budget(budget: usize, upstream_max: usize) -> Option<usize> {
 /// newest messages, truncate individual oversized bodies, and never leave a tool result
 /// behind without the assistant call that produced it. @since 0.29.7
 pub fn fit_messages(messages: Vec<ChatMessage>, budget_tokens: usize) -> Vec<ChatMessage> {
+    fit_messages_with(messages, &[], budget_tokens, &HeuristicTokenizer)
+}
+
+/// As `fit_messages`, but first reserves room for the tool definitions the request carries:
+/// `defs` never participate in drop-oldest, so they are subtracted from the body budget.
+/// A pathological definition set can drive the body budget to 0; the trimmer still keeps the
+/// system prompt and the newest message rather than returning an empty request. @since 0.29.7
+pub fn fit_messages_with(
+    messages: Vec<ChatMessage>,
+    defs: &[ToolDefinition],
+    budget_tokens: usize,
+    counter: &dyn TokenCounter,
+) -> Vec<ChatMessage> {
     let budget = clamp_budget(budget_tokens);
+    let body = budget.saturating_sub(definitions_tokens(defs));
+    fit_messages_body(messages, body, counter)
+}
+
+fn fit_messages_body(
+    messages: Vec<ChatMessage>,
+    budget: usize,
+    counter: &dyn TokenCounter,
+) -> Vec<ChatMessage> {
     let per_message = budget / 4;
     let prepared: Vec<ChatMessage> = messages
         .into_iter()
-        .map(|m| truncate(m, per_message))
+        .map(|m| truncate(m, per_message, counter))
         .collect();
     let (system, rest) = match prepared.split_first() {
         Some((first, tail)) if first.role == Role::System => (Some(first.clone()), tail.to_vec()),
         _ => (None, prepared),
     };
-    let mut total = request_tokens(system.as_slice()) + request_tokens(&rest);
+    let mut total = request_tokens_with(system.as_slice(), counter)
+        + request_tokens_with(&rest, counter);
     let mut drop = 0usize;
     while drop + 1 < rest.len() && total > budget {
-        total -= message_tokens(&rest[drop]);
+        total -= message_tokens_with(&rest[drop], counter);
         drop += 1;
     }
     // A prefix cut must not orphan a tool result: providers reject an unpaired one.
@@ -166,12 +217,12 @@ pub fn fit_messages(messages: Vec<ChatMessage>, budget_tokens: usize) -> Vec<Cha
 /// are never touched; tool-call payloads that alone exceed the cap are replaced by a
 /// marker so a message can shrink even when its bulk lives in `tool_calls.arguments`.
 /// @since 0.29.7
-fn truncate(mut message: ChatMessage, cap: usize) -> ChatMessage {
+fn truncate(mut message: ChatMessage, cap: usize, counter: &dyn TokenCounter) -> ChatMessage {
     if message.role == Role::System {
         return message;
     }
-    shrink_calls(&mut message, cap);
-    let tokens = message_tokens(&message);
+    shrink_calls(&mut message, cap, counter);
+    let tokens = message_tokens_with(&message, counter);
     if tokens <= cap {
         return message;
     }
@@ -188,11 +239,11 @@ fn truncate(mut message: ChatMessage, cap: usize) -> ChatMessage {
 }
 
 /// Replace a tool-call payload that alone exceeds `cap` tokens with a marker. @since 0.29.7
-fn shrink_calls(message: &mut ChatMessage, cap: usize) {
+fn shrink_calls(message: &mut ChatMessage, cap: usize, counter: &dyn TokenCounter) {
     let max_chars = cap.saturating_mul(4);
     for call in &mut message.tool_calls {
         let text = call.arguments.to_string();
-        let count = text.chars().count();
+        let count = counter.count_text(&text);
         if count > max_chars {
             call.arguments =
                 serde_json::json!({ "_truncated": format!("…[已截断 {count} 字符]…") });
@@ -223,7 +274,66 @@ pub fn truncate_chars(text: &str, max_chars: usize) -> (String, usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::ToolCall;
+    use crate::types::{ToolCall, ToolDefinition};
+
+    fn def(name: &str) -> ToolDefinition {
+        ToolDefinition {
+            name: name.into(),
+            description: "x".repeat(400),
+            input_schema: serde_json::json!(
+                {"type": "object", "properties": {"cmd": {"type": "string"}}}
+            ),
+        }
+    }
+
+    #[test]
+    fn definitions_tokens_charges_name_description_and_schema() {
+        assert_eq!(definitions_tokens(&[]), 0);
+        let one = definitions_tokens(&[def("bash")]);
+        let two = definitions_tokens(&[def("bash"), def("read")]);
+        assert!(one > 100, "schema + description must cost real tokens: {one}");
+        assert!(two > one);
+    }
+
+    #[test]
+    fn fit_with_defs_reserves_their_budget() {
+        let defs = vec![def("bash"), def("read"), def("write")];
+        let messages = || {
+            let mut m = vec![ChatMessage::system("sys")];
+            m.extend((0..20).map(|i| ChatMessage::user(format!("m{i}: {}", "x".repeat(400)))));
+            m
+        };
+        let bare = fit_messages_with(messages(), &[], MIN_CONTEXT_TOKENS, &HeuristicTokenizer);
+        let reserved =
+            fit_messages_with(messages(), &defs, MIN_CONTEXT_TOKENS, &HeuristicTokenizer);
+        assert!(request_tokens(&reserved) <= request_tokens(&bare));
+        assert!(request_tokens(&reserved) + definitions_tokens(&defs) <= MIN_CONTEXT_TOKENS);
+        assert_eq!(reserved[0].role, Role::System);
+        assert!(reserved.last().unwrap().content.starts_with("m19"));
+    }
+
+    #[test]
+    fn fit_with_defs_larger_than_the_budget_never_empties_the_request() {
+        let defs: Vec<_> = (0..50).map(|i| def(&format!("tool{i}"))).collect();
+        let messages = vec![ChatMessage::system("sys"), ChatMessage::user("hello")];
+        let fitted = fit_messages_with(messages, &defs, MIN_CONTEXT_TOKENS, &HeuristicTokenizer);
+        assert_eq!(fitted.len(), 2, "system + newest survive even when defs blow the budget");
+        assert_eq!(fitted[0].role, Role::System);
+        // body == 0 时 keep = max(2)、half = keep/2 = 1：只剩 1 个头部字符 + 截断标记 + 1 个尾部字符。
+        assert!(fitted[1].content.starts_with("h\n"), "kept: {}", fitted[1].content);
+        assert!(fitted[1].content.len() > 2, "the truncation marker is kept too");
+    }
+
+    #[test]
+    fn fit_messages_without_defs_matches_the_plain_entry_point() {
+        // ChatMessage 只 derive Debug/Clone/Serialize/Deserialize，没有 PartialEq，
+        // 所以比较编码后的大小与条目数，而不是比较值。
+        let messages = vec![ChatMessage::system("sys"), ChatMessage::user("hi")];
+        let plain = fit_messages(messages.clone(), MIN_CONTEXT_TOKENS);
+        let with_defs = fit_messages_with(messages, &[], MIN_CONTEXT_TOKENS, &HeuristicTokenizer);
+        assert_eq!(request_tokens(&plain), request_tokens(&with_defs));
+        assert_eq!(plain.len(), with_defs.len());
+    }
 
     /// The pre-batch formula, kept in the test module as the lower bound every
     /// input must clear: new estimates may only ever be more conservative.
