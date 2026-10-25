@@ -904,6 +904,12 @@ fn format_name(f: agentj_model::catalog::WireFormat) -> String {
     .into()
 }
 
+/// The window a catalog entry publishes; `None` when the id is unknown or the entry publishes
+/// no window (absence is reported, never guessed).
+fn catalog_window(catalog: &ModelCatalog, id: &str) -> Option<u32> {
+    catalog.lookup(id).and_then(|entry| entry.context_window)
+}
+
 /// Maps ids through the overlay: a hit keeps its format/verified; a miss is synthesized as
 /// `openai-compat` + `verified: false` (phase-1 D3 — never guess a route from the id).
 fn entries_of(ids: &[String], overlay: &agentj_model::catalog::ModelCatalog) -> Vec<ModelEntry> {
@@ -913,7 +919,7 @@ fn entries_of(ids: &[String], overlay: &agentj_model::catalog::ModelCatalog) -> 
                 id: id.clone(),
                 verified: e.verified,
                 format: format_name(e.format),
-                context_window: None,
+                context_window: catalog_window(overlay, id),
             },
             None => ModelEntry {
                 id: id.clone(),
@@ -1072,6 +1078,31 @@ mod tests {
             api_key: api_key.into(),
             label: None,
         }
+    }
+
+    #[test]
+    fn catalog_window_is_read_from_the_entry() {
+        let catalog = ModelCatalog::from_json(
+            r#"{"base_url":"https://x","models":[{"id":"opencode-go/a","format":"openai-compat","verified":true,"context_window":200000}]}"#,
+        );
+        assert_eq!(catalog_window(&catalog, "opencode-go/a"), Some(200_000));
+        assert_eq!(catalog_window(&catalog, "opencode-go/missing"), None);
+    }
+
+    #[test]
+    fn model_list_entries_carry_catalog_windows_and_none_for_unknown_ids() {
+        let catalog = ModelCatalog::from_json(
+            r#"{"base_url":"https://x","models":[{"id":"opencode-go/a","format":"openai-compat","verified":true,"context_window":200000}]}"#,
+        );
+        let models = entries_of(
+            &["opencode-go/a".into(), "opencode-go/missing".into()],
+            &catalog,
+        );
+        assert_eq!(models[0].context_window, Some(200_000));
+        assert_eq!(
+            models[1].context_window, None,
+            "an unpublished window is never invented"
+        );
     }
 
     #[tokio::test]
