@@ -1,7 +1,7 @@
 //! Context pipeline — pure message-builder for the agent loop.
 
 use crate::module::ContextPipeline as ContextPipelineTrait;
-use crate::types::{ChatMessage, Role, ToolCall};
+use crate::types::{ChatMessage, Role, ToolCall, ToolDefinition};
 
 /// Pure message-builder pipeline. The system prompt is supplied by the caller
 /// (AgentLoop) at assemble time, so this struct carries no state.
@@ -40,6 +40,23 @@ impl ContextPipelineTrait for DefaultContextPipeline {
         messages
     }
 
+    /// Charges the definition reservation against the **total**, not against a body that
+    /// `fit` then re-floors at 1k tokens — otherwise a big tool catalogue on a small window
+    /// silently overflows and the overflow retry replays a byte-identical request.
+    fn fit_with_tools(
+        &self,
+        messages: Vec<ChatMessage>,
+        tool_definitions: &[ToolDefinition],
+        budget_tokens: usize,
+    ) -> Vec<ChatMessage> {
+        crate::budget::fit_messages_with(
+            messages,
+            tool_definitions,
+            budget_tokens,
+            &crate::budget::HeuristicTokenizer,
+        )
+    }
+
     fn reflux(&self, history: &mut Vec<ChatMessage>, tool_call: &ToolCall, result: String) {
         history.push(ChatMessage {
             role: Role::Assistant,
@@ -66,6 +83,36 @@ mod tests {
         assert_eq!(result.len(), 3);
         assert_eq!(result[0].role, Role::System);
         assert_eq!(result[0].content, "You are a helpful assistant.");
+    }
+
+    /// A toy tool whose definition costs roughly `tokens` (a long description is the
+    /// cheapest way to make the reservation dominate a small window).
+    fn fat_tool(name: &str, tokens: usize) -> crate::types::ToolDefinition {
+        crate::types::ToolDefinition {
+            name: name.to_string(),
+            description: "d".repeat(tokens * 4),
+            input_schema: serde_json::json!({"type": "object"}),
+        }
+    }
+
+    #[test]
+    fn fit_with_tools_charges_definitions_against_the_total_budget() {
+        let pipeline = DefaultContextPipeline::new();
+        let defs = vec![fat_tool("fat", 1_500)];
+        let reserved = crate::budget::definitions_tokens(&defs);
+        assert!(reserved >= 1_500, "fixture must reserve a big chunk: {reserved}");
+        // Ten ~104-token turns: with the reservation charged the body may keep about four of
+        // them, while the generic `fit` floor (1k) would let nine through and overflow.
+        let mut messages = vec![ChatMessage::system("sys")];
+        messages.extend((0..10).map(|_| ChatMessage::user("u".repeat(400))));
+        let fitted = pipeline.fit_with_tools(messages, &defs, 2_000);
+        let body = crate::budget::request_tokens(&fitted);
+        // The generic `fit` clamps the *body* to 1k, which would put the total at 2.5k+;
+        // the reservation has to be charged against the total instead.
+        assert!(
+            body + reserved <= 2_000,
+            "body {body} + definitions {reserved} must stay within 2000"
+        );
     }
 
     #[test]

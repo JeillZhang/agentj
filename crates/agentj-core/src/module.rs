@@ -93,7 +93,10 @@ pub trait ContextPipeline: Send + Sync {
     ) -> Vec<ChatMessage> {
         let reserved = crate::budget::definitions_tokens(tool_definitions);
         // Never let the definitions swallow the whole budget: the body keeps at least one
-        // token so `fit` still runs and the newest message survives.
+        // token so `fit` still runs and the newest message survives. A `fit` implementation
+        // with its own lower bound can re-inflate the total past `budget_tokens`; pipelines
+        // that care (core's `DefaultContextPipeline`) override this to charge the reservation
+        // against the total instead.
         self.fit(messages, budget_tokens.saturating_sub(reserved).max(1))
     }
     fn fit(&self, messages: Vec<ChatMessage>, budget_tokens: usize) -> Vec<ChatMessage> {

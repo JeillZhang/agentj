@@ -114,7 +114,8 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
   + ServiceRegistry（同步/异步） + TurnRunner 总线化 turn 编排
   + `budget`（请求 token 预算：可插拔 `TokenCounter` 接缝 + `HeuristicTokenizer` 分类校准
   （ASCII 4 / 标点 2.5 / CJK 1.25 / 星平面 0.5 chars-per-token，每类不低于旧启发式）
-  + `fit_messages` 裁剪 + `definitions_tokens` 工具定义预留（`ContextPipeline::fit_with_tools`）
+  + `fit_messages` 裁剪 + `definitions_tokens` 工具定义预留（`ContextPipeline::fit_with_tools`；
+    core 的 `DefaultContextPipeline` 把预留记在总量上，避开 `fit` 的 1k 下限）
   + `effective_budget` 逐请求取 min(显式上限, 模型窗口 × 90%) + 共享 `CHARS_PER_TOKEN`
   + 上游超限时 `retry_budget` 收紧重试，`ContextPipeline::fit` 默认接入）
   + `ToolCallContext`（会话根上下文，工具相对路径重定基）
