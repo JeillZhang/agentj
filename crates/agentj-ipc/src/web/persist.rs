@@ -54,10 +54,13 @@ impl WebConfig {
         };
         let now = Instant::now();
         let now_unix = crate::metrics_state::unix_now();
+        let generation = self.login_limiter.generation();
         let state = self.login_limiter.to_state(now, now_unix);
         match crate::metrics_state::write(path, &state) {
             Ok(()) => {
-                self.login_limiter.mark_clean();
+                // Conditional clear: a lockout recorded while this snapshot was
+                // being written is missing from it, so the next tick must retry.
+                self.login_limiter.mark_clean_at(generation);
                 let mut report = write_or_recover(&self.state_report);
                 report.last_flush_unix = now_unix;
             }
