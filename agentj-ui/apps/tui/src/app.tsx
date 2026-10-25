@@ -28,7 +28,7 @@ import { useFileTree } from "./files.tsx";
 import { DEFAULT_PROJECT_KEY } from "./filetreePrefs.ts";
 import { buildSearchIndex, clampSelection, flattenVisible, moveSelection, parentPath } from "./files.ts";
 import type { RawFileEntry, SearchEntry } from "./files.ts";
-import { getStatusLine } from "./status.ts";
+import { formatSubSuffix, getStatusLine } from "./status.ts";
 import type { SubSuffixInput } from "./status.ts";
 export interface TransportHandle {
   onStatusChange?: (s: TransportStatus) => void;
@@ -520,6 +520,7 @@ function AppInner({ url, createTransport, backoffBaseMs = 1000 }: AppProps) {
   const [catalogSeq, setCatalogSeq] = useState(0);
   const sub = useSubscriptionSuffix(client, status, catalogSeq);
   const statusLine = getStatusLine(authError, status, sub);
+  const subTone = formatSubSuffix(sub).tone;
   const modelConfig = useModelConfig(client, catalogSeq);
   const [selectedModel, setSelectedModel] = useState<ModelEntry | null>(null);
   const [transcriptRows, setTranscriptRows] = useState<TranscriptRow[]>([]);
@@ -724,9 +725,9 @@ function AppInner({ url, createTransport, backoffBaseMs = 1000 }: AppProps) {
     [client, st, selectedModel],
   );
   const statusColor =
-    authError !== null || sub?.tone === "error"
+    authError !== null || subTone === "error"
       ? palette.error
-      : sub?.tone === "warning"
+      : subTone === "warning"
         ? palette.warning
         : status === "open"
           ? palette.success
