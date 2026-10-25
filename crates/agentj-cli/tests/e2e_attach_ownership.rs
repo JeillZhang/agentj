@@ -177,11 +177,9 @@ fn second_client_reclaims_ownership_after_the_owner_disconnects() {
     // 若只有 A 在线，drop(A) 会让内核直接关机，这里就测不到「归属转移」了。
     let mut b = common::SocketClient::connect(&served.addr);
     drop(a); // owner 断连：settle_owner_pending 清 owner，但会话本身仍在
-    // 等 A 的 EOF 被服务端消费完，保证下面的 run 真的是一次**重新**认领。
-    std::thread::sleep(Duration::from_millis(300));
-
-    // A 的 EOF 可能晚于这条请求被处理：owner 若仍指向 A，subscribe 就跳过认领（但本身成功）。
-    // 真正的归属转移由随后 session/run 无条件的 claim_run_owner 完成。
+    // 不睡固定时长等 A 的 EOF：服务端处理断连与这条请求的先后顺序不确定，睡多久都可能不够
+    // （慢 runner 上就是 flake）。owner 若仍指向 A，subscribe 会跳过认领但本身成功；真正的
+    // 归属转移由随后 `session/run` 无条件的 claim_run_owner 完成，批准读的是 b 自己的流。
     let sub = b.request("session/subscribe", serde_json::json!({"session_id": sid}));
     assert!(
         sub.get("error").is_none(),
