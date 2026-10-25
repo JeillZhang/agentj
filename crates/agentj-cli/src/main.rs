@@ -743,6 +743,15 @@ fn decode_attach_frame(v: &serde_json::Value) -> AttachAction {
     }
 }
 
+/// True when an error frame answers one of the denies attach itself wrote (a settled or
+/// rejected `permission/respond`). Those must not abort the attached run.
+fn is_attach_deny_reply(frame: &serde_json::Value, deny_ids: &[u64]) -> bool {
+    frame
+        .get("id")
+        .and_then(|id| id.as_u64())
+        .is_some_and(|id| deny_ids.contains(&id))
+}
+
 /// The line `run --attach` prints when the remote kernel asks for an approval: attach is a
 /// non-interactive client, so it can only refuse and say how to approve for real.
 fn attach_deny_warning(tool: &str, request_id: &str) -> String {
@@ -805,6 +814,7 @@ where
 {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
     let mut next_id = 2u64;
+    let mut deny_ids: Vec<u64> = Vec::new();
     let mut line = String::new();
     loop {
         line.clear();
@@ -819,13 +829,24 @@ where
         match decode_attach_frame(&frame) {
             AttachAction::DenyApproval { request_id, tool } => {
                 eprintln!("{}", attach_deny_warning(&tool, &request_id));
+                let id = next_id;
                 next_id += 1;
-                let body = attach_deny_request(&request_id, next_id);
+                deny_ids.push(id);
+                let body = attach_deny_request(&request_id, id);
                 if let Err(err) = w.write_all(body.as_bytes()).await {
                     tracing::warn!(%err, "attach: failed to send the deny decision");
                 }
             }
-            AttachAction::Fail(failure) => return Ok(Some(failure)),
+            AttachAction::Fail(failure) => {
+                // A refused deny answers *our* write, not the run: the remote turn is still
+                // going, so report the bookkeeping failure and keep reading instead of
+                // aborting with an error that looks like the run's own.
+                if is_attach_deny_reply(&frame, &deny_ids) {
+                    eprintln!("warning: attach deny was refused: {failure}");
+                    continue;
+                }
+                return Ok(Some(failure));
+            }
             AttachAction::Reply(text) => {
                 println!("{text}");
                 return Ok(None);
@@ -2060,6 +2081,54 @@ mod tests {
 
     fn frame(v: serde_json::Value) -> AttachAction {
         decode_attach_frame(&v)
+    }
+
+    #[test]
+    fn attach_deny_replies_are_told_apart_from_run_failures() {
+        let refused: serde_json::Value = serde_json::from_str(
+            r#"{"jsonrpc":"2.0","id":3,"error":{"code":-32001,"message":"already settled"}}"#,
+        )
+        .unwrap();
+        assert!(is_attach_deny_reply(&refused, &[3]));
+        assert!(!is_attach_deny_reply(&refused, &[4]), "a foreign id is a run failure");
+        assert_eq!(
+            frame(refused),
+            AttachAction::Fail("error: already settled (code -32001)".into()),
+            "the frame still decodes as an error; only the reader decides what to do"
+        );
+    }
+
+    #[tokio::test]
+    async fn attach_survives_a_refused_deny_and_returns_the_run_reply() {
+        let (client_side, server_side) = tokio::io::duplex(4096);
+        let (cr, cw) = tokio::io::split(client_side);
+        let (mut sr, mut sw) = tokio::io::split(server_side);
+        let mut reader = tokio::io::BufReader::new(cr);
+        let mut writer = cw;
+        let frames = [
+            r#"{"jsonrpc":"2.0","method":"$/permissionRequest","params":{"request_id":"r1","tool":"bash","args":{}}}"#,
+            r#"{"jsonrpc":"2.0","id":2,"error":{"code":-32001,"message":"already settled"}}"#,
+            r#"{"jsonrpc":"2.0","id":1,"result":{"content":"run finished"}}"#,
+        ];
+        let feeder = tokio::spawn(async move {
+            use tokio::io::AsyncWriteExt;
+            for f in frames {
+                sw.write_all(format!("{f}\n").as_bytes()).await.unwrap();
+            }
+        });
+        let reply = read_attach_stream(&mut reader, &mut writer)
+            .await
+            .expect("a refused deny must not abort the attached run");
+        // `Ok(None)` means the run's answer arrived (it was printed); `Some(_)` would be a
+        // failure line, which is what a refused deny used to be turned into.
+        assert_eq!(reply, None, "the run's reply must end the stream cleanly");
+        feeder.await.unwrap();
+        // The deny really went out (the reader wrote it into the half this end reads from).
+        use tokio::io::AsyncReadExt;
+        let mut buf = vec![0u8; 256];
+        let n = sr.read(&mut buf).await.expect("the deny must be written");
+        let sent = String::from_utf8_lossy(&buf[..n]).to_string();
+        assert!(sent.contains("\"decision\":\"deny\""), "wrote: {sent}");
     }
 
     #[test]
