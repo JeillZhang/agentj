@@ -85,9 +85,14 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
     protocol 测试 → SDK 生成 + 漂移门禁 → sdk / tokens / web 测试 → web 构建 →
     `dist/version.json` 与 `protocol/methods.json` 协议版本一致 → oxlint → TUI（bun）测试 →
     `check-desktop-ui.mjs` → `check-version.sh` → `check-relocate.mjs`
-  - `desktop-package`：Linux 打包（唯一跑 `tauri build` 的作业）—— protocol / SDK 类型生成 →
-    web 构建 → `--bundles deb,appimage` → `check-artifacts.sh linux` → 上传产物；
-    `timeout-minutes: 45`，不含测试套件
+  - `desktop-package`：Linux 打包 —— protocol / SDK 类型生成 → web 构建 →
+    `--bundles deb,appimage` → `check-artifacts.sh linux` → 上传产物；`timeout-minutes: 45`，
+    不含测试套件
+  - `desktop-package-macos` / `desktop-package-windows`：跨平台打包 —— 同样的前置步骤 →
+    `--bundles dmg|msi` → `check-artifacts.sh macos|windows`（`shell: bash`，Windows 也走 bash）→
+    上传 `agentj-desktop-macos` / `agentj-desktop-windows`；`timeout-minutes: 60`，不含测试套件。
+    **只在 PR 带 `desktop-package` label 或手动 dispatch 时运行**（macOS/Windows runner 昂贵），
+    契约由 `assert-ci.sh desktop-package-platforms` 钉住；产物**不签名不公证**
 - `.github/workflows/smoke.yml` — 冒烟（PR + push main + 手动）：
   `cargo build --release` + `agentj --version/--help` 断言 + `cargo test -p agentj-core -- smoke`
 - `.github/workflows/e2e.yml` — E2E（main 合并后 + 手动）：
@@ -106,8 +111,10 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
   serde + schemars，零内核耦合。协议版本 `0.20.0`，81 schemas。
 - `agentj-core`（内核）：Kernel 混合总线 + 模块 trait 注册表
   + ServiceRegistry（同步/异步） + TurnRunner 总线化 turn 编排
-  + `budget`（请求 token 预算：`estimate_tokens` 估算 + `fit_messages` 裁剪
-  + `effective_budget` 逐请求取 min(显式上限, 模型窗口 × 90%)
+  + `budget`（请求 token 预算：可插拔 `TokenCounter` 接缝 + `HeuristicTokenizer` 分类校准
+  （ASCII 4 / 标点 2.5 / CJK 1.25 / 星平面 0.5 chars-per-token，每类不低于旧启发式）
+  + `fit_messages` 裁剪 + `definitions_tokens` 工具定义预留（`ContextPipeline::fit_with_tools`）
+  + `effective_budget` 逐请求取 min(显式上限, 模型窗口 × 90%) + 共享 `CHARS_PER_TOKEN`
   + 上游超限时 `retry_budget` 收紧重试，`ContextPipeline::fit` 默认接入）
   + `ToolCallContext`（会话根上下文，工具相对路径重定基）
   + `text_tool_call`（把模型写成纯文本方言的工具调用还原成真正的调用；无法无歧义还原时
@@ -171,7 +178,8 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
   无 `find` 子进程，复用 `GrepTool::SKIP_DIRS` 同一跳目录表，默认 60s 到点即停）；
   两个进程型工具（`bash` / `grep`）统一经 `ToolExecutor`（`executor.rs`）以独立进程组
   执行，超时杀整组并按工具默认值（`bash` 120s、`grep` 60s）生效，可经入参 `timeout_ms`
-  覆盖（钳制 1s–600s）。
+  覆盖（钳制 1s–600s）；`grep` 无 `rg` 时的进程内回退（`search_native`）同样受同一 deadline
+  约束，超期按 `ToolError::Timeout` 失败而非返回部分结果。
 - `agentj-license`：Ed25519 许可证校验（entitlements + free mode）。
 - `agentj-mcp`：MCP 客户端 + McpConnectionManager 长驻连接
   （McpServerSpec + close_all）。
