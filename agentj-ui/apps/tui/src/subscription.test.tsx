@@ -384,6 +384,90 @@ describe("SubscriptionOverlay link mode", () => {
     act(() => setup.renderer.destroy());
   });
 
+  /** Counts `onCredentialChange` calls so one-shot reporting is observable. */
+  function changeCounter(): { count: () => number; onChange: () => void } {
+    let changes = 0;
+    return {
+      count: () => changes,
+      onChange: () => {
+        changes += 1;
+      },
+    };
+  }
+
+  test("reports one credential change after a saved link", async () => {
+    const client = linkClient({ [METHODS.authSetApiKey]: verified });
+    const counter = changeCounter();
+    const setup = await testRender(
+      <SubscriptionOverlay
+        client={client}
+        onClose={() => {}}
+        onCredentialChange={counter.onChange}
+      />,
+      {},
+    );
+    await typeKey(setup, "sk-secret");
+    await submit(setup);
+    await setup.waitFor(() => client.calls.includes(METHODS.authSetApiKey));
+    await repaint(setup);
+    expect(counter.count()).toBe(1);
+    act(() => setup.renderer.destroy());
+  });
+
+  test("does not report a credential change for a rejected link", async () => {
+    const client = linkClient({
+      [METHODS.authSetApiKey]: {
+        ...verified,
+        saved: false,
+        outcome: "rejected",
+        error: { kind: "unauthorized" },
+      },
+    });
+    const counter = changeCounter();
+    const setup = await testRender(
+      <SubscriptionOverlay
+        client={client}
+        onClose={() => {}}
+        onCredentialChange={counter.onChange}
+      />,
+      {},
+    );
+    await typeKey(setup, "sk-bad");
+    await submit(setup);
+    await setup.waitFor(() => client.calls.includes(METHODS.authSetApiKey));
+    await repaint(setup);
+    expect(counter.count()).toBe(0);
+    act(() => setup.renderer.destroy());
+  });
+
+  test("reports a credential change after clearing the stored key", async () => {
+    const client = linkClient({
+      [METHODS.authClearCredential]: { provider: "opencode-go", cleared: true },
+      [METHODS.modelList]: { models: [] },
+      [METHODS.providerUsageHistory]: { samples: [] },
+    });
+    const counter = changeCounter();
+    const setup = await testRender(
+      <SubscriptionOverlay
+        client={client}
+        onClose={() => {}}
+        onCredentialChange={counter.onChange}
+      />,
+      {},
+    );
+    await act(async () => {
+      await setup.flush();
+    });
+    await act(async () => {
+      getInput(setup).press("c");
+      await setup.flush();
+    });
+    await setup.waitFor(() => client.calls.includes(METHODS.authClearCredential));
+    await setup.waitFor(() => counter.count() > 0).catch(() => {});
+    expect(counter.count()).toBe(1);
+    act(() => setup.renderer.destroy());
+  });
+
   test("keeps the device flow off while link mode owns the keys", async () => {
     const client = linkClient();
     const setup = await testRender(<SubscriptionOverlay client={client} onClose={() => {}} />, {});

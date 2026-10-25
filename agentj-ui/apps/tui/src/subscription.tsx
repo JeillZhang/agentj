@@ -61,6 +61,11 @@ type DevicePoll =
 export type SubscriptionOverlayProps = {
   client: RpcClient;
   onClose: () => void;
+  /**
+   * Fired once per successful credential change (link saved / credential cleared / device
+   * login), so the host can re-read the served model catalog. Never fired for a rejected link.
+   */
+  onCredentialChange?: () => void;
   /** Injectable delay so the polling cadence is deterministic in tests (defaults to setTimeout). */
   schedule?: (fn: () => void, ms: number) => void;
 };
@@ -110,7 +115,7 @@ export function trendLine(kind: string, samples: UsageSampleLike[]): string {
 }
 
 export function SubscriptionOverlay(props: SubscriptionOverlayProps): React.ReactNode {
-  const { client, onClose } = props;
+  const { client, onClose, onCredentialChange } = props;
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const schedule =
     props.schedule ??
@@ -203,7 +208,11 @@ export function SubscriptionOverlay(props: SubscriptionOverlayProps): React.Reac
       }
       if (reply.state === "authorized") {
         await refreshAll();
-        if (!cancelled.current) setDevice(null);
+        if (!cancelled.current) {
+          // A device login replaces the credential just like a link does.
+          onCredentialChange?.();
+          setDevice(null);
+        }
         return;
       }
       if (reply.state === "expired") setDeviceMsg("设备码已过期：请重新登录");
@@ -247,6 +256,8 @@ export function SubscriptionOverlay(props: SubscriptionOverlayProps): React.Reac
       return;
     }
     if (cancelled.current) return;
+    // A rejection never saves, so only a saved credential can change the served catalog.
+    if (res.saved === true) onCredentialChange?.();
     setLinkMsg(outcomeSentence(res));
     setEnvShadow(res.saved === true && res.effective_source === "env");
   };
@@ -259,6 +270,7 @@ export function SubscriptionOverlay(props: SubscriptionOverlayProps): React.Reac
       return;
     }
     await refreshAll();
+    if (!cancelled.current) onCredentialChange?.();
   };
 
   useKeyboard((key) => {

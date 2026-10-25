@@ -1,8 +1,8 @@
 import { describe, expect, it, mock } from "bun:test";
 import { testRender } from "@opentui/react/test-utils";
 import type { TestRendererSetup } from "@opentui/core/testing";
-import { act } from "react";
-import { METHODS, formatContextWindow } from "@agentj/sdk";
+import { act, useState } from "react";
+import { METHODS, formatContextWindow, resolveModelMarker } from "@agentj/sdk";
 import type { RpcClient } from "@agentj/sdk";
 import {
   MODEL_CONFIG,
@@ -67,6 +67,25 @@ async function renderConfigProbe(
 
 function markerCount(frame: string): number {
   return (frame.match(/▶/g) ?? []).length;
+}
+
+type RefreshControl = { bump: () => void };
+
+/** `useModelConfig` driven by an external refresh counter, so a bump is observable. */
+function RefreshProbe({ client, control }: {
+  client: RpcClient | null;
+  control: RefreshControl;
+}) {
+  const [seq, setSeq] = useState(0);
+  control.bump = () => setSeq((n) => n + 1);
+  const cfg = useModelConfig(client, seq);
+  return <text>{cfg.providers.map((e) => e.name).join(",")}</text>;
+}
+
+/** Calls the client stub received for one method. */
+function callsFor(client: RpcClient, method: string): unknown[][] {
+  const calls = (client.request as unknown as { mock: { calls: unknown[][] } }).mock.calls;
+  return calls.filter((c) => c[0] === method);
 }
 
 describe("providersFromStatus", () => {
@@ -140,6 +159,25 @@ describe("renderModelList", () => {
     const out = renderModelList({ default_model: "dup", providers: DUP_PROVIDERS });
     expect(out).not.toContain("▶");
     expect(out.split("\n").slice(0, 2)).toEqual(["  dup", "  dup"]);
+  });
+
+  it("marks nothing when the default name is served twice", () => {
+    const providers = [
+      { name: "glm-5", provider: "a" },
+      { name: "glm-5", provider: "b" },
+    ];
+    expect(resolveModelMarker(providers, null, "glm-5")).toEqual({ index: -1, match: "none" });
+    expect(renderModelList({ default_model: "glm-5", providers })).not.toContain("▶");
+  });
+
+  it("falls back to a unique default name when the explicit provider went stale", () => {
+    const providers = [{ name: "glm-5", provider: "aaa" }];
+    const selected = { name: "glm-5", provider: "zzz" };
+    expect(resolveModelMarker(providers, selected, "glm-5")).toEqual({
+      index: 0,
+      match: "default",
+    });
+    expect(renderModelList({ default_model: "glm-5", providers, selected })).toContain("▶ glm-5");
   });
 
   it("hint text no longer mentions restarting the kernel", () => {
@@ -330,6 +368,31 @@ describe("useModelConfig", () => {
       new Error("model/list failed"),
     );
     expect(cfg().providers).toEqual([{ name: "opencode-go/a", provider: "opencode-go" }]);
+    act(() => setup.renderer.destroy());
+  });
+});
+
+describe("useModelConfig refresh", () => {
+  it("refetches kernel status and every model list when the sequence changes", async () => {
+    const request = mock((method: string) =>
+      method === METHODS.kernelStatus
+        ? Promise.resolve({ default_model: "a", providers: [{ id: "p", models: ["a"] }] })
+        : Promise.resolve({ models: [] }),
+    );
+    const client = { request } as unknown as RpcClient;
+    const control: RefreshControl = { bump: () => {} };
+    const setup = await testRender(<RefreshProbe client={client} control={control} />, {});
+    await act(async () => {
+      await setup.flush();
+    });
+    expect(callsFor(client, METHODS.kernelStatus)).toHaveLength(1);
+    expect(callsFor(client, METHODS.modelList)).toHaveLength(1);
+    await act(async () => {
+      control.bump();
+      await setup.flush();
+    });
+    expect(callsFor(client, METHODS.kernelStatus)).toHaveLength(2);
+    expect(callsFor(client, METHODS.modelList)).toHaveLength(2);
     act(() => setup.renderer.destroy());
   });
 });

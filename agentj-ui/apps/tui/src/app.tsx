@@ -460,7 +460,9 @@ function AppInner({ url, createTransport, backoffBaseMs = 1000 }: AppProps) {
   const { pending: permReq, respond: handlePermRespond, clear: clearPerm } = usePermissionState(client);
   const { toggle: toggleTheme, palette } = useTheme();
   const statusLine = getStatusLine(authError, status);
-  const modelConfig = useModelConfig(client);
+  // Credential changes (link / clear) alter the served model catalog: bump this to re-read it.
+  const [catalogSeq, setCatalogSeq] = useState(0);
+  const modelConfig = useModelConfig(client, catalogSeq);
   const [selectedModel, setSelectedModel] = useState<ModelEntry | null>(null);
   const [transcriptRows, setTranscriptRows] = useState<TranscriptRow[]>([]);
   const [todos, setTodos] = useState<TodoState>(EMPTY_TODOS);
@@ -864,7 +866,11 @@ function AppInner({ url, createTransport, backoffBaseMs = 1000 }: AppProps) {
         />
       ) : null}
       {paletteCtrl.subOpen && client ? (
-        <SubscriptionOverlay client={client} onClose={paletteCtrl.handleSubClose} />
+        <SubscriptionOverlay
+          client={client}
+          onClose={paletteCtrl.handleSubClose}
+          onCredentialChange={() => setCatalogSeq((n) => n + 1)}
+        />
       ) : null}
       {paletteCtrl.paletteQuery !== null && !paletteCtrl.modelOpen ? (
         <Palette
