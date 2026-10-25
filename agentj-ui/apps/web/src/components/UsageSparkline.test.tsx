@@ -87,4 +87,34 @@ describe("UsageSparkline", () => {
     fireEvent.focus(screen.getByTestId("spark-keyboard"));
     expect(live.textContent).toContain("30%");
   });
+
+  it("downsamples a dense series while keeping the peak", () => {
+    // 200 samples in 120 px is ~0.6 px per sample: drawing one vertex each would make every
+    // spike invisible, so the chart buckets and keeps each bucket's min and max.
+    const samples = Array.from({ length: 200 }, (_, i) => pt(i, i === 137 ? 99 : 10));
+    const { container } = render(<UsageSparkline points={samples} width={120} />);
+    const d = container.querySelector("path")?.getAttribute("d") ?? "";
+    expect(d.split(" ").length - 1).toBeLessThanOrEqual(30);
+    const peak = `${(137 * (120 / 199)).toFixed(1)},${(16 - 1 - (99 / 100) * 14).toFixed(1)}`;
+    expect(d).toContain(peak);
+    // One band per bucket, not per sample: fewer targets than points.
+    expect(screen.getAllByTestId("spark-hit").length).toBeLessThan(200);
+  });
+
+  it("names the sample range when a bucket is inspected", () => {
+    const samples = Array.from({ length: 200 }, (_, i) => pt(i, 20 + (i % 7)));
+    render(<UsageSparkline points={samples} width={120} />);
+    const row = screen.getByTestId("spark-keyboard");
+    fireEvent.focus(row);
+    const tip = screen.getByRole("tooltip").textContent ?? "";
+    expect(tip).toMatch(/样本 \d+–\d+/);
+    const before = tip;
+    fireEvent.keyDown(row, { key: "ArrowLeft" });
+    expect(screen.getByRole("tooltip").textContent).not.toBe(before);
+  });
+
+  it("renders nothing at zero width", () => {
+    const { container } = render(<UsageSparkline points={[pt(0, 10), pt(60, 30)]} width={0} />);
+    expect(container).toBeEmptyDOMElement();
+  });
 });
