@@ -54,6 +54,23 @@ pub fn clamp_budget(budget_tokens: usize) -> usize {
     budget_tokens.clamp(MIN_CONTEXT_TOKENS, MAX_CONTEXT_TOKENS)
 }
 
+/// The budget a request is actually trimmed to: the **smallest ceiling wins** across the
+/// configured cap and the model's window. A window is only ever trusted at 90% of its
+/// advertised size — tokenizer drift and per-message framing are always on our side of the
+/// estimate, so aiming at the raw window is how the first request gets rejected. Without a
+/// window the cap stands alone; without either we fall back to a conservative default.
+/// @since 0.20.0
+pub fn effective_budget(cap: Option<usize>, window: Option<usize>) -> usize {
+    let by_cap = cap.map(clamp_budget);
+    let by_window = window.map(|w| clamp_budget(w * 9 / 10));
+    match (by_cap, by_window) {
+        (Some(c), Some(w)) => c.min(w),
+        (Some(c), None) => c,
+        (None, Some(w)) => w,
+        (None, None) => DEFAULT_CONTEXT_TOKENS,
+    }
+}
+
 /// Tighten `budget` after an upstream rejection: keep 90% of the reported limit when it is
 /// the smaller of the two (head-room for tokenizer drift), else 90% of the current budget.
 /// Returns `None` when the budget cannot shrink any further — a retry would resend the
@@ -216,6 +233,17 @@ mod tests {
             Role::Tool,
             "a dropped tool call must take its result with it"
         );
+    }
+
+    #[test]
+    fn effective_budget_takes_the_smallest_ceiling() {
+        assert_eq!(effective_budget(None, None), DEFAULT_CONTEXT_TOKENS);
+        assert_eq!(effective_budget(Some(32_000), None), 32_000);
+        assert_eq!(effective_budget(None, Some(200_000)), 180_000);
+        assert_eq!(effective_budget(Some(50_000), Some(200_000)), 50_000);
+        assert_eq!(effective_budget(Some(500_000), Some(200_000)), 180_000);
+        assert_eq!(effective_budget(None, Some(1_000_000)), 900_000);
+        assert_eq!(effective_budget(None, Some(10)), MIN_CONTEXT_TOKENS);
     }
 
     #[test]
