@@ -405,6 +405,30 @@ describe("App with mocked SDK transport", () => {
     expect(tab).toHaveAttribute("aria-selected", "true");
   });
 
+  it.each(["u", "U"])("opens the 订阅 tab from the %s shortcut", async (key) => {
+    render(<App />);
+    await waitFor(() =>
+      expect(document.querySelector('.aj-status-light[data-state="connected"]')).not.toBeNull(),
+    );
+    // Shift arrives as the uppercase key, so both spellings must open the same surface.
+    const trigger = await screen.findByTestId("sub-trigger");
+    trigger.focus();
+    fireEvent.keyDown(trigger, { key });
+    const tab = await screen.findByRole("tab", { name: "订阅" });
+    expect(tab).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("ignores the shortcut while typing", async () => {
+    render(<App />);
+    await waitFor(() =>
+      expect(document.querySelector('.aj-status-light[data-state="connected"]')).not.toBeNull(),
+    );
+    const box = await screen.findByRole("textbox");
+    box.focus();
+    fireEvent.keyDown(box, { key: "u" });
+    expect(screen.queryByRole("tab", { name: "订阅" })).toBeNull();
+  });
+
   it("shows connected status after successful kernel/status", async () => {
     render(<App />);
     await waitFor(() =>

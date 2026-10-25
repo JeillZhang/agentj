@@ -22,6 +22,7 @@ import ConnectionStatus from "./components/ConnectionStatus";
 import SubscriptionStatus from "./components/SubscriptionStatus";
 import type { SettingsCategory } from "./components/SettingsDialog";
 import { useSubscriptionStatus } from "./hooks/useSubscriptionStatus";
+import { useShortcutScope } from "./hooks/useShortcutScope";
 import UnifiedSidebar from "./components/UnifiedSidebar";
 import WorkspaceShell from "./components/WorkspaceShell";
 import RightPanel, { groupByRunId } from "./components/RightPanel";
@@ -404,6 +405,15 @@ export default function App() {
   const openSubscriptionSettings = useCallback(() => {
     settingsOpenerRef.current?.("subscription");
   }, []);
+  // `u` / `Shift+U` reach the usage surfaces without the mouse (design ㊺). Shift arrives as
+  // an uppercase key, so the same handler is registered under both spellings; the hook
+  // already refuses modals, editable targets and modifier combos.
+  const shellRef = useRef<HTMLDivElement | null>(null);
+  const shellShortcuts = useMemo(
+    () => ({ u: openSubscriptionSettings, U: openSubscriptionSettings }),
+    [openSubscriptionSettings],
+  );
+  useShortcutScope(shellRef, shellShortcuts);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [selectedModel, setSelectedModel] = useState<ModelEntry | null>(null);
   // The linked account catalog overrides the kernel-served opencode-go rows; the kernel
@@ -683,7 +693,7 @@ export default function App() {
   }, [rightDrawerOpen]);
 
   return (
-    <div className="aj-app" data-drawer={drawerOpen ? "open" : "closed"}>
+    <div className="aj-app" data-drawer={drawerOpen ? "open" : "closed"} ref={shellRef}>
       <header className="aj-topbar" role="banner">
         <div className="aj-topbar__brand">
           <h1>agentj</h1>

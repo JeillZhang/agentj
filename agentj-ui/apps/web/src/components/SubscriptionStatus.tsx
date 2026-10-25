@@ -91,6 +91,7 @@ export default function SubscriptionStatus({ status, onOpenSettings }: Props) {
             <span className="aj-status-row aj-sub-status__error">{status.error}</span>
           )}
           {needsCredential && (
+            <>
             <button
               type="button"
               className="aj-sub__btn aj-sub-status__link"
@@ -101,6 +102,10 @@ export default function SubscriptionStatus({ status, onOpenSettings }: Props) {
             >
               设置 → 订阅
             </button>
+            <span className="aj-sub-status__keys" data-testid="sub-shortcut-hint">
+              <kbd>u</kbd> 用量设置
+            </span>
+            </>
           )}
         </div>
       )}
