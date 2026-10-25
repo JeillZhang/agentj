@@ -178,6 +178,21 @@ pub(crate) mod test_support {
     }
 }
 
+/// Install the "an approver is attached (but silent)" delivery signal.
+///
+/// Every production transport attaches a notifier before serving, and these
+/// fixtures model the serve path: their asks must stay pending until the test
+/// answers, cancels or lets the approval timeout run. Without a notifier the
+/// module settles the ask at once as undeliverable (`no approver`) — correct
+/// for a non-TTY `agentj run` without `--yes`, but not what these tests drive.
+/// Tests of the real routing call `attach_permission_notifier()` (which
+/// overwrites this stub) or install their own observer.
+fn silent_approver(module: &Arc<agentj_permission::PermissionModule>) {
+    module.set_notifier(Arc::new(
+        |_p: &agentj_protocol::permission::PermissionRequestParams, _sid: &str| true,
+    ));
+}
+
 /// `permission_server` with an explicit approval timeout, so a test can hold
 /// an approval pending long enough to observe *how* it gets settled.
 fn permission_server_with(
@@ -193,6 +208,7 @@ fn permission_server_with(
         },
     );
     let module = Arc::new(agentj_permission::PermissionModule::new(policies, timeout));
+    silent_approver(&module);
     let mut server = IpcServer::new(Kernel::new(), stub_session());
     server.permission_module = Some(module.clone());
     (server, module)
@@ -231,6 +247,7 @@ fn blocking_run_server_with(
         policies,
         std::time::Duration::from_secs(10),
     ));
+    silent_approver(&module);
     let store: Arc<InMemoryStore> = Arc::new(InMemoryStore::new());
     let session_dyn: Arc<dyn SessionStore> = store.clone();
     let tools = Arc::new(ToolRegistry::new());

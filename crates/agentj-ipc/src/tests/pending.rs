@@ -625,6 +625,7 @@ async fn non_owner_permission_respond_is_rejected() {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
     module.set_notifier(Arc::new(move |p: &PermissionRequestParams, _sid: &str| {
         let _ = tx.send(p.request_id.clone());
+        true // handed to the test's observer (the non-owner respond below must still be rejected)
     }));
     let new_resp = server
         .handle_request_from(r#"{"jsonrpc":"2.0","id":1,"method":"session/new"}"#, &a)
@@ -871,6 +872,14 @@ async fn approval_without_reachable_owner_is_denied_immediately() {
         reason, "timeout",
         "no reachable owner must deny at once, not time out"
     );
+    // The owner-less settlement is the disconnect path, NOT the permission
+    // module's "nobody to ask" path: the IPC notifier reports delivery = true
+    // and settles this session itself (design decision P4).
+    assert_ne!(
+        reason,
+        agentj_permission::NO_APPROVER_REASON,
+        "the IPC notifier settles via cancel_session(DISCONNECTED_REASON), not 'no approver'"
+    );
     assert!(
         module.view(&request_id).is_none(),
         "the approval must be settled, not left pending"
@@ -888,6 +897,7 @@ async fn respond_allow_records_permission_node_between_call_and_result() {
     module.set_notifier(Arc::new(
         move |p: &agentj_protocol::permission::PermissionRequestParams, _sid: &str| {
             let _ = ask_tx.send(p.request_id.clone());
+            true // handed to the test's observer, which answers via permission/respond
         },
     ));
     let run = tokio::spawn({
@@ -957,6 +967,7 @@ async fn respond_deny_records_deny_and_run_still_completes() {
     module.set_notifier(Arc::new(
         move |p: &agentj_protocol::permission::PermissionRequestParams, _sid: &str| {
             let _ = ask_tx.send(p.request_id.clone());
+            true // handed to the test's observer, which answers via permission/respond
         },
     ));
     let run = tokio::spawn({
