@@ -13,7 +13,7 @@ fn registry_lists_all_v01_methods() {
     )
     .unwrap();
     let methods = reg["methods"].as_array().unwrap();
-    assert_eq!(methods.len(), 28, "unexpected method count");
+    assert_eq!(methods.len(), 29, "unexpected method count");
     let find = |name: &str| {
         methods
             .iter()
@@ -60,6 +60,11 @@ fn registry_lists_all_v01_methods() {
             "auth/clearCredential",
             "AuthClearCredentialParams",
             "AuthClearCredentialResult",
+        ),
+        (
+            "provider/usageHistory",
+            "ProviderUsageHistoryParams",
+            "ProviderUsageHistoryResult",
         ),
     ] {
         let m = find(name);
@@ -125,7 +130,7 @@ fn protocol_version_and_new_methods_are_registered() {
     let reg: serde_json::Value = serde_json::from_str(raw).unwrap();
     assert_eq!(reg["protocol_version"], "0.19.0");
     let methods = reg["methods"].as_array().unwrap();
-    assert_eq!(methods.len(), 28, "unexpected method count");
+    assert_eq!(methods.len(), 29, "unexpected method count");
     let names: Vec<&str> = methods
         .iter()
         .map(|m| m["method"].as_str().unwrap())

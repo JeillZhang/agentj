@@ -25,6 +25,7 @@
     { "method": "model/list", "kind": "request", "direction": "client_to_server", "params": "ModelListParams", "result": "ModelListResult" },
     { "method": "auth/status", "kind": "request", "direction": "client_to_server", "params": "AuthStatusParams", "result": "AuthStatusResult" },
     { "method": "provider/usage", "kind": "request", "direction": "client_to_server", "params": "ProviderUsageParams", "result": "ProviderUsageResult" },
+    { "method": "provider/usageHistory", "kind": "request", "direction": "client_to_server", "params": "ProviderUsageHistoryParams", "result": "ProviderUsageHistoryResult" },
     { "method": "auth/deviceStart", "kind": "request", "direction": "client_to_server", "params": "AuthDeviceStartParams", "result": "AuthDeviceStartResult" },
     { "method": "auth/devicePoll", "kind": "request", "direction": "client_to_server", "params": "AuthDevicePollParams", "result": "AuthDevicePollResult" },
     { "method": "auth/setApiKey", "kind": "request", "direction": "client_to_server", "params": "AuthSetApiKeyParams", "result": "AuthSetApiKeyResult" },

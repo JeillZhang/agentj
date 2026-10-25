@@ -139,6 +139,7 @@ pub(crate) const DISPATCH_METHODS: &[&str] = &[
     "model/list",
     "auth/status",
     "provider/usage",
+    "provider/usageHistory",
     "auth/deviceStart",
     "auth/devicePoll",
     "auth/setApiKey",

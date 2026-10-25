@@ -197,7 +197,7 @@ fn dispatch_table_matches_methods_json() {
     let mut actual: Vec<String> = DISPATCH_METHODS.iter().map(|s| s.to_string()).collect();
     actual.sort();
     assert_eq!(actual, expected);
-    assert_eq!(DISPATCH_METHODS.len(), 23);
+    assert_eq!(DISPATCH_METHODS.len(), 24);
     let unique: std::collections::BTreeSet<&String> = actual.iter().collect();
     assert_eq!(
         actual.len(),
