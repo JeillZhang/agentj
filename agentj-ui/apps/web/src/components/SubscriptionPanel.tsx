@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { METHODS, RpcClient } from "@agentj/sdk";
 import type { AuthSetApiKeyResult, ProviderUsageHistoryResult, UsageSample, UsageWindow } from "@agentj/protocol";
 import SubscriptionUsage, { CredentialRow } from "./SubscriptionUsage";
-import { ERROR_TEXT } from "./subscriptionModel";
+import { ERROR_TEXT, deviceStateLabel } from "./subscriptionModel";
 import type { SubscriptionStatusData } from "../hooks/useSubscriptionStatus";
 import "./subscriptionPanel.css";
 
@@ -154,16 +154,13 @@ export default function SubscriptionPanel({ client, onClose, onLinked, onCleared
     if (res.state === "pending") return schedulePoll(code, seconds);
     if (res.state === "slow_down") return schedulePoll(code, res.interval ?? seconds);
     setDevice(null);
+    const label = deviceStateLabel(res.state);
+    if (label !== null) setDeviceMsg(label);
     if (res.state === "authorized") {
-      setDeviceMsg("登录成功");
       void loadStatus();
       void client.request(METHODS.modelList, { refresh: true });
       refreshUsage();
-      return;
     }
-    if (res.state === "expired") setDeviceMsg("设备码已过期，请重新登录");
-    else if (res.state === "denied") setDeviceMsg("设备码登录被拒绝");
-    else setDeviceMsg("设备码登录未完成，请重试");
   };
 
   const link = async () => {
