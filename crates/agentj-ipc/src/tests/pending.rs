@@ -886,6 +886,60 @@ async fn approval_without_reachable_owner_is_denied_immediately() {
     );
 }
 
+/// A row in `session_owner` is not the same thing as a reachable approver: a
+/// connection whose send channel is already gone (the disconnect race — the
+/// writer is dead but the ownership row has not been cleared yet) still owns the
+/// session. `send_to` reports that failure, so the notifier must propagate it:
+/// the ask is then undeliverable and has to be denied at once with the honest
+/// `no approver` reason instead of waiting out the whole approval timeout.
+#[tokio::test]
+async fn approval_with_dead_owner_writer_is_denied_immediately() {
+    let (server, module) = permission_server_with(std::time::Duration::from_secs(30));
+    let server = Arc::new(server);
+    server.attach_permission_notifier();
+    // The writer is registered and owns `s1`, but its channel is closed —
+    // exactly what a WS connection looks like after its peer vanished.
+    let writer = ConnectionWriter::new(
+        "tcp-A".into(),
+        TransportKind::Tcp,
+        "tcp-A".into(),
+        Arc::new(|_msg: &str| {
+            Err(agentj_core::error::IpcError::InvalidRequest(
+                "ws send channel closed".into(),
+            ))
+        }),
+    );
+    {
+        let mut reg = write_or_recover(&server.registry);
+        reg.register_writer(writer);
+        reg.set_session_owner(&"s1".to_string(), "tcp-A");
+    }
+    let ctx = PermissionContext {
+        session_id: "s1".into(),
+        tool: "bash".into(),
+        source: ToolSource::Builtin,
+        args: serde_json::json!({"command": "curl x"}),
+        workspace_root: std::path::PathBuf::from("/ws"),
+    };
+    let PermissionDecision::Ask { request_id } = module.check(&ctx) else {
+        panic!("expected Ask");
+    };
+    let decision = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        module.await_approval(&request_id),
+    )
+    .await
+    .expect("an undeliverable ask must be settled at once, not after the 30s timeout");
+    let PermissionDecision::Deny { reason } = &decision else {
+        panic!("an undeliverable ask must deny, got {decision:?}");
+    };
+    assert_eq!(
+        reason,
+        agentj_permission::NO_APPROVER_REASON,
+        "the undelivered ask must be denied as having no approver, not as a timeout"
+    );
+}
+
 #[tokio::test]
 async fn respond_allow_records_permission_node_between_call_and_result() {
     let dir = temp_dir_traj("settle");
