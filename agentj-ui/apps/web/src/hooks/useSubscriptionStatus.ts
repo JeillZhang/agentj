@@ -123,8 +123,9 @@ export function useSubscriptionStatus(client: RpcClient | null): SubscriptionSta
     try {
       auth = (await client.request(METHODS.authStatus, {})) as AuthStatus;
     } catch (e) {
-      // A failing auth probe must not read as "healthy": surface it as the generic
-      // error state (the credential itself is unknown, so `invalid` would be a guess).
+      // A failing auth probe must not read as "healthy" *or* as "no credential": the
+      // credential itself is unknown, so `unavailable` grades to `error` (never `invalid`,
+      // which would be a guess).
       if (current()) {
         setSnapshot((prev) => ({
           ...prev,
@@ -211,16 +212,18 @@ export function useSubscriptionStatus(client: RpcClient | null): SubscriptionSta
 
   const worstPercent = worstPercentOf(snapshot.windows);
   const graded = severityOf(worstPercent);
+  // `unknown` means "nobody has answered about the credential yet": either the answer was
+  // `no_credential`, or no probe has reported a kind at all (still checking). A failed probe
+  // reports `unavailable`, which is a transport/kernel problem — grading it `unknown` would
+  // claim "no credential linked" and re-offer the linking CTA.
   const state: SubscriptionState =
-    snapshot.auth !== "linked"
+    snapshot.errorKind === "no_credential" || (snapshot.auth !== "linked" && snapshot.errorKind === null)
       ? "unknown"
-      : snapshot.errorKind === "no_credential"
-        ? "unknown"
-        : snapshot.errorKind !== null && INVALID_KINDS.includes(snapshot.errorKind)
-          ? "invalid"
-          : snapshot.errorKind !== null
-            ? "error"
-            : graded;
+      : snapshot.errorKind !== null && INVALID_KINDS.includes(snapshot.errorKind)
+        ? "invalid"
+        : snapshot.errorKind !== null
+          ? "error"
+          : graded;
 
   return {
     state,

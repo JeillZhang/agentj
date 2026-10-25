@@ -161,6 +161,20 @@ describe("useSubscriptionStatus", () => {
     expect(failed.result.current.state).toBe("error");
   });
 
+  it("grades a failed auth probe as an error instead of a missing credential", async () => {
+    const client = makeClient({
+      [METHODS.authStatus]: () => {
+        throw new Error("kernel gone");
+      },
+    });
+    const { result } = renderHook(() => useSubscriptionStatus(client));
+    await settle();
+    expect(result.current.errorKind).toBe("unavailable");
+    // Nobody answered *about the credential*, so `unknown` ("未链接凭据") would be a lie:
+    // an unreachable kernel must not read as "no key linked".
+    expect(result.current.state).toBe("error");
+  });
+
   it("grades the worst window and exposes a manual refresh", async () => {
     const client = makeClient({
       [METHODS.authStatus]: linked,

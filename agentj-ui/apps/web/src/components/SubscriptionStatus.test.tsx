@@ -110,6 +110,9 @@ describe("SubscriptionStatus", () => {
     );
     expect(screen.getByTestId("sub-dot")).toHaveAttribute("data-state", "error");
     expect(screen.getByRole("tooltip")).toHaveTextContent("socket closed");
+    // A failed probe is not a missing credential: no "未链接凭据" copy, no linking CTA.
+    expect(screen.getByRole("tooltip")).not.toHaveTextContent("未链接凭据");
+    expect(screen.queryByRole("button", { name: /设置.*订阅/ })).not.toBeInTheDocument();
   });
 
   it("opens from the keyboard and closes on blur", () => {
