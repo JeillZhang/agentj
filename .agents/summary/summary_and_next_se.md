@@ -93,7 +93,8 @@
 
 - core：`TokenCounter` 分类校准（ASCII / 标点 / CJK / 星平面各自的边界值）、
   `definitions_tokens` 覆盖 name/description/schema + overhead、`fit_with_tools` 等价于
-  `fit(budget - definitions_tokens)` 且零预算有下限、`shrink_calls` 按 token 计量（密标点 JSON
+  `fit(budget - definitions_tokens)` 且零预算有下限、只有首条 system 免裁剪
+  （`a_later_system_message_is_trimmed_like_any_other`）、`shrink_calls` 按 token 计量（密标点 JSON
   超 cap 即被替换、40k 字符 payload 收缩后 `estimate_tokens <= cap`）、
   `DefaultContextPipeline::fit_with_tools` 把预留记在总量上（`body + reserved <= budget`）。
 - tools：grep 进程内回退在 deadline 到点时返回 `Timeout`（不返回部分结果）。

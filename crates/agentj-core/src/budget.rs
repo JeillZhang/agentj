@@ -194,7 +194,8 @@ fn fit_messages_body(
     let per_message = budget / 4;
     let prepared: Vec<ChatMessage> = messages
         .into_iter()
-        .map(|m| truncate(m, per_message, counter))
+        .enumerate()
+        .map(|(i, m)| truncate(m, per_message, counter, i == 0))
         .collect();
     let (system, rest) = match prepared.split_first() {
         Some((first, tail)) if first.role == Role::System => (Some(first.clone()), tail.to_vec()),
@@ -217,12 +218,18 @@ fn fit_messages_body(
     fitted
 }
 
-/// Keep the head and tail of an oversized body, marking what was dropped. System prompts
-/// are never touched; tool-call payloads that alone exceed the cap are replaced by a
-/// marker so a message can shrink even when its bulk lives in `tool_calls.arguments`.
+/// Keep the head and tail of an oversized body, marking what was dropped. Only the leading
+/// system prompt (`protected`) is never touched — a `system` message injected later in the
+/// thread is ordinary payload; tool-call payloads that alone exceed the cap are replaced by
+/// a marker so a message can shrink even when its bulk lives in `tool_calls.arguments`.
 /// @since 0.29.7
-fn truncate(mut message: ChatMessage, cap: usize, counter: &dyn TokenCounter) -> ChatMessage {
-    if message.role == Role::System {
+fn truncate(
+    mut message: ChatMessage,
+    cap: usize,
+    counter: &dyn TokenCounter,
+    protected: bool,
+) -> ChatMessage {
+    if protected && message.role == Role::System {
         return message;
     }
     shrink_calls(&mut message, cap);
@@ -290,6 +297,26 @@ mod tests {
                 {"type": "object", "properties": {"cmd": {"type": "string"}}}
             ),
         }
+    }
+
+    #[test]
+    fn a_later_system_message_is_trimmed_like_any_other() {
+        // Only the leading system prompt is exempt: a `system` reminder injected mid-thread
+        // is ordinary payload, and protecting it let the request exceed the budget.
+        let messages = vec![
+            ChatMessage::system("sys"),
+            ChatMessage::system("提醒 ".repeat(4000)),
+            // The newest message is kept unconditionally, so a `system` role must not make it
+            // untouchable: that is the shape that used to overflow.
+            ChatMessage::system("提醒 ".repeat(4000)),
+        ];
+        let fitted = fit_messages(messages, 1000);
+        assert!(
+            request_tokens(&fitted) <= 1000,
+            "a mid-thread system message must be trimmed: {} tokens in {} messages",
+            request_tokens(&fitted),
+            fitted.len()
+        );
     }
 
     #[test]
