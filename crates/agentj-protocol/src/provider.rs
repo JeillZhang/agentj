@@ -33,6 +33,10 @@ pub struct ModelEntry {
     pub id: String,
     pub verified: bool,
     pub format: String,
+    /// Context window in tokens; absent when upstream metadata does not publish a window.
+    /// @since 0.20.0
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u32>,
 }
 
 /// Catalog tier (account → live → overlay; static for non-go providers).
@@ -355,6 +359,7 @@ mod tests {
                 id: "opencode-go/kimi-k3".into(),
                 verified: true,
                 format: "anthropic".into(),
+                context_window: None,
             }],
         };
         let v = serde_json::to_value(&r).unwrap();
@@ -363,6 +368,29 @@ mod tests {
         assert_eq!(v["fetched_at"], 1_760_000_000i64);
         let back: ModelListResult = serde_json::from_value(v).unwrap();
         assert_eq!(back.models[0].id, "opencode-go/kimi-k3");
+    }
+
+    #[test]
+    fn model_entry_omits_an_unknown_context_window() {
+        let entry = ModelEntry {
+            id: "m".into(),
+            verified: true,
+            format: "opencode-go".into(),
+            context_window: None,
+        };
+        let value = serde_json::to_value(&entry).unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({"id": "m", "verified": true, "format": "opencode-go"})
+        );
+        let with_window = ModelEntry {
+            context_window: Some(200_000),
+            ..entry
+        };
+        assert_eq!(
+            serde_json::to_value(&with_window).unwrap()["context_window"],
+            serde_json::json!(200_000)
+        );
     }
 
     #[test]

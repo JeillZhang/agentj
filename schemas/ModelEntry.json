@@ -4,6 +4,15 @@
   "description": "One catalog entry. `verified: false` means the route was synthesized, not known.\n@since 0.17.0",
   "type": "object",
   "properties": {
+    "context_window": {
+      "description": "Context window in tokens; absent when upstream metadata does not publish a window.\n@since 0.20.0",
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint32",
+      "minimum": 0
+    },
     "format": {
       "type": "string"
     },

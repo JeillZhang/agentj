@@ -384,6 +384,7 @@ impl CliProviderService {
                         id,
                         verified: true,
                         format: cfg.kind.clone(),
+                        context_window: None,
                     })
                     .collect(),
             }
@@ -912,11 +913,13 @@ fn entries_of(ids: &[String], overlay: &agentj_model::catalog::ModelCatalog) -> 
                 id: id.clone(),
                 verified: e.verified,
                 format: format_name(e.format),
+                context_window: None,
             },
             None => ModelEntry {
                 id: id.clone(),
                 verified: false,
                 format: "openai-compat".into(),
+                context_window: None,
             },
         })
         .collect()
