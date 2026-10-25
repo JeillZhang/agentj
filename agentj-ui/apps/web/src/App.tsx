@@ -210,6 +210,35 @@ function openOpClient(wsUrl: string) {
 
 
 
+/** One `model/list` row, narrowed to the field the picker labels rows with. */
+type ModelWindow = { id: string; context_window?: number | null };
+
+/**
+ * Catalog windows keyed by model id, fetched once per provider.
+ *
+ * `model/list` is provider-scoped — a param-less call answers for the configured default
+ * provider only — so a served row of any other provider would stay unlabelled. Ids are
+ * provider-scoped too (`opencode-go` namespaces its catalog as `opencode-go/<model>`), so
+ * the per-provider catalogs merge into one flat id → window map and a row is labelled only
+ * by an id its own provider published. A failing leg contributes nothing, which drops the
+ * labels of that provider alone instead of blanking the list.
+ */
+async function loadModelWindows(cli: RpcClient, providers: string[]) {
+  const catalogs = await Promise.all(
+    providers.map((provider) =>
+      cli
+        .request(METHODS.modelList, { provider })
+        .then((catalog) => (catalog as { models?: ModelWindow[] }).models ?? [])
+        .catch(() => [] as ModelWindow[]),
+    ),
+  );
+  const windows = new Map<string, number | null>();
+  for (const models of catalogs) {
+    for (const entry of models) windows.set(entry.id, entry.context_window ?? null);
+  }
+  return windows;
+}
+
 function useSharedKernel(wsUrl: string, seq: number) {
   const [modules, setModules] = useState<{ id: string; state: string }[]>([]);
   const [status, setStatus] = useState(`connecting to kernel on ${wsUrl}…`);
@@ -269,26 +298,20 @@ function useSharedKernel(wsUrl: string, seq: number) {
             );
             if (served.length > 0) setModels(served);
             setStatus("connected");
-            // The context window is a catalog fact (model/list), not a kernel/status one:
+            // The context window is a catalog fact (`model/list`), not a `kernel/status` one:
             // providers that publish none leave `cap` unset and the row shows no label.
-            cli
-              .request(METHODS.modelList)
-              .then((catalog) => {
-                if (cancelled) return;
-                const list =
-                  (catalog as { models?: { id: string; context_window?: number | null }[] })
-                    .models ?? [];
-                const windows = new Map(
-                  list.map((entry) => [entry.id, entry.context_window ?? null]),
-                );
-                setModels((prev) =>
-                  prev.map((m) => {
-                    const cap = formatContextWindow(windows.get(m.name) ?? null);
-                    return cap ? { ...m, cap } : m;
-                  }),
-                );
-              })
-              .catch(() => {});
+            const catalogProviders = [
+              ...new Set(served.map((m) => m.provider).filter((p): p is string => Boolean(p))),
+            ];
+            void loadModelWindows(cli, catalogProviders).then((windows) => {
+              if (cancelled) return;
+              setModels((prev) =>
+                prev.map((m) => {
+                  const cap = formatContextWindow(windows.get(m.name) ?? null);
+                  return cap ? { ...m, cap } : m;
+                }),
+              );
+            });
           })
           .catch(() => {
             if (cancelled) return;

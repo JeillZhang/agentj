@@ -2,7 +2,7 @@ import { describe, expect, it, mock } from "bun:test";
 import { testRender } from "@opentui/react/test-utils";
 import type { TestRendererSetup } from "@opentui/core/testing";
 import { act } from "react";
-import { METHODS } from "@agentj/sdk";
+import { METHODS, formatContextWindow } from "@agentj/sdk";
 import type { RpcClient } from "@agentj/sdk";
 import {
   MODEL_CONFIG,
@@ -38,15 +38,20 @@ function ModelConfigProbe({ client, control }: {
 async function renderConfigProbe(
   data: Record<string, unknown>,
   modelList: ModelListStub = { models: [] },
+  byProvider: Record<string, ModelListStub> = {},
 ): Promise<{ cfg: () => ModelListInput; setup: TestRendererSetup }> {
   let settle: (value: unknown) => void = () => {};
   const pending = new Promise<unknown>((resolve) => {
     settle = resolve;
   });
   const client = {
-    request: (method: string) => {
+    request: (method: string, params?: Record<string, unknown>) => {
       if (method === METHODS.modelList) {
-        return modelList instanceof Error ? Promise.reject(modelList) : Promise.resolve(modelList);
+        // `model/list` is provider-scoped; a per-provider stub answers each fan-out leg.
+        const provider = params?.["provider"];
+        const stub =
+          (typeof provider === "string" ? byProvider[provider] : undefined) ?? modelList;
+        return stub instanceof Error ? Promise.reject(stub) : Promise.resolve(stub);
       }
       return pending;
     },
@@ -291,6 +296,30 @@ describe("useModelConfig", () => {
     );
     expect(cfg().providers).toEqual([
       { name: "opencode-go/a", provider: "opencode-go", cap: "1.0M" },
+    ]);
+    act(() => setup.renderer.destroy());
+  });
+
+  it("labels each row from its own provider's catalog", async () => {
+    const { cfg, setup } = await renderConfigProbe(
+      {
+        default_model: "deepseek-chat",
+        providers: [
+          { id: "deepseek", models: ["deepseek-chat"] },
+          { id: "opencode-go", models: ["opencode-go/kimi-k3"] },
+        ],
+      },
+      { models: [] },
+      {
+        deepseek: { models: [{ id: "deepseek-chat", context_window: null }] },
+        "opencode-go": {
+          models: [{ id: "opencode-go/kimi-k3", context_window: 204_800 }],
+        },
+      },
+    );
+    expect(cfg().providers).toEqual([
+      { name: "deepseek-chat", provider: "deepseek" },
+      { name: "opencode-go/kimi-k3", provider: "opencode-go", cap: formatContextWindow(204_800)! },
     ]);
     act(() => setup.renderer.destroy());
   });

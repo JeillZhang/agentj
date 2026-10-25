@@ -26,6 +26,8 @@ const shared = vi.hoisted(() => ({
   lastHistoryParams: { value: null as Record<string, unknown> | null },
   kernelStatusResult: { value: null as Record<string, unknown> | null },
   modelListResult: { value: null as Record<string, unknown> | null },
+  modelListByProvider: { value: null as Record<string, Record<string, unknown>> | null },
+  modelListParams: { value: [] as Array<Record<string, unknown> | undefined> },
   modelListShouldFail: { value: false },
   authSetApiKeyResult: {
     value: {
@@ -106,7 +108,15 @@ vi.mock("@agentj/sdk", async () => {
         return shared.historyResult.value;
       }
       if (method === "model/list") {
+        shared.modelListParams.value.push(params);
         if (shared.modelListShouldFail.value) throw new Error("model/list failed");
+        // `model/list` is provider-scoped: a per-provider map answers each leg, so a
+        // test can make one provider publish windows while another publishes none.
+        const byProvider = shared.modelListByProvider.value;
+        if (byProvider) {
+          const provider = (params as { provider?: string } | undefined)?.provider;
+          return (provider ? byProvider[provider] : undefined) ?? { models: [] };
+        }
         return shared.modelListResult.value ?? { models: [] };
       }
       if (method === "auth/status") return { provider: "opencode-go", authenticated: false };
@@ -236,7 +246,7 @@ vi.mock("@agentj/sdk", async () => {
   };
 });
 
-import { resolveWsUrl } from "@agentj/sdk";
+import { formatContextWindow, resolveWsUrl } from "@agentj/sdk";
 import { loadConnection } from "./connectionStore";
 import App, { connectionLight, isProtocolCompatible } from "./App";
 import { historyToEntries, historyToConversation, filterNodes } from "./Trajectory";
@@ -727,6 +737,47 @@ describe("App with mocked SDK transport", () => {
     expect(await screen.findByText("205k")).toBeInTheDocument();
     shared.kernelStatusResult.value = null;
     shared.modelListResult.value = null;
+  });
+
+  it("labels each row from its own provider's catalog", async () => {
+    shared.kernelStatusResult.value = {
+      modules: [{ id: "test-mod", state: "running" }],
+      default_model: "deepseek-chat",
+      providers: [
+        { id: "deepseek", models: ["deepseek-chat"] },
+        { id: "opencode-go", models: ["opencode-go/kimi-k3"] },
+      ],
+    };
+    shared.modelListByProvider.value = {
+      deepseek: {
+        models: [{ id: "deepseek-chat", verified: true, format: "deepseek", context_window: null }],
+      },
+      "opencode-go": {
+        models: [
+          { id: "opencode-go/kimi-k3", verified: true, format: "opencode-go", context_window: 204800 },
+        ],
+      },
+    };
+    shared.modelListParams.value = [];
+    render(<App />);
+    await createActiveSession();
+    fireEvent.click(screen.getByRole("button", { name: /deepseek-chat/ }));
+    await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(2));
+    // The window is the contract of the row's own provider leg, not the default provider's.
+    const window = formatContextWindow(204800) ?? "";
+    await waitFor(() =>
+      expect(
+        screen.getAllByRole("option").map((o) => o.querySelector(".cap")?.textContent ?? ""),
+      ).toEqual(["", window]),
+    );
+    // One leg per distinct served provider, in served order — never a param-less default call.
+    expect(shared.modelListParams.value).toEqual([
+      { provider: "deepseek" },
+      { provider: "opencode-go" },
+    ]);
+    shared.kernelStatusResult.value = null;
+    shared.modelListByProvider.value = null;
+    shared.modelListParams.value = [];
   });
 
   it("shows no context window label when model/list reports none", async () => {

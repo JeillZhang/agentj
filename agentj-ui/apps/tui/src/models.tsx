@@ -61,6 +61,30 @@ export function withContextWindows(entries: ModelEntry[], models: ModelWindow[])
   });
 }
 
+/**
+ * Catalog windows, fetched once per provider.
+ *
+ * `model/list` is provider-scoped — a param-less call answers for the configured default
+ * provider only — so a served row of any other provider would stay unlabelled. Ids are
+ * provider-scoped too (`opencode-go` namespaces its catalog as `opencode-go/<model>`), so the
+ * legs merge into one flat id → window list and a row is labelled only by an id its own
+ * provider published. A failing leg contributes nothing, dropping that provider's labels only.
+ */
+async function loadContextWindows(client: RpcClient, entries: ModelEntry[]): Promise<ModelWindow[]> {
+  const providers = [
+    ...new Set(entries.map((e) => e.provider).filter((p): p is string => Boolean(p))),
+  ];
+  const catalogs = await Promise.all(
+    providers.map((provider) =>
+      client
+        .request(METHODS.modelList, { provider })
+        .then((list) => (list as { models?: ModelWindow[] }).models ?? [])
+        .catch(() => [] as ModelWindow[]),
+    ),
+  );
+  return catalogs.flat();
+}
+
 export function useModelConfig(client: RpcClient | null): ModelListInput {
   const [cfg, setCfg] = useState<ModelListInput>(MODEL_CONFIG);
   useEffect(() => {
@@ -76,18 +100,13 @@ export function useModelConfig(client: RpcClient | null): ModelListInput {
         if (!providers) return;
         const dm = data?.["default_model"];
         // The context window is a catalog fact (model/list), not a kernel/status one, so
-        // it rides a second request; a failing catalog leg drops the labels rather than
-        // blanking the list, hence `.catch` on that leg only.
-        return client
-          .request(METHODS.modelList)
-          .then((list) => (list as { models?: ModelWindow[] }).models ?? [])
-          .catch(() => [])
-          .then((models) =>
-            setCfg({
-              default_model: typeof dm === "string" ? dm : "",
-              providers: withContextWindows(providers, models),
-            }),
-          );
+        // it rides second requests, one per provider.
+        return loadContextWindows(client, providers).then((models) =>
+          setCfg({
+            default_model: typeof dm === "string" ? dm : "",
+            providers: withContextWindows(providers, models),
+          }),
+        );
       })
       .catch(() => {});
   }, [client]);
