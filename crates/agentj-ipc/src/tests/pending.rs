@@ -11,6 +11,7 @@ use agentj_core::permission::{PermissionChecker, PermissionContext, PermissionDe
 use agentj_core::turn_runner::TurnRunner;
 use agentj_core::types::*;
 use agentj_model::mock::MockModelProvider;
+use agentj_permission::ApprovalDecision;
 use agentj_session::InMemoryStore;
 use std::sync::Arc;
 
@@ -174,6 +175,54 @@ async fn owner_disconnect_denies_pending_approval() {
             reason: "disconnected".into()
         }
     );
+}
+
+/// The ownership snapshot taken at disconnect is stale by the time the modules are cancelled:
+/// a second client can claim the session in between (`session/run` claims unconditionally).
+/// Killing the session's pending items then would deny an approval the *new* owner raised, so
+/// only sessions nobody owns are settled.
+#[tokio::test]
+async fn disconnect_does_not_settle_a_session_reclaimed_meanwhile() {
+    let (server, _module) = permission_server_with(std::time::Duration::from_secs(30));
+    let module = server.permission_module.clone().unwrap();
+    let ctx = PermissionContext {
+        session_id: "s1".into(),
+        tool: "bash".into(),
+        source: ToolSource::Builtin,
+        args: serde_json::json!({"command": "curl x"}),
+        workspace_root: std::path::PathBuf::from("/ws"),
+    };
+    assert!(write_or_recover(&server.registry).try_acquire_run(&"s1".to_string()));
+    // The snapshot `cleanup_connection("conn-a")` will take still names conn-a as the owner…
+    write_or_recover(&server.registry).set_session_owner(&"s1".to_string(), "conn-a");
+    // …but conn-b claims the session (its run raises this approval) before the settle runs.
+    write_or_recover(&server.registry).set_session_owner(&"s1".to_string(), "conn-b");
+    let PermissionDecision::Ask { request_id } = module.check(&ctx) else {
+        panic!("expected Ask");
+    };
+    // Settle from the stale snapshot, exactly as the racing disconnect would.
+    server.settle_sessions("conn-a", vec!["s1".to_string()]);
+    let module = server.permission_module.clone().unwrap();
+    let waiting = request_id.clone();
+    let handle = tokio::spawn(async move { module.await_approval(&waiting).await });
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    assert!(
+        !handle.is_finished(),
+        "the new owner's approval must still be pending, not settled as disconnected"
+    );
+    assert!(
+        server
+            .permission_module
+            .clone()
+            .unwrap()
+            .respond(&request_id, ApprovalDecision::Allow),
+        "the new owner must still be able to answer"
+    );
+    let decision = tokio::time::timeout(std::time::Duration::from_millis(500), handle)
+        .await
+        .expect("the allowed request must settle")
+        .unwrap();
+    assert_eq!(decision, PermissionDecision::Allow);
 }
 
 /// Fixture: an IpcServer wired to a fresh QuestionModule (notifier not yet attached).

@@ -33,21 +33,41 @@ node agentj-ui/apps/desktop/check-desktop-ui.mjs        # 前端产物/配置一
 脚本只检查产物是否存在（`artifacts-ok <platform>` 即通过），不验证版本号或安装行为；
 不带参数时默认 `linux`，未知平台会报错并列出可选值。
 
-## CI 只验证 Linux 打包
+## CI 打包（三平台）
 
-`.github/workflows/ci.yml` 的 `desktop-package` 作业是**唯一跑 `tauri build`** 的地方：它在
-`ubuntu-latest` 上装 Node 24 与 Tauri 系统依赖，先做 protocol / SDK 类型生成与 web 构建
-（dist 必须先存在，否则 `frontendDist` 为空），再
-`npm --prefix agentj-ui/apps/desktop run build -- --bundles deb,appimage`，用
-`check-artifacts.sh linux` 校验后把 `*.deb` / `*.AppImage` 作为 `agentj-desktop-linux` 上传
-（保留 7 天）。作业不跑测试套件，有 45 分钟超时。
+`.github/workflows/ci.yml` 有三个打包作业，每个平台一个，彼此独立：
 
-- **`dmg` / `msi` 不在 CI 里，需手动构建**：仓库没有配置 macOS 签名 / 公证证书与 Windows
-  代码签名（`windows-latest` 自带 WiX，缺的是证书），跨平台作业（`cross-platform`）只做
-  `cargo build --workspace`，**不打包**。
-  要发这两个包就在对应平台的机器上跑上面那两条 `--bundles dmg` / `--bundles msi` 命令，再
-  用 `check-artifacts.sh macos` / `check-artifacts.sh windows` 自检。
-- **CI 绿不等于四件套齐全**：它只保证 Linux 的 `deb` + `AppImage` 能构建、能通过存在性校验。
+| 作业 | runner | 产物 | 校验 | 上传名 |
+|------|--------|------|------|--------|
+| `desktop-package` | `ubuntu-latest` | `deb` + `AppImage` | `check-artifacts.sh linux` | `agentj-desktop-linux` |
+| `desktop-package-macos` | `macos-latest` | `dmg` | `check-artifacts.sh macos` | `agentj-desktop-macos` |
+| `desktop-package-windows` | `windows-latest` | `msi` | `check-artifacts.sh windows` | `agentj-desktop-windows` |
+
+三个作业的步骤相同：装 Node 24 → protocol / SDK 类型生成 → web 构建（dist 必须先存在，
+否则 `frontendDist` 为空）→ `tauri build --bundles <…>` → 平台校验脚本 → 上传产物（保留 7 天，
+没有产物即失败）。都不跑测试套件；Linux 作业 45 分钟超时，另两个 60 分钟
+（macOS / Windows runner 更慢）。
+
+- **macOS / Windows 作业按 `desktop-package` label 门控**：只有 PR 带该 label 或手动
+  `workflow_dispatch` 时才会跑，避免每个 PR 都付 macOS/Windows runner 的成本。想验证跨平台打包，
+  给 PR 打上 `desktop-package` label 即可——`on.pull_request.types` 含 `labeled`，打标签会直接
+  触发一次**只跑这两个打包作业**的运行（其余作业在该事件下被跳过，因此标注不会重跑测试与覆盖率）；
+  没有 push 权限的人打标签同样有效。
+- **`scripts/tests/assert-ci.sh desktop-package-platforms`** 把上面这份契约钉进仓库不变量
+  （runner / bundle / 校验脚本 / `shell: bash` / 上传名 / 保留期 / label 门控），改 `ci.yml`
+  却没同步这份契约会直接红。
+
+### 产物未签名（用户绕过）
+
+三个作业都**不签名、不公证**（仓库没有 macOS Developer ID 证书与 Apple 公证凭据，也没有
+Windows 代码签名证书），所以首次打开会有系统警告：
+
+- **macOS**：双击 `.dmg` 拖入「应用程序」后，右键（或 Control-点击）应用图标 → **打开** →
+  确认打开；已装过则可用
+  `xattr -d com.apple.quarantine /Applications/AgentJ.app` 清掉隔离属性。
+- **Windows**：`.msi` 安装时 SmartScreen 可能提示「Windows 已保护你的电脑」→ **更多信息** →
+  **仍要运行**。
+- **Linux**：`deb` / `AppImage` 不受影响；`AppImage` 需 `chmod +x` 后运行。
 
 ## 远程连接
 

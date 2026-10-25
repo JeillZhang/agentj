@@ -1,7 +1,9 @@
 name: ci
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
+    # `labeled` is what makes the `desktop-package` label gate below usable: a label added
+    # after the PR was opened only reaches the jobs through a fresh event.
+    types: [opened, synchronize, reopened, labeled]
   push:
     branches: [main]
   workflow_dispatch:
@@ -17,6 +19,7 @@ env:
   COVERAGE_THRESHOLD: 92
 jobs:
   lint:
+    if: github.event.action != 'labeled'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -38,6 +41,7 @@ jobs:
           bash scripts/tests/assert-cargo.sh --strict
           bash scripts/tests/assert-ci.sh --strict
   test:
+    if: github.event.action != 'labeled'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -51,6 +55,7 @@ jobs:
       - run: cargo build -p agentj-plugin-fixture
       - run: cargo test --workspace --locked
   deny:
+    if: github.event.action != 'labeled'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -62,6 +67,7 @@ jobs:
       # so the guard would silently rot instead of failing the build.
       - run: cargo deny check advisories licenses bans sources -D unmatched-skip
   cross-platform:
+    if: github.event.action != 'labeled'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
@@ -76,6 +82,7 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo build --workspace --locked
   coverage:
+    if: github.event.action != 'labeled'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -95,6 +102,7 @@ jobs:
           name: coverage-lcov
           path: lcov.info
   frontend:
+    if: github.event.action != 'labeled'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -130,6 +138,7 @@ jobs:
   # Linux desktop packaging: proves `tauri build` still produces installable
   # artifacts. `cross-platform` stays build-only; bundling lives here alone.
   desktop-package:
+    if: github.event.action != 'labeled'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -166,5 +175,81 @@ jobs:
           path: |
             agentj-ui/apps/desktop/src-tauri/target/release/bundle/deb/*.deb
             agentj-ui/apps/desktop/src-tauri/target/release/bundle/appimage/*.AppImage
+          retention-days: 7
+          if-no-files-found: error
+
+  # Cross-platform bundles are label-gated and never run by default: macOS/Windows
+  # runners are ~10x the cost of `ubuntu-latest`, so they only fire when a PR carries
+  # the `desktop-package` label or the whole workflow is dispatched by hand. `dmg`/`msi`
+  # are the native installers the four-artifact contract promises.
+  desktop-package-macos:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'desktop-package')
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: agentj-ui/package-lock.json
+      - name: Install frontend dependencies
+        run: npm --prefix agentj-ui ci
+      - name: Build protocol types
+        run: npm --prefix agentj-ui run generate --workspace=@agentj/protocol
+      - name: Build sdk types
+        run: npm --prefix agentj-ui run generate --workspace=@agentj/sdk
+      - name: Build web assets
+        run: npm --prefix agentj-ui run build --workspace=@agentj/web
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: agentj-ui/apps/desktop/src-tauri -> target
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Build desktop bundles
+        run: npm --prefix agentj-ui/apps/desktop run build -- --bundles dmg
+      - name: Verify artifacts
+        shell: bash
+        run: ./agentj-ui/apps/desktop/check-artifacts.sh macos
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agentj-desktop-macos
+          path: agentj-ui/apps/desktop/src-tauri/target/release/bundle/dmg/*.dmg
+          retention-days: 7
+          if-no-files-found: error
+
+  desktop-package-windows:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'desktop-package')
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: agentj-ui/package-lock.json
+      - name: Install frontend dependencies
+        run: npm --prefix agentj-ui ci
+      - name: Build protocol types
+        run: npm --prefix agentj-ui run generate --workspace=@agentj/protocol
+      - name: Build sdk types
+        run: npm --prefix agentj-ui run generate --workspace=@agentj/sdk
+      - name: Build web assets
+        run: npm --prefix agentj-ui run build --workspace=@agentj/web
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: agentj-ui/apps/desktop/src-tauri -> target
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Build desktop bundles
+        run: npm --prefix agentj-ui/apps/desktop run build -- --bundles msi
+      - name: Verify artifacts
+        shell: bash
+        run: ./agentj-ui/apps/desktop/check-artifacts.sh windows
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agentj-desktop-windows
+          path: agentj-ui/apps/desktop/src-tauri/target/release/bundle/msi/*.msi
           retention-days: 7
           if-no-files-found: error

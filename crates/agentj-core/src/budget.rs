@@ -7,7 +7,7 @@
 //! result) was forwarded verbatim until the provider answered
 //! `[context_length_exceeded] ... resulted in 3904559 tokens`.
 
-use crate::types::{ChatMessage, Role};
+use crate::types::{ChatMessage, Role, ToolDefinition};
 
 /// Budget used when `[model] max_context_tokens` is unset. @since 0.29.7
 pub const DEFAULT_CONTEXT_TOKENS: usize = 128_000;
@@ -24,29 +24,107 @@ pub const MAX_OVERFLOW_RETRIES: usize = 2;
 pub const TOOL_RESULT_TRUNCATION_NOTICE: &str =
     "\n…[已截断 {dropped} 字符，原文 {total} 字符；请缩小查询范围]…\n";
 
-/// Approximate tokens: ASCII at ~4 chars/token, everything else at ~1 char/token (CJK is
-/// close to one token per character, and under-counting is what breaks the request).
-/// @since 0.29.7
+/// Approximate tokens: ASCII letters/whitespace at ~4 chars/token, dense ASCII punctuation
+/// at ~2.5 chars/token, CJK at ~1.25 chars/token, other BMP characters at ~1 char/token and
+/// astral characters at ~0.5 char/token. Under-counting is what breaks the request, so every
+/// class is charged at least as much as the pre-seam heuristic (ASCII-only 4:1, everything
+/// else 1:1) did. @since 0.29.7
 pub fn estimate_tokens(text: &str) -> usize {
-    let (ascii, wide) = text.chars().fold((0usize, 0usize), |(a, w), c| {
-        if c.is_ascii() { (a + 1, w) } else { (a, w + 1) }
-    });
-    ascii.div_ceil(4) + wide
+    HeuristicTokenizer.count_text(text)
+}
+
+/// The seam every budget calculation goes through, so a provider-specific tokenizer can be
+/// dropped in without touching the trimming logic. @since 0.29.7
+pub trait TokenCounter {
+    fn count_text(&self, text: &str) -> usize;
+}
+
+/// Character-class heuristic used until a real BPE vocabulary is embedded. @since 0.29.7
+#[derive(Debug, Default, Clone, Copy)]
+pub struct HeuristicTokenizer;
+
+impl TokenCounter for HeuristicTokenizer {
+    fn count_text(&self, text: &str) -> usize {
+        if text.is_empty() {
+            return 0;
+        }
+        let (mut word, mut punct, mut cjk, mut bmp, mut astral) =
+            (0usize, 0usize, 0usize, 0usize, 0usize);
+        for c in text.chars() {
+            if c.is_ascii() {
+                if c.is_ascii_alphanumeric() || c.is_ascii_whitespace() {
+                    word += 1;
+                } else {
+                    punct += 1;
+                }
+            } else if is_cjk(c) {
+                cjk += 1;
+            } else if (c as u32) > 0xFFFF {
+                astral += 1;
+            } else {
+                bmp += 1;
+            }
+        }
+        // words 4/token, punctuation 2.5/token, CJK 1.25/token, other BMP 1/token,
+        // astral 0.5/token (`astral * 2`).
+        (word.div_ceil(4) + (punct * 2).div_ceil(5) + (cjk * 5).div_ceil(4) + bmp + astral * 2)
+            .max(1)
+    }
+}
+
+/// Han / Hiragana / Katakana / Hangul / CJK compatibility ideographs. @since 0.29.7
+fn is_cjk(c: char) -> bool {
+    matches!(
+        c as u32,
+        0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0x3040..=0x30FF | 0xAC00..=0xD7AF | 0xF900..=0xFAFF
+    )
 }
 
 /// Tokens one assembled message costs, tool-call payloads included. @since 0.29.7
 pub fn message_tokens(message: &ChatMessage) -> usize {
-    let calls: usize = message
-        .tool_calls
-        .iter()
-        .map(|call| estimate_tokens(&call.name) + estimate_tokens(&call.arguments.to_string()) + 8)
-        .sum();
-    estimate_tokens(&message.content) + calls + 4
+    message_tokens_with(message, &HeuristicTokenizer)
+}
+
+/// `message_tokens` against an arbitrary counter. @since 0.29.7
+pub fn message_tokens_with(message: &ChatMessage, counter: &dyn TokenCounter) -> usize {
+    let mut total = counter.count_text(&message.content) + 4;
+    if let Some(call) = &message.tool_call_id {
+        total += counter.count_text(call);
+    }
+    for call in &message.tool_calls {
+        total +=
+            8 + counter.count_text(&call.name) + counter.count_text(&call.arguments.to_string());
+    }
+    total
 }
 
 /// Tokens an assembled request costs. @since 0.29.7
 pub fn request_tokens(messages: &[ChatMessage]) -> usize {
-    messages.iter().map(message_tokens).sum()
+    request_tokens_with(messages, &HeuristicTokenizer)
+}
+
+/// `request_tokens` against an arbitrary counter. @since 0.29.7
+pub fn request_tokens_with(messages: &[ChatMessage], counter: &dyn TokenCounter) -> usize {
+    messages
+        .iter()
+        .map(|m| message_tokens_with(m, counter))
+        .sum()
+}
+
+/// Per-definition framing cost beyond its name, description and schema. @since 0.29.7
+const TOOL_DEF_OVERHEAD: usize = 12;
+
+/// Tokens the tool definitions in a request cost. They are never dropped by the trimmer, but
+/// they do occupy the window, so `fit_messages_with` reserves room for them first. @since 0.29.7
+pub fn definitions_tokens(defs: &[ToolDefinition]) -> usize {
+    defs.iter()
+        .map(|d| {
+            estimate_tokens(&d.name)
+                + estimate_tokens(&d.description)
+                + estimate_tokens(&d.input_schema.to_string())
+                + TOOL_DEF_OVERHEAD
+        })
+        .sum()
 }
 
 /// Clamp a configured or upstream-reported budget into the supported range. @since 0.29.7
@@ -90,20 +168,44 @@ pub fn retry_budget(budget: usize, upstream_max: usize) -> Option<usize> {
 /// newest messages, truncate individual oversized bodies, and never leave a tool result
 /// behind without the assistant call that produced it. @since 0.29.7
 pub fn fit_messages(messages: Vec<ChatMessage>, budget_tokens: usize) -> Vec<ChatMessage> {
+    fit_messages_with(messages, &[], budget_tokens, &HeuristicTokenizer)
+}
+
+/// As `fit_messages`, but first reserves room for the tool definitions the request carries:
+/// `defs` never participate in drop-oldest, so they are subtracted from the body budget.
+/// A pathological definition set can drive the body budget to 0; the trimmer still keeps the
+/// system prompt and the newest message rather than returning an empty request. @since 0.29.7
+pub fn fit_messages_with(
+    messages: Vec<ChatMessage>,
+    defs: &[ToolDefinition],
+    budget_tokens: usize,
+    counter: &dyn TokenCounter,
+) -> Vec<ChatMessage> {
     let budget = clamp_budget(budget_tokens);
+    let body = budget.saturating_sub(definitions_tokens(defs));
+    fit_messages_body(messages, body, counter)
+}
+
+fn fit_messages_body(
+    messages: Vec<ChatMessage>,
+    budget: usize,
+    counter: &dyn TokenCounter,
+) -> Vec<ChatMessage> {
     let per_message = budget / 4;
     let prepared: Vec<ChatMessage> = messages
         .into_iter()
-        .map(|m| truncate(m, per_message))
+        .enumerate()
+        .map(|(i, m)| truncate(m, per_message, counter, i == 0))
         .collect();
     let (system, rest) = match prepared.split_first() {
         Some((first, tail)) if first.role == Role::System => (Some(first.clone()), tail.to_vec()),
         _ => (None, prepared),
     };
-    let mut total = request_tokens(system.as_slice()) + request_tokens(&rest);
+    let mut total =
+        request_tokens_with(system.as_slice(), counter) + request_tokens_with(&rest, counter);
     let mut drop = 0usize;
     while drop + 1 < rest.len() && total > budget {
-        total -= message_tokens(&rest[drop]);
+        total -= message_tokens_with(&rest[drop], counter);
         drop += 1;
     }
     // A prefix cut must not orphan a tool result: providers reject an unpaired one.
@@ -116,16 +218,22 @@ pub fn fit_messages(messages: Vec<ChatMessage>, budget_tokens: usize) -> Vec<Cha
     fitted
 }
 
-/// Keep the head and tail of an oversized body, marking what was dropped. System prompts
-/// are never touched; tool-call payloads that alone exceed the cap are replaced by a
-/// marker so a message can shrink even when its bulk lives in `tool_calls.arguments`.
+/// Keep the head and tail of an oversized body, marking what was dropped. Only the leading
+/// system prompt (`protected`) is never touched — a `system` message injected later in the
+/// thread is ordinary payload; tool-call payloads that alone exceed the cap are replaced by
+/// a marker so a message can shrink even when its bulk lives in `tool_calls.arguments`.
 /// @since 0.29.7
-fn truncate(mut message: ChatMessage, cap: usize) -> ChatMessage {
-    if message.role == Role::System {
+fn truncate(
+    mut message: ChatMessage,
+    cap: usize,
+    counter: &dyn TokenCounter,
+    protected: bool,
+) -> ChatMessage {
+    if protected && message.role == Role::System {
         return message;
     }
     shrink_calls(&mut message, cap);
-    let tokens = message_tokens(&message);
+    let tokens = message_tokens_with(&message, counter);
     if tokens <= cap {
         return message;
     }
@@ -143,13 +251,15 @@ fn truncate(mut message: ChatMessage, cap: usize) -> ChatMessage {
 
 /// Replace a tool-call payload that alone exceeds `cap` tokens with a marker. @since 0.29.7
 fn shrink_calls(message: &mut ChatMessage, cap: usize) {
-    let max_chars = cap.saturating_mul(4);
     for call in &mut message.tool_calls {
-        let text = call.arguments.to_string();
-        let count = text.chars().count();
-        if count > max_chars {
+        // Charge the payload with the same counter that will measure it later: a chars-per-token
+        // constant cannot cover both ASCII words (4 chars/token) and dense punctuation
+        // (2.5) or CJK (1.25), so a char cap either waves an over-budget payload through or
+        // throws away payloads that would have fitted.
+        let tokens = estimate_tokens(&call.arguments.to_string());
+        if tokens > cap {
             call.arguments =
-                serde_json::json!({ "_truncated": format!("…[已截断 {count} 字符]…") });
+                serde_json::json!({ "_truncated": format!("…[已截断 {tokens} tokens]…") });
         }
     }
 }
@@ -177,14 +287,207 @@ pub fn truncate_chars(text: &str, max_chars: usize) -> (String, usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::ToolCall;
+    use crate::types::{ToolCall, ToolDefinition};
+
+    fn def(name: &str) -> ToolDefinition {
+        ToolDefinition {
+            name: name.into(),
+            description: "x".repeat(400),
+            input_schema: serde_json::json!(
+                {"type": "object", "properties": {"cmd": {"type": "string"}}}
+            ),
+        }
+    }
 
     #[test]
-    fn estimate_tokens_charges_cjk_per_character() {
+    fn a_later_system_message_is_trimmed_like_any_other() {
+        // Only the leading system prompt is exempt: a `system` reminder injected mid-thread
+        // is ordinary payload, and protecting it let the request exceed the budget.
+        let messages = vec![
+            ChatMessage::system("sys"),
+            ChatMessage::system("提醒 ".repeat(4000)),
+            // The newest message is kept unconditionally, so a `system` role must not make it
+            // untouchable: that is the shape that used to overflow.
+            ChatMessage::system("提醒 ".repeat(4000)),
+        ];
+        let fitted = fit_messages(messages, 1000);
+        assert!(
+            request_tokens(&fitted) <= 1000,
+            "a mid-thread system message must be trimmed: {} tokens in {} messages",
+            request_tokens(&fitted),
+            fitted.len()
+        );
+    }
+
+    #[test]
+    fn definitions_tokens_charges_name_description_and_schema() {
+        assert_eq!(definitions_tokens(&[]), 0);
+        let one = definitions_tokens(&[def("bash")]);
+        let two = definitions_tokens(&[def("bash"), def("read")]);
+        assert!(
+            one > 100,
+            "schema + description must cost real tokens: {one}"
+        );
+        assert!(two > one);
+    }
+
+    #[test]
+    fn fit_with_defs_reserves_their_budget() {
+        let defs = vec![def("bash"), def("read"), def("write")];
+        let messages = || {
+            let mut m = vec![ChatMessage::system("sys")];
+            m.extend((0..20).map(|i| ChatMessage::user(format!("m{i}: {}", "x".repeat(400)))));
+            m
+        };
+        let bare = fit_messages_with(messages(), &[], MIN_CONTEXT_TOKENS, &HeuristicTokenizer);
+        let reserved =
+            fit_messages_with(messages(), &defs, MIN_CONTEXT_TOKENS, &HeuristicTokenizer);
+        assert!(request_tokens(&reserved) <= request_tokens(&bare));
+        assert!(request_tokens(&reserved) + definitions_tokens(&defs) <= MIN_CONTEXT_TOKENS);
+        assert_eq!(reserved[0].role, Role::System);
+        assert!(reserved.last().unwrap().content.starts_with("m19"));
+    }
+
+    #[test]
+    fn fit_with_defs_larger_than_the_budget_never_empties_the_request() {
+        let defs: Vec<_> = (0..50).map(|i| def(&format!("tool{i}"))).collect();
+        let messages = vec![ChatMessage::system("sys"), ChatMessage::user("hello")];
+        let fitted = fit_messages_with(messages, &defs, MIN_CONTEXT_TOKENS, &HeuristicTokenizer);
+        assert_eq!(
+            fitted.len(),
+            2,
+            "system + newest survive even when defs blow the budget"
+        );
+        assert_eq!(fitted[0].role, Role::System);
+        // body == 0 时 keep = max(2)、half = keep/2 = 1：只剩 1 个头部字符 + 截断标记 + 1 个尾部字符。
+        assert!(
+            fitted[1].content.starts_with("h\n"),
+            "kept: {}",
+            fitted[1].content
+        );
+        assert!(
+            fitted[1].content.len() > 2,
+            "the truncation marker is kept too"
+        );
+    }
+
+    #[test]
+    fn fit_messages_without_defs_matches_the_plain_entry_point() {
+        // ChatMessage 只 derive Debug/Clone/Serialize/Deserialize，没有 PartialEq，
+        // 所以比较编码后的大小与条目数，而不是比较值。
+        let messages = vec![ChatMessage::system("sys"), ChatMessage::user("hi")];
+        let plain = fit_messages(messages.clone(), MIN_CONTEXT_TOKENS);
+        let with_defs = fit_messages_with(messages, &[], MIN_CONTEXT_TOKENS, &HeuristicTokenizer);
+        assert_eq!(request_tokens(&plain), request_tokens(&with_defs));
+        assert_eq!(plain.len(), with_defs.len());
+    }
+
+    /// The pre-batch formula, kept in the test module as the lower bound every
+    /// input must clear: new estimates may only ever be more conservative.
+    fn legacy_estimate(text: &str) -> usize {
+        let (ascii, wide) = text.chars().fold((0usize, 0usize), |(a, w), c| {
+            if c.is_ascii() { (a + 1, w) } else { (a, w + 1) }
+        });
+        ascii.div_ceil(4) + wide
+    }
+
+    #[test]
+    fn heuristic_never_estimates_below_the_legacy_formula() {
+        let corpus = [
+            "",
+            "abcd",
+            "The quick brown fox jumps over the lazy dog.",
+            r#"{"a": [1, 2, 3], "b": {"c": null}, "d": true}"#,
+            "fn main() { let x = vec![1, 2, 3]; println!(\"{:?}\", x); }",
+            "中文文本",
+            "ab中文",
+            "αβγ",
+            "café au lait",
+            "emoji 🚀🚀 and 中文字 mixed with code `let a = 1;`",
+        ];
+        for text in corpus {
+            assert!(
+                estimate_tokens(text) >= legacy_estimate(text),
+                "estimate must never be more optimistic than the legacy formula: {text:?}"
+            );
+        }
         assert_eq!(estimate_tokens(""), 0);
+    }
+
+    #[test]
+    fn heuristic_charges_dense_punctuation_more_than_prose() {
+        let prose = "aaaa bbbb cccc dddd eeee ffff gggg hhhh";
+        let punctuation = "{}[]()<>,;:!?@#$%^&*_-+=|~`\"'\\/{}[]()<>,;:";
+        assert!(estimate_tokens(punctuation) > estimate_tokens(prose));
+    }
+
+    #[test]
+    fn heuristic_charges_cjk_above_one_token_per_char() {
         assert_eq!(estimate_tokens("abcd"), 1);
-        assert_eq!(estimate_tokens("中文文本"), 4);
-        assert_eq!(estimate_tokens("ab中文"), 3);
+        assert_eq!(estimate_tokens("中文文本"), 5, "CJK costs 1.25 token/char");
+        assert_eq!(estimate_tokens("ab中文"), 4);
+    }
+
+    #[test]
+    fn heuristic_charges_other_bmp_characters_one_token_each() {
+        assert_eq!(estimate_tokens("αβγ"), 3);
+        assert_eq!(estimate_tokens("café"), 1 + 1, "ascii run + one BMP char");
+    }
+
+    #[test]
+    fn heuristic_charges_astral_characters_double() {
+        assert_eq!(estimate_tokens("🚀🚀"), 4);
+        assert!(
+            estimate_tokens("🚀🚀") >= legacy_estimate("🚀🚀"),
+            "the legacy formula charges 1 per astral char; the new one charges 2"
+        );
+    }
+
+    #[test]
+    fn shrink_calls_measures_the_payload_in_tokens() {
+        let big = serde_json::json!({"blob": "y".repeat(40_000)}).to_string();
+        let mut message = ChatMessage::user("go");
+        message.tool_calls = vec![ToolCall {
+            id: "c1".into(),
+            name: "bash".into(),
+            arguments: serde_json::Value::from(big),
+        }];
+        shrink_calls(&mut message, 200);
+        assert!(
+            estimate_tokens(&message.tool_calls[0].arguments.to_string()) <= 200,
+            "the shrunk payload must fit the token cap"
+        );
+        assert!(
+            message.tool_calls[0].arguments["_truncated"].is_string(),
+            "the truncation marker must survive"
+        );
+    }
+
+    #[test]
+    fn shrink_calls_counts_dense_punctuation_as_tokens_not_chars() {
+        // 320 punctuation chars are 320 chars but 128 tokens: a char-based cap of 100 tokens
+        // (300 chars) would wave this through and leave the message 28% over budget.
+        let blob = "{}[]()<>,;:!?".repeat(20);
+        let payload = serde_json::json!({ "q": blob }).to_string();
+        assert!(
+            payload.chars().count() <= 300 + 16,
+            "fixture stays under the char cap"
+        );
+        assert!(
+            estimate_tokens(&payload) > 100,
+            "fixture must exceed the token cap"
+        );
+        let mut message = ChatMessage::user("go");
+        message.tool_calls = vec![ToolCall {
+            id: "c1".into(),
+            name: "grep".into(),
+            arguments: serde_json::Value::from(payload),
+        }];
+        shrink_calls(&mut message, 100);
+        assert!(
+            message.tool_calls[0].arguments["_truncated"].is_string(),
+            "a payload over the token cap must be shrunk"
+        );
     }
 
     #[test]

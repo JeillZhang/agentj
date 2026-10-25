@@ -5,7 +5,8 @@
 set -euo pipefail
 
 ROOT="${AGENTJ_ROOT:-$(cd -- "$(dirname "$0")/../.." && pwd)}"
-CHECKS=(harness ci-jobs coverage-gate frontend-job desktop-package-job governance-files hygiene docs-summaries docs-agents)
+CHECKS=(harness ci-jobs coverage-gate frontend-job desktop-package-job desktop-package-platforms \
+        governance-files hygiene docs-summaries docs-agents)
 
 # --- Check inventory contract (maintained by hand, NOT a cache) ---------------
 # EXPECTED_* lists the check inventory each harness is required to expose. It is a
@@ -16,7 +17,7 @@ CHECKS=(harness ci-jobs coverage-gate frontend-job desktop-package-job governanc
 # so "one check silently dropped" can no longer look like "everything green".
 EXPECTED_UI_CHECKS="ui-manifests lockfile-root single-lockfile"
 EXPECTED_CARGO_CHECKS="cargo-root crate-inheritance licenses deny-config lockfile-locked fn-length"
-EXPECTED_CI_CHECKS="harness ci-jobs coverage-gate frontend-job desktop-package-job governance-files hygiene docs-summaries docs-agents"
+EXPECTED_CI_CHECKS="harness ci-jobs coverage-gate frontend-job desktop-package-job desktop-package-platforms governance-files hygiene docs-summaries docs-agents"
 
 bad() { printf 'FAIL %s: %s\n' "$1" "$2"; return 1; }
 ok() { printf 'PASS %s\n' "$1"; }
@@ -417,6 +418,105 @@ if observed_order != list(expected_order):
         "desktop-package must build the web dist, then the bundles, then verify them "
         f"(got {' -> '.join(observed_order) or 'none of those steps'})"
     )
+print("ok")
+PY
+  ); then
+    bad "$name" "$out"
+    return 1
+  fi
+  ok "$name"
+}
+
+check_desktop_package_platforms() {
+  local name=desktop-package-platforms
+  if ! have_pyyaml; then
+    bad "$name" "python3 PyYAML is required to parse .github/workflows/ci.yml"
+    return 1
+  fi
+  local out
+  if ! out=$(python3 - "$ROOT" <<'PY'
+import pathlib
+import sys
+import yaml
+
+root = pathlib.Path(sys.argv[1])
+path = root / ".github" / "workflows" / "ci.yml"
+if not path.is_file():
+    print("missing .github/workflows/ci.yml")
+    sys.exit(1)
+doc = yaml.safe_load(path.read_text()) or {}
+jobs = doc.get("jobs") or {}
+
+GATE = "github.event.pull_request.labels.*.name"
+specs = {
+    "desktop-package-macos": ("macos-latest", "dmg", "macos", "agentj-desktop-macos"),
+    "desktop-package-windows": ("windows-latest", "msi", "windows", "agentj-desktop-windows"),
+}
+errors = []
+for job_name, (runner, bundle, platform, artifact) in specs.items():
+    job = jobs.get(job_name)
+    if job is None:
+        errors.append(f"missing job {job_name}")
+        continue
+    if job.get("runs-on") != runner:
+        errors.append(f"{job_name} must run on {runner}")
+    timeout = job.get("timeout-minutes")
+    if not isinstance(timeout, int) or timeout > 60:
+        errors.append(f"{job_name} must set timeout-minutes <= 60")
+    steps = job.get("steps") or []
+    runs = " ".join(str(step.get("run", "")) for step in steps)
+    if f"--bundles {bundle}" not in runs:
+        errors.append(f"{job_name} must bundle `--bundles {bundle}`")
+    if f"check-artifacts.sh {platform}" not in runs:
+        errors.append(f"{job_name} must verify the {platform} artifacts")
+    verifiers = [
+        step for step in steps
+        if f"check-artifacts.sh {platform}" in str(step.get("run", ""))
+    ]
+    if not verifiers or verifiers[0].get("shell") != "bash":
+        errors.append(f"{job_name} must run check-artifacts.sh under `shell: bash`")
+    if "cargo test" in runs:
+        errors.append(f"{job_name} must not run the test suite")
+    gate = str(job.get("if", ""))
+    if GATE not in gate or "desktop-package" not in gate:
+        errors.append(f"{job_name} must be gated by the `desktop-package` PR label")
+    uploads = [
+        step for step in steps
+        if str(step.get("uses", "")).startswith("actions/upload-artifact")
+    ]
+    if not uploads:
+        errors.append(f"{job_name} must upload its artifacts")
+    else:
+        with_ = uploads[0].get("with") or {}
+        if with_.get("name") != artifact:
+            errors.append(f"{job_name} must upload as {artifact}")
+        if with_.get("retention-days") != 7:
+            errors.append(f"{job_name} must set retention-days: 7")
+        if with_.get("if-no-files-found") != "error":
+            errors.append(f"{job_name} must fail when no artifacts are produced")
+
+# The label gate is only usable if a `labeled` event is actually delivered: a label added
+# after the PR opened never reaches the original payload, and a re-run replays it.
+triggers = doc.get("on") or doc.get(True) or {}
+pull_request = triggers.get("pull_request") if isinstance(triggers, dict) else None
+types = (pull_request or {}).get("types") or []
+if "labeled" not in types:
+    errors.append("on.pull_request.types must include `labeled` so the packaging label gate fires")
+
+# A `labeled` run must stay cheap: only the packaging jobs may run on it.
+SKIP = "github.event.action != 'labeled'"
+for job_name, job in jobs.items():
+    gated_out = SKIP in str(job.get("if", ""))
+    # Only the two label-gated packagers run on `labeled`; the Linux packager already ran on
+    # the PR's own push, so it is skipped like the test/lint/coverage jobs.
+    if job_name in specs and gated_out:
+        errors.append(f"{job_name} must not be skipped on a `labeled` event")
+    if job_name not in specs and not gated_out:
+        errors.append(f"{job_name} must be skipped on a `labeled` event (`{SKIP}`)")
+
+if errors:
+    print("; ".join(errors))
+    sys.exit(1)
 print("ok")
 PY
   ); then

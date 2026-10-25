@@ -235,6 +235,10 @@ fn resolve_session_dir(cfg: &agentj_config::Config) -> std::path::PathBuf {
 /// Pure resolution of the metrics state directory (design D4): an explicit
 /// `[web] state_dir` wins, then `$XDG_DATA_HOME/agentj`, then
 /// `$HOME/.local/share/agentj`; `None` means "keep the counters in memory".
+///
+/// An *empty* configured `state_dir` is treated as unset: `PathBuf::from("")` is not a
+/// directory anyone can write to, but it used to win the chain and silently hand the
+/// callers a path that resolves to the process CWD.
 fn metrics_state_dir_from(
     cfg: &agentj_config::Config,
     xdg: Option<&str>,
@@ -244,7 +248,8 @@ fn metrics_state_dir_from(
         .inner()
         .web
         .as_ref()
-        .and_then(|web| web.state_dir.clone());
+        .and_then(|web| web.state_dir.clone())
+        .filter(|dir| !dir.as_os_str().is_empty());
     if let Some(dir) = explicit {
         return Some(dir);
     }
@@ -703,6 +708,71 @@ fn run_error_line(v: &serde_json::Value) -> Option<String> {
     })
 }
 
+/// One decoded JSON-RPC frame from a `run --attach` stream. Keeping the decision in a
+/// single value instead of inline `if`s in the read loop is what stops a reply frame from
+/// being mistaken for a fresh request (and denied again, forever).
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum AttachAction {
+    DenyApproval { request_id: String, tool: String },
+    Reply(String),
+    Fail(String),
+    Ignore,
+}
+
+fn decode_attach_frame(v: &serde_json::Value) -> AttachAction {
+    if v.get("method").and_then(|m| m.as_str()) == Some("$/permissionRequest") {
+        let params = &v["params"];
+        return match params.get("request_id").and_then(|r| r.as_str()) {
+            Some(request_id) => AttachAction::DenyApproval {
+                request_id: request_id.to_string(),
+                tool: params
+                    .get("tool")
+                    .and_then(|t| t.as_str())
+                    .unwrap_or("unknown")
+                    .to_string(),
+            },
+            None => AttachAction::Ignore,
+        };
+    }
+    if let Some(failure) = run_error_line(v) {
+        return AttachAction::Fail(failure);
+    }
+    match v["result"]["content"].as_str() {
+        Some(text) => AttachAction::Reply(text.to_string()),
+        None => AttachAction::Ignore,
+    }
+}
+
+/// True when an error frame answers one of the denies attach itself wrote (a settled or
+/// rejected `permission/respond`). Those must not abort the attached run.
+fn is_attach_deny_reply(frame: &serde_json::Value, deny_ids: &[u64]) -> bool {
+    frame
+        .get("id")
+        .and_then(|id| id.as_u64())
+        .is_some_and(|id| deny_ids.contains(&id))
+}
+
+/// The line `run --attach` prints when the remote kernel asks for an approval: attach is a
+/// non-interactive client, so it can only refuse and say how to approve for real.
+fn attach_deny_warning(tool: &str, request_id: &str) -> String {
+    format!(
+        "warning: run --attach cannot answer approvals; denying {tool} ({request_id}) — \
+         attach again with an interactive serve client, or run `agentj serve` and approve there"
+    )
+}
+
+/// A `permission/respond` request denying `request_id`, ready to write as one line.
+fn attach_deny_request(request_id: &str, id: u64) -> String {
+    let params = agentj_protocol::permission::PermissionRespondParams {
+        request_id: request_id.to_string(),
+        decision: agentj_protocol::permission::PermissionDecision::Deny,
+    };
+    let body = serde_json::to_string(&params).expect("a deny decision always serializes");
+    format!(
+        "{{\"jsonrpc\":\"2.0\",\"id\":{id},\"method\":\"permission/respond\",\"params\":{body}}}\n"
+    )
+}
+
 async fn run_attached(
     url: &str,
     prompt: &str,
@@ -732,26 +802,58 @@ async fn run_attached(
     let run_line = run_params_json(&sid, prompt, provider, model);
     w.write_all(run_line.as_bytes()).await?;
     w.write_all(b"\n").await?;
+    read_attach_stream(&mut reader, &mut w).await
+}
+
+/// Drain the run's frame stream until it concludes. Returns the failure text when the
+/// run failed (the caller prints it and exits non-zero), or `None` on a delivered reply.
+async fn read_attach_stream<R, W>(reader: &mut R, w: &mut W) -> anyhow::Result<Option<String>>
+where
+    R: tokio::io::AsyncBufRead + Unpin,
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+    let mut next_id = 2u64;
+    let mut deny_ids: Vec<u64> = Vec::new();
+    let mut line = String::new();
     loop {
         line.clear();
         if reader.read_line(&mut line).await? == 0 {
-            anyhow::bail!("connection closed before session/run completed");
+            return Ok(Some(
+                "attach: connection closed before the run finished".into(),
+            ));
         }
-        let v: serde_json::Value = match serde_json::from_str(line.trim()) {
-            Ok(v) => v,
-            Err(_) => continue,
+        let Ok(frame) = serde_json::from_str::<serde_json::Value>(line.trim()) else {
+            continue;
         };
-        // Checked before the result branch: an error reply has no
-        // `result.content`, so ignoring it would spin here forever.
-        if let Some(failure) = run_error_line(&v) {
-            return Ok(Some(failure));
-        }
-        if let Some(text) = v["result"]["content"].as_str() {
-            println!("{text}");
-            break;
+        match decode_attach_frame(&frame) {
+            AttachAction::DenyApproval { request_id, tool } => {
+                eprintln!("{}", attach_deny_warning(&tool, &request_id));
+                let id = next_id;
+                next_id += 1;
+                deny_ids.push(id);
+                let body = attach_deny_request(&request_id, id);
+                if let Err(err) = w.write_all(body.as_bytes()).await {
+                    tracing::warn!(%err, "attach: failed to send the deny decision");
+                }
+            }
+            AttachAction::Fail(failure) => {
+                // A refused deny answers *our* write, not the run: the remote turn is still
+                // going, so report the bookkeeping failure and keep reading instead of
+                // aborting with an error that looks like the run's own.
+                if is_attach_deny_reply(&frame, &deny_ids) {
+                    eprintln!("warning: attach deny was refused: {failure}");
+                    continue;
+                }
+                return Ok(Some(failure));
+            }
+            AttachAction::Reply(text) => {
+                println!("{text}");
+                return Ok(None);
+            }
+            AttachAction::Ignore => continue,
         }
     }
-    Ok(None)
 }
 
 #[tokio::main]
@@ -1975,6 +2077,127 @@ mod tests {
         );
     }
 
+    // ---- T5: attach frame decoding ----
+
+    fn frame(v: serde_json::Value) -> AttachAction {
+        decode_attach_frame(&v)
+    }
+
+    #[test]
+    fn attach_deny_replies_are_told_apart_from_run_failures() {
+        let refused: serde_json::Value = serde_json::from_str(
+            r#"{"jsonrpc":"2.0","id":3,"error":{"code":-32001,"message":"already settled"}}"#,
+        )
+        .unwrap();
+        assert!(is_attach_deny_reply(&refused, &[3]));
+        assert!(
+            !is_attach_deny_reply(&refused, &[4]),
+            "a foreign id is a run failure"
+        );
+        assert_eq!(
+            frame(refused),
+            AttachAction::Fail("error: already settled (code -32001)".into()),
+            "the frame still decodes as an error; only the reader decides what to do"
+        );
+    }
+
+    #[tokio::test]
+    async fn attach_survives_a_refused_deny_and_returns_the_run_reply() {
+        let (client_side, server_side) = tokio::io::duplex(4096);
+        let (cr, cw) = tokio::io::split(client_side);
+        let (mut sr, mut sw) = tokio::io::split(server_side);
+        let mut reader = tokio::io::BufReader::new(cr);
+        let mut writer = cw;
+        let frames = [
+            r#"{"jsonrpc":"2.0","method":"$/permissionRequest","params":{"request_id":"r1","tool":"bash","args":{}}}"#,
+            r#"{"jsonrpc":"2.0","id":2,"error":{"code":-32001,"message":"already settled"}}"#,
+            r#"{"jsonrpc":"2.0","id":1,"result":{"content":"run finished"}}"#,
+        ];
+        let feeder = tokio::spawn(async move {
+            use tokio::io::AsyncWriteExt;
+            for f in frames {
+                sw.write_all(format!("{f}\n").as_bytes()).await.unwrap();
+            }
+        });
+        let reply = read_attach_stream(&mut reader, &mut writer)
+            .await
+            .expect("a refused deny must not abort the attached run");
+        // `Ok(None)` means the run's answer arrived (it was printed); `Some(_)` would be a
+        // failure line, which is what a refused deny used to be turned into.
+        assert_eq!(reply, None, "the run's reply must end the stream cleanly");
+        feeder.await.unwrap();
+        // The deny really went out (the reader wrote it into the half this end reads from).
+        use tokio::io::AsyncReadExt;
+        let mut buf = vec![0u8; 256];
+        let n = sr.read(&mut buf).await.expect("the deny must be written");
+        let sent = String::from_utf8_lossy(&buf[..n]).to_string();
+        assert!(sent.contains("\"decision\":\"deny\""), "wrote: {sent}");
+    }
+
+    #[test]
+    fn attach_frame_denies_a_permission_request() {
+        let v = serde_json::json!({"jsonrpc":"2.0","method":"$/permissionRequest",
+            "params":{"request_id":"r1","tool":"bash","args":{"cmd":"ls"},"reason":"ask"}});
+        assert_eq!(
+            frame(v),
+            AttachAction::DenyApproval {
+                request_id: "r1".into(),
+                tool: "bash".into()
+            }
+        );
+    }
+
+    #[test]
+    fn attach_frame_ignores_progress_and_respond_replies() {
+        for v in [
+            serde_json::json!({"jsonrpc":"2.0","method":"$/progress","params":{"token":"t"}}),
+            serde_json::json!({"jsonrpc":"2.0","id":3,"result":{}}),
+        ] {
+            assert_eq!(frame(v), AttachAction::Ignore);
+        }
+    }
+
+    #[test]
+    fn attach_frame_surfaces_errors_and_content() {
+        assert!(matches!(
+            frame(
+                serde_json::json!({"jsonrpc":"2.0","id":2,"error":{"code":-32000,"message":"boom"}})
+            ),
+            AttachAction::Fail(_)
+        ));
+        assert_eq!(
+            frame(serde_json::json!({"jsonrpc":"2.0","id":2,"result":{"content":"done"}})),
+            AttachAction::Reply("done".into())
+        );
+    }
+
+    #[test]
+    fn attach_deny_warning_names_the_tool_and_request_id() {
+        let line = attach_deny_warning("bash", "r1");
+        assert!(line.starts_with("warning: run --attach cannot answer approvals"));
+        assert!(line.contains("bash") && line.contains("r1"));
+    }
+
+    #[test]
+    fn attach_deny_request_serializes_to_a_deny_decision() {
+        let body = attach_deny_request("req-9", 7);
+        let v: serde_json::Value = serde_json::from_str(body.trim()).unwrap();
+        assert_eq!(v["method"], "permission/respond");
+        assert_eq!(v["params"]["request_id"], "req-9");
+        assert_eq!(v["params"]["decision"], "deny");
+        assert_eq!(v["id"], 7);
+    }
+
+    #[test]
+    fn attach_frame_ignores_a_malformed_permission_notification() {
+        let v = serde_json::json!({"jsonrpc":"2.0","method":"$/permissionRequest","params":{}});
+        assert_eq!(
+            frame(v),
+            AttachAction::Ignore,
+            "no request_id means nothing to deny"
+        );
+    }
+
     #[test]
     fn run_error_line_is_none_for_result() {
         let v: serde_json::Value =
@@ -2057,6 +2280,20 @@ mod tests {
     }
 
     #[test]
+    fn state_dir_empty_string_is_not_a_path() {
+        let cfg = config_with_web(Some(""));
+        assert_eq!(
+            metrics_state_dir_from(&cfg, Some("/xdg"), Some("/home/u")),
+            Some(std::path::PathBuf::from("/xdg/agentj")),
+            "an empty configured state_dir must behave like an absent one"
+        );
+        assert_eq!(
+            usage_history_dir_from(&cfg, Some("/xdg"), Some("/home/u")),
+            Some(std::path::PathBuf::from("/xdg/agentj/usage"))
+        );
+    }
+
+    #[test]
     fn state_dir_falls_back_to_xdg_then_home() {
         let cfg = config_with_web(None);
         assert_eq!(
@@ -2072,6 +2309,13 @@ mod tests {
             Some(std::path::PathBuf::from("/home/u/.local/share/agentj")),
             "an empty XDG_DATA_HOME is not a path"
         );
+    }
+
+    #[test]
+    fn state_dir_empty_string_without_env_warns() {
+        let cfg = config_with_web(Some(""));
+        assert_eq!(metrics_state_dir_from(&cfg, None, None), None);
+        assert!(metrics_state_warning(None).is_some());
     }
 
     #[test]

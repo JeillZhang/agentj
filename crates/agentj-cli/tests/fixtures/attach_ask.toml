@@ -1,0 +1,15 @@
+[model]
+provider = "mock"
+
+[[model.providers]]
+name = "mock"
+kind = "mock"
+base_url = "mock://local"
+api_key_env = ""
+
+[permission]
+# 远端审批超时故意远大于测试 deadline（30s vs 10s），这样告警只能来自 attach 自己。
+timeout_ms = 30000
+
+[permission.tools.bash]
+mode = "ask"

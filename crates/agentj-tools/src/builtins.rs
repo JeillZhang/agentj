@@ -219,6 +219,7 @@ impl GrepTool {
                 pattern,
                 include,
                 cwd.unwrap_or_else(|| std::path::Path::new(".")),
+                timeout,
             )
             .map(serde_json::Value::String),
             Err(other) => Err(other.into()),
@@ -258,12 +259,21 @@ impl GrepTool {
     /// Search without ripgrep: walk `root`, match `include` as a glob, run the
     /// regex per line, and print `path:line:match` like `rg --no-heading
     /// --with-filename --line-number`. Binary and oversized files are skipped,
-    /// and the walk honours [`GrepTool::SKIP_DIRS`].
+    /// and the walk honours [`GrepTool::SKIP_DIRS`]. `timeout` bounds the walk
+    /// itself: the caller's already-clamped deadline is the only budget that
+    /// exists once the `rg` subprocess is gone.
     fn search_native(
         pattern: &str,
         include: &str,
         root: &std::path::Path,
+        timeout: std::time::Duration,
     ) -> Result<String, ToolError> {
+        let deadline = std::time::Instant::now() + timeout;
+        // An already-spent budget must not report "no matches": an empty result from a walk
+        // that was never allowed to run is exactly the lie this deadline exists to prevent.
+        if std::time::Instant::now() >= deadline {
+            return Err(ToolError::Timeout(timeout));
+        }
         let re = regex::Regex::new(pattern).map_err(|e| ToolError::ExecutionFailed {
             name: "grep".into(),
             reason: format!("invalid regex: {e}"),
@@ -277,37 +287,82 @@ impl GrepTool {
                 !(e.file_type().is_dir()
                     && Self::SKIP_DIRS.contains(&e.file_name().to_string_lossy().as_ref()))
             });
-        'walk: for entry in walker.filter_map(Result::ok) {
-            if !entry.file_type().is_file() {
-                continue;
+        for entry in walker.filter_map(Result::ok) {
+            if std::time::Instant::now() >= deadline {
+                return Err(ToolError::Timeout(timeout));
             }
             if !Self::include_matches(include, entry.path(), root) {
                 continue;
             }
-            if entry.metadata().map(|m| m.len()).unwrap_or(u64::MAX) > Self::MAX_FILE_BYTES {
-                continue;
-            }
-            let Ok(bytes) = std::fs::read(entry.path()) else {
-                continue;
-            };
-            // Non-UTF-8 (binary) files are skipped rather than lossily searched.
-            let Ok(text) = String::from_utf8(bytes) else {
-                continue;
-            };
-            let shown = entry.path().strip_prefix(root).unwrap_or(entry.path());
-            for (idx, line) in text.lines().enumerate() {
-                if !re.is_match(line) {
-                    continue;
-                }
-                if hits == Self::MAX_HITS {
-                    out.push_str(&format!("…[结果已截断，命中超过 {} 条]\n", Self::MAX_HITS));
-                    break 'walk;
-                }
-                out.push_str(&format!("{}:{}:{}\n", shown.display(), idx + 1, line));
-                hits += 1;
+            if Self::scan_entry(&entry, root, &re, deadline, timeout, &mut out, &mut hits)? {
+                out.push_str(&format!("…[结果已截断，命中超过 {} 条]\n", Self::MAX_HITS));
+                break;
             }
         }
         Ok(out)
+    }
+
+    /// Search one walked entry, returning `true` once [`GrepTool::MAX_HITS`] is
+    /// reached. Non-matching entries (wrong type, oversized, binary) are skipped
+    /// silently; only a timeout is an error.
+    #[allow(clippy::too_many_arguments)]
+    fn scan_entry(
+        entry: &walkdir::DirEntry,
+        root: &std::path::Path,
+        re: &regex::Regex,
+        deadline: std::time::Instant,
+        timeout: std::time::Duration,
+        out: &mut String,
+        hits: &mut usize,
+    ) -> Result<bool, ToolError> {
+        if !entry.file_type().is_file() {
+            return Ok(false);
+        }
+        // Checked before the read: a 1 MiB file can otherwise eat whatever budget is left.
+        if std::time::Instant::now() >= deadline {
+            return Err(ToolError::Timeout(timeout));
+        }
+        if entry.metadata().map(|m| m.len()).unwrap_or(u64::MAX) > Self::MAX_FILE_BYTES {
+            return Ok(false);
+        }
+        let Ok(bytes) = std::fs::read(entry.path()) else {
+            return Ok(false);
+        };
+        // Non-UTF-8 (binary) files are skipped rather than lossily searched.
+        let Ok(text) = String::from_utf8(bytes) else {
+            return Ok(false);
+        };
+        let shown = entry.path().strip_prefix(root).unwrap_or(entry.path());
+        let rel = shown.display().to_string();
+        Self::scan_text(&rel, out, hits, &text, re, deadline, timeout)?;
+        Ok(*hits >= Self::MAX_HITS)
+    }
+
+    /// Scan one file's text, re-checking the deadline every 512 lines: the per-entry
+    /// guard above cannot bound a single huge file, so the in-file check is the one
+    /// that actually stops a pathological file. A timeout reports no matches at all.
+    fn scan_text(
+        rel: &str,
+        out: &mut String,
+        hits: &mut usize,
+        text: &str,
+        re: &regex::Regex,
+        deadline: std::time::Instant,
+        timeout: std::time::Duration,
+    ) -> Result<(), ToolError> {
+        for (idx, line) in text.lines().enumerate() {
+            if idx & 511 == 0 && std::time::Instant::now() >= deadline {
+                return Err(ToolError::Timeout(timeout));
+            }
+            if re.is_match(line) {
+                *hits += 1;
+                out.push_str(&format!("{rel}:{}:{line}\n", idx + 1));
+                if *hits >= Self::MAX_HITS {
+                    return Ok(());
+                }
+            }
+        }
+        Ok(())
     }
 
     /// `rg --glob` matches the pattern against the *file name* at any depth (so
@@ -832,7 +887,13 @@ mod tests {
         std::fs::write(root.path().join("a/b/c/deep.rs"), "needle\n").unwrap();
         std::fs::write(root.path().join("a/b/c/deep.txt"), "needle\n").unwrap();
 
-        let out = GrepTool::search_native("needle", "*.rs", root.path()).unwrap();
+        let out = GrepTool::search_native(
+            "needle",
+            "*.rs",
+            root.path(),
+            Duration::from_millis(SEARCH_DEFAULT_TIMEOUT_MS as u64),
+        )
+        .unwrap();
         assert_eq!(out, "a/b/c/deep.rs:1:needle\n");
     }
 
@@ -840,9 +901,24 @@ mod tests {
     fn grep_fallback_skips_binary_files_and_reports_bad_regex() {
         let root = tempfile::TempDir::new().unwrap();
         std::fs::write(root.path().join("bin.dat"), [0u8, 159, 146, 150, b'x']).unwrap();
-        assert_eq!(GrepTool::search_native("x", "*", root.path()).unwrap(), "");
+        assert_eq!(
+            GrepTool::search_native(
+                "x",
+                "*",
+                root.path(),
+                Duration::from_millis(SEARCH_DEFAULT_TIMEOUT_MS as u64),
+            )
+            .unwrap(),
+            ""
+        );
 
-        let err = GrepTool::search_native("([", "*", root.path()).unwrap_err();
+        let err = GrepTool::search_native(
+            "([",
+            "*",
+            root.path(),
+            Duration::from_millis(SEARCH_DEFAULT_TIMEOUT_MS as u64),
+        )
+        .unwrap_err();
         assert!(
             matches!(&err, ToolError::ExecutionFailed { name, reason }
                 if name == "grep" && reason.contains("invalid regex")),
@@ -1055,5 +1131,103 @@ mod tests {
             std::fs::canonicalize(stdout).unwrap(),
             std::fs::canonicalize(expected).unwrap()
         );
+    }
+
+    #[test]
+    fn native_search_times_out_when_the_budget_is_zero() {
+        let root = tempfile::TempDir::new().unwrap();
+        std::fs::write(root.path().join("a.txt"), "needle\n").unwrap();
+        let err = GrepTool::search_native("needle", "*", root.path(), Duration::ZERO).unwrap_err();
+        assert!(
+            matches!(err, ToolError::Timeout(_)),
+            "zero budget must time out structurally: {err}"
+        );
+    }
+
+    #[test]
+    fn native_search_times_out_before_the_walk_starts() {
+        let root = tempfile::TempDir::new().unwrap();
+        // A root the walker never yields (it does not exist) is the case the per-entry guard
+        // cannot cover: without a pre-walk check the call reports "no matches" with a spent
+        // budget.
+        let missing = root.path().join("does-not-exist");
+        let err = GrepTool::search_native("needle", "*", &missing, Duration::ZERO).unwrap_err();
+        assert!(
+            matches!(err, ToolError::Timeout(_)),
+            "a spent budget must time out, not report zero matches: {err}"
+        );
+    }
+
+    #[test]
+    fn native_search_finds_hits_within_the_budget() {
+        let root = tempfile::TempDir::new().unwrap();
+        std::fs::write(root.path().join("a.txt"), "needle\n").unwrap();
+        let out =
+            GrepTool::search_native("needle", "*", root.path(), Duration::from_secs(5)).unwrap();
+        assert_eq!(out, "a.txt:1:needle\n");
+    }
+
+    #[test]
+    fn grep_fallback_honours_the_clamped_timeout() {
+        let root = tempfile::TempDir::new().unwrap();
+        std::fs::write(root.path().join("a.txt"), "needle\n").unwrap();
+        // 钳制下限是 1s：timeout_ms = 1 与缺省值都要落到同一个 Duration。
+        assert_eq!(
+            clamp_timeout_ms(Some(1), SEARCH_DEFAULT_TIMEOUT_MS),
+            Duration::from_millis(MIN_TOOL_TIMEOUT_MS as u64)
+        );
+        let err = GrepTool::run_with_rg(
+            "agentj-test-missing-rg-binary",
+            "needle",
+            "*",
+            Some(root.path()),
+            Duration::ZERO,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, ToolError::Timeout(_)),
+            "the fallback must honour the deadline: {err}"
+        );
+    }
+
+    #[test]
+    fn scan_text_checks_the_deadline_inside_a_file() {
+        let re = regex::Regex::new("needle").unwrap();
+        let body: String = (0..1_000)
+            .map(|i| format!("line {i} without a match\n"))
+            .collect();
+        let (mut out, mut hits) = (String::new(), 0usize);
+        // 已经过去的 deadline：idx 0 的复查立即命中，与挂钟速度无关。
+        let deadline = std::time::Instant::now();
+        let err = GrepTool::scan_text(
+            "big.txt",
+            &mut out,
+            &mut hits,
+            &body,
+            &re,
+            deadline,
+            Duration::ZERO,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, ToolError::Timeout(_)),
+            "the in-file guard must fire: {err}"
+        );
+        assert_eq!(hits, 0, "a timed-out scan reports nothing");
+        assert!(out.is_empty(), "no partial output escapes a timeout");
+    }
+
+    #[test]
+    fn native_search_skips_files_over_the_size_cap() {
+        let root = tempfile::TempDir::new().unwrap();
+        let body = "needle\n".repeat(200_000);
+        assert!(
+            body.len() as u64 > GrepTool::MAX_FILE_BYTES,
+            "the fixture must exceed the 1 MiB cap or the cap is never exercised"
+        );
+        std::fs::write(root.path().join("big.txt"), &body).unwrap();
+        let out =
+            GrepTool::search_native("needle", "*", root.path(), Duration::from_secs(30)).unwrap();
+        assert_eq!(out, "", "files above the size cap are skipped");
     }
 }
