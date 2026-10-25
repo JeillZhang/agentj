@@ -91,8 +91,9 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
   - `desktop-package-macos` / `desktop-package-windows`：跨平台打包 —— 同样的前置步骤 →
     `--bundles dmg|msi` → `check-artifacts.sh macos|windows`（`shell: bash`，Windows 也走 bash）→
     上传 `agentj-desktop-macos` / `agentj-desktop-windows`；`timeout-minutes: 60`，不含测试套件。
-    **只在 PR 带 `desktop-package` label 或手动 dispatch 时运行**（macOS/Windows runner 昂贵），
-    契约由 `assert-ci.sh desktop-package-platforms` 钉住；产物**不签名不公证**
+    **只在 PR 带 `desktop-package` label 或手动 dispatch 时运行**（macOS/Windows runner 昂贵）——
+    `on.pull_request.types` 含 `labeled`，打标签即触发一次只跑这两个打包作业的运行，其余作业在该
+    事件下被跳过；契约由 `assert-ci.sh desktop-package-platforms` 钉住；产物**不签名不公证**
 - `.github/workflows/smoke.yml` — 冒烟（PR + push main + 手动）：
   `cargo build --release` + `agentj --version/--help` 断言 + `cargo test -p agentj-core -- smoke`
 - `.github/workflows/e2e.yml` — E2E（main 合并后 + 手动）：

@@ -50,7 +50,9 @@ node agentj-ui/apps/desktop/check-desktop-ui.mjs        # 前端产物/配置一
 
 - **macOS / Windows 作业按 `desktop-package` label 门控**：只有 PR 带该 label 或手动
   `workflow_dispatch` 时才会跑，避免每个 PR 都付 macOS/Windows runner 的成本。想验证跨平台打包，
-  给 PR 打上 `desktop-package` label 再重跑 workflow。
+  给 PR 打上 `desktop-package` label 即可——`on.pull_request.types` 含 `labeled`，打标签会直接
+  触发一次**只跑这两个打包作业**的运行（其余作业在该事件下被跳过，因此标注不会重跑测试与覆盖率）；
+  没有 push 权限的人打标签同样有效。
 - **`scripts/tests/assert-ci.sh desktop-package-platforms`** 把上面这份契约钉进仓库不变量
   （runner / bundle / 校验脚本 / `shell: bash` / 上传名 / 保留期 / label 门控），改 `ci.yml`
   却没同步这份契约会直接红。

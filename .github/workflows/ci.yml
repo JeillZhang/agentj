@@ -1,7 +1,9 @@
 name: ci
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
+    # `labeled` is what makes the `desktop-package` label gate below usable: a label added
+    # after the PR was opened only reaches the jobs through a fresh event.
+    types: [opened, synchronize, reopened, labeled]
   push:
     branches: [main]
   workflow_dispatch:
@@ -17,6 +19,7 @@ env:
   COVERAGE_THRESHOLD: 92
 jobs:
   lint:
+    if: github.event.action != 'labeled'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -38,6 +41,7 @@ jobs:
           bash scripts/tests/assert-cargo.sh --strict
           bash scripts/tests/assert-ci.sh --strict
   test:
+    if: github.event.action != 'labeled'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -51,6 +55,7 @@ jobs:
       - run: cargo build -p agentj-plugin-fixture
       - run: cargo test --workspace --locked
   deny:
+    if: github.event.action != 'labeled'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -62,6 +67,7 @@ jobs:
       # so the guard would silently rot instead of failing the build.
       - run: cargo deny check advisories licenses bans sources -D unmatched-skip
   cross-platform:
+    if: github.event.action != 'labeled'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
@@ -76,6 +82,7 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo build --workspace --locked
   coverage:
+    if: github.event.action != 'labeled'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -95,6 +102,7 @@ jobs:
           name: coverage-lcov
           path: lcov.info
   frontend:
+    if: github.event.action != 'labeled'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -130,6 +138,7 @@ jobs:
   # Linux desktop packaging: proves `tauri build` still produces installable
   # artifacts. `cross-platform` stays build-only; bundling lives here alone.
   desktop-package:
+    if: github.event.action != 'labeled'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:

@@ -444,7 +444,8 @@ path = root / ".github" / "workflows" / "ci.yml"
 if not path.is_file():
     print("missing .github/workflows/ci.yml")
     sys.exit(1)
-jobs = (yaml.safe_load(path.read_text()) or {}).get("jobs") or {}
+doc = yaml.safe_load(path.read_text()) or {}
+jobs = doc.get("jobs") or {}
 
 GATE = "github.event.pull_request.labels.*.name"
 specs = {
@@ -493,6 +494,25 @@ for job_name, (runner, bundle, platform, artifact) in specs.items():
             errors.append(f"{job_name} must set retention-days: 7")
         if with_.get("if-no-files-found") != "error":
             errors.append(f"{job_name} must fail when no artifacts are produced")
+
+# The label gate is only usable if a `labeled` event is actually delivered: a label added
+# after the PR opened never reaches the original payload, and a re-run replays it.
+triggers = doc.get("on") or doc.get(True) or {}
+pull_request = triggers.get("pull_request") if isinstance(triggers, dict) else None
+types = (pull_request or {}).get("types") or []
+if "labeled" not in types:
+    errors.append("on.pull_request.types must include `labeled` so the packaging label gate fires")
+
+# A `labeled` run must stay cheap: only the packaging jobs may run on it.
+SKIP = "github.event.action != 'labeled'"
+for job_name, job in jobs.items():
+    gated_out = SKIP in str(job.get("if", ""))
+    # Only the two label-gated packagers run on `labeled`; the Linux packager already ran on
+    # the PR's own push, so it is skipped like the test/lint/coverage jobs.
+    if job_name in specs and gated_out:
+        errors.append(f"{job_name} must not be skipped on a `labeled` event")
+    if job_name not in specs and not gated_out:
+        errors.append(f"{job_name} must be skipped on a `labeled` event (`{SKIP}`)")
 
 if errors:
     print("; ".join(errors))
