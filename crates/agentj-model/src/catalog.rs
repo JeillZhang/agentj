@@ -198,7 +198,6 @@ mod tests {
         for (id, format) in [
             ("opencode-go/kimi-k3", WireFormat::OpenAiCompat),
             ("opencode-go/longcat-2.0", WireFormat::OpenAiCompat),
-            ("opencode-go/grok-4.5", WireFormat::Responses),
             ("opencode-go/grok-4.7", WireFormat::Responses),
             ("opencode-go/gpt-6-luna", WireFormat::Responses),
             (
@@ -228,6 +227,22 @@ mod tests {
     }
 
     #[test]
+    fn builtin_snapshot_carries_context_windows() {
+        let cat = ModelCatalog::builtin();
+        let windows: Vec<u32> = cat
+            .entries
+            .values()
+            .filter_map(|e| e.context_window)
+            .collect();
+        assert!(
+            windows.len() >= 28,
+            "only {} entries carry a window",
+            windows.len()
+        );
+        assert!(windows.iter().all(|w| *w > 0));
+    }
+
+    #[test]
     fn overlay_json_emits_context_window_only_when_known() {
         let entries = vec![
             CatalogEntry {
@@ -252,7 +267,7 @@ mod tests {
     fn catalog_builtin_marks_unresolved_ids_unverified() {
         let catalog = ModelCatalog::builtin();
         // Ids `GET /v1/models` still advertises but models.dev does not cover.
-        for id in ["opencode-go/glm-5", "opencode-go/omen-alpha"] {
+        for id in ["opencode-go/gemini-4-argon", "opencode-go/omen-alpha"] {
             let entry = catalog.lookup(id).expect(id);
             assert_eq!(entry.format, WireFormat::OpenAiCompat);
             assert!(!entry.verified, "{id} must stay unverified");
