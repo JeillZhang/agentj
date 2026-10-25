@@ -854,47 +854,77 @@ async fn run_attached(
 
 /// Drain the run's frame stream until it concludes. Returns the failure text when the
 /// run failed (the caller prints it and exits non-zero), or `None` on a delivered reply.
+/// Read one decodable frame, skipping lines that are not JSON (banners, partial writes).
+async fn read_attach_frame<R>(reader: &mut R) -> anyhow::Result<Option<serde_json::Value>>
+where
+    R: tokio::io::AsyncBufRead + Unpin,
+{
+    use tokio::io::AsyncBufReadExt;
+    let mut line = String::new();
+    loop {
+        line.clear();
+        if reader.read_line(&mut line).await? == 0 {
+            return Ok(None);
+        }
+        if let Ok(frame) = serde_json::from_str::<serde_json::Value>(line.trim()) {
+            return Ok(Some(frame));
+        }
+    }
+}
+
+/// Write one request attach owns (a deny or a skip) and remember its id, so a refusal of
+/// *that* write is not mistaken for the run failing.
+async fn send_own_request<W, F>(
+    w: &mut W,
+    next_id: &mut u64,
+    own_ids: &mut Vec<u64>,
+    build: F,
+    what: &str,
+) where
+    W: tokio::io::AsyncWrite + Unpin,
+    F: FnOnce(u64) -> String,
+{
+    use tokio::io::AsyncWriteExt;
+    let id = *next_id;
+    *next_id += 1;
+    own_ids.push(id);
+    if let Err(err) = w.write_all(build(id).as_bytes()).await {
+        tracing::warn!(%err, "attach: failed to {what}");
+    }
+}
+
 async fn read_attach_stream<R, W>(reader: &mut R, w: &mut W) -> anyhow::Result<Option<String>>
 where
     R: tokio::io::AsyncBufRead + Unpin,
     W: tokio::io::AsyncWrite + Unpin,
 {
-    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
     let mut next_id = 2u64;
     // Ids of the requests attach itself wrote (a deny or a skip), so their error replies
     // are not mistaken for the run failing.
     let mut own_ids: Vec<u64> = Vec::new();
-    let mut line = String::new();
     loop {
-        line.clear();
-        if reader.read_line(&mut line).await? == 0 {
+        let Some(frame) = read_attach_frame(reader).await? else {
             return Ok(Some(
                 "attach: connection closed before the run finished".into(),
             ));
-        }
-        let Ok(frame) = serde_json::from_str::<serde_json::Value>(line.trim()) else {
-            continue;
         };
         match decode_attach_frame(&frame) {
             AttachAction::DenyApproval { request_id, tool } => {
                 eprintln!("{}", attach_deny_warning(&tool, &request_id));
-                let id = next_id;
-                next_id += 1;
-                own_ids.push(id);
-                let body = attach_deny_request(&request_id, id);
-                if let Err(err) = w.write_all(body.as_bytes()).await {
-                    tracing::warn!(%err, "attach: failed to send the deny decision");
-                }
+                let build = |id| attach_deny_request(&request_id, id);
+                send_own_request(
+                    w,
+                    &mut next_id,
+                    &mut own_ids,
+                    build,
+                    "send the deny decision",
+                )
+                .await;
             }
             AttachAction::SkipQuestion { question_id } => {
                 eprintln!("{}", attach_skip_question_warning(&question_id));
-                let id = next_id;
-                next_id += 1;
-                own_ids.push(id);
-                let body = attach_skip_question_request(&question_id, id);
-                if let Err(err) = w.write_all(body.as_bytes()).await {
-                    tracing::warn!(%err, "attach: failed to settle the question");
-                }
+                let build = |id| attach_skip_question_request(&question_id, id);
+                send_own_request(w, &mut next_id, &mut own_ids, build, "settle the question").await;
             }
             AttachAction::Fail(failure) => {
                 // A refused deny answers *our* write, not the run: the remote turn is still
