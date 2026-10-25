@@ -190,6 +190,7 @@ mod tests {
                 id: "opencode-go/kimi-k3".into(),
                 format: WireFormat::OpenAiCompat,
                 verified: true,
+                context_window: None,
             },
         );
         entries.insert(
@@ -198,6 +199,7 @@ mod tests {
                 id: "opencode-go/grok-4.5".into(),
                 format: WireFormat::Responses,
                 verified: true,
+                context_window: None,
             },
         );
         entries.insert(
@@ -206,6 +208,7 @@ mod tests {
                 id: "opencode-go/minimax-m3".into(),
                 format: WireFormat::Anthropic,
                 verified: true,
+                context_window: None,
             },
         );
         ModelCatalog {

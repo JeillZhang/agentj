@@ -29,6 +29,7 @@ pub fn build_overlay(live_ids: &[String], models_dev: &serde_json::Value) -> Vec
                 id,
                 format,
                 verified,
+                context_window: None,
             }
         })
         .collect()
@@ -61,11 +62,17 @@ pub fn overlay_json(base_url: &str, entries: &[CatalogEntry]) -> String {
     let models: Vec<serde_json::Value> = entries
         .iter()
         .map(|e| {
-            serde_json::json!({
+            // Unknown windows stay absent from the committed overlay: a guessed default would
+            // silently shrink the request budget for models we know nothing about (design D2).
+            let mut obj = serde_json::json!({
                 "id": e.id,
                 "format": format_name(e.format),
                 "verified": e.verified,
-            })
+            });
+            if let Some(window) = e.context_window {
+                obj["context_window"] = serde_json::json!(window);
+            }
+            obj
         })
         .collect();
     serde_json::to_string_pretty(&serde_json::json!({
@@ -164,6 +171,7 @@ mod tests {
             id: "opencode-go/x".into(),
             format: WireFormat::Anthropic,
             verified: true,
+            context_window: None,
         }];
         let json = overlay_json("https://example.test", &entries);
         let parsed = crate::catalog::ModelCatalog::from_json(&json);
