@@ -72,9 +72,22 @@
   「已投递未回答」；`docs/guide/subscription.md`：新增「常驻状态指示灯」小节（无轮询 / 年龄可见 /
   300s 焦点补取）替换掉旧的「不做常驻徽标」非目标，并补趋势图的悬停 + 键盘读值。
 
+### 验收修复（code review 后追加）
+
+7 个前端缺陷一次修完，每个一提交（web 750 → 755、tui 202 → 204、sdk 89 不变、oxlint 仍 0 error / 48）：
+
+1. 订阅面板 CTA 不可点：`onBlur` 收进 wrapper 且只在焦点真的离开时收起（点按钮/按 Tab 不再先卸载）。
+2. `auth/status` 探测失败曾被报成「未链接凭据」：`unavailable` 归 `error`，`no_credential` 才归 `unknown`。
+3. `unserved` 改按模型名判定（两个 provider 提供同名默认模型时不再误报「当前未提供」）。
+4. 焦点连点不再重复打请求（`inFlightRef` 折叠并发取数）。
+5. TUI 断连清空 suffix（不再残留 `kernel unreachable · sub 40%`）。
+6. TUI 换/清凭据后经 `catalogSeq` 重读 suffix。
+7. 迷你曲线命中带 `key` 改用位置，不再因同秒重复样本丢 hover。
+8. `app.tsx` 的 `sub?.tone` 类型错误修掉（`formatSubSuffix(sub).tone`；TUI 无 tsc 门禁，故此前静默）。
+
 ### 门禁
 
-web 750 测试 / 61 文件、sdk 89、tui 202 / 23 文件；`vite build` 通过；`oxlint` **0 error / 48 warning**
+web 755 测试 / 61 文件、sdk 89、tui 204 / 23 文件；`vite build` 通过；`oxlint` **0 error / 48 warning**
 （与基线持平——`TopbarMenu` 改为「注册回调」而不是写穿父级 ref，消掉了一条 `react(immutability)`）。
 `tokens` 未新增任何变量；`check-version.sh` / `check-desktop-ui.mjs` / `assert-ui.sh all` 全过。
 
@@ -303,7 +316,7 @@ TUI 订阅浮层追加块字符曲线与首尾值；`check-artifacts.sh linux-de
 ## 下一步
 
 - 本批次（结构债收敛，前端侧 T16–T30 + T32）已收尾：FileTree 拆分、TUI 测试收窄、模型标记语义统一、
-  订阅状态常驻指示 + 趋势图交互、文档同步；门禁全绿（web 750 / sdk 89 / tui 202，oxlint 0 error / 48
+  订阅状态常驻指示 + 趋势图交互、文档同步，code review 的 8 个缺陷已全部修复；门禁全绿（web 755 / sdk 89 / tui 204，oxlint 0 error / 48
   warning，vite build 过）；分支推送 `origin` 与 `gitcode`，PR 开在 `origin`（用户负责合并）。
 - 表外可选改进：`SubscriptionPanel.tsx` 仍有 309 行（下一步可把「历史抽屉 + 凭据卡片」再分一层）；
   `SubscriptionStatus` 目前只在 shell 顶栏，尚无键盘直达设置页的快捷键；`UsageSparkline` 的命中带

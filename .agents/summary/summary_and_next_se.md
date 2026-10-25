@@ -55,9 +55,20 @@
 - `docs/guide/tools.md` 重写 glob 超时段落（超时会让本次调用失败、部分匹配丢弃）；
   `docs/changelog/v0.1.md` 补 Changed（web 拆分）与 Fixed（glob 超时、无审批器立即拒绝）。
 
+### 验收修复（code review 后追加）
+
+- **`ConnectionRegistry::deliver`**：`send_to` 对未知 id 有意返回 `Ok`（给关掉的 peer 回响应不算错），
+  但审批 notifier 不能继承这份宽容——所有权行还在、writer 已消失时会被当成「已投递」，
+  于是空等整个 `timeout_ms` 才以 `timed out` 拒绝。新增 `deliver` 只回答「到底送达没有」，
+  审批改用它；新增测试 `approval_with_vanished_owner_is_denied_immediately`
+  （超时设为 30s，2s 内必须拿到 `no approver` 拒绝）与既有的 dead-writer 测试互为补角。ipc lib 306 → 307。
+- **notifier 失败路径**：owner 分支 `send_to` 的失败不再被 `let _ =` 吞掉，改为
+  `registry.read().ok().is_some_and(|r| r.deliver(...))` + `warn!`（`approval request could not
+  reach the session owner`），`register_ask` 据此立即 `deny_without_approver`。
+
 ### 门禁
 
-`cargo test --workspace --locked` 全绿（1204 项）、`clippy --workspace --all-targets -- -D warnings`
+`cargo test --workspace --locked` 全绿（1208 项）、`clippy --workspace --all-targets -- -D warnings`
 零警告、`cargo fmt --all --check` 干净、`fn-length` 0 违规、`assert-{cargo,ui,ci}.sh all` 全 PASS、
 `check-version.sh` version-ok。
 
