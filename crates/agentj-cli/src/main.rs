@@ -703,6 +703,60 @@ fn run_error_line(v: &serde_json::Value) -> Option<String> {
     })
 }
 
+/// One decoded JSON-RPC frame from a `run --attach` stream. Keeping the decision in a
+/// single value instead of inline `if`s in the read loop is what stops a reply frame from
+/// being mistaken for a fresh request (and denied again, forever).
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum AttachAction {
+    DenyApproval { request_id: String, tool: String },
+    Reply(String),
+    Fail(String),
+    Ignore,
+}
+
+fn decode_attach_frame(v: &serde_json::Value) -> AttachAction {
+    if v.get("method").and_then(|m| m.as_str()) == Some("$/permissionRequest") {
+        let params = &v["params"];
+        return match params.get("request_id").and_then(|r| r.as_str()) {
+            Some(request_id) => AttachAction::DenyApproval {
+                request_id: request_id.to_string(),
+                tool: params
+                    .get("tool")
+                    .and_then(|t| t.as_str())
+                    .unwrap_or("unknown")
+                    .to_string(),
+            },
+            None => AttachAction::Ignore,
+        };
+    }
+    if let Some(failure) = run_error_line(v) {
+        return AttachAction::Fail(failure);
+    }
+    match v["result"]["content"].as_str() {
+        Some(text) => AttachAction::Reply(text.to_string()),
+        None => AttachAction::Ignore,
+    }
+}
+
+/// The line `run --attach` prints when the remote kernel asks for an approval: attach is a
+/// non-interactive client, so it can only refuse and say how to approve for real.
+fn attach_deny_warning(tool: &str, request_id: &str) -> String {
+    format!(
+        "warning: run --attach cannot answer approvals; denying {tool} ({request_id}) — \
+         attach again with an interactive serve client, or run `agentj serve` and approve there"
+    )
+}
+
+/// A `permission/respond` request denying `request_id`, ready to write as one line.
+fn attach_deny_request(request_id: &str, id: u64) -> String {
+    let params = agentj_protocol::permission::PermissionRespondParams {
+        request_id: request_id.to_string(),
+        decision: agentj_protocol::permission::PermissionDecision::Deny,
+    };
+    let body = serde_json::to_string(&params).expect("a deny decision always serializes");
+    format!("{{\"jsonrpc\":\"2.0\",\"id\":{id},\"method\":\"permission/respond\",\"params\":{body}}}\n")
+}
+
 async fn run_attached(
     url: &str,
     prompt: &str,
@@ -732,26 +786,46 @@ async fn run_attached(
     let run_line = run_params_json(&sid, prompt, provider, model);
     w.write_all(run_line.as_bytes()).await?;
     w.write_all(b"\n").await?;
+    read_attach_stream(&mut reader, &mut w).await
+}
+
+/// Drain the run's frame stream until it concludes. Returns the failure text when the
+/// run failed (the caller prints it and exits non-zero), or `None` on a delivered reply.
+async fn read_attach_stream<R, W>(reader: &mut R, w: &mut W) -> anyhow::Result<Option<String>>
+where
+    R: tokio::io::AsyncBufRead + Unpin,
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+    let mut next_id = 2u64;
+    let mut line = String::new();
     loop {
         line.clear();
         if reader.read_line(&mut line).await? == 0 {
-            anyhow::bail!("connection closed before session/run completed");
+            return Ok(Some(
+                "attach: connection closed before the run finished".into(),
+            ));
         }
-        let v: serde_json::Value = match serde_json::from_str(line.trim()) {
-            Ok(v) => v,
-            Err(_) => continue,
+        let Ok(frame) = serde_json::from_str::<serde_json::Value>(line.trim()) else {
+            continue;
         };
-        // Checked before the result branch: an error reply has no
-        // `result.content`, so ignoring it would spin here forever.
-        if let Some(failure) = run_error_line(&v) {
-            return Ok(Some(failure));
-        }
-        if let Some(text) = v["result"]["content"].as_str() {
-            println!("{text}");
-            break;
+        match decode_attach_frame(&frame) {
+            AttachAction::DenyApproval { request_id, tool } => {
+                eprintln!("{}", attach_deny_warning(&tool, &request_id));
+                next_id += 1;
+                let body = attach_deny_request(&request_id, next_id);
+                if let Err(err) = w.write_all(body.as_bytes()).await {
+                    tracing::warn!(%err, "attach: failed to send the deny decision");
+                }
+            }
+            AttachAction::Fail(failure) => return Ok(Some(failure)),
+            AttachAction::Reply(text) => {
+                println!("{text}");
+                return Ok(None);
+            }
+            AttachAction::Ignore => continue,
         }
     }
-    Ok(None)
 }
 
 #[tokio::main]
@@ -1972,6 +2046,76 @@ mod tests {
         assert_eq!(
             run_error_line(&invalid).as_deref(),
             Some("error: boom (code -32602)")
+        );
+    }
+
+    // ---- T5: attach frame decoding ----
+
+    fn frame(v: serde_json::Value) -> AttachAction {
+        decode_attach_frame(&v)
+    }
+
+    #[test]
+    fn attach_frame_denies_a_permission_request() {
+        let v = serde_json::json!({"jsonrpc":"2.0","method":"$/permissionRequest",
+            "params":{"request_id":"r1","tool":"bash","args":{"cmd":"ls"},"reason":"ask"}});
+        assert_eq!(
+            frame(v),
+            AttachAction::DenyApproval {
+                request_id: "r1".into(),
+                tool: "bash".into()
+            }
+        );
+    }
+
+    #[test]
+    fn attach_frame_ignores_progress_and_respond_replies() {
+        for v in [
+            serde_json::json!({"jsonrpc":"2.0","method":"$/progress","params":{"token":"t"}}),
+            serde_json::json!({"jsonrpc":"2.0","id":3,"result":{}}),
+        ] {
+            assert_eq!(frame(v), AttachAction::Ignore);
+        }
+    }
+
+    #[test]
+    fn attach_frame_surfaces_errors_and_content() {
+        assert!(matches!(
+            frame(
+                serde_json::json!({"jsonrpc":"2.0","id":2,"error":{"code":-32000,"message":"boom"}})
+            ),
+            AttachAction::Fail(_)
+        ));
+        assert_eq!(
+            frame(serde_json::json!({"jsonrpc":"2.0","id":2,"result":{"content":"done"}})),
+            AttachAction::Reply("done".into())
+        );
+    }
+
+    #[test]
+    fn attach_deny_warning_names_the_tool_and_request_id() {
+        let line = attach_deny_warning("bash", "r1");
+        assert!(line.starts_with("warning: run --attach cannot answer approvals"));
+        assert!(line.contains("bash") && line.contains("r1"));
+    }
+
+    #[test]
+    fn attach_deny_request_serializes_to_a_deny_decision() {
+        let body = attach_deny_request("req-9", 7);
+        let v: serde_json::Value = serde_json::from_str(body.trim()).unwrap();
+        assert_eq!(v["method"], "permission/respond");
+        assert_eq!(v["params"]["request_id"], "req-9");
+        assert_eq!(v["params"]["decision"], "deny");
+        assert_eq!(v["id"], 7);
+    }
+
+    #[test]
+    fn attach_frame_ignores_a_malformed_permission_notification() {
+        let v = serde_json::json!({"jsonrpc":"2.0","method":"$/permissionRequest","params":{}});
+        assert_eq!(
+            frame(v),
+            AttachAction::Ignore,
+            "no request_id means nothing to deny"
         );
     }
 
