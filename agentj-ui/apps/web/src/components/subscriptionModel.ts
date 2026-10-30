@@ -34,6 +34,18 @@ export const STATE_TEXT: Record<SubscriptionState, string> = {
 };
 
 /**
+ * One sentence per device-code poll outcome; `null` means "keep polling". Moved out of the
+ * panel so the literals live with the other user-facing text.
+ */
+export function deviceStateLabel(state: string): string | null {
+  if (state === "authorized") return "登录成功";
+  if (state === "expired") return "设备码已过期，请重新登录";
+  if (state === "denied") return "设备码登录被拒绝";
+  if (state === "pending" || state === "slow_down") return null;
+  return "设备码登录未完成，请重试";
+}
+
+/**
  * Coarse, human age of a usage payload. Deliberately coarse: the freshness contract
  * only distinguishes "just now" from "minutes" from "hours", so no clock is needed
  * beyond the caller's own read.

@@ -14,6 +14,24 @@ describe("parseProgress standard wire frames", () => {
     });
     expect(f).toEqual({ kind: "tool_call", id: "c1", name: "bash", arguments: { cmd: "ls" } });
   });
+  it("carries the dropped char count when a tool result was truncated", () => {
+    const f = parseProgress({
+      token: 7,
+      value: { kind: "tool_result", tool_call_id: "c1", content: "auth.rs", truncated_chars: 1200 },
+    });
+    expect(f).toEqual({ kind: "tool_result", call_id: "c1", content: "auth.rs", truncated: 1200 });
+  });
+
+  it("ignores a bogus truncated_chars without dropping the result", () => {
+    for (const bogus of [0, -5, "lots", null]) {
+      const f = parseProgress({
+        token: 7,
+        value: { kind: "tool_result", tool_call_id: "c1", content: "auth.rs", truncated_chars: bogus },
+      });
+      expect(f).toEqual({ kind: "tool_result", call_id: "c1", content: "auth.rs" });
+    }
+  });
+
   it("parses tool_result", () => {
     const f = parseProgress({ token: 7, value: { kind: "tool_result", tool_call_id: "c1", content: "auth.rs\n" } });
     expect(f).toEqual({ kind: "tool_result", call_id: "c1", content: "auth.rs\n" });

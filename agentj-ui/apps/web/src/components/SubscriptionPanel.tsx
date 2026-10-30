@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { METHODS, RpcClient } from "@agentj/sdk";
 import type { AuthSetApiKeyResult, ProviderUsageHistoryResult, UsageSample, UsageWindow } from "@agentj/protocol";
 import SubscriptionUsage, { CredentialRow } from "./SubscriptionUsage";
-import { ERROR_TEXT } from "./subscriptionModel";
+import { ERROR_TEXT, deviceStateLabel } from "./subscriptionModel";
 import type { SubscriptionStatusData } from "../hooks/useSubscriptionStatus";
 import "./subscriptionPanel.css";
 
@@ -17,6 +17,12 @@ type Props = {
    * snapshot instead of fetching usage itself: one owner for the polling contract.
    */
   status?: SubscriptionStatusData;
+  /**
+   * Which half of the account surface to render. Settings splits 用量 and 订阅 into two
+   * tabs, but both read the same fetches, so one component owns the data and each tab
+   * mounts only its own section.
+   */
+  section?: "all" | "usage" | "subscription";
 };
 
 type ProviderUsage = {
@@ -63,7 +69,7 @@ function linkClearText(cleared: boolean): string {
   return cleared ? "已解除链接；模型列表回退到公开目录" : "当前没有已保存的凭据";
 }
 
-export default function SubscriptionPanel({ client, onClose, onLinked, onCleared, status }: Props) {
+export default function SubscriptionPanel({ client, onClose, onLinked, onCleared, status, section = "all" }: Props) {
   const [auth, setAuth] = useState<AuthStatus | null>(null);
   const [ownUsage, setOwnUsage] = useState<ProviderUsage | null>(null);
   const [samples, setSamples] = useState<UsageSample[]>([]);
@@ -148,16 +154,13 @@ export default function SubscriptionPanel({ client, onClose, onLinked, onCleared
     if (res.state === "pending") return schedulePoll(code, seconds);
     if (res.state === "slow_down") return schedulePoll(code, res.interval ?? seconds);
     setDevice(null);
+    const label = deviceStateLabel(res.state);
+    if (label !== null) setDeviceMsg(label);
     if (res.state === "authorized") {
-      setDeviceMsg("登录成功");
       void loadStatus();
       void client.request(METHODS.modelList, { refresh: true });
       refreshUsage();
-      return;
     }
-    if (res.state === "expired") setDeviceMsg("设备码已过期，请重新登录");
-    else if (res.state === "denied") setDeviceMsg("设备码登录被拒绝");
-    else setDeviceMsg("设备码登录未完成，请重试");
   };
 
   const link = async () => {
@@ -241,12 +244,22 @@ export default function SubscriptionPanel({ client, onClose, onLinked, onCleared
           关闭
         </button>
       </div>
-      {auth && <CredentialRow status={auth} />}
-      {usage ? (
-        <SubscriptionUsage usage={usage} samples={samples} now={historyAt} />
-      ) : (
-        <p className="aj-sub__hint">正在获取用量…</p>
+      {section !== "usage" && auth && <CredentialRow status={auth} />}
+      {section !== "subscription" &&
+        (usage ? (
+          <SubscriptionUsage usage={usage} samples={samples} now={historyAt} />
+        ) : (
+          <p className="aj-sub__hint">正在获取用量…</p>
+        ))}
+      {section !== "subscription" && (
+        <div className="aj-sub__actions aj-sub__actions--usage">
+          <button type="button" className="aj-sub__btn" onClick={refreshUsage}>
+            刷新用量
+          </button>
+        </div>
       )}
+      {section !== "usage" && (
+        <>
       <div className="aj-sub__link">
         <span className="aj-sub__section">链接方式</span>
         <label className="aj-sub__link-label" htmlFor="aj-sub-api-key">
@@ -289,11 +302,10 @@ export default function SubscriptionPanel({ client, onClose, onLinked, onCleared
         <button type="button" className="aj-sub__btn" onClick={() => void startDevice()}>
           设备码登录
         </button>
-        <button type="button" className="aj-sub__btn" onClick={refreshUsage}>
-          刷新用量
-        </button>
       </div>
-      {device && (
+        </>
+      )}
+      {section !== "usage" && device && (
         <div className="aj-sub__device">
           <p>
             请在浏览器打开 <a href={device.verification_uri}>{device.verification_uri}</a>
@@ -303,7 +315,7 @@ export default function SubscriptionPanel({ client, onClose, onLinked, onCleared
           </p>
         </div>
       )}
-      {deviceMsg && <p className="aj-sub__msg">{deviceMsg}</p>}
+      {section !== "usage" && deviceMsg && <p className="aj-sub__msg">{deviceMsg}</p>}
     </div>
   );
 }

@@ -26,7 +26,7 @@ type Props = {
   subscription?: SubscriptionStatusData;
 };
 
-type CategoryId = "connection" | "display" | "project" | "demo" | "subscription";
+type CategoryId = "connection" | "display" | "project" | "demo" | "usage" | "subscription";
 export type SettingsCategory = CategoryId;
 type Category = { id: CategoryId; label: string };
 
@@ -35,6 +35,7 @@ const CATEGORIES: Category[] = [
   { id: "display", label: "显示" },
   { id: "project", label: "项目" },
   { id: "demo", label: "演示数据" },
+  { id: "usage", label: "用量" },
   { id: "subscription", label: "订阅" },
 ];
 
@@ -56,6 +57,9 @@ export default function SettingsDialog({
   subscription,
 }: Props) {
   const [active, setActive] = useState<CategoryId>(initialCategory);
+  // A missing/invalid credential is the one thing on the 订阅 tab worth flagging from the
+  // nav: everything else there is optional.
+  const credentialPending = subscription?.state === "unknown" || subscription?.state === "invalid";
   const [demo, setDemo] = useState(isDemoEnabled);
   const tabRefs = useRef(new Map<CategoryId, HTMLButtonElement | null>());
   const activeIndex = CATEGORIES.findIndex((category) => category.id === active);
@@ -102,10 +106,24 @@ export default function SettingsDialog({
               aria-controls={panelId(category.id)}
               tabIndex={tabIndexFor(index, activeIndex)}
               className={`aj-settings-nav__item${active === category.id ? " aj-settings-nav__item--active" : ""}`}
+              title={
+                category.id === "subscription" && credentialPending
+                  ? "订阅 · 待配置凭据"
+                  : undefined
+              }
               onClick={() => select(category.id)}
               onKeyDown={onTabKeyDown}
             >
               {category.label}
+              {category.id === "subscription" && credentialPending && (
+                // Decorative dot: the state lives in the tab's title, so the accessible
+                // name stays exactly the label.
+                <span
+                  className="aj-settings-nav__badge"
+                  data-testid="settings-nav-badge"
+                  aria-hidden="true"
+                />
+              )}
             </button>
           ))}
         </div>
@@ -140,10 +158,17 @@ export default function SettingsDialog({
               </button>
             </div>
           )}
+          {active === "usage" &&
+            (client ? (
+              <SubscriptionPanel client={client} onClose={onClose} onLinked={onModelsLinked}
+                onCleared={onModelsCleared} status={subscription} section="usage" />
+            ) : (
+              <p className="aj-hint">先连接内核</p>
+            ))}
           {active === "subscription" &&
             (client ? (
               <SubscriptionPanel client={client} onClose={onClose} onLinked={onModelsLinked}
-                onCleared={onModelsCleared} status={subscription} />
+                onCleared={onModelsCleared} status={subscription} section="subscription" />
             ) : (
               <p className="aj-hint">先连接内核</p>
             ))}

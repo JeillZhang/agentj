@@ -575,7 +575,9 @@ impl TurnState {
         &mut self,
     ) -> Result<Option<BoxStream<'static, Result<ModelEvent, ModelError>>>, String> {
         let route = |reason: String| format!("agent error: {reason}");
-        let tools = self.lane.tool_defs.clone();
+        // The definition set may not claim more than 30% of the budget (design ㊶): the tail is
+        // dropped so the body keeps room, and the provider is sent exactly what was charged.
+        let tools = budget::bounded_definitions(&self.lane.tool_defs, self.lane.context_budget);
         let request = self.pipeline.fit_with_tools(
             self.lane.messages.clone(),
             &tools,

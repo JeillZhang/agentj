@@ -492,6 +492,8 @@ struct TcpServeOptions {
     provider_service: Option<Arc<dyn agentj_ipc::ProviderService>>,
     /// `[web]` spot cadence + per-request verification knobs.
     integrity: agentj_ipc::web::IntegrityOptions,
+    /// `Config::validate()` output: every clamped/ignored knob, printed with the banner.
+    config_warnings: Vec<String>,
 }
 
 /// Whether `host` refers to the loopback interface (the local-trust default).
@@ -598,13 +600,14 @@ async fn serve_tcp(
     // handler were installed afterwards, that SIGTERM would still hit the default
     // disposition and kill the process without a graceful shutdown.
     let signal_task = spawn_tcp_signal_task(tcp.shared_server());
-    println!("listening on {local}");
+    emit_line(&format!("listening on {local}"));
     emit_serve_banner(
         &tcp.web_config(),
         &web_dist,
         &options.host,
         local.port(),
         warnings,
+        &options.config_warnings,
     );
     // Resident mode: exits when the last client disconnects or a shutdown
     // request arrives (design #3, on-demand resident).
@@ -628,21 +631,43 @@ fn serve_warnings(options: &TcpServeOptions) -> [Option<String>; 4] {
 /// config-level warnings in the order the CLI has always emitted them:
 /// websocket → dist → web config, then the optional warnings in
 /// [insecure-bind, metrics-state, proxy-trust, usage-history] order.
+/// Write one readiness/banner line to stdout, logging instead of panicking when the pipe is
+/// gone. A supervisor that reads only the `listening on` line and closes its end is normal
+/// (`head -1`, readiness probes); `println!` would abort the daemon with a BrokenPipe panic
+/// right after it announced itself, and every connection queued in the backlog then gets an
+/// RST instead of a reply.
+fn emit_line(text: &str) {
+    let mut out = std::io::stdout().lock();
+    if let Err(err) = emit_line_to(&mut out, text) {
+        tracing::warn!(%err, "serve: stdout closed; banner line dropped");
+    }
+}
+
+/// Testable core of `emit_line`: write one line, propagate the io error.
+fn emit_line_to<W: std::io::Write>(out: &mut W, text: &str) -> std::io::Result<()> {
+    writeln!(out, "{text}")
+}
+
 fn emit_serve_banner(
     web: &agentj_ipc::web::WebConfig,
     web_dist: &Option<std::path::PathBuf>,
     host: &str,
     port: u16,
     warnings: [Option<String>; 4],
+    config_warnings: &[String],
 ) {
-    println!("websocket on ws://{}:{}/ws", bracket_ipv6(host), port);
+    emit_line(&format!(
+        "websocket on ws://{}:{}/ws",
+        bracket_ipv6(host),
+        port
+    ));
     match web_dist {
-        Some(dir) => println!(
+        Some(dir) => emit_line(&format!(
             "web ui on http://{}:{}/ (dist: {})",
             bracket_ipv6(host),
             port,
             dir.display()
-        ),
+        )),
         None => eprintln!(
             "warning: web dist not found; build it via `npm --prefix agentj-ui run build \
              --workspace=@agentj/web` or pass --web-dist <PATH>"
@@ -652,6 +677,10 @@ fn emit_serve_banner(
         eprintln!("{warning}");
     }
     for warning in warnings.into_iter().flatten() {
+        eprintln!("{warning}");
+    }
+    // Last, so an operator reading the banner tail sees every silently adjusted knob.
+    for warning in config_warnings {
         eprintln!("{warning}");
     }
 }
@@ -713,7 +742,15 @@ fn run_error_line(v: &serde_json::Value) -> Option<String> {
 /// being mistaken for a fresh request (and denied again, forever).
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum AttachAction {
-    DenyApproval { request_id: String, tool: String },
+    DenyApproval {
+        request_id: String,
+        tool: String,
+    },
+    /// The kernel is waiting on an `ask` tool; attach is not an interactive client, so it
+    /// settles the question as skipped instead of letting the 600s timeout run.
+    SkipQuestion {
+        question_id: String,
+    },
     Reply(String),
     Fail(String),
     Ignore,
@@ -730,6 +767,14 @@ fn decode_attach_frame(v: &serde_json::Value) -> AttachAction {
                     .and_then(|t| t.as_str())
                     .unwrap_or("unknown")
                     .to_string(),
+            },
+            None => AttachAction::Ignore,
+        };
+    }
+    if v.get("method").and_then(|m| m.as_str()) == Some("$/askQuestion") {
+        return match v["params"].get("question_id").and_then(|q| q.as_str()) {
+            Some(question_id) => AttachAction::SkipQuestion {
+                question_id: question_id.to_string(),
             },
             None => AttachAction::Ignore,
         };
@@ -773,6 +818,29 @@ fn attach_deny_request(request_id: &str, id: u64) -> String {
     )
 }
 
+/// `question/respond` body attach writes: the question is settled as skipped, which the
+/// kernel reports to the model honestly instead of blocking until the ask timeout.
+fn attach_skip_question_request(question_id: &str, id: u64) -> String {
+    let params = agentj_protocol::question::QuestionRespondParams {
+        question_id: question_id.to_string(),
+        answers: Vec::new(),
+        skipped: true,
+    };
+    let body = serde_json::to_string(&params).expect("a skipped answer always serializes");
+    format!(
+        "{{\"jsonrpc\":\"2.0\",\"id\":{id},\"method\":\"question/respond\",\"params\":{body}}}\n"
+    )
+}
+
+/// The line `run --attach` prints when the remote kernel asks a question: attach answers it
+/// as skipped, and says how to answer for real.
+fn attach_skip_question_warning(question_id: &str) -> String {
+    format!(
+        "warning: run --attach cannot answer questions; skipping ({question_id}) — \
+         answer it in an interactive serve client, or run `agentj run` locally"
+    )
+}
+
 async fn run_attached(
     url: &str,
     prompt: &str,
@@ -807,41 +875,83 @@ async fn run_attached(
 
 /// Drain the run's frame stream until it concludes. Returns the failure text when the
 /// run failed (the caller prints it and exits non-zero), or `None` on a delivered reply.
+/// Read one decodable frame, skipping lines that are not JSON (banners, partial writes).
+async fn read_attach_frame<R>(reader: &mut R) -> anyhow::Result<Option<serde_json::Value>>
+where
+    R: tokio::io::AsyncBufRead + Unpin,
+{
+    use tokio::io::AsyncBufReadExt;
+    let mut line = String::new();
+    loop {
+        line.clear();
+        if reader.read_line(&mut line).await? == 0 {
+            return Ok(None);
+        }
+        if let Ok(frame) = serde_json::from_str::<serde_json::Value>(line.trim()) {
+            return Ok(Some(frame));
+        }
+    }
+}
+
+/// Write one request attach owns (a deny or a skip) and remember its id, so a refusal of
+/// *that* write is not mistaken for the run failing.
+async fn send_own_request<W, F>(
+    w: &mut W,
+    next_id: &mut u64,
+    own_ids: &mut Vec<u64>,
+    build: F,
+    what: &str,
+) where
+    W: tokio::io::AsyncWrite + Unpin,
+    F: FnOnce(u64) -> String,
+{
+    use tokio::io::AsyncWriteExt;
+    let id = *next_id;
+    *next_id += 1;
+    own_ids.push(id);
+    if let Err(err) = w.write_all(build(id).as_bytes()).await {
+        tracing::warn!(%err, "attach: failed to {what}");
+    }
+}
+
 async fn read_attach_stream<R, W>(reader: &mut R, w: &mut W) -> anyhow::Result<Option<String>>
 where
     R: tokio::io::AsyncBufRead + Unpin,
     W: tokio::io::AsyncWrite + Unpin,
 {
-    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
     let mut next_id = 2u64;
-    let mut deny_ids: Vec<u64> = Vec::new();
-    let mut line = String::new();
+    // Ids of the requests attach itself wrote (a deny or a skip), so their error replies
+    // are not mistaken for the run failing.
+    let mut own_ids: Vec<u64> = Vec::new();
     loop {
-        line.clear();
-        if reader.read_line(&mut line).await? == 0 {
+        let Some(frame) = read_attach_frame(reader).await? else {
             return Ok(Some(
                 "attach: connection closed before the run finished".into(),
             ));
-        }
-        let Ok(frame) = serde_json::from_str::<serde_json::Value>(line.trim()) else {
-            continue;
         };
         match decode_attach_frame(&frame) {
             AttachAction::DenyApproval { request_id, tool } => {
                 eprintln!("{}", attach_deny_warning(&tool, &request_id));
-                let id = next_id;
-                next_id += 1;
-                deny_ids.push(id);
-                let body = attach_deny_request(&request_id, id);
-                if let Err(err) = w.write_all(body.as_bytes()).await {
-                    tracing::warn!(%err, "attach: failed to send the deny decision");
-                }
+                let build = |id| attach_deny_request(&request_id, id);
+                send_own_request(
+                    w,
+                    &mut next_id,
+                    &mut own_ids,
+                    build,
+                    "send the deny decision",
+                )
+                .await;
+            }
+            AttachAction::SkipQuestion { question_id } => {
+                eprintln!("{}", attach_skip_question_warning(&question_id));
+                let build = |id| attach_skip_question_request(&question_id, id);
+                send_own_request(w, &mut next_id, &mut own_ids, build, "settle the question").await;
             }
             AttachAction::Fail(failure) => {
                 // A refused deny answers *our* write, not the run: the remote turn is still
                 // going, so report the bookkeeping failure and keep reading instead of
                 // aborting with an error that looks like the run's own.
-                if is_attach_deny_reply(&frame, &deny_ids) {
+                if is_attach_deny_reply(&frame, &own_ids) {
                     eprintln!("warning: attach deny was refused: {failure}");
                     continue;
                 }
@@ -1125,6 +1235,7 @@ struct WebSettings {
     metrics_state_dir: Option<std::path::PathBuf>,
     usage_history_warning: Option<String>,
     integrity: agentj_ipc::web::IntegrityOptions,
+    config_warnings: Vec<String>,
 }
 
 impl WebSettings {
@@ -1139,6 +1250,7 @@ impl WebSettings {
                 resolve_usage_history_dir(config).as_deref(),
             ),
             integrity: resolve_integrity_options(config),
+            config_warnings: config.validate(),
         }
     }
 }
@@ -1447,6 +1559,7 @@ async fn run_serve(
         usage_history_warning: web.usage_history_warning,
         provider_service: wiring.provider_service,
         integrity: web.integrity,
+        config_warnings: web.config_warnings,
     };
     serve_tcp(
         wiring.kernel,
@@ -2179,6 +2292,37 @@ mod tests {
     }
 
     #[test]
+    fn attach_settles_a_question_as_skipped() {
+        let v = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "$/askQuestion",
+            "params": { "question_id": "q-7", "question": "Which file?", "options": [] }
+        });
+        assert_eq!(
+            frame(v),
+            AttachAction::SkipQuestion {
+                question_id: "q-7".into()
+            }
+        );
+        let body = attach_skip_question_request("q-7", 9);
+        let sent: serde_json::Value = serde_json::from_str(body.trim()).unwrap();
+        assert_eq!(sent["method"], "question/respond");
+        assert_eq!(sent["params"]["question_id"], "q-7");
+        assert_eq!(sent["params"]["skipped"], true);
+        assert_eq!(sent["id"], 9);
+        assert!(
+            attach_skip_question_warning("q-7").contains("cannot answer questions"),
+            "the operator must be told the question was skipped"
+        );
+    }
+
+    #[test]
+    fn attach_ignores_a_malformed_question_notification() {
+        let v = serde_json::json!({"jsonrpc": "2.0", "method": "$/askQuestion", "params": {}});
+        assert_eq!(frame(v), AttachAction::Ignore);
+    }
+
+    #[test]
     fn attach_deny_request_serializes_to_a_deny_decision() {
         let body = attach_deny_request("req-9", 7);
         let v: serde_json::Value = serde_json::from_str(body.trim()).unwrap();
@@ -2346,6 +2490,23 @@ mod tests {
             ))
         );
         assert_eq!(usage_history_dir_from(&cfg, None, None), None);
+    }
+
+    #[test]
+    fn web_settings_carry_the_config_clamp_warnings() {
+        let cfg = load_test_config("[agent]\nmax_tool_iterations = 9000\n");
+        let web = WebSettings::resolve(&cfg);
+        assert_eq!(
+            web.config_warnings,
+            vec!["warning: agent.max_tool_iterations = 9000 outside 1..=1000; using 1000"],
+            "the serve banner must surface a silently clamped knob"
+        );
+        assert!(
+            WebSettings::resolve(&load_test_config(""))
+                .config_warnings
+                .is_empty(),
+            "an in-range config stays quiet"
+        );
     }
 
     #[test]
@@ -2549,5 +2710,35 @@ mod tests {
         let body = std::fs::read_to_string(&path).unwrap();
         assert!(body.contains("\"version\":1"), "{body}");
         assert!(body.contains("\"counters\""), "{body}");
+    }
+
+    /// A closed stdout must not take the daemon down: this is exactly what a supervisor that
+    /// reads the readiness line and closes the pipe does, and the pre-fix `println!` aborted
+    /// the process with a BrokenPipe panic (queued connections then saw an RST).
+    #[test]
+    fn banner_lines_survive_a_closed_stdout() {
+        struct Closed;
+        impl std::io::Write for Closed {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "closed",
+                ))
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut closed = Closed;
+        let err = emit_line_to(&mut closed, "websocket on ws://127.0.0.1:1/ws")
+            .expect_err("a closed pipe must surface as an io error, not a panic");
+        assert_eq!(err.kind(), std::io::ErrorKind::BrokenPipe);
+        // And the same line written to a live sink is byte-identical to what the banner shows.
+        let mut buf: Vec<u8> = Vec::new();
+        emit_line_to(&mut buf, "listening on 127.0.0.1:4096").unwrap();
+        assert_eq!(
+            String::from_utf8(buf).unwrap(),
+            "listening on 127.0.0.1:4096\n"
+        );
     }
 }

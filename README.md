@@ -191,7 +191,7 @@ env = { FOO = "bar" }
   （同端口分类器；`?token=` + `initialize.token` + 登录 cookie 三通道鉴权）
 - HTTP 面（内核托管）：`/`（Web UI）+ `/assets` + `/login` / `/logout` +
   `GET /version` + `GET /metrics`（详见 [HTTP 面与鉴权](docs/guide/http-and-auth.md)）
-- 协议版本：`0.20.0`（`initialize` 握手 + 语义化版本 + 加性纪律：只加不改；
+- 协议版本：`0.21.0`（`initialize` 握手 + 语义化版本 + 加性纪律：只加不改；
   未知能力/枚举值容忍）
 
 ## Development

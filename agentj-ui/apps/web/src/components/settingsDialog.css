@@ -45,6 +45,17 @@
   font-weight: 600;
 }
 
+/* Nav badge: the tab itself carries the state, so a dot is enough (no extra text). */
+.aj-settings-nav__badge {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-left: 6px;
+  border-radius: 50%;
+  background: var(--aj-danger, #d9534f);
+  vertical-align: middle;
+}
+
 .aj-settings-nav__item:focus-visible {
   outline: 2px solid var(--aj-accent);
   outline-offset: -2px;

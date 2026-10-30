@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import type { KeyboardEvent, ReactElement } from "react";
 import type { TrendPoint } from "@agentj/sdk";
+import { buildBuckets, type SparkBucket } from "./sparkBuckets";
 
 type Props = {
   /** Points for one window kind, ascending by `at`; see `buildTrend`. */
@@ -22,6 +23,10 @@ function pct(percent: number): number {
   return Math.round(percent);
 }
 
+function when(at: number): string {
+  return new Date(at * 1000).toLocaleString();
+}
+
 /** Screen-reader summary; also the live region's idle text and the paragraph fallback. */
 function summarise(points: TrendPoint[]): string {
   const values = points.map((p) => pct(p.percent));
@@ -29,30 +34,42 @@ function summarise(points: TrendPoint[]): string {
   return `用量趋势：最新 ${latest}%，最低 ${Math.min(...values)}%，最高 ${Math.max(...values)}%`;
 }
 
-function describePoint(point: TrendPoint): string {
-  return `${pct(point.percent)}% · ${new Date(point.at * 1000).toLocaleString()}`;
+/** Tooltip text: one sample names itself, a bucket names the sample range it stands for. */
+function describeBucket(bucket: SparkBucket): string {
+  const head = `${pct(bucket.percent)}%`;
+  if (bucket.start === bucket.end) return `${head} · ${when(bucket.at)}`;
+  return `${head} · 样本 ${bucket.start + 1}–${bucket.end + 1} · ${when(bucket.at)}`;
 }
 
 /**
  * Inline usage trend for one window kind. Renders nothing below two points — a single
  * sample is not a trend, and an empty chart reads as "no data" the wrong way.
  *
- * Hovering a vertical band inspects that sample; the same inspection is reachable from the
- * keyboard (focus the chart, step with ←/→, Esc to dismiss) and announced through a live
- * region, so the readout is not pointer-only.
+ * Hovering a band inspects that sample (or the sample range, once bucketed); the same
+ * inspection is reachable from the keyboard (focus the chart, step with ←/→, Esc to
+ * dismiss) and announced through a live region, so the readout is not pointer-only.
  */
 export default function UsageSparkline({ points, width = 120 }: Props): ReactElement | null {
   const [active, setActive] = useState<number | null>(null);
-  if (points.length < 2) return null;
+  const usable = points.length >= 2 && width > 0;
+  const buckets = useMemo(
+    () => (usable ? buildBuckets(points, width) : []),
+    [points, width, usable],
+  );
+  if (!usable) return null;
   const last = points.length - 1;
-  const current = active !== null && active >= 0 && active <= last ? active : null;
   const step = width / last;
+  const lastBucket = buckets.length - 1;
+  const current = active !== null && active >= 0 && active <= lastBucket ? active : null;
   const summary = summarise(points);
-  const tip = current === null ? null : describePoint(points[current]);
+  const tip = current === null ? null : describeBucket(buckets[current]);
+  const bandX = (bucket: SparkBucket) => bucket.start * step - step / 2;
+  const bandW = (bucket: SparkBucket) => Math.max(step, (bucket.end - bucket.start + 1) * step);
+  const bandLeft = (bucket: SparkBucket) => (bandX(bucket) + bandW(bucket) / 2) / width;
 
   const stepBy = (delta: number) => {
-    const from = current ?? last;
-    setActive(Math.min(last, Math.max(0, from + delta)));
+    const from = current ?? lastBucket;
+    setActive(Math.min(lastBucket, Math.max(0, from + delta)));
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
@@ -67,14 +84,18 @@ export default function UsageSparkline({ points, width = 120 }: Props): ReactEle
       setActive(0);
     } else if (event.key === "End") {
       event.preventDefault();
-      setActive(last);
+      setActive(lastBucket);
     } else if (event.key === "Escape") {
       setActive(null);
     }
   };
 
-  const d = points
-    .map((p, i) => `${i === 0 ? "M" : "L"}${(i * step).toFixed(1)},${pointY(p.percent).toFixed(1)}`)
+  const d = buckets
+    .flatMap((bucket) => bucket.vertices)
+    .map(
+      (i, k) =>
+        `${k === 0 ? "M" : "L"}${(i * step).toFixed(1)},${pointY(points[i].percent).toFixed(1)}`,
+    )
     .join(" ");
   return (
     <div
@@ -84,25 +105,25 @@ export default function UsageSparkline({ points, width = 120 }: Props): ReactEle
       tabIndex={0}
       aria-label={`${summary}（聚焦后可用左右方向键逐点查看）`}
       onKeyDown={onKeyDown}
-      onFocus={() => setActive((a) => a ?? last)}
+      onFocus={() => setActive((a) => a ?? lastBucket)}
       onBlur={() => setActive(null)}
     >
       <svg className="aj-spark" width={width} height={HEIGHT} role="img" aria-label={summary}>
         <path d={d} fill="none" stroke="currentColor" strokeWidth="1.5" />
-        {points.map((p, i) => (
+        {buckets.map((bucket, i) => (
           <rect
-            key={`${p.at}-${i}`}
+            key={`${bucket.at}-${i}`}
             className="aj-spark-hit"
             data-testid="spark-hit"
-            x={Math.max(0, i * step - step / 2)}
+            x={Math.max(0, bandX(bucket))}
             y={0}
-            width={step}
+            width={bandW(bucket)}
             height={HEIGHT}
             fill="transparent"
             onMouseEnter={() => setActive(i)}
             onMouseLeave={() => setActive((a) => (a === i ? null : a))}
           >
-            <title>{describePoint(p)}</title>
+            <title>{describeBucket(bucket)}</title>
           </rect>
         ))}
       </svg>
@@ -110,7 +131,7 @@ export default function UsageSparkline({ points, width = 120 }: Props): ReactEle
         <div
           className="aj-spark-tip"
           role="tooltip"
-          style={{ left: `${Math.round(((current * step) / width) * 100)}%` }}
+          style={{ left: `${Math.round(bandLeft(buckets[current]) * 100)}%` }}
         >
           {tip}
         </div>

@@ -1,6 +1,6 @@
 # AGENTS.md
 
-> **当前版本 0.1.0** · `PROTOCOL_VERSION` **0.20.0**（29 方法 / 81 schemas / 15 crates）
+> **当前版本 0.1.0** · `PROTOCOL_VERSION` **0.21.0**（29 方法 / 81 schemas / 15 crates）
 > 本文件只记录**约束、入口与基线**（Setup / Commands / Architecture / Conventions / Rules）。
 > **逐版本变更与历史决策不写在这里** —— 见 [`docs/changelog/`](docs/changelog/)、
 > [`docs/guide/`](docs/guide/)、[`docs/specs/`](docs/specs/) 与 `.agents/summary/`。
@@ -109,7 +109,7 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
 - `agentj-protocol`（leaf）：IPC 协议权威 wire 类型（JSON-RPC 2.0、错误码、
   29 方法 params/result、流式/订阅/权限/提问/文件列举/订阅服务/用量历史
   （`ProviderUsageHistoryParams`/`ProviderUsageHistoryResult`/`UsageSample`）类型），
-  serde + schemars，零内核耦合。协议版本 `0.20.0`，81 schemas。
+  serde + schemars，零内核耦合。协议版本 `0.21.0`，81 schemas。
 - `agentj-core`（内核）：Kernel 混合总线 + 模块 trait 注册表
   + ServiceRegistry（同步/异步） + TurnRunner 总线化 turn 编排
   + `budget`（请求 token 预算：可插拔 `TokenCounter` 接缝 + `HeuristicTokenizer` 分类校准
@@ -239,7 +239,7 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
 - `agentj-plugin-fixture`（dev-only）：插件 cdylib 测试夹具。
 - `schemas/*.json`：81 JSON Schema（schemars 生成，提交件 + drift 门禁）。
 - `protocol/methods.json`：方法注册表（method ↔ schema/方向/类型；29 方法，
-  protocol_version 0.20.0）。
+  protocol_version 0.21.0）。
 - `docs/specs/ipc-protocol.md`：人类可读协议规范——**错误码表、WS/HTTP 鉴权
   通道、各方法参数/结果契约的权威来源**。
 

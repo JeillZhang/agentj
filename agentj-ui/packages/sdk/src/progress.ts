@@ -23,7 +23,7 @@ export type FileChangeFrame = {
 export type ProgressFrame =
   | { kind: "text"; text: string }
   | { kind: "tool_call"; id: string; name: string; arguments: unknown }
-  | { kind: "tool_result"; call_id: string; content: string }
+  | { kind: "tool_result"; call_id: string; content: string; truncated?: number }
   | { kind: "usage"; usage: UsageInfo }
   | {
       kind: "permission";
@@ -114,9 +114,15 @@ export function parseProgress(params: unknown): ProgressFrame {
     }
     case "tool_result": {
       const { tool_call_id, content } = raw;
-      return typeof tool_call_id === "string" && typeof content === "string"
-        ? { kind: "tool_result", call_id: tool_call_id, content }
-        : { kind: "unknown", raw: params };
+      if (typeof tool_call_id !== "string" || typeof content !== "string") {
+        return { kind: "unknown", raw: params };
+      }
+      // Absent means "nothing was dropped" (0.20.0 wire); a malformed count is ignored
+      // rather than hiding the result.
+      const dropped = raw["truncated_chars"];
+      return typeof dropped === "number" && dropped > 0
+        ? { kind: "tool_result", call_id: tool_call_id, content, truncated: dropped }
+        : { kind: "tool_result", call_id: tool_call_id, content };
     }
     case "usage": {
       const u = raw["usage"];

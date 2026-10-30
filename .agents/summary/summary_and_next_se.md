@@ -7,185 +7,79 @@
 > 待实施），不得随内容替换而删除；仅当该特性实际实施完成后才能移除（移入功能记录）。
 > 前端总结独立存放于 `summary_and_next_fe.md`；两文件内容隔离，互不写入对方文件。
 
-本文件当前记录**合并收口批次（后端侧）**——wire 面零变更（`PROTOCOL_VERSION` 仍 `0.20.0`，
-29 方法 / 81 schemas），工作区版本仍 `0.1.0`，`schemas/` 与 `protocol/methods.json` 未改。
+本文件当前记录 **B9 可观测性 / 配置校验 / 协议截断上报批次（后端侧）**——协议
+`PROTOCOL_VERSION` 由 `0.20.0` 升到 **`0.21.0`**（加性字段，方法数 29 / schemas 81 均不变），
+工作区版本仍 `0.1.0`。
 
-> 当前功能：**tokenizer 接缝 / 三平台打包 / attach 审批 / grep 时限 合并收口** —— 分支
-> `feature/tokenizer-packaging-attach-grep`，计划 17 任务（T0–T16）。
-> 设计与计划是本地文档（`docs/superpowers/{specs,plans}/2026-10-25-tokenizer-packaging-attach-grep-*`，
+> 当前功能：**B9 可观测性 · 配置校验 · 协议截断上报 · 用量面板** —— 分支
+> `feature/b9-observability-config-hardening`，16 任务计划（T1–T11 + b 后缀子任务）。
+> 设计与计划是本地文档（`docs/superpowers/{specs,plans}/2026-10-25-b9-observability-config-hardening*`，
 > 不入库）。
 
-## 合并收口批次（后端侧） ✅
+## B9 批次（后端侧） ✅
 
-### 交付
+### 交付（每项一提交，均已过门禁）
 
-**A. 预算层可插拔 `TokenCounter` + 分类校准（待实施 ⑰⁺a，`crates/agentj-core/src/budget.rs`）**
+| 计划项 | 提交 | 内容 |
+|--------|------|------|
+| T1 | `e57ff0b` | 限流快照落盘不丢更新：`LoginLimiter` 增 `generation`，写盘成功仅在代数未变时清 `dirty` |
+| T2 | `6014f9a` | `Config::validate()` 逐项渲染钳制告警，`serve` / `dashboard` 启动打印 |
+| T5 | `dc61fad` | `budget::definition_tokens` / `bounded_definitions`：工具定义占用 ≤ 请求预算 30%，超出从尾部丢弃 |
+| T4/T4b | `93b4fcb` | `agentj-mcp/src/process.rs`：独立进程组 + 整组终止 + drop 回收，`McpConnectionManager` / `transport` 接线 |
+| T8 | `ea01e4f` | `run --attach` 应答 `$/askQuestion`（stderr 提示 + 「跳过（未回答）」结算；自有请求 id 记账，拒绝回执不误判为 turn 失败） |
+| T3 | （同批） | `agentj-tools` spawn `NotFound` 单独成句回报，不再算作工具执行失败 |
+| T6/T6b/T6c/T7 | `6c2f387` | `truncated_chars` 上 wire（事件 + `$/progress`）+ SDK 解析 + Web 工具卡片显示「结果已截断 N 字符」，协议 0.21.0 |
+| T11 | `9af7c8b` | `UsageSparkline` 密集序列按桶聚合（8px 阈值，每桶保留 min/max 顶点） |
+| T10 | `8ba2aa6` | shell 作用域 `u` / `Shift+U` 打开用量 / 订阅设置，状态面板标出 `u` 提示 |
+| T9（替代形态） | `ee80d57` | 设置拆出「用量」「订阅」两个分类（`SubscriptionPanel` 增 `section`），凭据缺失时订阅 tab 带装饰红点 |
+| T9a（部分） | `a6353a2` | `deviceStateLabel` 移入 `subscriptionModel.ts` |
+| 收尾 | `21c6e09` | `read_attach_stream` 拆出 `read_attach_frame` / `send_own_request`，回到 ≤50 行门禁 |
+| CI 修复 | （本批末尾） | `smoke.yml` 五个 `- name: Smoke: …` 未加引号导致 YAML 解析失败（每次 push 0s 变红，`main` 同样）→ 加引号修复，`validate-workflow.sh` 通过 |
+| CI 修复 | （本批末尾） | serve 就绪行之后的 banner 写 stdout 改走 `emit_line`：管道被关闭时记日志而非 `println!` panic 退出（coverage 作业 `e2e_ws` `ConnectionReset` 的根因）；补单测 + e2e `serve_survives_a_closed_stdout_pipe` |
 
-- 新增接缝 `pub trait TokenCounter { fn count_text(&self, text: &str) -> usize; }`（`budget.rs:38`）
-  与默认实现 `HeuristicTokenizer`（`budget.rs:44`）：真 BPE 词表落地前，按**字符类**计费——
-  ASCII 字母/空白 4 chars/token、ASCII 标点 2.5、CJK（Han/Hiragana/Katakana/Hangul/兼容表意）
-  1.25、其余 BMP 1、星平面 0.5（`astral * 2`）。旧启发式（ASCII/4 + 非 ASCII×1）对中文与标点
-  严重低估，新权重保证**每一类至少和旧值一样高**（回退安全），`estimate_tokens` 仍等于
-  `HeuristicTokenizer.count_text`（签名不变，既有调用点零改动）。
-- 旁路辅助：`message_tokens_with` / `request_tokens_with`（`budget.rs`）接受任意 counter，
-  原 `message_tokens` / `request_tokens` 委托给 `HeuristicTokenizer`。
-- 工具调用收缩器**按 token 计量**（`budget.rs` 的 `shrink_calls`）：此前用 `cap × 4` 字符判断，
-  与估算侧各写一份换算率，且一个 chars-per-token 常数盖不住字符类差异（密标点 2.5、CJK 1.25、
-  ASCII 词 4）。现在直接 `estimate_tokens(payload) > cap` 才换成标记；评审期加的
-  `CHARS_PER_TOKEN` 常量与对应测试已删除（它撑不住「收缩后不超预算」的承诺）。
+**与计划的偏差**：T9 原计划把 `SubscriptionPanel` 拆成 `SubscriptionCredentialCard` +
+`SubscriptionHistory` 两个组件文件；实际采用**同组件按 `section` 分段**（设置两个 tab 各渲染一半，
+共用一份数据与轮询契约），未新建那两个文件——AC 的「凭据卡无 client 可用」「历史失败只影响历史区」
+由既有测试与新增分段测试覆盖。T9a 的 `historyEmptyText` 未实现：当前没有「暂无用量记录」空态
+（趋势图在 <2 点时整体不渲染），加了即为死代码。
 
-**B. 工具定义占用预算（`budget.rs` + `ContextPipeline::fit_with_tools` + turn runner）**
+### 门禁状态（本批收尾实测）
 
-- `definitions_tokens(defs)`（`budget.rs:124`）= 每个定义 `name + description + input_schema`
-  的 token 数 + `TOOL_DEF_OVERHEAD`（12）框架开销；定义**永不**被裁剪器丢弃，但确实占窗口，
-  因此必须在裁剪**之前**预留。
-- `ContextPipeline` 新增默认方法 `fit_with_tools(messages, defs, budget)`（`module.rs:88`）：
-  默认实现等价于 `fit(messages, budget - definitions_tokens(defs))`（下限 1，避免零预算），
-  自定义 pipeline 无需改动即获得新语义。
-- `TurnRunner` 组装请求时改调 `fit_with_tools`（`turn_runner.rs:579`），工具定义不再挤掉历史后
-  才被上游以 400 拒绝。
-
-**C. `grep` 进程内回退受同一 deadline 约束（待实施 ㊲⁺，`crates/agentj-tools/src/builtins.rs`）**
-
-- 无 `rg` 时走的 `GrepTool::search_native`（`builtins.rs:265`）现在自带
-  `Instant::now() + timeout` 期限：每进入一个 walked entry 检查一次，超期即
-  `Err(ToolError::Timeout(timeout))`（与 `bash` / `rg` 一致的结构化超时，不再是一段成功的文本）。
-- `scan_entry`（同文件）亦持 deadline，大文件逐行扫描不会单点跑穿预算；2000 条命中上限行为不变。
-- 前提在 `run_with_rg` 的注释里写明：`rg` 子进程消失后，调用方已钳制的 deadline 是**唯一**预算。
-
-**D. `run --attach` 不再对远端审批装死（待实施 ㊱⁺，`crates/agentj-cli/src/main.rs`）**
-
-- attach 帧解码收敛到单一动作解析，收到 `$/permissionRequest` 时打印
-  `warning: run --attach cannot answer approvals; denying {tool} ({request_id}) — ...`
-  （`main.rs:750`）并主动回一条 `permission/respond` deny（`attach_deny_request`，`main.rs:756`；
-  序列化由 `serde_json` 完成，避免手拼 JSON）。此前 attach 既不答复也不报警，只能等远端
-  `[permission] timeout_ms` 到期。
-- 归属语义不变：`--attach` 的审批归远端内核的订阅客户端，本进程只是「如实报告并拒绝」。
-
-**E. 三平台打包作业（待实施 ㉟⁺，`.github/workflows/ci.yml`）**
-
-- 新增 `desktop-package-macos`（`macos-latest`）与 `desktop-package-windows`（`windows-latest`）：
-  各跑 `npm ci` → protocol / sdk 类型生成 → web 构建 → `tauri build --bundles dmg|msi` →
-  `check-artifacts.sh macos|windows`（`shell: bash`）→ 上传 `agentj-desktop-macos` /
-  `agentj-desktop-windows`；`timeout-minutes: 60`，跑测试套件仍只在 Linux 作业之外的那套里。
-- 两个作业都**只在** PR 带 `desktop-package` label 或手动 dispatch 时运行
-  （`if: github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'desktop-package')`），
-  避免每个 PR 都付 macOS/Windows runner 的成本。
-
-**F. 仓库不变量同步（`scripts/tests/assert-ci.sh`，17 → 19 个 check）**
-
-- 新 check `desktop-package-platforms`：断言两个作业存在、runner 正确、`timeout-minutes <= 60`、
-  打包 bundle 与平台校验脚本匹配、校验步骤用 `shell: bash`、不带 `cargo test`、带 label 门控、
-  上传名与 `retention-days: 7` / `if-no-files-found: error` 正确。check 清单自检
-  （`CHECKS` ↔ `EXPECTED_CI_CHECKS` ↔ `--list`）同步到 10 个 ci check。
-- `check_docs_summaries` 的 `se_keep` 收窄为 `["⑰⁺"]`（㉟⁺/㊱⁺/㊲⁺ 本批已实施），
-  仍要求待实施表出现 `dmg` / `msi` 两词元。
-
-**G. 空 `[web] state_dir` 视为未设置（`crates/agentj-cli/src/main.rs`）**
-
-- `metrics_state_dir_from` 对显式空串加 `.filter(|dir| !dir.as_os_str().is_empty())`：
-  `PathBuf::from("")` 不是目录，此前却赢得解析链，把 metrics/usage 指向会解析到进程 CWD 的路径，
-  导致每次 flush 都失败（`cannot persist login metrics state ...`）。现在回落到
-  `$XDG_DATA_HOME/agentj` → `$HOME/.local/share/agentj`，两者皆无时返回 `None` 并复用
-  「无状态目录」启动警告。
-
-### 测试（新增 26 项 e2e/单测）
-
-- core：`TokenCounter` 分类校准（ASCII / 标点 / CJK / 星平面各自的边界值）、
-  `definitions_tokens` 覆盖 name/description/schema + overhead、`fit_with_tools` 等价于
-  `fit(budget - definitions_tokens)` 且零预算有下限、只有首条 system 免裁剪
-  （`a_later_system_message_is_trimmed_like_any_other`）、`shrink_calls` 按 token 计量（密标点 JSON
-  超 cap 即被替换、40k 字符 payload 收缩后 `estimate_tokens <= cap`）、
-  `DefaultContextPipeline::fit_with_tools` 把预留记在总量上（`body + reserved <= budget`）。
-- tools：grep 进程内回退在 deadline 到点时返回 `Timeout`（不返回部分结果）。
-- cli 单测：`attach_deny_request` 序列化出 `PermissionDecision::Deny`、attach 告警行文案、
-  `state_dir_empty_string_is_not_a_path` / `state_dir_empty_string_without_env_warns`。
-- e2e 新文件 `crates/agentj-cli/tests/e2e_attach_ownership.rs`（3 例）：attach 报告并拒绝远端审批
-  （stderr 命中 `warning: run --attach cannot answer approvals`，且远端的 `timeout_ms = 30000`
-  远大于测试 10s deadline，证明告警来自 attach 而非超时）；owner 断连后第二客户端重新认领并批准
-  （`session/subscribe` 成功 + `session/run` 的 `claim_run_owner` 完成归属转移）；非 owner 的
-  `permission/respond` 被 `NOT_AUTHORIZED` 拒绝且 owner 随后仍能收尾。
-  > 注意：`serve` 在**最后一个**连接断开时收尾（resident 决策 #3），所以「断连后重新认领」的夹具
-  > 必须**先**连上第二个客户端再 drop owner，否则内核直接关机、第二次写入 broken pipe。
-
-### 门禁
-
-| 门禁 | 结果 |
-|------|------|
-| `cargo test --workspace --locked` | 全绿，1247 项（含 3 项新 e2e） |
-| `cargo clippy --workspace --all-targets --locked -- -D warnings` | 0 警告 |
-| `cargo fmt --all --check` | 干净 |
-| `python3 scripts/tests/fn-length.py` | 0 函数 > 50 行 |
-| `bash scripts/tests/assert-{ui,cargo,ci}.sh all` | 3 / 6 / 10 passed，0 failed（共 19 个 check） |
-| `scripts/validate-workflow.sh .github/workflows/ci.yml <9 jobs>` | PASS |
-| `./scripts/check-version.sh` | `version-ok`（版本与协议版本均未变） |
-
-### 提交（`origin/main..HEAD`，最旧 → 最新）
-
-- `ee0b3f8` feat(core): add TokenCounter seam with calibrated character classes
-- `d5640e9` feat(core): reserve tool definition tokens in the request budget
-- `06c5fec` refactor(core): share one chars-per-token constant with the tool-call shrinker
-- `db49c23` feat(core): fit requests against the budget left after tool definitions
-- `2f73e86` fix(tools): bound the in-process grep fallback by the caller's deadline
-- `2720802` feat(cli): deny remote approvals from run --attach instead of hanging
-- `eb97702` test(cli): share the resident-server socket client across e2e binaries
-- `89b2e78` test(cli): cover attach approval denial and cross-client approval ownership
-- `ad74450` test(ci): pin the macOS/Windows desktop packaging jobs
-- `f08693f` ci: bundle dmg and msi on label-gated macOS/Windows runners
-- `080e8b9` fix(cli): treat an empty [web] state_dir as unset
-- `9a32579` style: cargo fmt after the tokenizer/budget edits
-- `0340ae1` test(e2e): keep a second client connected while the owner drops
-- 本提交 docs: 同步 changelog / guide / summary / AGENTS.md 基线
+- `cargo test --workspace --locked`：43 个 test binary 全绿；`cargo clippy --workspace --all-targets
+  --locked -- -D warnings` 零警告；`cargo fmt --all --check` 通过。
+- `cargo test -p agentj-protocol drift` 通过（schemas 与 `protocol/methods.json` 无漂移，
+  `protocol_version: 0.21.0`）。
+- `python3 scripts/tests/fn-length.py crates/`：0 个函数 > 50 行（收尾前 `read_attach_stream`
+  曾 59 行，已拆）。
+- `bash scripts/tests/assert-{cargo,ui,ci}.sh all`：6 / 3 / 10 全 PASS，0 skipped。
+- `cargo llvm-cov --workspace --fail-under-lines 92 --lcov --output-path lcov.info --locked`
+  （本地镜像 CI coverage 作业）：全绿，行覆盖 **93.81%**（32298/34429）。
+- `./scripts/check-version.sh`：`version-ok`（工作区 0.1.0 + 协议 0.21.0 全线一致）。
+- 前端：`npm --prefix agentj-ui test --workspace=@agentj/web` 772 passed；
+  `run build` / `run lint`（0 error）/ `@agentj/sdk` 91 passed / TUI `bun test` 204 passed。
 
 ## 遗留问题 / 已知限制（后端）
 
-- **仍是启发式估算**：`HeuristicTokenizer` 按字符类加权，不是真 BPE 词表——它把「中文/标点被
-  低估 2–4 倍」这一结构性问题压了下去，但逐 provider 的词表差异仍未刻画；`retry_budget`
+- **仍是启发式估算**：`HeuristicTokenizer` 按字符类加权，不是真 BPE 词表；`retry_budget`
   （上游超限收紧重试，最多 2 次）继续保留为兜底。见待实施 ⑰⁺b。
-- **工具定义只做「预留」不参与裁剪**：`fit_with_tools` 只在预算里扣掉定义开销；若定义本身就
-  超过窗口（超多 MCP 工具），`fit` 拿到的预算会被下限钳到 1，请求仍会超限——该情形目前靠上游
-  400 + `retry_budget` 收尾，没有「按需裁工具」的策略。
-- **owner 断连的结算快照可能过期**：`settle_sessions` 现在在 `clear_owner` 之后重新判定归属，
-  只结算仍无人认领的会话；快照与结算之间的窗口由 `settle_sessions(conn_id, owned)` 显式拆开，
-  单测直接喂一个过期快照驱动真实路径。
-- **`serve` 的「最后一个连接」判定看登记表**：e2e 里 B 连上后必须做一次往返（`session/list`）
-  才能确保它已被登记，否则 A 的 EOF 先到会让内核以为无人连接而收尾（表现为 B 写请求 BrokenPipe）。
-- **收缩器的粒度仍是「整体替换」**：`shrink_calls` 超 cap 时把整个参数替换成 `_truncated` 标记，
-  不做部分保留（部分保留会产出模型无法执行的半截 JSON）；被标记的调用通常直接失败，由模型重试。
-- **`fit_with_tools` 的预留记在总量上**：`DefaultContextPipeline` 走 `fit_messages_with`，body 可被
-  压到 0（只留系统提示 + 最新一条）；继承默认实现的第三方 pipeline 仍可能因自己的 `fit` 下限顶回
-  总量——trait 文档已写明该注意点。
-- **attach 侧仍是单向**：`run --attach` 只会 deny，不能批准，也不能应答 `$/askQuestion`
-  （提问只能等远端 `[agent] question_timeout_s` 或 owner 客户端回答）。见待实施 ㊱⁺b。
-- **`dmg` / `msi` 未签名未公证**：作业只构建并校验产物存在；macOS 用户需右键打开或
-  `xattr -d com.apple.quarantine`，Windows 会撞 SmartScreen。见待实施 ㉟⁺b。
-- **两个新作业的首次 CI 运行尚未观测**：本地用 `scripts/validate-workflow.sh` 与
-  `assert-ci.sh desktop-package-platforms` 静态校验结构，真实 runner 上的耗时/失败模式待首跑。
-- **`temp_dist` 固定 `/tmp` 目录**：`agentj-cli-e2e-web-{tag}` 仅按 tag 区分，同 tag 并发跑同一
-  测试目标（或残留服务）会互踩；既有模式，未在本阶段改动。
-- **fixture 基线重复**：`web_verify_off.toml` / `web_fast_spot.toml` 各自复制了
-  `permission_deny.toml` 的完整基线（含 `timeout_ms = 800`），基线变更时需同步三处；
-  本批新增的 `attach_ask.toml` 同理（`timeout_ms = 30000` 是刻意远大于测试 deadline）。
-- **进程型工具报错里的 `name` 变成程序名**：`NotFound` / spawn 失败时 executor 把
-  `ProgramMissing.name` 填成**程序**（`crates/agentj-tools/src/executor.rs:27-30`：bash → `sh`、
-  grep → `rg`），而改动前填的是工具名；管道读失败则是 `"child"`。错误码与变体未变（无 wire 影响），
-  属可选跟进。
-- **`ToolExecutor::run_blocking` 只能在阻塞线程里调**：它自建 runtime 后 `block_on`
-  （`crates/agentj-tools/src/executor.rs:220-237`），当前唯一生产调用方是 `spawn_blocking`；
-  若将来在异步上下文直接调 `Tool::execute` 会 panic。
-- **MCP 子进程链路仍未接线**：`crates/agentj-mcp/src/connection_manager.rs:222` 仍是裸
-  `tokio::spawn` 管理子进程，未走 `ToolExecutor` 的进程组 / 超时 / drop 回收。
-- **bash 默认 120s 对冷编译偏紧**：Rust 全量 `cargo build` / 大测试套件可能超过 120s；模型可用
-  入参 `timeout_ms`（上限 600s）覆盖，默认值是否上调待观察。
-- **`[web] state_dir = ""` 已按未设置处理**：解析链回落，但配置文件本身不报错——静默容忍而非
-  配置校验告警；若要「写错就喊」需在 `agentj-config` 加载期加校验。
-- **flush 与变更之间存在理论竞态（未复现）**：`flush_metrics_state`
-  （`crates/agentj-ipc/src/web/persist.rs`）先快照、后**无条件** `mark_clean()`；仅「在该窗口内
-  SIGKILL」才真正丢一次增量。
-- **grep 回退不读 `.gitignore`**：无 `rg` 时的进程内检索只跳过固定目录
-  （`.git`/`target`/`node_modules` 等），不解析 `.gitignore`；命中结果仍受 2000 条上限约束。
-- **`web` 子模块的运行期盲点**：跨域行为（例如 metrics 落盘 ↔ 限流计数）仍需在
-  `web/tests/integrity.rs` 与 `web/tests/persist.rs` 两侧同时改动；`structure.rs` 只钉薄根。
+- **工具定义裁剪按注册顺序**：`bounded_definitions` 从尾部丢弃，注册顺序只是「有用性」的
+  粗略代理；没有按当前任务 / 会话动态挑选工具的策略。
+- **配置告警是「渲染后打印」而非结构化**：`Config::validate()` 返回 `Vec<String>`，`serve` 只在
+  启动时打印一次，未进 `/metrics` 也未进 `/version`（`startup_warnings()` 只覆盖 dist 三类）。
+- **attach 仍是单向**：只会 deny 审批与「跳过」提问，不能批准、也不能回答具体选项
+  （回答需要跨进程交互式输入通道，本批未做）。
+- **`dmg` / `msi` 未签名未公证**：见待实施 ㉟⁺b。
+- **`temp_dist` 固定 `/tmp` 目录**：`agentj-cli-e2e-web-{tag}` 仅按 tag 区分，同 tag 并发会互踩。
+- **fixture 基线重复**：`web_verify_off.toml` / `web_fast_spot.toml` / `attach_ask.toml` 各自复制
+  了 `permission_deny.toml` 的完整基线（含 `timeout_ms`），基线变更需同步多处。
+- **进程型工具报错里的 `name` 仍是程序名**：`ProgramMissing.name` 填程序（`sh` / `rg`），
+  与工具名不一致；错误码与变体未变（无 wire 影响），属可选跟进。
+- **`ToolExecutor::run_blocking` 只能在阻塞线程里调**：自建 runtime 后 `block_on`，在异步上下文
+  直接调会 panic（当前唯一生产调用方是 `spawn_blocking`）。
+- **bash 默认 120s 对冷编译偏紧**：可用入参 `timeout_ms`（上限 600s）覆盖，默认值待观察。
+- **grep 回退不读 `.gitignore`**：无 `rg` 时只跳过固定目录，命中仍受 2000 条上限约束。
+- **MCP 进程组回收只覆盖新链路**：`connection_manager` 已走 `process.rs`，但 `agentj-tools` 的
+  `ToolExecutor` 与 MCP 的进程组语义是两套实现（未合并成单一抽象）。
 - **不泄露**：凭据只经 `redact()` 暴露 `key_hint`；完整 key 不出现在结果 / 日志 / 错误文案 /
   前端持久化中。
 - **远端**：`origin`（GitHub）是唯一权威，`gitcode` 是只读镜像；feature 分支推两个远端，
@@ -195,24 +89,23 @@
 
 | # | 特性 | 内容 | 依赖 | 状态 |
 |---|------|------|------|------|
-| ⑰⁺b | 真 BPE 词表 | 本批已交付可插拔 `TokenCounter` 接缝 + 字符类校准权重，但权重仍是字符类启发式；下一步按 provider 家族嵌入真词表（`tiktoken` 类），只换 `TokenCounter` 实现 | 需引入分词器依赖 / 体积权衡 | 待实施 |
+| ⑰⁺b | 真 BPE 词表 | 可插拔 `TokenCounter` 接缝 + 字符类校准权重已交付，权重仍是启发式；下一步按 provider 家族嵌入真词表（`tiktoken` 类），只换 `TokenCounter` 实现 | 需引入分词器依赖 / 体积权衡 | 待实施 |
 | ㉟⁺b | 产物签名与公证 | 三平台产物已由 CI 真实构建并校验（`deb` / `AppImage` / `dmg` / `msi`），仍缺签名与公证（macOS notarize / Windows signtool） | 需证书与 CI secret 策略 | 待实施 |
-| ㊱⁺b | `run --attach` 应答提问 | attach 已能报告并拒绝远端审批，但仍无法应答 `$/askQuestion`（现状由远端 `[agent] question_timeout_s` 收尾） | 需要跨进程提问夹具 + 交互式 attach 输入通道 | 待实施 |
 
 > 类型标记：`【债】` = 工程债 / 质量门禁，`【修复】` = 已确认缺陷或元数据不一致；无标记 = 特性。
 > 规则：本表条目在未实施时必须**跨阶段保留**（不得随内容替换删除）；实施完成后从本表移除，
 > 并记入对应功能章节。下一特性选择（`jskill-feature-next`）合并本表与 `_fe.md` 待实施表。
-> 上一批的「真 tokenizer / macOS-Windows 打包 / attach 审批归属 / grep 进程内时限」四行已在本批
-> 实施完毕并从本表移除（前三个以降级形态转为上面的 ⑰⁺b / ㉟⁺b / ㊱⁺b）。
+> 本批实施完毕并移除的一行：**㊱⁺b `run --attach` 应答提问**（T8，attach 现在以「跳过」结算提问，
+> 仍不能给出具体答案——见遗留问题）。
 
 ## 下一步
 
-- 本批次（合并收口：tokenizer 接缝 / 三平台打包 / attach 审批 / grep 时限）已收尾并过门禁；
-  分支推 `origin` 与 `gitcode`，PR 开在 `origin`（用户负责合并）。
-- 下一批候选（见上表）：⑰⁺b 真 BPE 词表、㉟⁺b 产物签名与公证、㊱⁺b `run --attach` 应答提问。
-- 表外可选改进：`[web]` 配置校验（空 `state_dir` 喊出来而不是静默回落）；`flush_metrics_state`
-  快照与 `mark_clean()` 之间的理论竞态；把「工具结果已截断」作为可观测事件透出
-  （当前仅内核内 `AgentEvent::ToolResultTruncated`）；按需裁剪超量 MCP 工具定义。
+- 本批次（B9 可观测性 / 配置校验 / 协议截断上报 / 用量面板）已收尾并过门禁；分支推 `origin` 与
+  `gitcode`，PR 开在 `origin`（用户负责合并）。
+- 下一批候选（见上表）：⑰⁺b 真 BPE 词表、㉟⁺b 产物签名与公证。
+- 表外可选改进：把 `Config::validate()` 的告警接进 `/version` 与 `/metrics`（目前只打印）；
+  工具定义按任务动态挑选而非注册顺序；attach 支持回答具体选项；合并 MCP 与 `ToolExecutor`
+  两套进程组实现。
 
 > 远端提示：本机 `git fetch gitcode` 若报 `fatal: couldn't find remote ref gitcode`，按纪律
 > 不 `--force`；分支照常 `git push gitcode <branch>:<branch>`，失败即如实记录。

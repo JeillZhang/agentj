@@ -22,6 +22,7 @@ import ConnectionStatus from "./components/ConnectionStatus";
 import SubscriptionStatus from "./components/SubscriptionStatus";
 import type { SettingsCategory } from "./components/SettingsDialog";
 import { useSubscriptionStatus } from "./hooks/useSubscriptionStatus";
+import { useShortcutScope } from "./hooks/useShortcutScope";
 import UnifiedSidebar from "./components/UnifiedSidebar";
 import WorkspaceShell from "./components/WorkspaceShell";
 import RightPanel, { groupByRunId } from "./components/RightPanel";
@@ -404,6 +405,18 @@ export default function App() {
   const openSubscriptionSettings = useCallback(() => {
     settingsOpenerRef.current?.("subscription");
   }, []);
+  const openUsageSettings = useCallback(() => {
+    settingsOpenerRef.current?.("usage");
+  }, []);
+  // `u` opens 用量 and `Shift+U` 订阅 without the mouse (design ㊺). Shift arrives as an
+  // uppercase key, so both are plain keys; the hook already refuses modals, editable
+  // targets and modifier combos.
+  const shellRef = useRef<HTMLDivElement | null>(null);
+  const shellShortcuts = useMemo(
+    () => ({ u: openUsageSettings, U: openSubscriptionSettings }),
+    [openUsageSettings, openSubscriptionSettings],
+  );
+  useShortcutScope(shellRef, shellShortcuts);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [selectedModel, setSelectedModel] = useState<ModelEntry | null>(null);
   // The linked account catalog overrides the kernel-served opencode-go rows; the kernel
@@ -683,7 +696,7 @@ export default function App() {
   }, [rightDrawerOpen]);
 
   return (
-    <div className="aj-app" data-drawer={drawerOpen ? "open" : "closed"}>
+    <div className="aj-app" data-drawer={drawerOpen ? "open" : "closed"} ref={shellRef}>
       <header className="aj-topbar" role="banner">
         <div className="aj-topbar__brand">
           <h1>agentj</h1>

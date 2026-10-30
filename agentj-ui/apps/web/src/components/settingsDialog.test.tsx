@@ -4,6 +4,24 @@ import { render, screen, fireEvent, within, waitFor } from "@testing-library/rea
 import type { RpcClient } from "@agentj/sdk";
 import { METHODS } from "@agentj/sdk";
 import SettingsDialog from "./SettingsDialog";
+import type { SubscriptionState, SubscriptionStatusData } from "../hooks/useSubscriptionStatus";
+
+/** Full snapshot shape; only the state matters to the nav badge. */
+function statusWith(state: SubscriptionState): SubscriptionStatusData {
+  return {
+    state,
+    windows: [],
+    worstPercent: null,
+    fetchedAt: 0,
+    credential: null,
+    warnPercent: null,
+    stale: false,
+    errorKind: null,
+    error: null,
+    loading: false,
+    refresh: async () => {},
+  };
+}
 
 // Answers the subscription panel's mount reads and one verified API-key link.
 function stubClientWithVerifiedLink() {
@@ -37,6 +55,7 @@ test("defaults to the 连接 tab, uses the wide card and switches categories via
     "显示",
     "项目",
     "演示数据",
+    "用量",
     "订阅",
   ]);
   expect(screen.getByRole("tab", { name: "连接" })).toHaveAttribute("aria-selected", "true");
@@ -63,11 +82,11 @@ test("ArrowDown moves tab selection, focus and the tabpanel", () => {
   expect(screen.getByRole("tabpanel")).toHaveAttribute("aria-labelledby", "aj-settings-tab-display");
 });
 
-test("shows the five final categories and mounts both new panels", () => {
+test("shows the six categories and mounts both new panels", () => {
   localStorage.clear();
   render(<SettingsDialog onConnect={() => {}} onClose={() => {}} />);
   const tabs = screen.getAllByRole("tab").map((t) => t.textContent);
-  expect(tabs).toEqual(["连接", "显示", "项目", "演示数据", "订阅"]);
+  expect(tabs).toEqual(["连接", "显示", "项目", "演示数据", "用量", "订阅"]);
   expect(screen.queryByText("会话列表")).toBeNull();
   fireEvent.click(screen.getByRole("tab", { name: "显示" }));
   expect(screen.getByRole("switch", { name: "减弱动画" })).toBeTruthy();
@@ -75,7 +94,7 @@ test("shows the five final categories and mounts both new panels", () => {
   expect(screen.getByLabelText("默认项目")).toBeTruthy();
 });
 
-test("keeps keyboard roaming across five tabs", () => {
+test("keeps keyboard roaming across six tabs", () => {
   localStorage.clear();
   render(<SettingsDialog onConnect={() => {}} onClose={() => {}} />);
   const first = screen.getByRole("tab", { name: "连接" });
@@ -128,10 +147,12 @@ test("lists the subscription tab and reaches it from the keyboard", async () => 
   const c = { request: vi.fn().mockResolvedValue({}) } as unknown as RpcClient;
   render(<SettingsDialog onConnect={() => {}} onClose={() => {}} client={c} />);
   expect(screen.getAllByRole("tab").map((t) => t.textContent))
-    .toEqual(["连接", "显示", "项目", "演示数据", "订阅"]);
+    .toEqual(["连接", "显示", "项目", "演示数据", "用量", "订阅"]);
   const demo = screen.getByRole("tab", { name: "演示数据" });
   demo.focus();
   fireEvent.keyDown(demo, { key: "ArrowDown" });
+  expect(screen.getByRole("tab", { name: "用量" })).toHaveAttribute("aria-selected", "true");
+  fireEvent.keyDown(document.activeElement as Element, { key: "ArrowDown" });
   expect(screen.getByRole("tab", { name: "订阅" })).toHaveAttribute("aria-selected", "true");
   await waitFor(() => expect(c.request).toHaveBeenCalled()); // SubscriptionPanel mounted with the client
 });
@@ -162,14 +183,60 @@ test("forwards the linked catalog to its parent", async () => {
   }));
 });
 
-test("keeps the five categories while a callback is threaded through", () => {
+test("keeps the six categories while a callback is threaded through", () => {
   localStorage.clear();
   render(<SettingsDialog onConnect={() => {}} onClose={() => {}} client={null}
     onModelsLinked={() => {}} />);
   expect(screen.getAllByRole("tab").map((t) => t.textContent))
-    .toEqual(["连接", "显示", "项目", "演示数据", "订阅"]);
+    .toEqual(["连接", "显示", "项目", "演示数据", "用量", "订阅"]);
   const demo = screen.getByRole("tab", { name: "演示数据" });
   demo.focus();
   fireEvent.keyDown(demo, { key: "ArrowDown" });
+  expect(screen.getByRole("tab", { name: "用量" })).toHaveAttribute("aria-selected", "true");
+  fireEvent.keyDown(document.activeElement as Element, { key: "ArrowDown" });
   expect(screen.getByRole("tab", { name: "订阅" })).toHaveAttribute("aria-selected", "true");
+});
+
+test("resolves every category to exactly one non-empty pane", () => {
+  localStorage.clear();
+  render(<SettingsDialog onConnect={() => {}} onClose={() => {}} client={stubClientWithVerifiedLink()} />);
+  for (const tab of screen.getAllByRole("tab")) {
+    fireEvent.click(tab);
+    const panels = screen.getAllByRole("tabpanel");
+    expect(panels).toHaveLength(1);
+    expect(panels[0].getAttribute("aria-labelledby")).toBe(tab.id);
+    expect((panels[0].textContent ?? "").trim().length).toBeGreaterThan(0);
+  }
+});
+
+test("splits 用量 from 订阅 so each tab carries only its own half", async () => {
+  localStorage.clear();
+  const c = stubClientWithVerifiedLink();
+  render(<SettingsDialog onConnect={() => {}} onClose={() => {}} client={c} />);
+  fireEvent.click(screen.getByRole("tab", { name: "用量" }));
+  await waitFor(() => expect(c.request).toHaveBeenCalledWith(METHODS.providerUsage, expect.anything()));
+  // Usage half: the read-only usage block, no credential editing.
+  expect(screen.getByRole("tabpanel").textContent).toContain("刷新用量");
+  expect(screen.queryByLabelText(/API Key/)).toBeNull();
+
+  fireEvent.click(screen.getByRole("tab", { name: "订阅" }));
+  // Subscription half: the credential controls, no usage refresh button.
+  expect(screen.getByLabelText(/API Key/)).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "刷新用量" })).toBeNull();
+});
+
+test("flags a missing credential on the 订阅 tab without renaming it", () => {
+  localStorage.clear();
+  render(<SettingsDialog onConnect={() => {}} onClose={() => {}}
+    client={stubClientWithVerifiedLink()} subscription={statusWith("invalid")} />);
+  expect(screen.getByTestId("settings-nav-badge")).toBeInTheDocument();
+  const tab = screen.getByRole("tab", { name: "订阅" });
+  expect(tab).toHaveAttribute("title", "订阅 · 待配置凭据");
+});
+
+test("shows no credential badge once the account is valid", () => {
+  localStorage.clear();
+  render(<SettingsDialog onConnect={() => {}} onClose={() => {}}
+    client={stubClientWithVerifiedLink()} subscription={statusWith("ok")} />);
+  expect(screen.queryByTestId("settings-nav-badge")).toBeNull();
 });

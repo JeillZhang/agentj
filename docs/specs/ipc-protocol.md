@@ -2,7 +2,7 @@
 
 > 本文档是 AgentJ 内核对外暴露的统一 UI 接口协议（IPC）的**人类可读权威规范**。
 > 机器可读工件（`schemas/*.json` 与 `protocol/methods.json`）是本规范的机器事实来源，见 [机器可读模型](#10-机器可读模型)。
-> 协议当前版本：`0.20.0`。
+> 协议当前版本：`0.21.0`。
 
 ## 1. 范围与一致性
 
@@ -373,7 +373,7 @@ initialize（请求）→ initialized（通知）→ 会话阶段 → shutdown�
 |------|----------|------|
 | `text` | `delta` | 文本 token 增量（`delta` 为 string，可累积拼接为完整增量） |
 | `tool_call` | `tool_call` | 模型请求调用工具；`tool_call` 为 `{ id, name, arguments }` |
-| `tool_result` | `tool_call_id`, `content` | 工具执行结果回流；`tool_call_id` 关联对应 `tool_call` |
+| `tool_result` | `tool_call_id`, `content` | 工具执行结果回流；`tool_call_id` 关联对应 `tool_call`；可选 `truncated_chars`（`@since 0.21.0`，被丢弃的字符数；内核按 `[agent] max_tool_result_chars` 单点裁剪时下发，未截断则缺省） |
 | `usage` | `usage` | 每轮 run 在 Done 时下发一次的 token 用量结算（`@since 0.12.0`）；`usage` 为 `{ prompt_tokens, completion_tokens }` |
 | `permission` | `request_id`, `tool`, `decision` | 待审批 `$/permissionRequest` 的裁决结算（`@since 0.12.0`）；`decision` 为 `PermissionDecision`，可选字段 `session_id`（多会话客户端据此归类） |
 | `todo` | `session_id`, `revision`, `items` | 全量 TODO 快照（`@since 0.13.0`，见 决策 #2）；`revision` 按会话单调递增，客户端丢弃比已见更旧的快照；`items` 为 `TodoItem[]`；可选 `run_id`（`@since 0.15.0`，按 run 单调） |

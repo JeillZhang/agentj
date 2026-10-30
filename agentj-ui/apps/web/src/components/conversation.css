@@ -103,6 +103,14 @@
   padding: 8px;
 }
 
+/* Says how much of an over-long result the kernel dropped, so a clipped card is
+   never mistaken for the whole output (design ㊵). */
+.aj-tool-truncated {
+  font-size: 11px;
+  color: var(--aj-textMuted);
+  font-variant-numeric: tabular-nums;
+}
+
 .aj-tool-name { font-family: var(--aj-mono); font-weight: 600; }
 
 /* Command / file / pattern beside the tool name; a long value truncates so the

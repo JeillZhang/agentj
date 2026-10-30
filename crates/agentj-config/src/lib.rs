@@ -393,6 +393,17 @@ pub struct Config {
     inner: AgentJConfig,
 }
 
+/// One warning line when `value` falls outside `min..=max`, naming both the requested
+/// and the effective value so an operator sees what the kernel actually used.
+fn push_clamp(out: &mut Vec<String>, key: &str, value: i64, min: i64, max: i64) {
+    if value < min || value > max {
+        let effective = value.clamp(min, max);
+        out.push(format!(
+            "warning: {key} = {value} outside {min}..={max}; using {effective}"
+        ));
+    }
+}
+
 impl Config {
     pub fn load(path: Option<PathBuf>) -> Result<Self, Box<dyn std::error::Error>> {
         let mut config = AgentJConfig::default();
@@ -421,6 +432,114 @@ impl Config {
     /// clamped into the supported range. @since 0.29.9
     pub fn question_timeout_s(&self) -> u64 {
         clamp_question_timeout_s(self.inner.agent.question_timeout_s) as u64
+    }
+
+    /// Every configured value the kernel had to clamp or ignore, one warning line each
+    /// (design B9 item ㊳). Startup prints them, so a silently adjusted knob is never
+    /// invisible; an in-range configuration yields an empty vector.
+    ///
+    /// `[permission] timeout_ms` is not repeated here: the CLI already clamps it with its
+    /// own warning, and one knob must not warn twice.
+    pub fn validate(&self) -> Vec<String> {
+        let mut warnings = Vec::new();
+        let model = &self.inner.model;
+        push_clamp(
+            &mut warnings,
+            "model.quota_warn_percent",
+            model.quota_warn_percent,
+            1,
+            100,
+        );
+        if let Some(tokens) = model.max_context_tokens {
+            push_clamp(
+                &mut warnings,
+                "model.max_context_tokens",
+                tokens,
+                agentj_core::budget::MIN_CONTEXT_TOKENS as i64,
+                agentj_core::budget::MAX_CONTEXT_TOKENS as i64,
+            );
+        }
+        self.validate_agent(&mut warnings);
+        self.validate_usage(&mut warnings);
+        self.validate_web(&mut warnings);
+        warnings
+    }
+
+    fn validate_agent(&self, warnings: &mut Vec<String>) {
+        let agent = &self.inner.agent;
+        push_clamp(
+            warnings,
+            "agent.max_tool_iterations",
+            agent.max_tool_iterations,
+            MIN_TOOL_ITERATIONS,
+            MAX_TOOL_ITERATIONS,
+        );
+        push_clamp(
+            warnings,
+            "agent.max_tool_result_chars",
+            agent.max_tool_result_chars,
+            MIN_TOOL_RESULT_CHARS,
+            MAX_TOOL_RESULT_CHARS,
+        );
+        push_clamp(
+            warnings,
+            "agent.question_timeout_s",
+            agent.question_timeout_s,
+            MIN_QUESTION_TIMEOUT_S,
+            MAX_QUESTION_TIMEOUT_S,
+        );
+    }
+
+    fn validate_usage(&self, warnings: &mut Vec<String>) {
+        let usage = self.inner.usage.clone().unwrap_or_default();
+        push_clamp(
+            warnings,
+            "usage.history_days",
+            usage.history_days,
+            MIN_HISTORY_DAYS,
+            MAX_HISTORY_DAYS,
+        );
+        push_clamp(
+            warnings,
+            "usage.history_max_samples",
+            usage.history_max_samples,
+            MIN_HISTORY_SAMPLES,
+            MAX_HISTORY_SAMPLES,
+        );
+    }
+
+    fn validate_web(&self, warnings: &mut Vec<String>) {
+        let Some(web) = self.inner.web.as_ref() else {
+            return;
+        };
+        push_clamp(
+            warnings,
+            "web.spot_interval_secs",
+            web.spot_interval_secs as i64,
+            MIN_SPOT_INTERVAL_SECS as i64,
+            MAX_SPOT_INTERVAL_SECS as i64,
+        );
+        push_clamp(
+            warnings,
+            "web.spot_sample",
+            web.spot_sample as i64,
+            MIN_SPOT_SAMPLE as i64,
+            MAX_SPOT_SAMPLE as i64,
+        );
+        push_clamp(
+            warnings,
+            "web.verify_cache_ttl_secs",
+            web.verify_cache_ttl_secs as i64,
+            MIN_VERIFY_CACHE_TTL_SECS as i64,
+            MAX_VERIFY_CACHE_TTL_SECS as i64,
+        );
+        if web
+            .state_dir
+            .as_ref()
+            .is_some_and(|dir| dir.as_os_str().is_empty())
+        {
+            warnings.push("warning: [web] state_dir is empty; treating it as unset".into());
+        }
     }
 }
 
@@ -495,6 +614,51 @@ mod tests {
     static ENV_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
     fn env_lock() -> std::sync::MutexGuard<'static, ()> {
         agentj_core::sync::lock_or_recover(ENV_LOCK.get_or_init(|| std::sync::Mutex::new(())))
+    }
+
+    /// Build a `Config` straight from TOML so the clamp tests do not need a file.
+    fn config_from(toml_src: &str) -> Config {
+        Config {
+            inner: toml::from_str(toml_src).expect("inline TOML parses"),
+        }
+    }
+
+    #[test]
+    fn validate_names_every_clamped_field_once() {
+        let config = config_from(concat!(
+            "[model]\nprovider = \"deepseek\"\nquota_warn_percent = 0\nmax_context_tokens = 100\n",
+            "[agent]\nmax_tool_iterations = 5000\nmax_tool_result_chars = 10\n",
+            "question_timeout_s = 0\n",
+            "[usage]\nhistory_days = 0\nhistory_max_samples = 10\n",
+            "[web]\nspot_interval_secs = 1\nspot_sample = 0\n",
+            "verify_cache_ttl_secs = 0\nstate_dir = \"\"\n",
+        ));
+        let expected = [
+            "warning: model.quota_warn_percent = 0 outside 1..=100; using 1",
+            "warning: model.max_context_tokens = 100 outside 1000..=10000000; using 1000",
+            "warning: agent.max_tool_iterations = 5000 outside 1..=1000; using 1000",
+            "warning: agent.max_tool_result_chars = 10 outside 1000..=1000000; using 1000",
+            "warning: agent.question_timeout_s = 0 outside 1..=86400; using 1",
+            "warning: usage.history_days = 0 outside 1..=365; using 1",
+            "warning: usage.history_max_samples = 10 outside 100..=100000; using 100",
+            "warning: web.spot_interval_secs = 1 outside 5..=3600; using 5",
+            "warning: web.spot_sample = 0 outside 1..=1024; using 1",
+            "warning: web.verify_cache_ttl_secs = 0 outside 1..=3600; using 1",
+            "warning: [web] state_dir is empty; treating it as unset",
+        ];
+        assert_eq!(config.validate(), expected);
+    }
+
+    #[test]
+    fn validate_is_silent_for_an_in_range_config() {
+        let config = config_from(concat!(
+            "[model]\nprovider = \"deepseek\"\nquota_warn_percent = 50\nmax_context_tokens = 128000\n",
+            "[agent]\nmax_tool_iterations = 50\nmax_tool_result_chars = 100000\n",
+            "question_timeout_s = 600\n",
+            "[web]\nspot_interval_secs = 60\nspot_sample = 8\nverify_cache_ttl_secs = 60\n",
+        ));
+        assert_eq!(config.validate(), Vec::<String>::new());
+        assert_eq!(config_from("").validate(), Vec::<String>::new());
     }
 
     #[test]

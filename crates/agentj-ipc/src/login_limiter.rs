@@ -79,6 +79,8 @@ pub(crate) struct LoginLimiter {
     counters: CounterAtoms,
     /// Set by every state mutation, cleared after a successful flush (design D3).
     dirty: AtomicBool,
+    /// Bumped by every mutation so a flush can tell whether its snapshot is stale.
+    generation: AtomicU64,
 }
 
 impl LoginLimiter {
@@ -92,6 +94,7 @@ impl LoginLimiter {
             entries: Mutex::new(HashMap::new()),
             counters: CounterAtoms::default(),
             dirty: AtomicBool::new(false),
+            generation: AtomicU64::new(0),
         }
     }
 
@@ -221,7 +224,21 @@ impl LoginLimiter {
         self.dirty.store(false, Ordering::Relaxed);
     }
 
+    /// Snapshot token for a flush: mutations that land after this reading make the
+    /// in-flight snapshot stale, so `mark_clean_at` refuses to clear the flag.
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation.load(Ordering::Relaxed)
+    }
+
+    /// Clear the dirty flag only when nothing changed since `generation` was read.
+    pub(crate) fn mark_clean_at(&self, generation: u64) {
+        if self.generation.load(Ordering::Relaxed) == generation {
+            self.dirty.store(false, Ordering::Relaxed);
+        }
+    }
+
     fn mark_dirty(&self) {
+        self.generation.fetch_add(1, Ordering::Relaxed);
         self.dirty.store(true, Ordering::Relaxed);
     }
 
@@ -626,6 +643,25 @@ mod tests {
         limiter.mark_clean();
         limiter.record_success(ip("203.0.113.9"));
         assert!(limiter.dirty());
+    }
+
+    /// A flush that lost the race against a mutation must not clear the dirty flag:
+    /// the counters it just wrote are already stale, so the next tick has to retry.
+    #[test]
+    fn mark_clean_at_keeps_dirty_when_the_generation_moved() {
+        let limiter = LoginLimiter::with_policy(restore_policy());
+        let now = Instant::now();
+        limiter.record_failure(ip("203.0.113.9"), now);
+        let captured = limiter.generation();
+        limiter.record_failure(ip("203.0.113.9"), now);
+        limiter.mark_clean_at(captured);
+        assert!(
+            limiter.dirty(),
+            "a mutation during the save must keep the state dirty"
+        );
+        let latest = limiter.generation();
+        limiter.mark_clean_at(latest);
+        assert!(!limiter.dirty(), "an unchanged generation clears the flag");
     }
 
     #[test]
