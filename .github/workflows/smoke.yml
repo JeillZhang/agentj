@@ -21,13 +21,13 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo build --release --locked
-      - name: Smoke: version
+      - name: "Smoke: version"
         run: ./target/release/agentj --version
-      - name: Smoke: help
+      - name: "Smoke: help"
         run: ./target/release/agentj --help
-      - name: Smoke: run subcommand help
+      - name: "Smoke: run subcommand help"
         run: ./target/release/agentj run --help
-      - name: Smoke: serve subcommand help
+      - name: "Smoke: serve subcommand help"
         run: ./target/release/agentj serve --help
-      - name: Smoke: core quick tests
+      - name: "Smoke: core quick tests"
         run: cargo test -p agentj-core -- smoke

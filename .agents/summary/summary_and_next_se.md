@@ -34,6 +34,7 @@
 | T9（替代形态） | `ee80d57` | 设置拆出「用量」「订阅」两个分类（`SubscriptionPanel` 增 `section`），凭据缺失时订阅 tab 带装饰红点 |
 | T9a（部分） | `a6353a2` | `deviceStateLabel` 移入 `subscriptionModel.ts` |
 | 收尾 | `21c6e09` | `read_attach_stream` 拆出 `read_attach_frame` / `send_own_request`，回到 ≤50 行门禁 |
+| CI 修复 | （本批末尾） | `smoke.yml` 五个 `- name: Smoke: …` 未加引号导致 YAML 解析失败（每次 push 0s 变红，`main` 同样）→ 加引号修复，`validate-workflow.sh` 通过 |
 | CI 修复 | （本批末尾） | serve 就绪行之后的 banner 写 stdout 改走 `emit_line`：管道被关闭时记日志而非 `println!` panic 退出（coverage 作业 `e2e_ws` `ConnectionReset` 的根因）；补单测 + e2e `serve_survives_a_closed_stdout_pipe` |
 
 **与计划的偏差**：T9 原计划把 `SubscriptionPanel` 拆成 `SubscriptionCredentialCard` +
