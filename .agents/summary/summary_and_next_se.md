@@ -34,6 +34,7 @@
 | T9（替代形态） | `ee80d57` | 设置拆出「用量」「订阅」两个分类（`SubscriptionPanel` 增 `section`），凭据缺失时订阅 tab 带装饰红点 |
 | T9a（部分） | `a6353a2` | `deviceStateLabel` 移入 `subscriptionModel.ts` |
 | 收尾 | `21c6e09` | `read_attach_stream` 拆出 `read_attach_frame` / `send_own_request`，回到 ≤50 行门禁 |
+| CI 修复 | （本批末尾） | serve 就绪行之后的 banner 写 stdout 改走 `emit_line`：管道被关闭时记日志而非 `println!` panic 退出（coverage 作业 `e2e_ws` `ConnectionReset` 的根因）；补单测 + e2e `serve_survives_a_closed_stdout_pipe` |
 
 **与计划的偏差**：T9 原计划把 `SubscriptionPanel` 拆成 `SubscriptionCredentialCard` +
 `SubscriptionHistory` 两个组件文件；实际采用**同组件按 `section` 分段**（设置两个 tab 各渲染一半，
@@ -50,6 +51,8 @@
 - `python3 scripts/tests/fn-length.py crates/`：0 个函数 > 50 行（收尾前 `read_attach_stream`
   曾 59 行，已拆）。
 - `bash scripts/tests/assert-{cargo,ui,ci}.sh all`：6 / 3 / 10 全 PASS，0 skipped。
+- `cargo llvm-cov --workspace --fail-under-lines 92 --lcov --output-path lcov.info --locked`
+  （本地镜像 CI coverage 作业）：全绿，行覆盖 **93.81%**（32298/34429）。
 - `./scripts/check-version.sh`：`version-ok`（工作区 0.1.0 + 协议 0.21.0 全线一致）。
 - 前端：`npm --prefix agentj-ui test --workspace=@agentj/web` 772 passed；
   `run build` / `run lint`（0 error）/ `@agentj/sdk` 91 passed / TUI `bun test` 204 passed。

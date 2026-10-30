@@ -600,7 +600,7 @@ async fn serve_tcp(
     // handler were installed afterwards, that SIGTERM would still hit the default
     // disposition and kill the process without a graceful shutdown.
     let signal_task = spawn_tcp_signal_task(tcp.shared_server());
-    println!("listening on {local}");
+    emit_line(&format!("listening on {local}"));
     emit_serve_banner(
         &tcp.web_config(),
         &web_dist,
@@ -631,6 +631,23 @@ fn serve_warnings(options: &TcpServeOptions) -> [Option<String>; 4] {
 /// config-level warnings in the order the CLI has always emitted them:
 /// websocket → dist → web config, then the optional warnings in
 /// [insecure-bind, metrics-state, proxy-trust, usage-history] order.
+/// Write one readiness/banner line to stdout, logging instead of panicking when the pipe is
+/// gone. A supervisor that reads only the `listening on` line and closes its end is normal
+/// (`head -1`, readiness probes); `println!` would abort the daemon with a BrokenPipe panic
+/// right after it announced itself, and every connection queued in the backlog then gets an
+/// RST instead of a reply.
+fn emit_line(text: &str) {
+    let mut out = std::io::stdout().lock();
+    if let Err(err) = emit_line_to(&mut out, text) {
+        tracing::warn!(%err, "serve: stdout closed; banner line dropped");
+    }
+}
+
+/// Testable core of `emit_line`: write one line, propagate the io error.
+fn emit_line_to<W: std::io::Write>(out: &mut W, text: &str) -> std::io::Result<()> {
+    writeln!(out, "{text}")
+}
+
 fn emit_serve_banner(
     web: &agentj_ipc::web::WebConfig,
     web_dist: &Option<std::path::PathBuf>,
@@ -639,14 +656,18 @@ fn emit_serve_banner(
     warnings: [Option<String>; 4],
     config_warnings: &[String],
 ) {
-    println!("websocket on ws://{}:{}/ws", bracket_ipv6(host), port);
+    emit_line(&format!(
+        "websocket on ws://{}:{}/ws",
+        bracket_ipv6(host),
+        port
+    ));
     match web_dist {
-        Some(dir) => println!(
+        Some(dir) => emit_line(&format!(
             "web ui on http://{}:{}/ (dist: {})",
             bracket_ipv6(host),
             port,
             dir.display()
-        ),
+        )),
         None => eprintln!(
             "warning: web dist not found; build it via `npm --prefix agentj-ui run build \
              --workspace=@agentj/web` or pass --web-dist <PATH>"
@@ -2689,5 +2710,35 @@ mod tests {
         let body = std::fs::read_to_string(&path).unwrap();
         assert!(body.contains("\"version\":1"), "{body}");
         assert!(body.contains("\"counters\""), "{body}");
+    }
+
+    /// A closed stdout must not take the daemon down: this is exactly what a supervisor that
+    /// reads the readiness line and closes the pipe does, and the pre-fix `println!` aborted
+    /// the process with a BrokenPipe panic (queued connections then saw an RST).
+    #[test]
+    fn banner_lines_survive_a_closed_stdout() {
+        struct Closed;
+        impl std::io::Write for Closed {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "closed",
+                ))
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut closed = Closed;
+        let err = emit_line_to(&mut closed, "websocket on ws://127.0.0.1:1/ws")
+            .expect_err("a closed pipe must surface as an io error, not a panic");
+        assert_eq!(err.kind(), std::io::ErrorKind::BrokenPipe);
+        // And the same line written to a live sink is byte-identical to what the banner shows.
+        let mut buf: Vec<u8> = Vec::new();
+        emit_line_to(&mut buf, "listening on 127.0.0.1:4096").unwrap();
+        assert_eq!(
+            String::from_utf8(buf).unwrap(),
+            "listening on 127.0.0.1:4096\n"
+        );
     }
 }

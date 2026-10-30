@@ -48,7 +48,10 @@ async fn serve_port_accepts_ws_clients_and_keeps_tcp_attach() {
         .spawn()
         .expect("spawn agentj serve");
     let stdout = child.stdout.take().unwrap();
-    let addr = read_listening_addr(&mut BufReader::new(stdout));
+    // Keep the pipe alive for the whole test: dropping it closes the child's stdout, and the
+    // serve banner writes there after the readiness line (see the closed-stdout test below).
+    let mut reader = BufReader::new(stdout);
+    let addr = read_listening_addr(&mut reader);
 
     // WS client (browser-equivalent): initialize over ws://.
     let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/ws"))
@@ -84,6 +87,47 @@ async fn serve_port_accepts_ws_clients_and_keeps_tcp_attach() {
     assert!(
         line2.contains("connection_id"),
         "daemon alive after ws-only: {line2}"
+    );
+
+    child.kill().expect("kill agentj");
+    let _ = child.wait();
+}
+
+/// A supervisor that reads only the readiness line and closes the pipe must not kill the
+/// daemon: the serve banner writes to stdout right after that line, and a `println!` on a
+/// closed pipe panics (BrokenPipe) — which killed the process and reset every queued
+/// connection. Regression for the CI failure on `e2e_ws` (2026-10-25).
+#[tokio::test]
+async fn serve_survives_a_closed_stdout_pipe() {
+    let dir = std::env::temp_dir().join(format!("agentj-e2e-ws-closed-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let cfg = dir.join("mock_config.toml");
+    std::fs::write(
+        &cfg,
+        "[model]\nprovider = \"mock\"\n\n[[model.providers]]\nname = \"mock\"\nkind = \"mock\"\nbase_url = \"mock://local\"\napi_key_env = \"\"\n",
+    )
+    .unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_agentj"))
+        .args(["--config", cfg.to_str().unwrap(), "serve", "--port", "0"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn agentj serve");
+    let stdout = child.stdout.take().unwrap();
+    let addr = read_listening_addr(&mut BufReader::new(stdout));
+    // The reader (and with it the read end of the child's stdout) is dropped right here.
+
+    let mut tcp = tokio::net::TcpStream::connect(&addr).await.unwrap();
+    tcp.write_all(initialize_line(9).as_bytes()).await.unwrap();
+    tcp.write_all(b"\n").await.unwrap();
+    let mut line = String::new();
+    tokio::io::BufReader::new(&mut tcp)
+        .read_line(&mut line)
+        .await
+        .unwrap();
+    assert!(
+        line.contains("connection_id"),
+        "closed-stdout serve: {line}"
     );
 
     child.kill().expect("kill agentj");
