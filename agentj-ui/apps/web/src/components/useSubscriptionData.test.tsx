@@ -35,6 +35,23 @@ describe("useSubscriptionData", () => {
     expect(methods).toContain(METHODS.authStatus);
   });
 
+  it("labels a status error without a kind as a failed probe, not an unreadable upstream", async () => {
+    const request = vi.fn(async () => ({}));
+    const client = { request } as unknown as RpcClient;
+    const status = {
+      ...statusFixture,
+      windows: [],
+      errorKind: null,
+      error: "-32602: InvalidParams",
+    } as unknown as SubscriptionStatusData;
+    const { result } = renderHook(() => useSubscriptionData(client, status));
+    await waitFor(() => expect(result.current.usage).not.toBeNull());
+    expect(result.current.usage?.error).toEqual({
+      kind: "probe_failed",
+      message: "-32602: InvalidParams",
+    });
+  });
+
   it("stops polling the device flow after unmount", async () => {
     vi.useFakeTimers();
     const request = vi.fn(async (method: string) => {

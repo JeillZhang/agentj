@@ -179,11 +179,14 @@ export function useSubscriptionStatus(client: RpcClient | null): SubscriptionSta
         loading: false,
       }));
     } catch (e) {
-      // Keep the last windows/stamp: a broken connection is not "zero usage".
+      // Keep the last windows/stamp: a rejected request is not "zero usage". Not "network"
+      // either — the kernel may have answered with an RPC error (unsupported provider, bad
+      // params) or not answered at all, and only the kernel's own `usage.error.kind` can say
+      // which; a transport-level guess made every -32602 read as 网络不可达.
       if (!current()) return;
       setSnapshot((prev) => ({
         ...prev,
-        errorKind: "network",
+        errorKind: "probe_failed",
         error: reason(e),
         loading: false,
       }));

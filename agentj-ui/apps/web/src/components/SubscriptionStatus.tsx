@@ -5,7 +5,7 @@
 import { useState } from "react";
 import { SUBSCRIPTION_FRESH_MS } from "../hooks/useSubscriptionStatus";
 import type { SubscriptionStatusData } from "../hooks/useSubscriptionStatus";
-import { ERROR_TEXT, STATE_TEXT, WINDOW_LABEL, formatUsageAge, sortWindows } from "./subscriptionModel";
+import { errorText, STATE_TEXT, WINDOW_LABEL, formatUsageAge, sortWindows } from "./subscriptionModel";
 import "./subscriptionPanel.css";
 
 type Props = {
@@ -31,7 +31,7 @@ export default function SubscriptionStatus({ status, onOpenSettings }: Props) {
   const needsCredential = status.state === "unknown" || status.state === "invalid";
   // A known kind has an actionable sentence; the raw RPC text stays below it so the cause is
   // still diagnosable. Unknown kinds/free-form errors render the raw text alone.
-  const reason = status.errorKind ? ERROR_TEXT[status.errorKind] : undefined;
+  const reason = errorText(status.errorKind);
 
   return (
     <div

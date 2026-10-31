@@ -28,6 +28,18 @@ export const ERROR_TEXT: Record<string, string> = {
   network: "网络不可达，已显示缓存数据",
 };
 
+/**
+ * The mapped sentence for a wire error kind, or `undefined` when the kind is unknown.
+ *
+ * Own-property check on purpose: the kind comes straight off the wire, so a value like
+ * `"toString"` or `"constructor"` must not resolve to an inherited `Object.prototype`
+ * member (that would hand a function to React as a child). Unknown kinds fall back to the
+ * raw RPC message at the call sites instead of disappearing.
+ */
+export function errorText(kind: string | null | undefined): string | undefined {
+  return kind && Object.hasOwn(ERROR_TEXT, kind) ? ERROR_TEXT[kind] : undefined;
+}
+
 /** One sentence per graded/trouble state; `unknown` is the "no credential" case. */
 export const STATE_TEXT: Record<SubscriptionState, string> = {
   ok: "额度充足",

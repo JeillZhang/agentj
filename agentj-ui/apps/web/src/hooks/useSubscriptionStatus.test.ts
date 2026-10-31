@@ -116,6 +116,9 @@ describe("useSubscriptionStatus", () => {
       for (let i = 0; i < 6; i += 1) await Promise.resolve();
     });
     expect(result.current.state).toBe("error");
+    // Not "network": a rejected request says nothing about the network, and the kernel may have
+    // answered with an RPC error (e.g. an unsupported provider) rather than not answering.
+    expect(result.current.errorKind).toBe("probe_failed");
     expect(result.current.error).toContain("socket closed");
     expect(result.current.windows).toHaveLength(1);
     expect(result.current.fetchedAt).toBe(stamp);
