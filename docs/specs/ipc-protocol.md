@@ -987,7 +987,7 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| `provider` | string | 否 | provider 名；省略 / `null` = 内核配置的默认 provider；非 opencode-go → `-32602` + `reason:"unsupported_provider"` |
+| `provider` | string | 否 | provider 名；省略 / `null` = 已配置的 `opencode-go` provider（没有 go 条目时回落到内核默认 provider）；非 opencode-go → `-32602` + `reason:"unsupported_provider"` |
 | `refresh` | boolean | 否 | `true` 绕过 **300s** 进程内缓存强制重拉；缺省 / `null` = 缓存内直接返回上次快照 |
 
 - **响应**：`ProviderUsageResult`（**成功响应**，甚至失败时也是——见下）。
@@ -1042,7 +1042,7 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| `provider` | string | 否 | provider 名；省略 / `null` = 内核配置的默认 provider；非 opencode-go → `-32602` + `reason:"unsupported_provider"` |
+| `provider` | string | 否 | provider 名；省略 / `null` = 已配置的 `opencode-go` provider（没有 go 条目时回落到内核默认 provider）；非 opencode-go → `-32602` + `reason:"unsupported_provider"` |
 
 - **响应**：`AuthDeviceStartResult`（上游设备授权响应原样透传，不落盘任何凭据）。
 
@@ -1085,7 +1085,7 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | `device_code` | string | 是 | `auth/deviceStart` 返回的 `device_code`，原样回传 |
-| `provider` | string | 否 | provider 名；省略 / `null` = 内核配置的默认 provider；非 opencode-go → `-32602` + `reason:"unsupported_provider"` |
+| `provider` | string | 否 | provider 名；省略 / `null` = 已配置的 `opencode-go` provider（没有 go 条目时回落到内核默认 provider）；非 opencode-go → `-32602` + `reason:"unsupported_provider"` |
 
 - **响应**：`AuthDevicePollResult`（**待授权不是错误**——`pending` / `slow_down` 同样以成功响应返回）。
 
@@ -1132,7 +1132,7 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| `provider` | string | 否 | provider 名；省略 / `null` = 内核配置的默认 provider |
+| `provider` | string | 否 | provider 名；省略 / `null` = 已配置的 `opencode-go` provider（没有 go 条目时回落到内核默认 provider）；非 opencode-go → `-32602` + `reason:"unsupported_provider"` |
 | `api_key` | string | 是 | 待链接的 API Key；`trim()` 后为空 → `-32602` + `reason:"invalid_params"`，且**不发任何上游请求、不写盘** |
 | `label` | string | 否 | 用户自填标签，随凭据一起落盘（`auth.json` 的 api_key 条目 `label`）；不参与解析优先级 |
 
@@ -1199,7 +1199,7 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| `provider` | string | 否 | provider 名；省略 / `null` = 内核配置的默认 provider；未知 → `-32602` + `reason:"unknown_provider"` |
+| `provider` | string | 否 | provider 名；省略 / `null` = 已配置的 `opencode-go` provider（没有 go 条目时回落到内核默认 provider）；非 opencode-go → `-32602` + `reason:"unsupported_provider"` |
 
 - **响应**：`AuthClearCredentialResult`（**没有可清除的条目也是成功响应**）。
 
@@ -1237,7 +1237,7 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| `provider` | string | 否 | provider 名；省略 / `null` = 内核配置的默认 provider；非 opencode-go → `-32602` + `reason:"unsupported_provider"` |
+| `provider` | string | 否 | provider 名；省略 / `null` = 已配置的 `opencode-go` provider（没有 go 条目时回落到内核默认 provider）；非 opencode-go → `-32602` + `reason:"unsupported_provider"` |
 | `kind` | UsageWindowKind | 否 | 只保留**报告了该窗口**的样本（样本内其余窗口原样保留）；省略 = 不过滤；未知取值（反序列化为 `Unknown`）**同样不参与过滤**（否则会静默返回空序列） |
 | `since` | integer | 否 | 起始时刻（epoch **秒**，int64，**闭区间**）；省略 = `now − retention_days × 86400` |
 | `limit` | integer | 否 | 保留**最新** N 条；省略 = **2000**；超界按 **1..=5000** 钳制（**不报错**） |
