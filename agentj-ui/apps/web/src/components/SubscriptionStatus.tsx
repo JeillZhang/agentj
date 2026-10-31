@@ -5,7 +5,7 @@
 import { useState } from "react";
 import { SUBSCRIPTION_FRESH_MS } from "../hooks/useSubscriptionStatus";
 import type { SubscriptionStatusData } from "../hooks/useSubscriptionStatus";
-import { STATE_TEXT, WINDOW_LABEL, formatUsageAge, sortWindows } from "./subscriptionModel";
+import { errorText, STATE_TEXT, WINDOW_LABEL, formatUsageAge, sortWindows } from "./subscriptionModel";
 import "./subscriptionPanel.css";
 
 type Props = {
@@ -29,6 +29,9 @@ export default function SubscriptionStatus({ status, onOpenSettings }: Props) {
   const age = open && openedAt > 0 && status.fetchedAt > 0 ? openedAt - status.fetchedAt : null;
   const lagging = status.stale || (age !== null && age > SUBSCRIPTION_FRESH_MS);
   const needsCredential = status.state === "unknown" || status.state === "invalid";
+  // A known kind has an actionable sentence; the raw RPC text stays below it so the cause is
+  // still diagnosable. Unknown kinds/free-form errors render the raw text alone.
+  const reason = errorText(status.errorKind);
 
   return (
     <div
@@ -88,7 +91,14 @@ export default function SubscriptionStatus({ status, onOpenSettings }: Props) {
             </span>
           )}
           {status.error && (
-            <span className="aj-status-row aj-sub-status__error">{status.error}</span>
+            <span className="aj-status-row aj-sub-status__error" data-testid="sub-error">
+              {reason ?? status.error}
+            </span>
+          )}
+          {status.error && reason && (
+            <span className="aj-status-row aj-sub-status__error aj-sub-status__error--raw">
+              {status.error}
+            </span>
           )}
           {needsCredential && (
             <>

@@ -115,6 +115,23 @@ describe("SubscriptionStatus", () => {
     expect(screen.queryByRole("button", { name: /设置.*订阅/ })).not.toBeInTheDocument();
   });
 
+  it("names the mapped reason for a failed probe next to the raw error", () => {
+    render(
+      <SubscriptionStatus
+        status={data({
+          state: "error",
+          errorKind: "probe_failed",
+          error: "-32602: InvalidParams",
+        })}
+      />,
+    );
+    open();
+    const tip = screen.getByRole("tooltip");
+    // The sentence comes from the shared table; the RPC text stays visible for diagnosis.
+    expect(tip).toHaveTextContent("无法从内核读取订阅状态");
+    expect(tip).toHaveTextContent("-32602: InvalidParams");
+  });
+
   it("opens from the keyboard and closes on blur", () => {
     render(<SubscriptionStatus status={data()} />);
     const trigger = screen.getByTestId("sub-trigger");

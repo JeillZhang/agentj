@@ -116,6 +116,9 @@ describe("useSubscriptionStatus", () => {
       for (let i = 0; i < 6; i += 1) await Promise.resolve();
     });
     expect(result.current.state).toBe("error");
+    // Not "network": a rejected request says nothing about the network, and the kernel may have
+    // answered with an RPC error (e.g. an unsupported provider) rather than not answering.
+    expect(result.current.errorKind).toBe("probe_failed");
     expect(result.current.error).toContain("socket closed");
     expect(result.current.windows).toHaveLength(1);
     expect(result.current.fetchedAt).toBe(stamp);
@@ -206,10 +209,13 @@ describe("useSubscriptionStatus", () => {
     });
     const { result } = renderHook(() => useSubscriptionStatus(client));
     await settle();
-    expect(result.current.errorKind).toBe("unavailable");
+    expect(result.current.errorKind).toBe("probe_failed");
     // Nobody answered *about the credential*, so `unknown` ("未链接凭据") would be a lie:
     // an unreachable kernel must not read as "no key linked".
     expect(result.current.state).toBe("error");
+    // A failed RPC is not an upstream parse failure: `unavailable` is reserved for
+    // `UsageError::Unavailable`, which the panel words as "上游响应无法识别".
+    expect(result.current.error).toContain("kernel gone");
   });
 
   it("grades the worst window and exposes a manual refresh", async () => {

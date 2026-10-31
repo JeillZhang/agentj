@@ -43,11 +43,78 @@ pub struct ProviderCfg {
     pub api_key_env: Option<String>,
 }
 
+/// The provider `provider: null` resolves to.
+///
+/// `[model] provider` defaults to the legacy literal `"deepseek"`, which need not name any
+/// `[[model.providers]]` entry — taking it verbatim made every `provider: null` call answer
+/// `-32602 unknown_provider` (UI: usage unavailable, model list empty). An unusable name
+/// falls back to what the kernel itself would run: the registry default, then the linkable
+/// `opencode-go` entry, then the first name in sorted order so the answer is deterministic.
+fn resolve_default_provider(
+    configured: &str,
+    cfgs: &HashMap<String, ProviderCfg>,
+    registry: &ProviderRegistry,
+) -> String {
+    let configured = configured.trim();
+    if cfgs.contains_key(configured) {
+        return configured.to_string();
+    }
+    registry
+        .default_name()
+        .filter(|name| cfgs.contains_key(name.as_str()))
+        .or_else(|| go_cfg_name(cfgs))
+        .or_else(|| sorted_names(cfgs).first().map(|name| (*name).clone()))
+        .unwrap_or_default()
+}
+
+/// Configured provider names, sorted so every fallback answers deterministically.
+fn sorted_names(cfgs: &HashMap<String, ProviderCfg>) -> Vec<&String> {
+    let mut names: Vec<&String> = cfgs.keys().collect();
+    names.sort();
+    names
+}
+
+/// The configured `opencode-go` entry name, if any.
+///
+/// The subscription surface (`provider/usage`, `auth/deviceStart`, `auth/setApiKey`, …) only works
+/// on an `opencode-go` provider, so those RPCs resolve `provider: null` through this instead of
+/// the generic default: with a `DEEPSEEK_API_KEY` set, the kernel default is `deepseek-chat` and
+/// the generic answer would be `-32602 unsupported_provider` even though a go key is linked.
+fn go_cfg_name(cfgs: &HashMap<String, ProviderCfg>) -> Option<String> {
+    sorted_names(cfgs)
+        .into_iter()
+        .find(|name| {
+            cfgs.get(name.as_str())
+                .is_some_and(|cfg| cfg.kind == "opencode-go")
+        })
+        .cloned()
+}
+
+/// One startup `warn` when `[model] provider` names no configured provider: the request path
+/// already answers with the resolved fallback, so this exists only to make the mismatch
+/// discoverable in logs.
+fn warn_unmatched_provider(
+    configured: &str,
+    cfgs: &HashMap<String, ProviderCfg>,
+    registry: &ProviderRegistry,
+) {
+    if configured.is_empty() || cfgs.contains_key(configured) {
+        return;
+    }
+    tracing::warn!(
+        configured,
+        resolved = %resolve_default_provider(configured, cfgs, registry),
+        "model.provider 不是已配置的 provider，已回退到实际可用的 provider"
+    );
+}
+
 /// The service handle injected into the IPC server (design D4).
 pub struct CliProviderService {
     store: AuthStore,
     cfgs: HashMap<String, ProviderCfg>,
-    default_provider: String,
+    /// `[model] provider` verbatim; resolved per request so a credential linked at runtime is
+    /// reflected without the service holding a stale name.
+    configured_provider: String,
     default_model: String,
     console_base: String,
     warn_percent: u8,
@@ -66,10 +133,14 @@ impl CliProviderService {
         warn_percent: u8,
         registry: Arc<ProviderRegistry>,
     ) -> Self {
+        let cfgs: HashMap<String, ProviderCfg> =
+            cfgs.into_iter().map(|c| (c.name.clone(), c)).collect();
+        let configured_provider = default_provider.trim().to_string();
+        warn_unmatched_provider(&configured_provider, &cfgs, &registry);
         Self {
             store,
-            cfgs: cfgs.into_iter().map(|c| (c.name.clone(), c)).collect(),
-            default_provider,
+            cfgs,
+            configured_provider,
             default_model: String::new(),
             console_base,
             warn_percent,
@@ -103,7 +174,34 @@ impl CliProviderService {
     }
 
     fn cfg(&self, provider: Option<&str>) -> Result<&ProviderCfg, DispatchError> {
-        let name = provider.unwrap_or(&self.default_provider);
+        let name = self.default_provider_name();
+        self.cfg_named(provider, &name)
+    }
+
+    /// `provider: null` for a capability only `opencode-go` implements: the go entry wins over
+    /// the kernel default, so a `deepseek-chat` default cannot blank the subscription surface.
+    /// An explicit name is still honoured (and rejected by `require_kind` when it is not go).
+    fn go_cfg(
+        &self,
+        provider: Option<&str>,
+        capability: &str,
+    ) -> Result<&ProviderCfg, DispatchError> {
+        let name = go_cfg_name(&self.cfgs).unwrap_or_else(|| self.default_provider_name());
+        self.require_kind(self.cfg_named(provider, &name)?, capability)
+    }
+
+    /// Reported provider for `provider: null` on the provider-agnostic RPCs (`auth/status`,
+    /// `model/list`): the same name the kernel itself would run.
+    fn default_provider_name(&self) -> String {
+        resolve_default_provider(&self.configured_provider, &self.cfgs, &self.registry)
+    }
+
+    fn cfg_named(
+        &self,
+        provider: Option<&str>,
+        fallback: &str,
+    ) -> Result<&ProviderCfg, DispatchError> {
+        let name = provider.unwrap_or(fallback);
         self.cfgs.get(name).ok_or_else(|| {
             let mut registered: Vec<&String> = self.cfgs.keys().collect();
             registered.sort();
@@ -230,9 +328,7 @@ impl CliProviderService {
         &self,
         p: ProviderUsageParams,
     ) -> Result<ProviderUsageResult, DispatchError> {
-        let cfg = self
-            .require_kind(self.cfg(p.provider.as_deref())?, "usage")?
-            .clone();
+        let cfg = self.go_cfg(p.provider.as_deref(), "usage")?.clone();
         let now = now_epoch();
         if let Some(hit) = self.cached_usage(&cfg.name, now, p.refresh == Some(true)) {
             return Ok(hit);
@@ -281,9 +377,7 @@ impl CliProviderService {
         &self,
         p: ProviderUsageHistoryParams,
     ) -> Result<ProviderUsageHistoryResult, DispatchError> {
-        let cfg = self
-            .require_kind(self.cfg(p.provider.as_deref())?, "usage_history")?
-            .clone();
+        let cfg = self.go_cfg(p.provider.as_deref(), "usage_history")?.clone();
         let retention = self
             .history
             .as_ref()
@@ -468,9 +562,7 @@ impl CliProviderService {
         &self,
         p: AuthDeviceStartParams,
     ) -> Result<AuthDeviceStartResult, DispatchError> {
-        let cfg = self
-            .require_kind(self.cfg(p.provider.as_deref())?, "device_flow")?
-            .clone();
+        let cfg = self.go_cfg(p.provider.as_deref(), "device_flow")?.clone();
         let code = agentj_auth::oauth::device_start(&self.console_base)
             .await
             .map_err(credential_error)?;
@@ -488,9 +580,7 @@ impl CliProviderService {
         &self,
         p: AuthDevicePollParams,
     ) -> Result<AuthDevicePollResult, DispatchError> {
-        let cfg = self
-            .require_kind(self.cfg(p.provider.as_deref())?, "device_flow")?
-            .clone();
+        let cfg = self.go_cfg(p.provider.as_deref(), "device_flow")?.clone();
         let outcome = agentj_auth::oauth::device_poll(&self.console_base, &p.device_code, 5)
             .await
             .map_err(credential_error)?;
@@ -572,8 +662,7 @@ impl CliProviderService {
         &self,
         p: AuthSetApiKeyParams,
     ) -> Result<AuthSetApiKeyResult, DispatchError> {
-        let cfg = self.cfg(p.provider.as_deref())?.clone();
-        self.require_kind(&cfg, "api_key")?;
+        let cfg = self.go_cfg(p.provider.as_deref(), "api_key")?.clone();
         let key = p.api_key.trim().to_string();
         if key.is_empty() {
             return Err(DispatchError::invalid_params_with_data(
@@ -713,8 +802,7 @@ impl CliProviderService {
         &self,
         p: AuthClearCredentialParams,
     ) -> Result<AuthClearCredentialResult, DispatchError> {
-        let cfg = self.cfg(p.provider.as_deref())?.clone();
-        self.require_kind(&cfg, "api_key")?;
+        let cfg = self.go_cfg(p.provider.as_deref(), "api_key")?.clone();
         let cleared = self.store.remove(&cfg.name).map_err(credential_error)?;
         lock_or_recover(&self.usage_cache).remove(&cfg.name);
         lock_or_recover(&self.model_cache).remove(&cfg.name);
@@ -1445,6 +1533,135 @@ mod tests {
         assert!(server.received_requests().await.unwrap().is_empty());
     }
 
+    /// BUG: `[model] provider` defaults to the legacy literal `"deepseek"`, which is not a
+    /// configured provider name. `provider: null` then answered `-32602 unknown_provider` on a
+    /// stock config, so the UI's `auth/status` + `provider/usage` + `model/list` all failed.
+    #[tokio::test]
+    async fn unconfigured_default_provider_falls_back_to_the_kernel_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = CliProviderService::new(
+            AuthStore::with_path(dir.path().join("auth.json")),
+            vec![
+                ProviderCfg {
+                    name: "deepseek-chat".into(),
+                    kind: "openai-compat".into(),
+                    base_url: "https://example.invalid".into(),
+                    api_key_env: None,
+                },
+                go_cfg("https://example.invalid"),
+            ],
+            // `ModelSection::default().provider`, present in no `[[model.providers]]` entry.
+            "deepseek".into(),
+            "https://example.invalid".into(),
+            80,
+            registry_with(&["opencode-go"]),
+        );
+        let hist = svc
+            .usage_history(ProviderUsageHistoryParams {
+                provider: None,
+                kind: None,
+                since: None,
+                limit: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(hist.provider, "opencode-go");
+    }
+
+    /// A kernel with no registered provider (fresh boot, no credential yet) must still answer
+    /// `auth/status` so the UI can offer the device-code link instead of `-32602`.
+    #[tokio::test]
+    async fn keyless_kernel_still_answers_with_the_linkable_provider() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = CliProviderService::new(
+            AuthStore::with_path(dir.path().join("auth.json")),
+            vec![
+                ProviderCfg {
+                    name: "deepseek-chat".into(),
+                    kind: "openai-compat".into(),
+                    base_url: "https://example.invalid".into(),
+                    api_key_env: None,
+                },
+                go_cfg("https://example.invalid"),
+            ],
+            "deepseek".into(),
+            "https://example.invalid".into(),
+            80,
+            empty_registry(),
+        );
+        let status = svc
+            .auth_status(AuthStatusParams { provider: None })
+            .await
+            .unwrap();
+        assert_eq!(status.provider, "opencode-go");
+        assert!(!status.authenticated);
+    }
+
+    /// `provider/usage` and friends only ever work on `opencode-go`, so their `provider: null`
+    /// must pick the go entry — even when the kernel default is another configured provider
+    /// (a `DEEPSEEK_API_KEY` in the documented config makes `deepseek-chat` the registry
+    /// default, which would otherwise answer `unsupported_provider` and blank the usage tab).
+    #[tokio::test]
+    async fn go_capability_rpcs_pick_the_go_provider_over_the_kernel_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = CliProviderService::new(
+            AuthStore::with_path(dir.path().join("auth.json")),
+            vec![
+                ProviderCfg {
+                    name: "deepseek-chat".into(),
+                    kind: "openai-compat".into(),
+                    base_url: "https://example.invalid".into(),
+                    api_key_env: None,
+                },
+                go_cfg("https://example.invalid"),
+            ],
+            "deepseek".into(),
+            "https://example.invalid".into(),
+            80,
+            // `deepseek-chat` registered first, so it is the kernel default.
+            registry_with(&["deepseek-chat", "opencode-go"]),
+        );
+        let hist = svc
+            .usage_history(ProviderUsageHistoryParams {
+                provider: None,
+                kind: None,
+                since: None,
+                limit: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(hist.provider, "opencode-go");
+    }
+
+    /// The other half of that split: `auth/status` stays on the kernel default provider, so the
+    /// credential row keeps describing the provider the kernel would actually run.
+    #[tokio::test]
+    async fn auth_status_stays_on_the_kernel_default_provider() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = CliProviderService::new(
+            AuthStore::with_path(dir.path().join("auth.json")),
+            vec![
+                ProviderCfg {
+                    name: "deepseek-chat".into(),
+                    kind: "openai-compat".into(),
+                    base_url: "https://example.invalid".into(),
+                    api_key_env: Some("AGENTJ_TEST_NO_SUCH_ENV_VAR".into()),
+                },
+                go_cfg("https://example.invalid"),
+            ],
+            "deepseek".into(),
+            "https://example.invalid".into(),
+            80,
+            registry_with(&["deepseek-chat", "opencode-go"]),
+        );
+        let status = svc
+            .auth_status(AuthStatusParams { provider: None })
+            .await
+            .unwrap();
+        assert_eq!(status.provider, "deepseek-chat");
+        assert!(!status.authenticated);
+    }
+
     #[tokio::test]
     async fn non_go_provider_is_unsupported_for_api_key_linking() {
         let server = wiremock::MockServer::start().await;
@@ -1699,9 +1916,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn omitted_provider_resolves_to_the_configured_default() {
-        // The configured default is a non-go provider, so an omitted `provider` must reach
-        // *its* kind check rather than fail as an unknown name.
+    async fn omitted_provider_reaches_the_go_entry_and_an_explicit_non_go_one_is_rejected() {
+        // Two halves of the same resolution rule: an omitted `provider` picks the linkable
+        // `opencode-go` entry even though `deepseek-chat` is the configured default (so linking
+        // and usage stay reachable), while an explicitly named non-go provider is still refused
+        // before anything is written or sent upstream.
         let server = wiremock::MockServer::start().await;
         let (svc, _dir) = console_service(
             vec![
@@ -1716,10 +1935,15 @@ mod tests {
             "deepseek-chat",
             &server.uri(),
         );
-        let err = svc.set_api_key(params("sk-k", None)).await.unwrap_err();
+        let err = svc
+            .set_api_key(params("sk-k", Some("deepseek-chat")))
+            .await
+            .unwrap_err();
         assert_eq!(err.code, -32602);
         assert_eq!(err.data.unwrap()["reason"], "unsupported_provider");
         assert!(server.received_requests().await.unwrap().is_empty());
+        let linked = svc.set_api_key(params("sk-k", None)).await.unwrap();
+        assert_eq!(linked.provider, "opencode-go");
     }
 
     #[tokio::test]

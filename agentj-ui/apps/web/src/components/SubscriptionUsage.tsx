@@ -6,7 +6,7 @@ import { Fragment } from "react";
 import { buildTrend } from "@agentj/sdk";
 import type { UsageSample, UsageWindow } from "@agentj/protocol";
 import UsageSparkline from "./UsageSparkline";
-import { ERROR_TEXT, WINDOW_LABEL, WINDOW_ORDER, isWarn } from "./subscriptionModel";
+import { errorText, WINDOW_LABEL, WINDOW_ORDER, isWarn } from "./subscriptionModel";
 
 type ProviderUsage = {
   windows?: UsageWindow[] | null;
@@ -60,7 +60,7 @@ export default function SubscriptionUsage({
   const windows = Array.isArray(usage.windows) ? [...usage.windows] : [];
   windows.sort((a, b) => WINDOW_ORDER.indexOf(a.kind) - WINDOW_ORDER.indexOf(b.kind));
   const kind = usage.error?.kind;
-  const sentence = kind ? ERROR_TEXT[kind] : undefined;
+  const sentence = errorText(kind);
   const cutoff = now > 0 ? now : Number.MAX_SAFE_INTEGER;
   return (
     <div className="aj-sub__usage">
@@ -79,6 +79,9 @@ export default function SubscriptionUsage({
         );
       })}
       {sentence && <p className="aj-sub__error">{sentence}</p>}
+      {usage.error?.message && usage.error.message !== sentence && (
+        <p className="aj-sub__error aj-sub__error--raw">{usage.error.message}</p>
+      )}
     </div>
   );
 }

@@ -21,8 +21,24 @@ export const ERROR_TEXT: Record<string, string> = {
   unauthorized: "密钥无效或已被撤销：请重新登录",
   entitlement: "该工作区没有 OpenCode Go 订阅",
   unavailable: "用量暂时无法获取（上游响应无法识别）",
+  // Not an upstream verdict: the request to the kernel itself failed (RPC error, connection
+  // gone, rejected params). Kept apart from `unavailable` so a broken request never reads as
+  // "upstream response unrecognised".
+  probe_failed: "无法从内核读取订阅状态：请检查连接后重试",
   network: "网络不可达，已显示缓存数据",
 };
+
+/**
+ * The mapped sentence for a wire error kind, or `undefined` when the kind is unknown.
+ *
+ * Own-property check on purpose: the kind comes straight off the wire, so a value like
+ * `"toString"` or `"constructor"` must not resolve to an inherited `Object.prototype`
+ * member (that would hand a function to React as a child). Unknown kinds fall back to the
+ * raw RPC message at the call sites instead of disappearing.
+ */
+export function errorText(kind: string | null | undefined): string | undefined {
+  return kind && Object.hasOwn(ERROR_TEXT, kind) ? ERROR_TEXT[kind] : undefined;
+}
 
 /** One sentence per graded/trouble state; `unknown` is the "no credential" case. */
 export const STATE_TEXT: Record<SubscriptionState, string> = {

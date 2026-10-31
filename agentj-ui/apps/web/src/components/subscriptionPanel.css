@@ -126,6 +126,13 @@
   color: var(--aj-error);
 }
 
+/* The raw RPC text under a mapped sentence: de-emphasised, never the loud red one. */
+.aj-sub__error--raw {
+  color: var(--aj-textCaption);
+  font-size: 11px;
+  word-break: break-word;
+}
+
 .aj-sub__actions {
   display: flex;
   gap: var(--aj-space-2);
@@ -223,6 +230,12 @@
 
 .aj-sub-status__error {
   color: var(--aj-error);
+}
+
+/* The raw RPC text under the mapped sentence: same row, but de-emphasised. */
+.aj-sub-status__error--raw {
+  color: var(--aj-textCaption);
+  font-size: 11px;
 }
 
 .aj-sub-status__link {

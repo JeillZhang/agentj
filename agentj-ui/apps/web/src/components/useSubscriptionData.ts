@@ -6,7 +6,7 @@ import type {
   UsageSample,
   UsageWindow,
 } from "@agentj/protocol";
-import { ERROR_TEXT, deviceStateLabel } from "./subscriptionModel";
+import { errorText, deviceStateLabel } from "./subscriptionModel";
 import type { SubscriptionStatusData } from "../hooks/useSubscriptionStatus";
 
 /**
@@ -47,7 +47,11 @@ function usageFromStatus(status: SubscriptionStatusData): ProviderUsage {
     windows: status.windows,
     warn_percent: status.warnPercent,
     stale: status.stale,
-    error: status.error ? { kind: status.errorKind ?? "unavailable", message: status.error } : null,
+    // A snapshot can only carry `error` together with a kind, so the fallback is defensive:
+    // `probe_failed` — never `unavailable`, which would claim the upstream body was unreadable.
+    error: status.error
+      ? { kind: status.errorKind ?? "probe_failed", message: status.error }
+      : null,
   };
 }
 
@@ -56,7 +60,7 @@ function linkResultText(res: AuthSetApiKeyResult): string {
   if (res.outcome !== "rejected") {
     return LINK_OUTCOME_TEXT[res.outcome] ?? "链接结果未知，请查看用量与凭据状态";
   }
-  const why = res.error?.kind ? ERROR_TEXT[res.error.kind] : undefined;
+  const why = errorText(res.error?.kind);
   return `未保存：${why ?? "API Key 被上游拒绝"}`;
 }
 
