@@ -28,7 +28,16 @@ describe("buildBuckets", () => {
   it("keeps a median vertex so mid-bucket dips survive", () => {
     const points = [pt(0, 90), pt(1, 10), pt(2, 50), pt(3, 20), pt(4, 95)];
     const [bucket] = buildBuckets(points, 1); // 1px over 4 gaps → the whole series is one bucket
-    expect(bucket.vertices).toEqual([1, 2, 4]); // min, median index, max
+    expect(bucket.vertices).toEqual([1, 2, 4]); // min, median sample, max
+  });
+
+  it("locates the median by value, not by position", () => {
+    // Sorted percents are 10, 20, 30, 90, 95 → the median sample is index 3 (30%),
+    // while the positional middle is index 2 (20%): only a value median keeps the
+    // vertex on the real middle of the bucket.
+    const points = [pt(0, 10), pt(1, 90), pt(2, 20), pt(3, 30), pt(4, 95)];
+    const [bucket] = buildBuckets(points, 1);
+    expect(bucket.vertices).toEqual([0, 3, 4]);
     expect(bucket.percent).toBe(95); // the tooltip/peak still report the highest sample
   });
 

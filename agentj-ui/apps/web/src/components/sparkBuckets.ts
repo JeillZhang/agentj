@@ -41,13 +41,22 @@ export function buildBuckets(points: TrendPoint[], width: number): SparkBucket[]
       if (points[i].percent < points[low].percent) low = i;
       if (points[i].percent > points[high].percent) high = i;
     }
-    const mid = start + Math.floor((end - start) / 2);
-    const vertices = [...new Set([low, mid, high])]
-      .filter((i) => i >= start && i <= end)
-      .sort((a, b) => a - b);
+    const mid = medianIndex(points, start, end);
+    const vertices = [...new Set([low, mid, high])].sort((a, b) => a - b);
     buckets.push({ start, end, percent: points[high].percent, at: points[high].at, vertices });
   }
   return buckets;
+}
+
+/**
+ * Index of the bucket's *median* sample: the middle of its percents by value, not by
+ * position, so a dip or a climb inside the bucket keeps a vertex on the real middle.
+ */
+function medianIndex(points: TrendPoint[], start: number, end: number): number {
+  const order: number[] = [];
+  for (let i = start; i <= end; i += 1) order.push(i);
+  order.sort((a, b) => points[a].percent - points[b].percent || a - b);
+  return order[Math.floor((order.length - 1) / 2)];
 }
 
 /** One drawable/interactive slot: a single sample, or a bucket of neighbouring samples. */
