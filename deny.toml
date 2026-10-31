@@ -46,23 +46,25 @@ skip = [
   # getrandom 0.3.4's UEFI backend (visible only under `cargo tree --target
   # all`); getrandom 0.4.3 ships r-efi 6.0.0 instead, hence the duplicate.
   { name = "r-efi", version = "=5.3.0" },
-  # ed25519-dalek 2.2.0 is the last consumer of rand_core 0.6 (agentj-license /
-  # agentj-cli); rand 0.9.5 already uses rand_core 0.9.5.
-  { name = "rand_core", version = "=0.6.4" },
+  # rand 0.9.5 (via tungstenite 0.29) is still on rand_core 0.9.5, while
+  # ed25519-dalek 3.0.0 rides crypto-common 0.2 -> digest 0.11 -> rand_core 0.10.
+  { name = "rand_core", version = "=0.9.5" },
   # async-trait 0.1.92 is the only proc-macro crate on syn 3 so far.
-  { name = "syn", version = "=3.0.4" },
-  # sha2 0.11 / digest 0.11 (agentj-ipc, agentj-cli) rides the RustCrypto 0.11
-  # wave, but ed25519-dalek 2.2.0 and sha1 0.10.7 (axum / tungstenite) still pin
-  # digest 0.10. Once ed25519-dalek and tungstenite move to digest 0.11 the
-  # whole block collapses back into a single version each.
+  { name = "syn", version = "=3.0.9" },
+  # digest 0.11 (agentj-ipc, agentj-cli, ed25519-dalek 3) vs digest 0.10, which
+  # only sha1 0.10.7 (axum / tungstenite 0.29) still pins. Once sha1 moves to
+  # the RustCrypto 0.11 wave this block collapses back into single versions.
   { name = "digest", version = "=0.10.7" },
   { name = "block-buffer", version = "=0.10.4" },
   { name = "crypto-common", version = "=0.1.7" },
   { name = "cpufeatures", version = "=0.2.17" },
-  { name = "sha2", version = "=0.10.9" },
   # base64 0.23.1 comes from reqwest 0.13, while axum 0.8 / hyper-util 0.1 still
   # ask for 0.22.1. Pure transitional overlap until axum bumps its own pin.
   { name = "base64", version = "=0.22.1" },
+  # agentj-ipc serves the web dist through tower-http 0.7 (fs + set-header),
+  # while reqwest 0.13.5 pins tower-http 0.6 for its own redirect/cookie layers.
+  # Drop this entry once reqwest re-exports on 0.7.
+  { name = "tower-http", version = "=0.6.11" },
   # toml 1.1 (agentj-config, agentj-plugin) parses through toml_datetime 1.1 and
   # winnow 1.0, whereas toml_edit 0.22 (comment-preserving writes) is still on
   # toml_datetime 0.6 / winnow 0.7. Upstream has not released a toml_edit on the

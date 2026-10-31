@@ -96,7 +96,7 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo build --locked -p agentj-plugin-fixture
       - run: cargo llvm-cov --workspace --fail-under-lines ${{ env.COVERAGE_THRESHOLD }} --lcov --output-path lcov.info --locked
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: coverage-lcov
@@ -107,7 +107,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
@@ -143,7 +143,7 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
@@ -169,7 +169,7 @@ jobs:
         run: npm --prefix agentj-ui/apps/desktop run build -- --bundles deb,appimage
       - name: Verify artifacts
         run: ./agentj-ui/apps/desktop/check-artifacts.sh linux
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: agentj-desktop-linux
           path: |
@@ -188,7 +188,7 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
@@ -211,7 +211,7 @@ jobs:
       - name: Verify artifacts
         shell: bash
         run: ./agentj-ui/apps/desktop/check-artifacts.sh macos
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: agentj-desktop-macos
           path: agentj-ui/apps/desktop/src-tauri/target/release/bundle/dmg/*.dmg
@@ -224,7 +224,7 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
@@ -247,7 +247,7 @@ jobs:
       - name: Verify artifacts
         shell: bash
         run: ./agentj-ui/apps/desktop/check-artifacts.sh windows
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: agentj-desktop-windows
           path: agentj-ui/apps/desktop/src-tauri/target/release/bundle/msi/*.msi

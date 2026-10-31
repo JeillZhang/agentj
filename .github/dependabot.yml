@@ -1,5 +1,8 @@
-# Dependency updates. Minor and patch bumps arrive as one grouped PR per
-# ecosystem so the review surface stays a single lockfile/manifest diff.
+# Dependency updates. Everything (major included) arrives as one grouped PR per
+# ecosystem, so a weekly round is a single lockfile/manifest diff to review
+# instead of one PR per semver-major. Dependabot cannot group across
+# ecosystems, so the floor is three PRs (cargo / npm / github-actions); majors
+# that need real migration work are still consolidated by hand (see #122).
 version: 2
 updates:
   - package-ecosystem: cargo
@@ -10,7 +13,7 @@ updates:
     groups:
       cargo-minor-patch:
         patterns: ["*"]
-        update-types: ["minor", "patch"]
+        update-types: ["major", "minor", "patch"]
 
   - package-ecosystem: npm
     directory: "/agentj-ui"
@@ -20,7 +23,7 @@ updates:
     groups:
       npm-minor-patch:
         patterns: ["*"]
-        update-types: ["minor", "patch"]
+        update-types: ["major", "minor", "patch"]
 
   - package-ecosystem: github-actions
     directory: "/"
@@ -30,4 +33,4 @@ updates:
     groups:
       actions-minor-patch:
         patterns: ["*"]
-        update-types: ["minor", "patch"]
+        update-types: ["major", "minor", "patch"]

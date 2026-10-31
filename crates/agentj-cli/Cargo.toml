@@ -31,7 +31,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 agentj-mcp = { path = "../agentj-mcp", version = "0.1.0" }
 agentj-license = { path = "../agentj-license", version = "0.1.0" }
 base64.workspace = true
-ed25519-dalek = { version = "2", features = ["rand_core"] }
+ed25519-dalek = { version = "3", features = ["rand_core"] }
 
 [dev-dependencies]
 libc = "0.2"
@@ -39,7 +39,7 @@ sha2 = "0.11"
 tempfile.workspace = true
 wiremock.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util"] }
-tokio-tungstenite = "0.26"
+tokio-tungstenite = "0.29"
 
 [lints]
 workspace = true
