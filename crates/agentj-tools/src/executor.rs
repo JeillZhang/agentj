@@ -17,7 +17,13 @@ pub struct CommandSpec {
 /// whether to fall back to the in-process walker (no string matching).
 #[derive(Debug)]
 pub enum RunFailure {
-    ProgramMissing { program: String, reason: String },
+    /// `tool` is the tool the model asked for (`bash`, `grep`), `program` the binary that
+    /// could not be spawned. The model sees the tool: "which binary do you use" is ours.
+    ProgramMissing {
+        tool: Option<String>,
+        program: String,
+        reason: String,
+    },
     Timeout(Duration),
     Failed(ToolError),
 }
@@ -25,9 +31,13 @@ pub enum RunFailure {
 impl From<RunFailure> for ToolError {
     fn from(failure: RunFailure) -> Self {
         match failure {
-            RunFailure::ProgramMissing { program, reason } => ToolError::ExecutionFailed {
-                name: program,
+            RunFailure::ProgramMissing {
+                tool,
+                program,
                 reason,
+            } => ToolError::ExecutionFailed {
+                name: tool.unwrap_or_else(|| program.clone()),
+                reason: format!("{program}: {reason}"),
             },
             RunFailure::Timeout(timeout) => ToolError::Timeout(timeout),
             RunFailure::Failed(error) => error,
@@ -143,6 +153,7 @@ impl Drop for ChildGuard {
 pub struct ToolExecutor {
     timeout: Duration,
     kill_on_drop: bool,
+    tool: Option<String>,
 }
 
 impl ToolExecutor {
@@ -150,7 +161,15 @@ impl ToolExecutor {
         Self {
             timeout,
             kill_on_drop,
+            tool: None,
         }
+    }
+
+    /// Name the tool this executor runs for. Spawn failures are reported under this name
+    /// so the model never sees "sh"/"rg" instead of the tool it actually called.
+    pub fn with_tool(mut self, tool: &str) -> Self {
+        self.tool = Some(tool.to_string());
+        self
     }
 
     /// Spawn a child into its own process group, wrapped in a kill_on_drop guard.
@@ -174,15 +193,19 @@ impl ToolExecutor {
         }
         isolate(&mut cmd); // new process group with pgid = child pid
         let child = cmd.spawn().map_err(|e| {
+            let program = spec.program.clone();
             if e.kind() == std::io::ErrorKind::NotFound {
                 RunFailure::ProgramMissing {
-                    program: spec.program.clone(),
+                    tool: self.tool.clone(),
+                    program,
                     reason: e.to_string(),
                 }
             } else {
+                // Same contract as `ProgramMissing`: the tool owns the error, the
+                // program is detail — otherwise one tool reports two names.
                 RunFailure::Failed(ToolError::ExecutionFailed {
-                    name: spec.program.clone(),
-                    reason: e.to_string(),
+                    name: self.tool.clone().unwrap_or_else(|| program.clone()),
+                    reason: format!("{program}: {e}"),
                 })
             }
         })?;
@@ -391,20 +414,76 @@ mod tests {
             })
             .unwrap_err();
         assert!(
-            matches!(&err, RunFailure::ProgramMissing { program, reason }
+            matches!(&err, RunFailure::ProgramMissing { program, reason, .. }
                 if program == "agentj-test-no-such-binary" && reason.contains("No such file")),
             "unexpected: {err:?}"
         );
     }
 
     #[test]
+    fn program_missing_names_the_tool_and_keeps_the_program() {
+        let err = ToolError::from(RunFailure::ProgramMissing {
+            tool: Some("bash".to_string()),
+            program: "agentj-test-no-such-binary".to_string(),
+            reason: "No such file or directory (os error 2)".to_string(),
+        });
+        assert!(
+            matches!(&err, ToolError::ExecutionFailed { name, .. } if name == "bash"),
+            "{err:?}"
+        );
+        let text = err.to_string();
+        assert!(text.contains("tool 'bash' execution failed"), "{text}");
+        assert!(text.contains("agentj-test-no-such-binary"), "{text}");
+    }
+
+    #[test]
+    fn program_missing_without_a_tool_falls_back_to_the_program() {
+        let err = ToolError::from(RunFailure::ProgramMissing {
+            tool: None,
+            program: "rg".to_string(),
+            reason: "No such file".to_string(),
+        });
+        assert!(
+            matches!(&err, ToolError::ExecutionFailed { name, .. } if name == "rg"),
+            "{err:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn generic_spawn_failure_also_names_the_tool() {
+        // `ProgramMissing` is only the `NotFound` branch; every other spawn error goes
+        // through the generic branch, which today reports the *program*.
+        let dir = std::env::temp_dir().join(format!("aj-tool-spawn-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let executor = ToolExecutor::new(Duration::from_secs(5), true).with_tool("bash");
+        let err = executor
+            .spawn_guarded(CommandSpec {
+                program: "sh".into(),
+                args: vec!["-c".into(), "true".into()],
+                cwd: Some(dir.join("missing-cwd")), // ENOENT from chdir, not from exec
+            })
+            .await
+            .expect_err("a missing cwd must fail the spawn");
+        assert!(
+            matches!(&err, ToolError::ExecutionFailed { name, .. } if name == "bash"),
+            "{err:?}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn run_failure_converts_back_to_tool_error() {
         let missing: ToolError = RunFailure::ProgramMissing {
+            tool: None,
             program: "rg".into(),
             reason: "No such file or directory (os error 2)".into(),
         }
         .into();
-        assert!(matches!(missing, ToolError::ExecutionFailed { ref name, .. } if name == "rg"));
+        assert!(
+            matches!(missing, ToolError::ExecutionFailed { ref name, .. } if name == "rg"),
+            "{missing:?}"
+        );
 
         // Also pins the model-visible wording for the timeout path (Review Focus #3).
         let timeout: ToolError = RunFailure::Timeout(Duration::from_millis(1500)).into();

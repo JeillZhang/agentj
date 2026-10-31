@@ -118,7 +118,9 @@ impl BashTool {
             args: vec!["-c".into(), command.to_string()],
             cwd: cwd.map(std::path::Path::to_path_buf),
         };
-        let out = ToolExecutor::new(timeout, true).run_blocking(spec)?;
+        let out = ToolExecutor::new(timeout, true)
+            .with_tool("bash")
+            .run_blocking(spec)?;
         Ok(serde_json::Value::String(out.stdout))
     }
 }
@@ -252,6 +254,7 @@ impl GrepTool {
             cwd: cwd.map(std::path::Path::to_path_buf),
         };
         ToolExecutor::new(timeout, true)
+            .with_tool("grep")
             .run_blocking(spec)
             .map(|out| out.stdout)
     }
