@@ -40,7 +40,8 @@ fn on_demand_json(web: &WebConfig) -> serde_json::Value {
 }
 
 /// The `/version` body: product/protocol versions, the dist facts, the throttling
-/// counters and the integrity summary (manifest + static + the two runtime blocks).
+/// counters, the integrity summary (manifest + static + the two runtime blocks) and
+/// the config warnings the kernel clamped at startup.
 fn version_payload(web: &WebConfig) -> serde_json::Value {
     let dist = web.dist_version();
     let counters = web.login_limiter.counters(Instant::now());
@@ -49,6 +50,7 @@ fn version_payload(web: &WebConfig) -> serde_json::Value {
         "product_version": env!("CARGO_PKG_VERSION"),
         "protocol_version": agentj_protocol::PROTOCOL_VERSION,
         "dist_present": web.dist.is_some(),
+        "config_warnings": web.config_warnings(),
         "dist": dist.map(|v| serde_json::json!({
             "product_version": v.product_version,
             "protocol_version": v.protocol_version,

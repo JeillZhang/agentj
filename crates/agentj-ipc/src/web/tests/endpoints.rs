@@ -6,6 +6,35 @@ use std::fs;
 use std::time::Duration;
 
 #[tokio::test]
+async fn version_reports_an_empty_config_warning_array_when_none_were_injected() {
+    let state = test_state(WebConfig::disabled());
+    let local: std::net::SocketAddr = LOOPBACK.parse().unwrap();
+    let (_, _, body) = get(crate::web::build_router(state, local), "/version").await;
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["config_warnings"], serde_json::json!([]));
+}
+
+#[tokio::test]
+async fn version_reports_config_warnings_verbatim() {
+    let web = WebConfig::disabled().with_config_warnings(vec![
+        "warning: agent.max_tool_iterations = 5000 outside 1..=1000; using 1000".to_string(),
+        "warning: [web] state_dir is empty; treating it as unset".to_string(),
+    ]);
+    let state = test_state(web);
+    let local: std::net::SocketAddr = LOOPBACK.parse().unwrap();
+    let (status, _, body) = get(crate::web::build_router(state, local), "/version").await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let warnings = v["config_warnings"].as_array().expect("array, never null");
+    assert_eq!(warnings.len(), 2);
+    assert_eq!(
+        warnings[0].as_str().unwrap(),
+        "warning: agent.max_tool_iterations = 5000 outside 1..=1000; using 1000"
+    );
+}
+
+
+#[tokio::test]
 async fn version_omits_the_on_demand_age_before_any_sweep() {
     let dist = temp_dist("version-ondemand");
     write_temp_dist_manifest(&dist);
