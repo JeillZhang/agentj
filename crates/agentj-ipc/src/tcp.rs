@@ -122,6 +122,9 @@ pub struct TcpBindOptions {
     /// `[web]` spot cadence + per-request verification knobs; `Default` keeps today's
     /// 60s / 8 / on / 60s behaviour.
     pub integrity: crate::web::IntegrityOptions,
+    /// `Config::validate()` output, surfaced by `/version` (the stderr banner keeps
+    /// printing it — both read the same `Vec`).
+    pub config_warnings: Vec<String>,
 }
 
 impl Default for TcpBindOptions {
@@ -136,6 +139,7 @@ impl Default for TcpBindOptions {
             metrics_state_dir: None,
             provider_service: None,
             integrity: crate::web::IntegrityOptions::default(),
+            config_warnings: Vec::new(),
         }
     }
 }
@@ -184,7 +188,8 @@ impl TcpIpcServer {
                 .with_trust_proxy_headers(options.trust_proxy_headers)
                 .with_secure_cookies(options.secure_cookies)
                 .with_metrics_state(state_path)
-                .with_integrity_options(options.integrity),
+                .with_integrity_options(options.integrity)
+                .with_config_warnings(options.config_warnings.clone()),
         );
         web.restore_metrics_state();
         let _ = web.spawn_spot_check();
