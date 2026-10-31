@@ -10,8 +10,8 @@
   "dependencies": {
     "@agentj/sdk": "*",
     "@agentj/tokens": "*",
-    "@opentui/core": "^0.6.6",
-    "@opentui/react": "^0.6.6",
+    "@opentui/core": "^0.7.0",
+    "@opentui/react": "^0.7.0",
     "react": "^19.3.1"
   },
   "devDependencies": {
