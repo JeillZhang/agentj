@@ -410,11 +410,26 @@ describe("App with mocked SDK transport", () => {
     await waitFor(() =>
       expect(document.querySelector('.aj-status-light[data-state="connected"]')).not.toBeNull(),
     );
+    // No `trigger.focus()`: first paint leaves focus on `document.body`, and the shell
+    // shortcut must still fire there (that is the whole point of `allowBodyFocus`).
     // Shift arrives as the uppercase key, so both spellings must open the same surface.
-    const trigger = await screen.findByTestId("sub-trigger");
-    trigger.focus();
-    fireEvent.keyDown(trigger, { key });
+    expect(document.activeElement).toBe(document.body);
+    fireEvent.keyDown(document.body, { key });
     expect(await screen.findByRole("tab", { name: tab })).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("ignores the body-focused shortcut while a dialog is open", async () => {
+    render(<App />);
+    await waitFor(() =>
+      expect(document.querySelector('.aj-status-light[data-state="connected"]')).not.toBeNull(),
+    );
+    fireEvent.mouseEnter(await screen.findByTestId("subscription-status"));
+    // The scope is broader than the light's own menu, so the name must be disambiguated
+    // exactly like the test above does; a bare /设置/ matches two buttons.
+    fireEvent.click(await screen.findByRole("button", { name: /设置.*订阅/ }));
+    expect(await screen.findByRole("tab", { name: "订阅" })).toHaveAttribute("aria-selected", "true");
+    fireEvent.keyDown(document.body, { key: "u" });
+    expect(screen.queryByRole("tab", { name: "用量", selected: true })).toBeNull();
   });
 
   it("ignores the shortcut while typing", async () => {
