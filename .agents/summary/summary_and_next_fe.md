@@ -30,22 +30,26 @@ schema 描述里的 `cmd` 更正为真实的 `command`）。
 | T14 | `9c0d3a2` | 新增 `useSubscriptionData`（数据层整体搬出），`SubscriptionPanel` 127 行 |
 | T15 | `6f1c1b7` | 新增 `SubscriptionHistory`（图表 + 刷新），面板 123 行 |
 | T16 | `04efc34` | 新增 `SubscriptionCredentialCard`（链接表单 + 设备码），面板 **80 行** |
+| 评审修正 | `7476b8a` | 趋势桶的中位顶点改为**按值取中位**（原先取位置中点，与名字/文档不符），删掉 `vertices` 里恒真的区间过滤，补判别用例 `locates the median by value, not by position`（`[10,90,20,30,95]` → `[0,3,4]`，位置中点会给 `[0,2,4]`） |
+| 评审修正 | `768ebd0` | 删掉 `@agentj/sdk` 的 `progress.test.ts` 里那条不可能失败的断言（断言自己刚构造的字面量）；schema 侧的 `the_generated_schema_documents_command_not_cmd` 已覆盖 |
 
 ### 实测门禁（本批收尾，2026-10-30）
 
 | 门禁 | 结果 |
 |------|------|
-| `npm --prefix agentj-ui test --workspace=@agentj/web` | 66 文件 / **784 passed** |
+| `npm --prefix agentj-ui test --workspace=@agentj/web` | 66 文件 / **785 passed**（评审修正后重跑） |
 | `npm --prefix agentj-ui run build --workspace=@agentj/web` | `tsc -b && vite build` 通过 |
 | `npm --prefix agentj-ui run lint --workspace=@agentj/web` | 0 error（warning 未新增） |
 | `bun --cwd agentj-ui/apps/tui test` | 23 文件 / **205 passed** |
-| `@agentj/sdk` / `@agentj/protocol` / `@agentj/tokens` | 92 / 4 / 11 passed |
+| `@agentj/sdk` / `@agentj/protocol` / `@agentj/tokens` | 91 / 4 / 11 passed（删掉一条空转断言后 sdk 91） |
 | protocol / sdk 生成 + 漂移 | `generate` 无 diff，`methods.ts` 仍 29 方法 |
 | `node agentj-ui/apps/desktop/check-desktop-ui.mjs` | `desktop-ui-ok` |
 | `./scripts/check-version.sh` | `version-ok` |
 
 ### 本批新增测试要点（防回退的判别力）
 
+- 中位顶点必须是**按值**的中位（`medianIndex` 按 `percent` 排序取中间样本）：只断言一条桶曲线抓不到
+  这个差别，新增用例让两种取法给出不同顶点（`[0,3,4]` vs `[0,2,4]`）。
 - `SparkBucket` 中位顶点的断言只能用 `,\d+\.\d+` 抓 y：旧写法 `-?\d+\.\d+` 连 x 一起抓，
   会得到 29 个不同值而假通过；去掉中位顶点后该用例必须失败（`expected 2 to be 3`）。
 - `UsageSparkline` 的降采样上界从 `toBeLessThanOrEqual(30)` 放宽到 `72`：120px 宽、200 样本时

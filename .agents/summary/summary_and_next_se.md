@@ -33,13 +33,22 @@
 | T11 | `4c3f84e` | `docs/specs/ipc-protocol.md` 的 bash 示例/字段表更正为 `command` / `timeout_ms`，并补记 `/version` 的 `config_warnings` 与 `/metrics` 的 `agentj_web_config_warnings`；`packages/sdk` 的 `progress.test.ts` 夹具同步 |
 | — | `8f9a708` | `cargo fmt --all`（只含格式化，无逻辑变化） |
 
+### 评审后修正（本次 review 发现并已修）
+
+| 提交 | 内容 |
+|------|------|
+| `870b168` | **真回归修复**：`ProcessGroup::drop` 会在**成功**返回后杀整组——`ChildGuard` 字段在 `Drop::drop` 之后才被丢弃，`kill_on_drop = false` 拦不住它，于是「命令自己起的 dev server」在工具返回瞬间被 SIGKILL。新增 `ProcessGroup::disarm()`：成功路径先 disarm，只有失败 / 超时 / drop 才杀整组；`reap` 只把 `waitpid` 的 `ECHILD` 当已回收（`EINTR` 重试而非短路）；drop 内 250ms 内回收不了记 `tracing::warn!`（原先 `let _ =` 吞掉）。判别测试：`agentj-core` 的 `a_disarmed_group_survives_its_drop`、`reap_answers_true_for_a_pid_that_never_existed`，`agentj-tools` 的 `a_successful_run_leaves_background_children_alive`（真进程，不 mock） |
+| `7476b8a` | sparkline 的「中位数顶点」改为**按值取中位**（原先取位置中点，名字与实现对不上），删掉 `vertices` 里恒真的区间过滤；新增判别用例 `locates the median by value, not by position`（`[10,90,20,30,95]` → 顶点 `[0,3,4]`，位置中点会给 `[0,2,4]`） |
+| `5783a60` | 修掉 `integrity.rs` 的并行 flake：`build_router` 的抽检线程首 tick 立即触发，可能在 POST 之前就从一个 runtime 线程发出唯一那条告警（thread-local `capture_warnings()` 看不到）。改为断言契约——`warned` 已记录该路径、本轮 `offenses` 为空、捕获到的次数 `<= 1`；连跑 10 次 `cargo test -p agentj-ipc --lib web::tests` 全绿 |
+| `768ebd0` | 删掉两条**不可能失败**的断言（protocol 与 sdk 里各自断言刚构造出来的 JSON 字面量）；schema 侧 `the_generated_schema_documents_command_not_cmd` 已覆盖文档注释与 wire 示例 |
+
 ### 实测门禁（本批收尾，2026-10-30）
 
 | 门禁 | 结果 |
 |------|------|
 | `cargo fmt --all --check` | 通过 |
 | `cargo clippy --workspace --all-targets --locked -- -D warnings` | 0 warning |
-| `cargo test --workspace --locked` | **1283 passed**, 0 failed |
+| `cargo test --workspace --locked` | **1285 passed**, 0 failed（评审修正后重跑） |
 | `cargo test -p agentj-protocol -- drift` | 2 passed（schemas 无漂移） |
 | `python3 scripts/tests/fn-length.py crates/` | 130 文件扫描、跳过 35 测试文件、**0 个 fn > 50 行** |
 | `bash scripts/tests/assert-{ui,cargo,ci}.sh all` | 3 + 6 + 10 = **19 项全 PASS** |
@@ -64,15 +73,17 @@
 
 - **`agentj-mcp/src/process.rs` 仍是 shim**：`isolate_group` / `kill_group` 只是再导出，`send_signal`
   未改用 `ProcessGroup`；等 mcp 传输层重写时可整体删除（保留它只为不打断既有调用点与回归测试）。
-- **非 unix 的 `ProcessGroup::kill`/`reap` 是空操作**：Windows 下没有进程组语义，调用方必须先
-  `start_kill()`；跨平台只保证「能编译、drop 会 kill 直接子进程」，不保证孙进程一起死。
+- **非 unix 的 `ProcessGroup::kill`/`reap` 是空操作**：Windows 下没有进程组语义，也没有可移植的
+  「不回收地探活」调用（`alive` 恒 `false`）；超时的子进程树可能留活口，是**既有平台缺口**。
+  仍持有 `Child` 的调用方用 `start_kill()` 兜底，但 `wait_with_output` 取走句柄后已无处可兜——
+  `process_group` 的模块文档按此如实描述，不再宣称调用方「必须」能满足。
 - **`config_warnings` 只有启动时算一次**：运行期不会因配置热更新而变化；同理 gauge 值恒定。
 - **`/metrics` 的 `Zlib` 许可未被任何依赖遇到**（`deny.toml:27`）：`license-not-encountered`
   当前是 warning；若 `cargo deny` 将来把它升为 error，需删除该条目。
-- **既有 flake**：`crates/agentj-ipc/src/web/tests/integrity.rs:313`
-  （`a_swept_offense_is_not_rewarned_by_a_spot_round`）在整模块并行时会偶发失败——`msec_spot(20, 1)`
-  的抽检线程可能在 POST 之前就从另一线程记下告警，而 `capture_warnings()` 用的是 thread-local
-  `set_default`。单跑必过，本批未触碰该文件；修法是在该用例加大 `msec_spot` 间隔。
+- **`integrity` 并行 flake 已修**（`5783a60`）：根因是抽检线程首 tick 立即触发，与 POST 竞争
+  「谁先告警」，thread-local 捕获看不到另一线程那条；现改为断言去重契约（`warned` 含路径 +
+  `offenses` 为空 + 捕获次数 `<= 1`）。**注意**：`capture_warnings()` 仍是 thread-local，写新用例时
+  不要跨线程断言日志条数。
 - **`check-artifacts.sh linux` 本地 `rc=1`**：需要 `src-tauri/target/release/bundle/{deb,appimage}`
   产物，本地未打包；该断言属 CI `desktop-package` 作业，不在本地收尾门禁内。
 
@@ -91,11 +102,11 @@
 
 ## 下一步
 
-- 本批次（B10 后端侧 T0–T6 / T10 / T11）已收尾并过门禁；分支推 `origin` 与 `gitcode`，
-  PR 开在 `origin`（用户负责合并）。
+- 本批次（B10 后端侧 T0–T6 / T10 / T11）已收尾、过门禁并完成评审修正；分支推 `origin` 与
+  `gitcode`，PR 开在 `origin`（用户负责合并）。
 - 下一批候选（见上表）：⑰⁺b 真 BPE 词表、㉟⁺b 产物签名与公证。
 - 表外可选改进：删掉 mcp 的 `process.rs` shim 并把 `send_signal` 也换成 `ProcessGroup`；
-  attach 支持回答具体选项；修掉 `integrity.rs:313` 的并行 flake。
+  attach 支持回答具体选项。
 
 > 远端提示：本机 `git fetch gitcode` 若报 `fatal: couldn't find remote ref gitcode`，按纪律
 > 不 `--force`；分支照常 `git push gitcode <branch>:<branch>`，失败即如实记录。
