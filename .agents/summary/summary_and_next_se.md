@@ -34,16 +34,29 @@
 - 新增 `fn resolve_default_provider(configured: &str, cfgs: &HashMap<String, ProviderCfg>,
   registry: &ProviderRegistry) -> String`：`trim()` 后的配置名命中 `cfgs` 即采用；否则按
   **注册表默认 provider**（且命中 `cfgs`）→ **排序后首个 `opencode-go` 条目** → **排序后首个名字**
-  回退；都为空则 `""`。配置名不可用且非空时记 `tracing::warn!(configured, resolved)`。
-  设计要点：回退顺序与内核实际会跑的 provider 对齐（注册表默认），而不是猜一个名字。
-- `CliProviderService::new` 先构建 `cfgs` 映射再解析默认 provider，之后所有 `provider: null`
-  的请求（`auth/status` / `provider/usage` / `provider/usageHistory` / `model/list`）共用该结果。
-- 两条回归用例：`unconfigured_default_provider_falls_back_to_the_kernel_default`（配置名
+  回退；都为空则 `""`。设计要点：回退顺序与内核实际会跑的 provider 对齐（注册表默认），而不是猜一个名字。
+- 新增 `fn go_cfg_name(cfgs)` + `fn sorted_names(cfgs)`：按能力解析。`provider/usage` /
+  `provider/usageHistory` / `auth/deviceStart` / `auth/devicePoll` / `auth/setApiKey` /
+  `auth/clearCredential` 六个方法只认 `opencode-go`，其 `provider: null` 现在取**已配置的 go 条目**
+  （无 go 条目才回落到默认 provider）；显式传入的非 go 名字仍由 `require_kind` 报
+  `unsupported_provider`。`auth/status` / `model/list` 继续报内核默认 provider（与内核实际运行的
+  provider 一致）。起因：`docs/guide/configuration.md` 的示例配置 + 设了 `DEEPSEEK_API_KEY` 时
+  注册表默认是 `deepseek-chat`，只按默认解析会让用量面板与设备码登录仍以
+  `-32602 unsupported_provider` 失败。
+- 解析改为**每次请求现算**：字段从 `default_provider` 换成 `configured_provider`（`[model] provider`
+  原文），`cfg()` / `go_cfg()` 各自调用 `default_provider_name()` / `go_cfg_name()`，运行期
+  `auth/setApiKey` 链接凭据后立刻生效；构造时只做一次 `warn_unmatched_provider()` 告警。
+- 四条回归用例：`unconfigured_default_provider_falls_back_to_the_kernel_default`（配置名
   `"deepseek"` + `cfgs = {deepseek-chat, opencode-go}` + 注册表默认 `opencode-go` → 默认解析为
   `opencode-go`）、`keyless_kernel_still_answers_with_the_linkable_provider`（**无任何注册
   provider** 的全新内核 → `auth/status` 仍返回 `provider: "opencode-go"` 且
-  `authenticated: false`，UI 因此能显示设备码登录入口而不是 `-32602`）。两例在修复前均以
-  `-32602 unknown_provider` 失败。
+  `authenticated: false`）、`go_capability_rpcs_pick_the_go_provider_over_the_kernel_default`
+  （注册表默认 `deepseek-chat` 时 `usage_history(None)` 仍解析到 `opencode-go`）、
+  `auth_status_stays_on_the_kernel_default_provider`（同一配置下 `auth/status` 报 `deepseek-chat`
+  且 `authenticated: false`）。前三例在修复前均以 `-32602` 失败。
+- `omitted_provider_reaches_the_go_entry_and_an_explicit_non_go_one_is_rejected` 重写自旧用例：
+  显式 `deepseek-chat` → `unsupported_provider` 且零上游请求；省略 provider → 链接到
+  `opencode-go` 成功。
 
 ## 实测门禁（本批，2026-10-31）
 
@@ -51,7 +64,7 @@
 |------|------|
 | `cargo fmt --all --check` | 通过 |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 0 warning |
-| `cargo test --workspace` | 全绿（含 `agentj-cli` 162 例） |
+| `cargo test --workspace` | 全绿（含 `agentj-cli` 163 例） |
 | `python3 scripts/tests/fn-length.py crates/agentj-cli/src/provider_service.rs` | 0 个 fn > 50 行 |
 | `bash scripts/tests/assert-{ui,cargo,ci}.sh all` | 3 + 6 + 10 = 19 项全 PASS |
 | `./scripts/check-version.sh` | `version-ok` |
@@ -59,15 +72,15 @@
 
 ## 遗留问题 / 已知限制（后端）
 
-- **默认 provider 只在 `CliProviderService::new` 解析一次**：运行期若通过 `auth/setApiKey`
-  链接新凭据并注册了新 provider，`default_provider` 不会重算（与内核注册表可能短暂不一致）；
-  当前链接目标固定为 `opencode-go`，所以不构成现实问题，待有「多 provider 运行期切换」需求时
-  改为每次请求解析或提供 setter。
-- **`resolve_default_provider` 仍偏好 `opencode-go`**：多个已配置 provider 且注册表默认不可用时
-  固定选它（订阅用量只对它有意义）；这只影响 `provider: null` 的展示路径，不影响内核跑 turn。
+- **`auth/status` 与订阅用量可能报不同 provider**：前者按内核默认为准（例如 `deepseek-chat`），
+  后者按 go 条目解析。这是刻意的：`auth/status` 描述「内核会跑的 provider 的凭据」，用量只对
+  go 有意义。若将来 UI 想让凭据行跟随订阅 provider，应显式传 `provider: "opencode-go"`。
 - **配置名不可用只在启动时 `warn` 一次**：日志里能看到「已回退」，但 `/version` 的
   `config_warnings` 不含这条（那是 `Config::validate()` 的告警集合）；如需可观测，应在
   `validate()` 里把「`model.provider` 不是已配置 provider」升为告警项。
+- **`provider: null` 的解析每次请求现算**：`cfgs` 是构造时的快照，运行期新增的 provider（仅
+  `activation::activate_opencode_go` 注册进注册表、不进 `cfgs`）不会被该回退看到；当前链接目标固定为
+  `opencode-go` 且它始终在 `cfgs` 里，所以不构成现实问题。
 - **`check-artifacts.sh linux` 本地 `rc=1`**：需要 `src-tauri/target/release/bundle` 产物，
   属 CI `desktop-package` 作业，不在本地收尾门禁内。
 

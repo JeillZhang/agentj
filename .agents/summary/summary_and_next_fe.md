@@ -30,17 +30,21 @@
 | `src/components/subscriptionModel.ts` | `ERROR_TEXT` 增 `probe_failed: "无法从内核读取订阅状态：请检查连接后重试"`；`unavailable` 保持「上游响应无法识别」不动 |
 | `src/components/useSubscriptionData.ts` | `usageFromStatus` 的兜底 kind `unavailable` → `probe_failed`（防御分支，语义一致） |
 | `src/components/SubscriptionStatus.tsx` | 悬浮面板先显示映射文案（`ERROR_TEXT[errorKind]`），再以弱化样式附原始 RPC 文本，便于定位 |
-| `src/components/subscriptionPanel.css` | 新增 `.aj-sub-status__error--raw`（`--aj-textCaption` + 11px，本文件既有小字惯例） |
+| `src/components/subscriptionPanel.css` | 新增 `.aj-sub-status__error--raw` 与 `.aj-sub__error--raw`（`--aj-textCaption` + 11px，本文件既有小字惯例） |
+| `src/components/subscriptionModel.ts` | 新增 `errorText(kind)`：`Object.hasOwn` 守卫的查表（线上 kind 可能叫 `"toString"`，裸查会拿到 `Object.prototype` 成员并把函数交给 React 渲染）；四处查表统一改走它 |
+| `src/hooks/useSubscriptionStatus.ts` | `provider/usage` 的 catch 也从 `errorKind: "network"` 改为 `probe_failed`：被拒的请求可能已被内核作答（如 `-32602`），`network` 只留给内核自己上报的 `usage.error.kind` |
+| `src/components/SubscriptionUsage.tsx` | 设置面板的用量错误在映射文案下补一行 `.aj-sub__error--raw` 原始 RPC 文本（与顶栏面板对齐） |
 
-测试：`useSubscriptionStatus.test.ts` 的探针失败用例改为断言 `errorKind === "probe_failed"`；
-`SubscriptionStatus.test.tsx` 新增「映射文案 + 原始 RPC 文本同时出现」用例（修复前 RED：
-悬浮面板只有裸文本）。
+测试：`useSubscriptionStatus.test.ts` 的探针失败/重取失败用例均断言 `errorKind === "probe_failed"`；
+`SubscriptionStatus.test.tsx` 新增「映射文案 + 原始 RPC 文本同时出现」用例；新增
+`SubscriptionUsage.test.tsx`（映射文案、原始文本行、未知 kind 只显原始文本、`"toString"` kind 不渲染函数）；
+`useSubscriptionData.test.tsx` 新增「status 带 error 但 errorKind 为 null → `probe_failed`」用例。
 
 ## 实测门禁（本批，2026-10-31）
 
 | 门禁 | 结果 |
 |------|------|
-| `npm test --workspace=@agentj/web` | 66 文件 / **786 passed** |
+| `npm test --workspace=@agentj/web` | 66 文件 / **791 passed** |
 | `npm run lint --workspace=@agentj/web` | 0 error（仅既有 warning） |
 | `npm run build --workspace=@agentj/web` | 通过 |
 | `bun --cwd agentj-ui/apps/tui test` | 205 passed（未改 TUI，回归确认） |
@@ -54,6 +58,7 @@
   `catch {}`，既不显示错误也不误报文案；如需对齐，得先给 TUI 一个错误状态位（独立小批）。
 - **设置面板内 `subscriptionPanel` 的 `loadUsage` 仍吞掉失败**：失败时保留旧快照（首次为 `null`），
   面板显示空状态而非错误句；真正的错误句来自壳层快照经 `usageFromStatus` 注入的那条路径。
+  两条路径现在都会带上原始 RPC 文本（`SubscriptionUsage` 新增的弱化行）。
 - **`SubscriptionPanel` 仍自己发起四条 RPC**：无连接级共享缓存，挂载即拉
   `provider/usage` + `provider/usageHistory`（注入 `status` 时省掉 usage）。
 - **`sessionBusyMessage` 用文本匹配**：SDK 抛错只保留 `message`（未附 `code`）。
