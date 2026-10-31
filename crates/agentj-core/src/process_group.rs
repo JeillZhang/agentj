@@ -7,10 +7,12 @@
 //! the leader to disappear (`reap`) so the kernel does not keep a zombie.
 //!
 //! Unix implements all three. Elsewhere `isolate`/`kill`/`reap` are no-ops: Windows
-//! has no `kill(-pid)` group semantics, so callers fall back to tokio's
-//! `kill_on_drop(true)` and must call `Child::start_kill` when they still own the
-//! handle. Keeping the no-op explicit (rather than `cfg`-ing whole call sites)
-//! keeps one code path everywhere and one honest doc comment per platform.
+//! has no `kill(-pid)` group semantics and no portable "probe without reaping" call,
+//! so `alive` answers `false`, `reap` answers `false` and a timed-out child can leave
+//! descendants behind. Callers that still hold the `Child` handle fall back to
+//! `Child::start_kill`; once the handle is consumed the tree is simply unreachable —
+//! a documented platform gap, not something a caller can satisfy. Keeping the no-op
+//! explicit (rather than `cfg`-ing whole call sites) keeps one code path everywhere.
 
 use std::time::{Duration, Instant};
 
@@ -66,15 +68,24 @@ pub fn alive(pid: u32) -> bool {
 #[derive(Debug)]
 pub struct ProcessGroup {
     pid: u32,
+    /// `false` once the group must outlive this value — a successful run keeps the
+    /// background children its command started (a dev server, a watcher).
+    armed: bool,
 }
 
 impl ProcessGroup {
     pub fn of(pid: u32) -> Self {
-        Self { pid }
+        Self { pid, armed: true }
     }
 
     pub fn pid(&self) -> u32 {
         self.pid
+    }
+
+    /// Stop `Drop` from killing the group: the leader already exited on its own and
+    /// whatever it left running is the command's business, not ours.
+    pub fn disarm(&mut self) {
+        self.armed = false;
     }
 
     /// SIGKILL every member of the group. Failures are ignored: the group may be gone.
@@ -103,8 +114,15 @@ impl ProcessGroup {
             loop {
                 let mut status = 0;
                 let ret = unsafe { libc::waitpid(self.pid as i32, &mut status, libc::WNOHANG) };
-                if ret == self.pid as i32 || ret == -1 {
-                    return true; // reaped now, or ECHILD → nothing left to reap
+                if ret == self.pid as i32 {
+                    return true; // reaped now
+                }
+                if ret < 0 {
+                    match std::io::Error::last_os_error().raw_os_error() {
+                        Some(libc::ECHILD) => return true, // already reaped: nothing left
+                        Some(libc::EINTR) => {}            // unrelated signal: retry
+                        _ => return false,
+                    }
                 }
                 if Instant::now() >= deadline {
                     return false;
@@ -122,8 +140,13 @@ impl ProcessGroup {
 
 impl Drop for ProcessGroup {
     fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
         self.kill();
-        let _ = self.reap(Duration::from_millis(250));
+        if !self.reap(Duration::from_millis(250)) {
+            tracing::warn!(pid = self.pid, "process group not reclaimed within 250ms");
+        }
     }
 }
 
@@ -213,6 +236,36 @@ mod tests {
         let (mut child, group) = spawn_sleeper_group(&pidfile).await;
         let grandchild = pid_from(&pidfile).await;
         drop(group);
+        assert_gone(grandchild).await;
+        let _ = child.wait().await;
+        std::fs::remove_file(&pidfile).ok();
+    }
+
+    /// `waitpid` answers `ECHILD` for a pid that was never our child: nothing to reap,
+    /// which is a success for the caller (review finding F3 — only `ECHILD` counts).
+    #[test]
+    fn reap_answers_true_for_a_pid_that_never_existed() {
+        let absent = 0x7fff_fffe_u32;
+        let started = Instant::now();
+        assert!(ProcessGroup::of(absent).reap(Duration::from_millis(500)));
+        assert!(started.elapsed() < Duration::from_millis(500), "no polling");
+    }
+
+    /// A disarmed group outlives its value: a successful run keeps what its command
+    /// started (review finding F1 — the old `Drop` killed the tree on success).
+    #[tokio::test]
+    async fn a_disarmed_group_survives_its_drop() {
+        let dir = std::env::temp_dir().join(format!("aj-core-group-keep-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let pidfile = dir.join("keep.pid");
+        let (mut child, mut group) = spawn_sleeper_group(&pidfile).await;
+        let leader = group.pid();
+        let grandchild = pid_from(&pidfile).await;
+        group.disarm();
+        drop(group);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(running(grandchild), "a disarmed group must keep running");
+        ProcessGroup::of(leader).kill(); // cleanup: a fresh, still-armed group
         assert_gone(grandchild).await;
         let _ = child.wait().await;
         std::fs::remove_file(&pidfile).ok();

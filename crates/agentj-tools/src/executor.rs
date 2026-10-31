@@ -89,6 +89,11 @@ impl ChildGuard {
                 name: "child".into(),
                 reason: e.to_string(),
             })?;
+        // The leader exited on its own: keep whatever it left running in the group
+        // (a command may start a server on purpose) and stop `Drop` from killing it.
+        if let Some(group) = self.group.as_mut() {
+            group.disarm();
+        }
         self.kill_on_drop = false; // already exited, nothing to kill
         Ok(ExecOutput {
             stdout: String::from_utf8_lossy(&output.stdout).to_string(),
@@ -518,5 +523,27 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         assert!(gone, "Drop must reclaim the group leader {pid}");
+    }
+
+    /// A successful run must not kill what its command left running: `bash` may start a
+    /// dev server on purpose, so the shared process group only kills on failure,
+    /// timeout and drop (review finding F1).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_successful_run_leaves_background_children_alive() {
+        let executor = ToolExecutor::new(Duration::from_secs(5), true);
+        let spec = CommandSpec {
+            program: "sh".into(),
+            args: vec!["-c".into(), "sleep 30 >/dev/null 2>&1 & echo $!".into()],
+            cwd: None,
+        };
+        let out = executor.run(spec).await.expect("sh runs");
+        let background: u32 = out.stdout.trim().parse().expect("pid on stdout");
+        assert!(
+            process_alive(background),
+            "the background child survives {out:?}"
+        );
+        // Cleanup: the executor no longer owns it.
+        agentj_core::process_group::ProcessGroup::of(background).kill();
     }
 }
