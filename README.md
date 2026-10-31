@@ -48,7 +48,8 @@ CLI、TUI、Web、Desktop 均作为协议消费者接入，任意语言可开发
 - [x] **CLI**：`agentj run` / `serve [stdio|--port]` / `dashboard`
 - [x] **守护内核**：常驻多客户端 + `run --attach`
 - [x] **内核托管 Web UI**：同端口静态托管 + 混合鉴权登录门 + WS cookie 通道
-- [x] **可观测性**：`GET /version` / `GET /metrics`（Prometheus）+ 登录限流 + 资产完整性校验
+- [x] **可观测性**：`GET /version`（含 `config_warnings` 配置钳制告警）/ `GET /metrics`
+  （Prometheus，含 `agentj_web_config_warnings`）+ 登录限流 + 资产完整性校验
 - [x] **子代理 / Skills 加载器 / 插件系统 / 用量统计 / License（Ed25519）**
 
 **前端（`agentj-ui` monorepo）**
@@ -118,7 +119,7 @@ agentj run --provider deepseek --model deepseek-chat "explain this codebase"
 agentj run --attach tcp://127.0.0.1:4096 "hi"
 
 # 可观测性
-curl http://127.0.0.1:4096/version   # 版本事实 + 限流聚合 + 完整性摘要
+curl http://127.0.0.1:4096/version   # 版本事实 + 配置钳制告警 + 限流聚合 + 完整性摘要
 curl http://127.0.0.1:4096/metrics   # Prometheus 文本（鉴权门控）
 RUST_LOG=debug agentj serve --port 4096
 
