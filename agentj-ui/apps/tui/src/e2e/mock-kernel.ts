@@ -222,7 +222,7 @@ function scheduleRunFlow(ws: WebSocket, sid: string): void {
         params: {
           request_id: "req-1",
           tool: "bash",
-          args: { cmd: "ls" },
+          args: { command: "ls" },
           session_id: sid,
         },
       }),

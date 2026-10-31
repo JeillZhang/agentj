@@ -35,7 +35,7 @@ describe("rowsFromFrame", () => {
       kind: "tool_call",
       id: "call-1",
       name: "bash",
-      arguments: { cmd: "ls" },
+      arguments: { command: "ls" },
     });
     expect(rows).toHaveLength(1);
     expect(rowGlyph(rows[0] as never)).toBe("│");
@@ -94,7 +94,7 @@ describe("RunTranscript", () => {
       kind: "tool_call",
       id: "c1",
       name: "bash",
-      arguments: { cmd: "ls" },
+      arguments: { command: "ls" },
     });
     rows = rowsFromFrame(rows, { kind: "usage", usage: { prompt_tokens: 10, completion_tokens: 5 } });
     const setup = await testRender(
