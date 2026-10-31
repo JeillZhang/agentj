@@ -14,7 +14,7 @@ pub struct PermissionRequestParams {
     pub request_id: String,
     /// Tool name, e.g. "bash".
     pub tool: String,
-    /// Raw tool arguments (contains `cmd` for bash, `path` for file tools).
+    /// Raw tool arguments (contains `command` for bash, `path` for file tools).
     pub args: serde_json::Value,
     /// Human-readable reason (tool default mode / matched rule).
     pub reason: String,
@@ -60,7 +60,7 @@ mod tests {
         let p = PermissionRequestParams {
             request_id: "r1".into(),
             tool: "bash".into(),
-            args: serde_json::json!({"cmd": "ls"}),
+            args: serde_json::json!({"command": "ls"}),
             reason: "tool default mode is ask".into(),
             origin_client: None,
             session_id: None,
@@ -68,8 +68,30 @@ mod tests {
         let json = serde_json::to_value(&p).unwrap();
         assert_eq!(json["request_id"], "r1");
         assert_eq!(json["tool"], "bash");
-        assert_eq!(json["args"]["cmd"], "ls");
+        assert_eq!(json["args"]["command"], "ls");
         assert_eq!(json["reason"], "tool default mode is ask");
+    }
+
+    #[test]
+    fn docs_and_fixtures_use_the_real_bash_parameter_name() {
+        let request = PermissionRequestParams {
+            request_id: "r1".into(),
+            tool: "bash".into(),
+            args: serde_json::json!({ "command": "rm -rf /tmp/x" }),
+            reason: "tool default mode is ask".into(),
+            origin_client: None,
+            session_id: None,
+        };
+        let json = serde_json::to_string(&request).unwrap();
+        assert!(json.contains("\"command\""), "{json}");
+        assert!(!json.contains("\"cmd\""), "{json}");
+    }
+
+    #[test]
+    fn the_generated_schema_documents_command_not_cmd() {
+        let schema = include_str!("../../../schemas/PermissionRequestParams.json");
+        assert!(schema.contains("command"), "schema must mention command: {schema}");
+        assert!(!schema.contains("`cmd`"), "schema still documents cmd: {schema}");
     }
 
     #[test]
