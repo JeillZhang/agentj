@@ -125,13 +125,15 @@ export function useSubscriptionStatus(client: RpcClient | null): SubscriptionSta
       auth = (await client.request(METHODS.authStatus, {})) as AuthStatus;
     } catch (e) {
       // A failing auth probe must not read as "healthy" *or* as "no credential": the
-      // credential itself is unknown, so `unavailable` grades to `error` (never `invalid`,
-      // which would be a guess).
+      // credential itself is unknown, so `probe_failed` grades to `error` (never `invalid`,
+      // which would be a guess). It is deliberately not `unavailable`: that kind is the
+      // kernel's "upstream body unparseable" verdict, and reusing it made every failed RPC
+      // read as "上游响应无法识别".
       if (current()) {
         setSnapshot((prev) => ({
           ...prev,
           loading: false,
-          errorKind: "unavailable",
+          errorKind: "probe_failed",
           error: reason(e),
         }));
       }
@@ -231,7 +233,7 @@ export function useSubscriptionStatus(client: RpcClient | null): SubscriptionSta
   const graded = severityOf(worstPercent);
   // `unknown` means "nobody has answered about the credential yet": either the answer was
   // `no_credential`, or no probe has reported a kind at all (still checking). A failed probe
-  // reports `unavailable`, which is a transport/kernel problem — grading it `unknown` would
+  // reports `probe_failed`, which is a transport/kernel problem — grading it `unknown` would
   // claim "no credential linked" and re-offer the linking CTA.
   const state: SubscriptionState =
     snapshot.errorKind === "no_credential" || (snapshot.auth !== "linked" && snapshot.errorKind === null)

@@ -47,7 +47,11 @@ function usageFromStatus(status: SubscriptionStatusData): ProviderUsage {
     windows: status.windows,
     warn_percent: status.warnPercent,
     stale: status.stale,
-    error: status.error ? { kind: status.errorKind ?? "unavailable", message: status.error } : null,
+    // A snapshot can only carry `error` together with a kind, so the fallback is defensive:
+    // `probe_failed` — never `unavailable`, which would claim the upstream body was unreadable.
+    error: status.error
+      ? { kind: status.errorKind ?? "probe_failed", message: status.error }
+      : null,
   };
 }
 

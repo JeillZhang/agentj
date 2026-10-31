@@ -21,6 +21,10 @@ export const ERROR_TEXT: Record<string, string> = {
   unauthorized: "密钥无效或已被撤销：请重新登录",
   entitlement: "该工作区没有 OpenCode Go 订阅",
   unavailable: "用量暂时无法获取（上游响应无法识别）",
+  // Not an upstream verdict: the request to the kernel itself failed (RPC error, connection
+  // gone, rejected params). Kept apart from `unavailable` so a broken request never reads as
+  // "upstream response unrecognised".
+  probe_failed: "无法从内核读取订阅状态：请检查连接后重试",
   network: "网络不可达，已显示缓存数据",
 };
 

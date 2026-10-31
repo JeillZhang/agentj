@@ -206,10 +206,13 @@ describe("useSubscriptionStatus", () => {
     });
     const { result } = renderHook(() => useSubscriptionStatus(client));
     await settle();
-    expect(result.current.errorKind).toBe("unavailable");
+    expect(result.current.errorKind).toBe("probe_failed");
     // Nobody answered *about the credential*, so `unknown` ("未链接凭据") would be a lie:
     // an unreachable kernel must not read as "no key linked".
     expect(result.current.state).toBe("error");
+    // A failed RPC is not an upstream parse failure: `unavailable` is reserved for
+    // `UsageError::Unavailable`, which the panel words as "上游响应无法识别".
+    expect(result.current.error).toContain("kernel gone");
   });
 
   it("grades the worst window and exposes a manual refresh", async () => {

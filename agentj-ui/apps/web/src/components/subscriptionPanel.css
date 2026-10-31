@@ -225,6 +225,12 @@
   color: var(--aj-error);
 }
 
+/* The raw RPC text under the mapped sentence: same row, but de-emphasised. */
+.aj-sub-status__error--raw {
+  color: var(--aj-textCaption);
+  font-size: 11px;
+}
+
 .aj-sub-status__link {
   align-self: flex-start;
   margin-top: 2px;
