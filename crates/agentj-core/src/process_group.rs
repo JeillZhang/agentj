@@ -40,7 +40,12 @@ pub fn alive(pid: u32) -> bool {
         // A finished-but-unreaped child still answers kill(pid, 0): read the state.
         match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
             Ok(stat) => {
-                let state = stat.rsplit(')').next().unwrap_or("").split_whitespace().next();
+                let state = stat
+                    .rsplit(')')
+                    .next()
+                    .unwrap_or("")
+                    .split_whitespace()
+                    .next();
                 state != Some("Z")
             }
             // No /proc (macOS): kill(0) answered, that is as good as it gets.
@@ -174,7 +179,10 @@ mod tests {
     async fn spawn_sleeper_group(pidfile: &Path) -> (tokio::process::Child, ProcessGroup) {
         let mut cmd = tokio::process::Command::new("sh");
         cmd.arg("-c")
-            .arg(format!("sleep 300 & echo $! > '{}'; wait", pidfile.display()))
+            .arg(format!(
+                "sleep 300 & echo $! > '{}'; wait",
+                pidfile.display()
+            ))
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
         isolate(&mut cmd);

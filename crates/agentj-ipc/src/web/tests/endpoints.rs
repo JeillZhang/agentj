@@ -33,7 +33,6 @@ async fn version_reports_config_warnings_verbatim() {
     );
 }
 
-
 #[tokio::test]
 async fn version_omits_the_on_demand_age_before_any_sweep() {
     let dist = temp_dist("version-ondemand");

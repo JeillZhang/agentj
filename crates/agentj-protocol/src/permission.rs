@@ -90,8 +90,14 @@ mod tests {
     #[test]
     fn the_generated_schema_documents_command_not_cmd() {
         let schema = include_str!("../../../schemas/PermissionRequestParams.json");
-        assert!(schema.contains("command"), "schema must mention command: {schema}");
-        assert!(!schema.contains("`cmd`"), "schema still documents cmd: {schema}");
+        assert!(
+            schema.contains("command"),
+            "schema must mention command: {schema}"
+        );
+        assert!(
+            !schema.contains("`cmd`"),
+            "schema still documents cmd: {schema}"
+        );
     }
 
     #[test]

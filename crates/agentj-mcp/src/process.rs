@@ -5,7 +5,7 @@
 //! it exists only to keep `agentj_mcp::process::{isolate_group, kill_group}` and its
 //! regression test in place.
 
-pub use agentj_core::process_group::{isolate as isolate_group, ProcessGroup};
+pub use agentj_core::process_group::{ProcessGroup, isolate as isolate_group};
 
 /// SIGKILL the process group led by `pid` (a negative pid addresses the group).
 pub fn kill_group(pid: u32) {

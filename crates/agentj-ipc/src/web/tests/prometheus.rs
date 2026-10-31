@@ -17,12 +17,13 @@ fn config_warning_count_is_a_gauge_registered_from_zero() {
         "{fresh}"
     );
 
-    let web = WebConfig::disabled().with_config_warnings(vec![
-        "warning: a".to_string(),
-        "warning: b".to_string(),
-    ]);
+    let web = WebConfig::disabled()
+        .with_config_warnings(vec!["warning: a".to_string(), "warning: b".to_string()]);
     let out = prometheus_text(&web);
-    assert!(has_metric_line(&out, "agentj_web_config_warnings 2"), "{out}");
+    assert!(
+        has_metric_line(&out, "agentj_web_config_warnings 2"),
+        "{out}"
+    );
     // The warning text itself never enters the metrics surface.
     assert!(!out.contains("warning: a"), "{out}");
 }

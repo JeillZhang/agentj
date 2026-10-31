@@ -2,7 +2,7 @@
 //! timeout kills the WHOLE group, drop reclaims orphans.
 
 use agentj_core::error::ToolError;
-use agentj_core::process_group::{isolate, ProcessGroup};
+use agentj_core::process_group::{ProcessGroup, isolate};
 use std::time::Duration;
 
 #[derive(Debug, Clone)]
@@ -519,5 +519,4 @@ mod tests {
         }
         assert!(gone, "Drop must reclaim the group leader {pid}");
     }
-
 }

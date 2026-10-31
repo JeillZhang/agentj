@@ -32,7 +32,11 @@ async fn remote_peer_without_cookie_cannot_read_the_config_warning_count() {
         "warning: agent.max_tool_iterations = 5000 outside 1..=1000; using 1000".to_string(),
     ]);
     let remote: std::net::SocketAddr = "203.0.113.7:41000".parse().unwrap();
-    let (status, _, body) = get(crate::web::build_router(test_state(web), remote), "/metrics").await;
+    let (status, _, body) = get(
+        crate::web::build_router(test_state(web), remote),
+        "/metrics",
+    )
+    .await;
     assert_eq!(status, axum::http::StatusCode::UNAUTHORIZED);
     assert!(!body.contains("agentj_web_config_warnings"), "{body}");
 }
