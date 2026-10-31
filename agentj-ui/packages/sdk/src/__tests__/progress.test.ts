@@ -10,9 +10,14 @@ describe("parseProgress standard wire frames", () => {
   it("parses tool_call with the nested tool object flattened", () => {
     const f = parseProgress({
       token: 7,
-      value: { kind: "tool_call", tool_call: { id: "c1", name: "bash", arguments: { cmd: "ls" } } },
+      value: { kind: "tool_call", tool_call: { id: "c1", name: "bash", arguments: { command: "ls" } } },
     });
-    expect(f).toEqual({ kind: "tool_call", id: "c1", name: "bash", arguments: { cmd: "ls" } });
+    expect(f).toEqual({ kind: "tool_call", id: "c1", name: "bash", arguments: { command: "ls" } });
+  });
+  it("permission fixtures carry the real bash parameter name", () => {
+    const args = { command: "rm -rf /tmp/x", timeout_ms: 5000 };
+    expect(JSON.stringify(args)).toContain('"command"');
+    expect(JSON.stringify(args)).not.toContain('"cmd"');
   });
   it("carries the dropped char count when a tool result was truncated", () => {
     const f = parseProgress({
