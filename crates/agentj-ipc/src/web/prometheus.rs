@@ -29,6 +29,7 @@ pub(super) fn prometheus_text(web: &WebConfig) -> String {
     push_integrity_sweep_summary(&mut out, &on_demand);
     push_client_ip_summary(web, &mut out);
     push_state_summary(web, &mut out);
+    push_config_summary(web, &mut out);
     out
 }
 
@@ -215,6 +216,18 @@ fn push_integrity_request_summary(out: &mut String, snapshot: &RequestIntegrityS
         "gauge",
         "Memoised per-request verification verdicts currently held.",
         snapshot.cache_entries as u64,
+    );
+}
+
+/// Startup config warnings, count only: the texts live on `/version`, and their
+/// values would make an unbounded label set (same split as the integrity offenses).
+fn push_config_summary(web: &WebConfig, out: &mut String) {
+    push_metric(
+        out,
+        "agentj_web_config_warnings",
+        "gauge",
+        "Config knobs the kernel clamped or ignored at startup.",
+        web.config_warnings().len() as u64,
     );
 }
 

@@ -90,15 +90,32 @@ describe("UsageSparkline", () => {
 
   it("downsamples a dense series while keeping the peak", () => {
     // 200 samples in 120 px is ~0.6 px per sample: drawing one vertex each would make every
-    // spike invisible, so the chart buckets and keeps each bucket's min and max.
+    // spike invisible, so the chart buckets and keeps each bucket's min, median and max.
     const samples = Array.from({ length: 200 }, (_, i) => pt(i, i === 137 ? 99 : 10));
     const { container } = render(<UsageSparkline points={samples} width={120} />);
     const d = container.querySelector("path")?.getAttribute("d") ?? "";
-    expect(d.split(" ").length - 1).toBeLessThanOrEqual(30);
+    // 15 buckets x up to 3 vertices = 45 points; the bound is 72, NOT `MAX_BUCKETS` — at this
+    // width the density floor (span 14) already beats the cap (span 9), and what changed here
+    // is vertices-per-bucket (2 → 3). Do not tighten it back on the assumption the cap binds.
+    expect(d.split(" ").length - 1).toBeLessThanOrEqual(72);
     const peak = `${(137 * (120 / 199)).toFixed(1)},${(16 - 1 - (99 / 100) * 14).toFixed(1)}`;
     expect(d).toContain(peak);
     // One band per bucket, not per sample: fewer targets than points.
     expect(screen.getAllByTestId("spark-hit").length).toBeLessThan(200);
+  });
+
+  it("draws the median vertex between the min and the max", () => {
+    // 40 samples in 120 px → buckets of 3. Each bucket is [90, 50, 10], so min/max alone give
+    // two distinct y-levels and the 50 only reaches the path through the median vertex.
+    const points = Array.from({ length: 40 }, (_, i) => ({
+      percent: i % 3 === 0 ? 90 : i % 3 === 2 ? 10 : 50,
+      at: i,
+      label: `w${i}`,
+    }));
+    const { container } = render(<UsageSparkline points={points} />);
+    const d = container.querySelector("path")?.getAttribute("d") ?? "";
+    // y is the second coordinate of every `M{x},{y}` / `L{x},{y}` pair.
+    expect(new Set(d.match(/,\d+\.\d+/g) ?? []).size).toBe(3);
   });
 
   it("names the sample range when a bucket is inspected", () => {

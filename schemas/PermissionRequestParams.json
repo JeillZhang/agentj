@@ -5,7 +5,7 @@
   "type": "object",
   "properties": {
     "args": {
-      "description": "Raw tool arguments (contains `cmd` for bash, `path` for file tools)."
+      "description": "Raw tool arguments (contains `command` for bash, `path` for file tools)."
     },
     "origin_client": {
       "description": "Connection id of the client that initiated the run (design 决策 #5).\nAbsent in single-client (stdio) mode — additive.",

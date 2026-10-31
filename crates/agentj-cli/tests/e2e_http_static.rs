@@ -443,6 +443,38 @@ fn e1_per_request_check_is_visible_on_metrics() {
 }
 
 #[test]
+fn version_reports_the_same_config_warnings_the_banner_prints() {
+    let dist = temp_dist("config-warnings");
+    // `run_serve_with_config` takes a config *path*, so write one that keeps the mock model
+    // and puts `max_tool_iterations` outside 1..=1000 → exactly one `Config::validate()` line.
+    let dir = std::env::temp_dir().join(format!("agentj-cli-clamp-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let config_path = dir.join("clamp.toml");
+    std::fs::write(
+        &config_path,
+        concat!(
+            "[model]\nprovider = \"mock\"\n\n",
+            "[[model.providers]]\nname = \"mock\"\nkind = \"mock\"\n",
+            "base_url = \"mock://local\"\napi_key_env = \"\"\n\n",
+            "[agent]\nmax_tool_iterations = 5000\n",
+        ),
+    )
+    .unwrap();
+
+    let stderr = run_serve_with_config(config_path.to_str().unwrap(), &dist, |addr| {
+        let version = http_get(addr, "/version");
+        assert!(version.contains("agent.max_tool_iterations"), "{version}");
+        assert!(version.contains("outside 1..=1000"), "{version}");
+        assert!(version.contains("using 1000"), "{version}");
+    });
+
+    // Parity: the banner prints the very same line the JSON carries.
+    assert!(stderr.contains("agent.max_tool_iterations"), "{stderr}");
+    std::fs::remove_dir_all(&dist).ok();
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn e2_manual_sweep_reports_a_mismatch() {
     let dist = temp_dist("e2");
     write_asset_manifest(&dist, &[("/assets/app.js", "sha384-not-the-real-digest")]);

@@ -3,13 +3,22 @@ import { describe, expect, it, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import ApprovalDialog, { fieldRows } from "./ApprovalDialog.tsx";
 
-const req = { request_id: "r1", tool: "bash", args: { cmd: "ls", timeout: 5 }, session_id: "s-91", reason: "user asked" };
+// The real bash tool arguments are `command` / `timeout_ms` (crates/agentj-tools/src/builtins.rs);
+// the old fixture used `cmd` / `timeout`, which is why this suite stayed green while the
+// dialog showed a raw `args` blob.
+const req = {
+  request_id: "r1",
+  tool: "bash",
+  args: { command: "ls", timeout_ms: 5000 },
+  session_id: "s-91",
+  reason: "user asked",
+};
 
 describe("fieldRows", () => {
   it("maps known fields to friendly labels", () => {
-    const rows = fieldRows("bash", { cmd: "ls", timeout: 5 });
+    const rows = fieldRows("bash", { command: "ls", timeout_ms: 5000 });
     expect(rows).toContainEqual({ label: "命令", value: "ls" });
-    expect(rows).toContainEqual({ label: "超时", value: 5 });
+    expect(rows).toContainEqual({ label: "超时", value: 5000 });
   });
   it("maps write file/content", () => {
     const rows = fieldRows("write", { path: "src/auth.rs", content: "+x" });
@@ -65,6 +74,24 @@ describe("ApprovalDialog", () => {
   it("keeps the literal session scope line", () => {
     render(<ApprovalDialog request={req} onRespond={() => {}} onClose={() => {}} />);
     expect(screen.getByText(/session: s-91/)).toBeInTheDocument();
+  });
+  it("labels bash command and timeout_ms instead of dumping args", () => {
+    render(
+      <ApprovalDialog
+        request={{
+          request_id: "r-1",
+          tool: "bash",
+          args: { command: "rm -rf /tmp/x", timeout_ms: 5000 },
+          session_id: null,
+        }}
+        onRespond={() => {}}
+        onClose={() => {}}
+      />,
+    );
+    expect(screen.getByText("命令")).toBeInTheDocument();
+    expect(screen.getByText("超时")).toBeInTheDocument();
+    expect(screen.getByText("rm -rf /tmp/x")).toBeInTheDocument();
+    expect(screen.queryByText("args")).toBeNull();
   });
   it("renders error text when provided", () => {
     render(<ApprovalDialog request={req} error="expired" onRespond={() => {}} onClose={() => {}} />);

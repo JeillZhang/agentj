@@ -10,9 +10,9 @@ describe("parseProgress standard wire frames", () => {
   it("parses tool_call with the nested tool object flattened", () => {
     const f = parseProgress({
       token: 7,
-      value: { kind: "tool_call", tool_call: { id: "c1", name: "bash", arguments: { cmd: "ls" } } },
+      value: { kind: "tool_call", tool_call: { id: "c1", name: "bash", arguments: { command: "ls" } } },
     });
-    expect(f).toEqual({ kind: "tool_call", id: "c1", name: "bash", arguments: { cmd: "ls" } });
+    expect(f).toEqual({ kind: "tool_call", id: "c1", name: "bash", arguments: { command: "ls" } });
   });
   it("carries the dropped char count when a tool result was truncated", () => {
     const f = parseProgress({

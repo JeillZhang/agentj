@@ -9,7 +9,6 @@ license.workspace = true
 agentj-core = { path = "../agentj-core", version = "0.1.0" }
 serde_json.workspace = true
 tokio = { workspace = true, features = ["process", "time", "io-util", "rt"] }
-libc = "0.2"   # process-group kill (design §工具执行生命周期; Unix-only usage)
 regex = "1"     # grep fallback: pattern matching without the `rg` binary
 globset = "0.4"   # grep fallback: `include` glob matching
 walkdir = "2"   # grep fallback: directory walk

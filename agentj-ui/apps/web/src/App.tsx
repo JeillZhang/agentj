@@ -416,7 +416,7 @@ export default function App() {
     () => ({ u: openUsageSettings, U: openSubscriptionSettings }),
     [openUsageSettings, openSubscriptionSettings],
   );
-  useShortcutScope(shellRef, shellShortcuts);
+  useShortcutScope(shellRef, shellShortcuts, { allowBodyFocus: true });
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [selectedModel, setSelectedModel] = useState<ModelEntry | null>(null);
   // The linked account catalog overrides the kernel-served opencode-go rows; the kernel

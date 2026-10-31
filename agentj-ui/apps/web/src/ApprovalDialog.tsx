@@ -19,7 +19,7 @@ type Props = {
 };
 
 const FIELD_MAP: Record<string, Record<string, string>> = {
-  bash: { cmd: "命令", timeout: "超时", cwd: "目录" },
+  bash: { command: "命令", timeout_ms: "超时" },
   read: { path: "路径", offset: "偏移", limit: "行数" },
   write: { path: "文件", content: "内容" },
   edit: { path: "文件", content: "内容" },

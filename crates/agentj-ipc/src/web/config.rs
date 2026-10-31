@@ -18,6 +18,9 @@ use super::*;
 pub struct WebConfig {
     pub dist: Option<std::path::PathBuf>,
     pub token: Option<String>,
+    /// `Config::validate()` output, injected by the TCP bind path so `/version` can
+    /// report silently clamped knobs instead of printing them once to stderr.
+    pub(crate) config_warnings: Vec<String>,
     pub(crate) dist_version: Option<DistVersion>,
     pub(crate) dist_version_error: Option<String>,
     pub(crate) integrity: IntegrityReport,
@@ -57,6 +60,7 @@ impl WebConfig {
         Self {
             dist,
             token: token.filter(|t| !t.is_empty()),
+            config_warnings: Vec::new(),
             dist_version,
             dist_version_error,
             integrity,
@@ -84,6 +88,12 @@ impl WebConfig {
             flush_task: std::sync::Mutex::new(None),
             flush_interval: Duration::from_secs(5),
         }
+    }
+    /// Attach the startup config warnings (design B10-1). Builder rather than a `new`
+    /// parameter: `WebConfig::new` has ~80 call sites, nearly all tests.
+    pub fn with_config_warnings(mut self, warnings: Vec<String>) -> Self {
+        self.config_warnings = warnings;
+        self
     }
     /// Mark session cookies `Secure` (enable when TLS terminates in front of the
     /// kernel). Off by default so plain `http://127.0.0.1` deployments keep working.
@@ -425,6 +435,10 @@ impl WebConfig {
     }
     pub(crate) fn integrity(&self) -> &IntegrityReport {
         &self.integrity
+    }
+    /// Warnings about clamped/ignored config knobs, verbatim from `Config::validate()`.
+    pub fn config_warnings(&self) -> &[String] {
+        &self.config_warnings
     }
     /// Startup diagnostics: empty when aligned or no dist is configured.
     /// Version mismatches and failed integrity checks warn without blocking.

@@ -61,6 +61,7 @@ WebSocket 与 raw TCP 同端口共存，通过连接分类器按首字节区分 
 - **`GET /version` 加性字段（HTTP 层，v0.21.0）**：既有形状 `{product_version, protocol_version, dist_present, dist}` 追加两块（未鉴权语义与 `Cache-Control: no-store` 不变；**不含 per-IP 明细**）：
   - `login_limiter`：`{attempts, failures, lockouts, blocked, locked_now, tracked_ips}`。`attempts` = 到达 limiter 的 `/login` POST 次数（含成功、失败、锁定期拒绝）；`failures` = token 校验失败次数（不含锁定期拒绝）；`lockouts` = 锁定**新触发**次数（`locked_until` 由非锁定态进入锁定态，延长不计）；`blocked` = 锁定期被拒请求数（未校验 token）；`locked_now` / `tracked_ips` = 快照时处于锁定中的 IP 数与 entries 条目数（扫描推导）。
   - `integrity`：`{manifest_present, checked, mismatched, missing}`（见下）。
+- **`GET /version` 加性字段 `config_warnings`（HTTP 层，v0.22.0）**：`config_warnings: string[]` —— `Config::validate()` 在启动时钳制 / 忽略的每个配置项一行（与启动 banner 经 stderr 打印的是**同一份** `Vec`，绝不二次求值）。无告警时为 `[]`，**永不为 `null`、永不省略**；同样不受鉴权门控（与 `/version` 其余字段一致，`Cache-Control: no-store` 不变），且**文本只在此处**——`/metrics` 只导出条数（`agentj_web_config_warnings`）。
 - **资产完整性清单 `asset-manifest.json`（构建产物 + 内核启动校验，v0.21.0；v0.22.0 覆盖扩展）**：构建期在 `dist/` 生成 `{"algorithm":"sha384","assets":{"/path":"sha384-<base64>"}}`，覆盖全部 Rollup bundle 产物（entry chunk、动态 chunk、CSS 及被引用资产）与 **SRI 注入之后**重写过的 `/index.html`；`assets` 键必须为以 `/` 开头、不含 `..` 的规范服务路径（违反 → 清单视为不可解析），值格式与 SRI `integrity` 同源（单遍哈希，逐字节一致）。**v0.22.0 起覆盖 dist 实目录全部部署文件**——`writeBundle` 枚举 dist 实目录中未入清单的其余文件（含 `public/` 透传，如 `/favicon.svg`）并合并（bundle 产物键优先，同键 public 项跳过）；**排除** `version.json`（由版本比对覆盖）、`asset-manifest.json` 自身与名称以 `.` 开头的隐藏文件/目录；枚举中文件不可读 → 构建失败。内核启动读取清单并逐文件比对哈希：缺失 / 不可解析 / 哈希不符 / 文件缺失 → 追加 `startup_warnings()` 警告（打印 stderr，**不阻断服务**；定位为部署完整性，非安全边界）；摘要进 `GET /version` 的 `integrity` 块（`manifest_present` = 是否存在且可解析、`checked` = 已校验文件数、`mismatched` = 哈希不符数、`missing` = 清单列出但文件缺失数）。
 - **指标导出 `GET /metrics`（HTTP 层，v0.22.0，鉴权门控）**：与 `/version` 并列的显式路由（先于静态面/登录门与 SPA fallback；**不依赖 dist 存在**）。门控 `auth_required()` = 已配置 token ∧ 非回环 peer ∧ 无有效会话 cookie；**未通过 → `401 text/plain` + `Cache-Control: no-store`（不重定向，脚本/监控友好）**，通过（回环 / 未配 token / 有效 cookie）→ 200。响应 `Content-Type: text/plain; version=0.0.4; charset=utf-8` + `Cache-Control: no-store`；每条指标附 `# HELP` / `# TYPE`；无 per-IP 时序历史（仅当前条目快照）。暴露面分五组：
   - 限流计数（counter）：`agentj_login_attempts_total`（到达 limiter 的 `/login` POST 次数，含成功/失败/锁定期拒绝）、`agentj_login_failures_total`（token 校验失败，不含锁定期拒绝）、`agentj_login_lockouts_total`（锁定**新触发**，延长不计）、`agentj_login_blocked_total`（锁定期被拒请求数）。
@@ -73,7 +74,8 @@ WebSocket 与 raw TCP 同端口共存，通过连接分类器按首字节区分 
     - `agentj_web_metrics_state_restored`（gauge 0/1，启动是否成功恢复）；
     - `agentj_web_metrics_state_entries_restored`（gauge，恢复的 per-IP 条目数）；
     - `agentj_web_metrics_state_write_failures_total`（counter，落盘失败次数）；
-    - `agentj_web_metrics_state_last_flush_unix`（gauge，上次成功落盘的墙钟秒，未落盘 = 0）。
+    - `agentj_web_metrics_state_last_flush_unix`（gauge，上次成功落盘的墙钟秒，未落盘 = 0）；
+    - `agentj_web_config_warnings`（gauge，启动时被钳制 / 忽略的配置项**条数**；文本本身只在 `/version` 的 `config_warnings` 里，不入 metrics —— 与 integrity 的 offenses 拆分同一约定）。
 - **运行期资产抽检（HTTP 层，v0.22.0）**：`TcpIpcServer` 启动后按 `SpotCheckConfig`（`interval` 默认 60s、`sample` 默认 8，测试可注入）`tokio::spawn` 周期任务，以排序键游标轮转抽样 `sample` 个清单文件比对 `sha384`（全量随轮转有界覆盖）；哈希不符计入 `mismatched`、文件缺失计入 `missing`，并 `warn!`（按路径进程内去重防刷屏）；manifest 缺失/不可用 → 任务不启动。结果经 `GET /version` 的 `integrity.runtime` 与 `GET /metrics` 双面暴露。
 - **`GET /version` `integrity` 加性嵌套 `runtime`（HTTP 层，v0.22.0）**：既有 `integrity` 块追加嵌套 `runtime`：`{rounds, checked, mismatched, missing, last_run_age_secs?}`——前四者为运行期抽检累计（`u64`，未运行过为 0），`last_run_age_secs` 为距上次抽检的秒数（`Option<u64>`，**未运行过则省略**）；manifest 缺失/不可用 → `runtime` 全零。既有字段（`manifest_present`/`checked`/`mismatched`/`missing`）逐字保留，`/version` 未鉴权语义与 `Cache-Control: no-store` 不变。
 - **逐请求资产校验（HTTP 层）**：静态面每个请求核验**本次将服务的那一个资产文件**（SPA 面未知路径回落核验 `/index.html`）；按路径 memoize、TTL 为**绝对**语义（命中不刷新），默认 60s、`[web] verify_cache_ttl_secs` 可调，缓存上限 1024 条（溢出先清过期、仍超则整体清空）。**恒定 fail-open**：不符/缺失只计数 + 按路径进程内去重 `warn!`，不改变响应状态与响应头；`[web] verify_on_request = false` 整体关闭；**未通过鉴权的请求不触发校验**（校验层位于登录门之内，回环免鉴权判据仍只吃真实 TCP peer）。校验层必须复原 `nest_service("/assets")` 剥掉的挂载前缀（`manifest_key_for`），否则清单命中恒失败、校验退化为空操作。累计值仅经 `/metrics` 暴露。
@@ -682,7 +684,7 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 { "jsonrpc": "2.0", "method": "$/permissionRequest", "params": {
   "request_id": "req-9",
   "tool": "bash",
-  "args": { "cmd": "rm -rf /tmp/x" },
+  "args": { "command": "rm -rf /tmp/x" },
   "reason": "tool default ask"
 } }
 ```
@@ -691,7 +693,7 @@ session/run 请求（携带 progress_token）→ AgentLoop.run_turn_stream()
 |------|------|------|------|
 | `request_id` | string | 是 | 审批请求 id（uuid，独立于 JSON-RPC 请求 id，见 §7.5） |
 | `tool` | string | 是 | 需要审批的工具名 |
-| `args` | object | 是 | 工具原始参数 |
+| `args` | object | 是 | 工具原始参数（bash 为 `command` / `timeout_ms`；文件工具为 `path`） |
 | `reason` | string | 否 | 审批原因（如命中的规则 / 默认模式） |
 | `session_id` | string | 否 | 归属会话 id（`@since 0.6.0` 加性字段，客户端可按此字段做多会话 UI 归类） |
 

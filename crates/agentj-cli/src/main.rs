@@ -591,6 +591,7 @@ async fn serve_tcp(
             metrics_state_dir: options.metrics_state_dir.clone(),
             provider_service: options.provider_service,
             integrity: options.integrity,
+            config_warnings: options.config_warnings.clone(),
         },
     )
     .await?;

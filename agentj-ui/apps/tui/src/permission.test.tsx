@@ -32,7 +32,7 @@ describe("PermissionDialog", () => {
     const setup = await testRender(
       <PermissionDialog
         tool="bash"
-        args='{"cmd":"rm -rf /tmp/x"}'
+        args='{"command":"rm -rf /tmp/x"}'
         sessionId="sess-123"
         onRespond={onRespond}
       />,
@@ -225,7 +225,7 @@ describe("Permission notification wiring", () => {
       notify?.(METHODS.permissionRequest, {
         request_id: "r1",
         tool: "bash",
-        args: { cmd: "ls" },
+        args: { command: "ls" },
         session_id: "s-1",
       });
     });
@@ -278,7 +278,7 @@ describe("Permission notification wiring", () => {
       dispatch(METHODS.permissionRequest, {
         request_id: "req-9",
         tool: "bash",
-        args: { cmd: "rm -rf /tmp/x" },
+        args: { command: "rm -rf /tmp/x" },
         session_id: "sess-123",
       });
     });

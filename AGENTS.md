@@ -125,6 +125,9 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
   + 工具结果单点裁剪（`[agent] max_tool_result_chars`：超限只截一次并广播
   `ToolResultTruncated`；`AgentEvent::Done` 携带本轮生效的 `provider`/`model`）
   + 事件总线重入防护（EventGuard thread_local + MAX_EVENT_DEPTH=16）
+  + `process_group`（同一进程组抽象：`isolate(&mut Command)` + `ProcessGroup::{of,pid,kill,reap}`
+  + `Drop` 先 kill 再按预算 reap；tools 与 mcp 共用，`libc` 仅在该模块 `#[cfg(unix)]` 内，
+  非 unix 的 kill/reap 是空操作，调用方须先 `start_kill()`）
   + `sync`（`lock_or_recover`/`read_or_recover`/`write_or_recover` 防中毒锁 helper
   + `panic_payload_message`：把 panic 负载渲染成可上报文本）
   + `pending`（`PendingRegistry`：待决条目存储 + TTL/归属回收，permission/question 共用）
@@ -178,14 +181,15 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
   `rg`、缺失时回退进程内检索（`regex` + `globset` + `walkdir`，行匹配 + `include` 通配 +
   跳目录/二进制/超大文件 + 2000 条上限）；`glob` 改为进程内匹配（`globset` + `walkdir`，
   无 `find` 子进程，复用 `GrepTool::SKIP_DIRS` 同一跳目录表，默认 60s 到点即停）；
-  两个进程型工具（`bash` / `grep`）统一经 `ToolExecutor`（`executor.rs`）以独立进程组
-  执行，超时杀整组并按工具默认值（`bash` 120s、`grep` 60s）生效，可经入参 `timeout_ms`
+  两个进程型工具（`bash` / `grep`）经 `agentj_core::process_group` 建组与回收（`ToolExecutor`，
+  `executor.rs`），超时杀整组并按工具默认值（`bash` 120s、`grep` 60s）生效，可经入参 `timeout_ms`
   覆盖（钳制 1s–600s）；`grep` 无 `rg` 时的进程内回退（`search_native`）同样受同一 deadline
   约束（入口 / 每个 entry / `fs::read` 之前 / 文件内每 512 行），超期按 `ToolError::Timeout`
   失败而非返回部分结果。
 - `agentj-license`：Ed25519 许可证校验（entitlements + free mode）。
 - `agentj-mcp`：MCP 客户端 + McpConnectionManager 长驻连接
-  （McpServerSpec + close_all）。
+  （McpServerSpec + close_all；进程组与回收复用 `agentj_core::process_group`，
+  `process.rs` 仅再导出 `isolate_group` / `ProcessGroup` / `kill_group`）。
 - `agentj-plugin`：插件系统（manifest + 状态机 + 依赖图 + libloading）。
 - `agentj-ipc`：JSON-RPC IPC（stdio/TCP/WS + 同端口分类器 + WsConnection
   + 注入式 `ProviderService` handle（`model/list` / `auth/status` / `provider/usage` /
@@ -219,11 +223,14 @@ AgentJ — AI 编码代理工具（Rust），Linux 内核式「内核调度 + �
     `429 + Retry-After`；idle_ttl 1800s / max_tracked 1024 淘汰；回环同样计数）
     + `snapshot()` 只读投影（供指标导出）。
   - 可观测性：`auth_required()` + 鉴权门控 `GET /metrics`（Prometheus 文本：
-    聚合计数 + per-IP series Top-50 截断 + 截断指示 + integrity 摘要；
+    聚合计数 + per-IP series Top-50 截断 + 截断指示 + integrity 摘要
+    + `agentj_web_config_warnings` gauge（告警条数，不暴露文本）；
     回环/未配 token/有效 cookie 直出，远程无 cookie → `401` 不重定向）；
     未鉴权 `GET /version`（200 JSON + `no-store`，显式路由优先于 SPA fallback）
     暴露 `DistVersion` 与 `startup_warnings()`（dist 版本/清单缺失、不可解析、
-    不一致三类启动警告，不阻断服务）。
+    不一致三类启动警告，不阻断服务）
+    + `config_warnings`（`WebConfig::with_config_warnings` 收下的、与启动横幅同一份
+    `Config::validate()` 告警，恒为数组、无告警时 `[]`）。
   - 资产完整性：构建期 `asset-manifest.json`（`sha384` 覆盖 dist 全部部署文件，
     与 SRI `integrity` 逐字节一致）→ 启动逐文件校验 + 60s / 8 文件游标轮转运行期抽检
     （`SpotCheckConfig`，结果经 `/version` `integrity.runtime` 与 `/metrics` 双面暴露）。
