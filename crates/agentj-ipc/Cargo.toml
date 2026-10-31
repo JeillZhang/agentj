@@ -30,7 +30,7 @@ agentj-session = { path = "../agentj-session", version = "0.1.0" }
 agentj-model = { path = "../agentj-model", version = "0.1.0" }
 futures.workspace = true
 tempfile.workspace = true
-tokio-tungstenite = "0.29"
+tokio-tungstenite = "0.30"
 tracing-subscriber = "0.3"
 
 [lints]
