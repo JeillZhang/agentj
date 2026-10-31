@@ -8,12 +8,14 @@ use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout};
 
+use crate::process::ProcessGroup;
+
 pub struct McpTransport {
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
     _child: Child,
-    /// Pid of the spawned child, which is also its process group id (design ㊷).
-    group: Option<u32>,
+    /// The spawned child's process group (its id is the child's pid, design ㊷).
+    group: Option<ProcessGroup>,
     next_id: u64,
 }
 
@@ -25,7 +27,7 @@ impl Drop for McpTransport {
 
 impl McpTransport {
     pub fn new(stdin: ChildStdin, stdout: ChildStdout, child: Child) -> Self {
-        let group = child.id();
+        let group = child.id().map(ProcessGroup::of);
         Self {
             stdin,
             stdout: BufReader::new(stdout),
@@ -36,11 +38,9 @@ impl McpTransport {
     }
 
     /// Reap everything the server started (`sh -c` grandchildren included). Idempotent:
-    /// `kill` on an already-empty group is a no-op error we discard.
+    /// dropping the group kills the whole tree and reaps the leader.
     fn reap_group(&mut self) {
-        if let Some(pid) = self.group.take() {
-            super::process::kill_group(pid);
-        }
+        drop(self.group.take());
     }
 
     pub async fn request(

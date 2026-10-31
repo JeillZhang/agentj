@@ -84,6 +84,11 @@ impl ProcessGroup {
         }
     }
 
+    /// Alive *and* not a zombie — same judgement as [`alive`], reachable from the group.
+    pub fn is_running(pid: u32) -> bool {
+        alive(pid)
+    }
+
     /// Wait up to `budget` for the group leader to be reaped. `true` once it is gone
     /// (this call consumed it, or it was already reaped — the kernel answers `ECHILD`).
     pub fn reap(&self, budget: Duration) -> bool {
