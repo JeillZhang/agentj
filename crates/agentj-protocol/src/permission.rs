@@ -73,21 +73,6 @@ mod tests {
     }
 
     #[test]
-    fn docs_and_fixtures_use_the_real_bash_parameter_name() {
-        let request = PermissionRequestParams {
-            request_id: "r1".into(),
-            tool: "bash".into(),
-            args: serde_json::json!({ "command": "rm -rf /tmp/x" }),
-            reason: "tool default mode is ask".into(),
-            origin_client: None,
-            session_id: None,
-        };
-        let json = serde_json::to_string(&request).unwrap();
-        assert!(json.contains("\"command\""), "{json}");
-        assert!(!json.contains("\"cmd\""), "{json}");
-    }
-
-    #[test]
     fn the_generated_schema_documents_command_not_cmd() {
         let schema = include_str!("../../../schemas/PermissionRequestParams.json");
         assert!(

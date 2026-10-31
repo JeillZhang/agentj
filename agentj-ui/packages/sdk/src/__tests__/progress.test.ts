@@ -14,11 +14,6 @@ describe("parseProgress standard wire frames", () => {
     });
     expect(f).toEqual({ kind: "tool_call", id: "c1", name: "bash", arguments: { command: "ls" } });
   });
-  it("permission fixtures carry the real bash parameter name", () => {
-    const args = { command: "rm -rf /tmp/x", timeout_ms: 5000 };
-    expect(JSON.stringify(args)).toContain('"command"');
-    expect(JSON.stringify(args)).not.toContain('"cmd"');
-  });
   it("carries the dropped char count when a tool result was truncated", () => {
     const f = parseProgress({
       token: 7,
