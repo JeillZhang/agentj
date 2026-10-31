@@ -637,7 +637,7 @@ export type PermissionDecision = "allow" | "deny" | "allow_always";
  */
 export interface PermissionRequestParams {
   /**
-   * Raw tool arguments (contains `cmd` for bash, `path` for file tools).
+   * Raw tool arguments (contains `command` for bash, `path` for file tools).
    */
   args: {
     [k: string]: unknown;

@@ -28,7 +28,8 @@ function hasOpenModal(): boolean {
  *
  * Gating (see plan Global Constraint 5):
  * - no modal dialog is open,
- * - focus must be inside the scope ref,
+ * - focus must be inside the scope ref — or on `document.body` when the caller opts
+ *   into `allowBodyFocus` (the shell does; the sidebar deliberately does not),
  * - INPUT / TEXTAREA / SELECT / contenteditable targets are ignored,
  * - ctrl / meta / alt modifiers and IME composition are ignored,
  * - preventDefault runs only when a mapped handler is invoked.
@@ -36,13 +37,20 @@ function hasOpenModal(): boolean {
 export function useShortcutScope(
   ref: RefObject<HTMLElement | null>,
   handlers: Record<string, () => void>,
+  options?: { allowBodyFocus?: boolean },
 ): void {
+  const allowBodyFocus = options?.allowBodyFocus ?? false;
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.ctrlKey || event.metaKey || event.altKey || event.isComposing) return;
       if (hasOpenModal()) return;
       const active = document.activeElement;
-      if (!active || !ref.current?.contains(active)) return;
+      if (!active) return;
+      // Browsers report `body` when nothing is focused (first paint, a click on the
+      // page background). The sidebar keeps the strict check; the shell opts in so
+      // `u` / `Shift+U` work before the user clicks into the app.
+      const onBody = active === document.body;
+      if (!(onBody && allowBodyFocus) && !ref.current?.contains(active)) return;
       if (isEditable(active)) return;
       const handler = handlers[event.key];
       if (handler) {
@@ -52,5 +60,5 @@ export function useShortcutScope(
     };
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
-  }, [ref, handlers]);
+  }, [ref, handlers, allowBodyFocus]);
 }

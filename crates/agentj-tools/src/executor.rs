@@ -2,6 +2,7 @@
 //! timeout kills the WHOLE group, drop reclaims orphans.
 
 use agentj_core::error::ToolError;
+use agentj_core::process_group::{ProcessGroup, isolate};
 use std::time::Duration;
 
 #[derive(Debug, Clone)]
@@ -16,7 +17,13 @@ pub struct CommandSpec {
 /// whether to fall back to the in-process walker (no string matching).
 #[derive(Debug)]
 pub enum RunFailure {
-    ProgramMissing { program: String, reason: String },
+    /// `tool` is the tool the model asked for (`bash`, `grep`), `program` the binary that
+    /// could not be spawned. The model sees the tool: "which binary do you use" is ours.
+    ProgramMissing {
+        tool: Option<String>,
+        program: String,
+        reason: String,
+    },
     Timeout(Duration),
     Failed(ToolError),
 }
@@ -24,9 +31,13 @@ pub enum RunFailure {
 impl From<RunFailure> for ToolError {
     fn from(failure: RunFailure) -> Self {
         match failure {
-            RunFailure::ProgramMissing { program, reason } => ToolError::ExecutionFailed {
-                name: program,
+            RunFailure::ProgramMissing {
+                tool,
+                program,
                 reason,
+            } => ToolError::ExecutionFailed {
+                name: tool.unwrap_or_else(|| program.clone()),
+                reason: format!("{program}: {reason}"),
             },
             RunFailure::Timeout(timeout) => ToolError::Timeout(timeout),
             RunFailure::Failed(error) => error,
@@ -52,13 +63,13 @@ pub struct ExecOutput {
 #[derive(Debug)]
 pub struct ChildGuard {
     child: Option<tokio::process::Child>,
-    pid: Option<u32>,
+    group: Option<ProcessGroup>,
     kill_on_drop: bool,
 }
 
 impl ChildGuard {
     pub fn pid(&self) -> u32 {
-        self.pid.unwrap_or(0)
+        self.group.as_ref().map(ProcessGroup::pid).unwrap_or(0)
     }
 
     /// Wait for completion (normal path). The Child is taken out; the guard keeps its
@@ -78,6 +89,11 @@ impl ChildGuard {
                 name: "child".into(),
                 reason: e.to_string(),
             })?;
+        // The leader exited on its own: keep whatever it left running in the group
+        // (a command may start a server on purpose) and stop `Drop` from killing it.
+        if let Some(group) = self.group.as_mut() {
+            group.disarm();
+        }
         self.kill_on_drop = false; // already exited, nothing to kill
         Ok(ExecOutput {
             stdout: String::from_utf8_lossy(&output.stdout).to_string(),
@@ -90,17 +106,17 @@ impl ChildGuard {
     /// Safe to call after `wait_with_output` consumed the Child: the pid is cached and
     /// reaping falls back to a raw `waitpid` when no Child handle remains.
     pub fn kill_group(&mut self) {
-        let Some(pid) = self.pid else {
+        let Some(pid) = self.group.as_ref().map(ProcessGroup::pid) else {
             return;
         };
-        #[cfg(unix)]
-        unsafe {
-            // negative pid = process group kill (child spawned with process_group(0))
-            let _ = libc::kill(-(pid as i32), libc::SIGKILL);
-        }
+        // `ProcessGroup::kill` is a no-op off unix, where the Child handle is the only
+        // lever left — hence the explicit `start_kill` on that path.
         #[cfg(not(unix))]
         if let Some(child) = self.child.as_mut() {
             let _ = child.start_kill();
+        }
+        if let Some(group) = self.group.as_ref() {
+            group.kill();
         }
         // SIGKILL delivery is async; retry until the child is reaped (waitpid) or the
         // budget expires. Without this, an unreaped zombie would still "exist" to
@@ -120,20 +136,11 @@ impl ChildGuard {
         if let Some(child) = self.child.as_mut() {
             return matches!(child.try_wait(), Ok(Some(_)));
         }
-        #[cfg(unix)]
-        unsafe {
-            let mut status: libc::c_int = 0;
-            let ret = libc::waitpid(pid as i32, &mut status, libc::WNOHANG);
-            // ECHILD = already reaped elsewhere (tokio reaper); treat as done.
-            if ret == pid as i32 {
-                return true;
-            }
-            ret == -1 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ECHILD)
-        }
-        #[cfg(not(unix))]
-        {
-            false
-        }
+        let _ = pid;
+        self.group
+            .as_ref()
+            .map(|group| group.reap(Duration::ZERO))
+            .unwrap_or(true)
     }
 }
 
@@ -151,6 +158,7 @@ impl Drop for ChildGuard {
 pub struct ToolExecutor {
     timeout: Duration,
     kill_on_drop: bool,
+    tool: Option<String>,
 }
 
 impl ToolExecutor {
@@ -158,7 +166,15 @@ impl ToolExecutor {
         Self {
             timeout,
             kill_on_drop,
+            tool: None,
         }
+    }
+
+    /// Name the tool this executor runs for. Spawn failures are reported under this name
+    /// so the model never sees "sh"/"rg" instead of the tool it actually called.
+    pub fn with_tool(mut self, tool: &str) -> Self {
+        self.tool = Some(tool.to_string());
+        self
     }
 
     /// Spawn a child into its own process group, wrapped in a kill_on_drop guard.
@@ -180,27 +196,28 @@ impl ToolExecutor {
         if let Some(dir) = &spec.cwd {
             cmd.current_dir(dir);
         }
-        #[cfg(unix)]
-        {
-            cmd.process_group(0); // new process group with pgid = child pid
-        }
+        isolate(&mut cmd); // new process group with pgid = child pid
         let child = cmd.spawn().map_err(|e| {
+            let program = spec.program.clone();
             if e.kind() == std::io::ErrorKind::NotFound {
                 RunFailure::ProgramMissing {
-                    program: spec.program.clone(),
+                    tool: self.tool.clone(),
+                    program,
                     reason: e.to_string(),
                 }
             } else {
+                // Same contract as `ProgramMissing`: the tool owns the error, the
+                // program is detail — otherwise one tool reports two names.
                 RunFailure::Failed(ToolError::ExecutionFailed {
-                    name: spec.program.clone(),
-                    reason: e.to_string(),
+                    name: self.tool.clone().unwrap_or_else(|| program.clone()),
+                    reason: format!("{program}: {e}"),
                 })
             }
         })?;
-        let pid = child.id();
+        let group = child.id().map(ProcessGroup::of);
         Ok(ChildGuard {
             child: Some(child),
-            pid,
+            group,
             kill_on_drop: self.kill_on_drop,
         })
     }
@@ -402,20 +419,76 @@ mod tests {
             })
             .unwrap_err();
         assert!(
-            matches!(&err, RunFailure::ProgramMissing { program, reason }
+            matches!(&err, RunFailure::ProgramMissing { program, reason, .. }
                 if program == "agentj-test-no-such-binary" && reason.contains("No such file")),
             "unexpected: {err:?}"
         );
     }
 
     #[test]
+    fn program_missing_names_the_tool_and_keeps_the_program() {
+        let err = ToolError::from(RunFailure::ProgramMissing {
+            tool: Some("bash".to_string()),
+            program: "agentj-test-no-such-binary".to_string(),
+            reason: "No such file or directory (os error 2)".to_string(),
+        });
+        assert!(
+            matches!(&err, ToolError::ExecutionFailed { name, .. } if name == "bash"),
+            "{err:?}"
+        );
+        let text = err.to_string();
+        assert!(text.contains("tool 'bash' execution failed"), "{text}");
+        assert!(text.contains("agentj-test-no-such-binary"), "{text}");
+    }
+
+    #[test]
+    fn program_missing_without_a_tool_falls_back_to_the_program() {
+        let err = ToolError::from(RunFailure::ProgramMissing {
+            tool: None,
+            program: "rg".to_string(),
+            reason: "No such file".to_string(),
+        });
+        assert!(
+            matches!(&err, ToolError::ExecutionFailed { name, .. } if name == "rg"),
+            "{err:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn generic_spawn_failure_also_names_the_tool() {
+        // `ProgramMissing` is only the `NotFound` branch; every other spawn error goes
+        // through the generic branch, which today reports the *program*.
+        let dir = std::env::temp_dir().join(format!("aj-tool-spawn-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let executor = ToolExecutor::new(Duration::from_secs(5), true).with_tool("bash");
+        let err = executor
+            .spawn_guarded(CommandSpec {
+                program: "sh".into(),
+                args: vec!["-c".into(), "true".into()],
+                cwd: Some(dir.join("missing-cwd")), // ENOENT from chdir, not from exec
+            })
+            .await
+            .expect_err("a missing cwd must fail the spawn");
+        assert!(
+            matches!(&err, ToolError::ExecutionFailed { name, .. } if name == "bash"),
+            "{err:?}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn run_failure_converts_back_to_tool_error() {
         let missing: ToolError = RunFailure::ProgramMissing {
+            tool: None,
             program: "rg".into(),
             reason: "No such file or directory (os error 2)".into(),
         }
         .into();
-        assert!(matches!(missing, ToolError::ExecutionFailed { ref name, .. } if name == "rg"));
+        assert!(
+            matches!(missing, ToolError::ExecutionFailed { ref name, .. } if name == "rg"),
+            "{missing:?}"
+        );
 
         // Also pins the model-visible wording for the timeout path (Review Focus #3).
         let timeout: ToolError = RunFailure::Timeout(Duration::from_millis(1500)).into();
@@ -425,7 +498,52 @@ mod tests {
 
     #[cfg(unix)]
     fn process_alive(pid: u32) -> bool {
-        // kill(pid, 0) returns Ok if the process exists (no signal sent).
-        unsafe { libc::kill(pid as i32, 0) == 0 }
+        agentj_core::process_group::alive(pid)
+    }
+
+    #[cfg(unix)] // `process_alive` itself is `#[cfg(unix)]`; without the cfg this breaks on windows
+    #[tokio::test]
+    async fn guard_drop_kills_the_group_leader_and_is_idempotent() {
+        let executor = ToolExecutor::new(Duration::from_secs(5), true);
+        let spec = CommandSpec {
+            program: "sh".into(),
+            args: vec!["-c".into(), "sleep 30 & wait".into()],
+            cwd: None,
+        };
+        let guard = executor.spawn_guarded(spec).await.expect("sh spawns");
+        let pid = guard.pid();
+        assert!(process_alive(pid), "the leader must start alive");
+        drop(guard); // Drop → kill the group + reap
+        let mut gone = false;
+        for _ in 0..150 {
+            if !process_alive(pid) {
+                gone = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(gone, "Drop must reclaim the group leader {pid}");
+    }
+
+    /// A successful run must not kill what its command left running: `bash` may start a
+    /// dev server on purpose, so the shared process group only kills on failure,
+    /// timeout and drop (review finding F1).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_successful_run_leaves_background_children_alive() {
+        let executor = ToolExecutor::new(Duration::from_secs(5), true);
+        let spec = CommandSpec {
+            program: "sh".into(),
+            args: vec!["-c".into(), "sleep 30 >/dev/null 2>&1 & echo $!".into()],
+            cwd: None,
+        };
+        let out = executor.run(spec).await.expect("sh runs");
+        let background: u32 = out.stdout.trim().parse().expect("pid on stdout");
+        assert!(
+            process_alive(background),
+            "the background child survives {out:?}"
+        );
+        // Cleanup: the executor no longer owns it.
+        agentj_core::process_group::ProcessGroup::of(background).kill();
     }
 }

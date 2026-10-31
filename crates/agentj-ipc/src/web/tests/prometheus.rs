@@ -5,6 +5,29 @@ use super::super::*;
 use super::support::*;
 use std::time::Instant;
 
+#[test]
+fn config_warning_count_is_a_gauge_registered_from_zero() {
+    let fresh = prometheus_text(&WebConfig::disabled());
+    assert!(
+        has_metric_line(&fresh, "agentj_web_config_warnings 0"),
+        "{fresh}"
+    );
+    assert!(
+        fresh.contains("# TYPE agentj_web_config_warnings gauge"),
+        "{fresh}"
+    );
+
+    let web = WebConfig::disabled()
+        .with_config_warnings(vec!["warning: a".to_string(), "warning: b".to_string()]);
+    let out = prometheus_text(&web);
+    assert!(
+        has_metric_line(&out, "agentj_web_config_warnings 2"),
+        "{out}"
+    );
+    // The warning text itself never enters the metrics surface.
+    assert!(!out.contains("warning: a"), "{out}");
+}
+
 #[tokio::test]
 async fn metrics_gates_remote_peers_and_formats_prometheus() {
     let state = test_state(crate::web::WebConfig::new(None, Some("s3cret".into())));

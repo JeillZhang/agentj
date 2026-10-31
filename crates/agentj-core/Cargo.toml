@@ -10,6 +10,7 @@ agentj-protocol = { path = "../agentj-protocol", version = "0.1.0" }
 anyhow = "1.0.104"
 async-trait.workspace = true
 futures.workspace = true
+libc = "0.2"          # process-group kill (process_group; Unix-only usage)
 parking_lot = "0.13"
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true

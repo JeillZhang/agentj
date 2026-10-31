@@ -340,8 +340,20 @@ async fn a_swept_offense_is_not_rewarned_by_a_spot_round() {
         round.offenses.is_empty(),
         "no second warning for a known path"
     );
+    // Who warned first is a race: `build_router` spawns the spot ticker, whose first tick
+    // fires immediately on a runtime worker thread, so the warning for this path may come
+    // from the ticker (off the capturing thread, hence invisible to `capture_warnings`)
+    // before the verify POST gets to it. The contract under test is "never warned twice",
+    // so assert the dedupe set and bound the captured count instead of pinning it to 1.
+    assert!(
+        lock_or_recover(&state.web.warned).contains("/assets/app.js"),
+        "the path is recorded as warned"
+    );
     let out = String::from_utf8(lock_or_recover(&buf.0).clone()).unwrap_or_default();
-    assert_eq!(out.matches("/assets/app.js").count(), 1, "{out}");
+    assert!(
+        out.matches("/assets/app.js").count() <= 1,
+        "a known path is warned at most once: {out}"
+    );
     std::fs::remove_dir_all(&dist).ok();
 }
 

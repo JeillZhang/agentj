@@ -1,36 +1,15 @@
 //! Process-group helpers for MCP server subprocesses (design item ㊷).
 //!
-//! Every spawn site puts its server into a fresh process group. `kill_on_drop` on the
-//! direct child is not enough: two of the three sites launch `sh -c <command>`, so the
-//! actual server — and anything it starts — is a *grandchild* that would survive the
-//! shell being killed. Killing the group reaps the whole tree.
+//! Thin re-export of `agentj_core::process_group`: the single implementation lives in
+//! the kernel so `agentj-tools` and `agentj-mcp` cannot drift. Do not add logic here —
+//! it exists only to keep `agentj_mcp::process::{isolate_group, kill_group}` and its
+//! regression test in place.
 
-use tokio::process::Command;
-
-/// Put the command into a new process group whose id is the child's pid.
-pub fn isolate_group(cmd: &mut Command) {
-    #[cfg(unix)]
-    {
-        cmd.process_group(0);
-    }
-    #[cfg(not(unix))]
-    {
-        // Windows has no process groups here; `kill_on_drop` remains the only lever.
-        let _ = cmd;
-    }
-}
+pub use agentj_core::process_group::{ProcessGroup, isolate as isolate_group};
 
 /// SIGKILL the process group led by `pid` (a negative pid addresses the group).
-/// Failures are ignored: the process (or group) may already be gone.
 pub fn kill_group(pid: u32) {
-    #[cfg(unix)]
-    unsafe {
-        libc::kill(-(pid as i32), libc::SIGKILL);
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = pid;
-    }
+    ProcessGroup::of(pid).kill();
 }
 
 #[cfg(all(test, unix))]
@@ -40,23 +19,10 @@ mod tests {
     use std::time::Duration;
     use tokio::process::Command;
 
-    /// Alive *and* not a zombie: a finished-but-unreaped child still answers `kill(pid, 0)`.
+    /// Alive *and* not a zombie: a finished-but-unreaped child still answers `kill(pid, 0)`,
+    /// which is why the check reads the state character instead of trusting the signal probe.
     fn running(pid: u32) -> bool {
-        if unsafe { libc::kill(pid as i32, 0) } != 0 {
-            return false;
-        }
-        match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
-            Ok(stat) => {
-                let state = stat
-                    .rsplit(')')
-                    .next()
-                    .unwrap_or("")
-                    .split_whitespace()
-                    .next();
-                state != Some("Z")
-            }
-            Err(_) => false,
-        }
+        ProcessGroup::is_running(pid)
     }
 
     async fn pid_from(path: &Path) -> u32 {
@@ -79,6 +45,30 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         panic!("grandchild {pid} survived its process group being killed");
+    }
+
+    #[tokio::test]
+    async fn transport_drop_leaves_no_zombie_behind() {
+        let dir = std::env::temp_dir().join(format!("agentj-mcp-zombie-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let pidfile = dir.join("leader.pid");
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c")
+            .arg(format!("echo $$ > '{}'; sleep 300", pidfile.display()))
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true);
+        isolate_group(&mut cmd);
+        let mut child = cmd.spawn().expect("sh spawns");
+        let stdin = child.stdin.take().unwrap();
+        let stdout = child.stdout.take().unwrap();
+        let transport = crate::transport::McpTransport::new(stdin, stdout, child);
+        let leader = pid_from(&pidfile).await;
+        drop(transport);
+        // `running` already treats `Z` as dead: this is the zombie assertion.
+        assert_gone(leader).await;
+        std::fs::remove_file(&pidfile).ok();
     }
 
     #[tokio::test]
