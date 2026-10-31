@@ -84,9 +84,11 @@ export function RunView(props: RunViewProps): React.ReactNode {
   return (
     <box flexDirection="column" flexGrow={1} padding={1}>
       <scrollbox ref={scrollRef} flexGrow={1} style={{ flexGrow: 1 }}>
-        {frames.map((f, i) => (
-          <text key={i}>{f}</text>
-        ))}
+        {frames
+          .filter((frame) => !isBlankText(frame))
+          .map((f, i) => (
+            <text key={i}>{f}</text>
+          ))}
       </scrollbox>
     </box>
   );
@@ -99,9 +101,11 @@ export function RunViewWithUsage(props: RunViewWithUsageProps): React.ReactNode 
   return (
     <box flexDirection="column" flexGrow={1} padding={1}>
       <scrollbox ref={scrollRef} flexGrow={1} style={{ flexGrow: 1 }}>
-        {frames.map((f, i) => (
-          <text key={i}>{f}</text>
-        ))}
+        {frames
+          .filter((frame) => !isBlankText(frame))
+          .map((f, i) => (
+            <text key={i}>{f}</text>
+          ))}
       </scrollbox>
       <text>{formatUsage(usage)}</text>
     </box>

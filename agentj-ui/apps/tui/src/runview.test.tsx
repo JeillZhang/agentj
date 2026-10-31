@@ -6,6 +6,7 @@ import {
   nextKey,
   rowGlyph,
   RunTranscript,
+  RunView,
   applyTodoFrame,
   EMPTY_TODO_STATE,
   EMPTY_TODOS,
@@ -16,6 +17,34 @@ import type { ProgressFrame } from "@agentj/sdk";
 
 const RUN_A = "11111111-1111-4111-8111-111111111111";
 const RUN_B = "22222222-2222-4222-8222-222222222222";
+
+describe("RunView", () => {
+  // Blank frames used to occupy a row each, so interleaving them is what makes the
+  // difference visible: with the filter the visible rows collapse to the text lines.
+  const visibleRows = (frame: string): string[] => {
+    const lines = frame.split("\n").map((line) => line.trimEnd());
+    while (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
+    return lines;
+  };
+
+  test("drops blank and zero-width frames", async () => {
+    const setup = await testRender(
+      <ThemeProvider>
+        <RunView frames={["hello", "\u200b", "world", "  ", "", "\ufeff"]} />
+      </ThemeProvider>,
+      {},
+    );
+    await act(async () => {
+      await setup.flush();
+    });
+    expect(visibleRows(setup.captureCharFrame()).map((line) => line.trim())).toEqual([
+      "",
+      "hello",
+      "world",
+    ]);
+    act(() => setup.renderer.destroy());
+  });
+});
 
 describe("rowsFromFrame", () => {
   test("appends a text row per parsed text frame with sequential keys", () => {
