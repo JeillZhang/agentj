@@ -26,10 +26,39 @@ pub fn isolate(cmd: &mut tokio::process::Command) {
     }
 }
 
+/// Is `pid` still running (and not a zombie)? Used by tests and by callers that
+/// need to observe a group they do not own a `Child` handle for.
+///
+/// Answers `false` on non-unix: there is no portable "probe without reaping" call,
+/// and no caller may depend on it for correctness.
+pub fn alive(pid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        if unsafe { libc::kill(pid as i32, 0) } != 0 {
+            return false;
+        }
+        // A finished-but-unreaped child still answers kill(pid, 0): read the state.
+        match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+            Ok(stat) => {
+                let state = stat.rsplit(')').next().unwrap_or("").split_whitespace().next();
+                state != Some("Z")
+            }
+            // No /proc (macOS): kill(0) answered, that is as good as it gets.
+            Err(_) => true,
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        false
+    }
+}
+
 /// A spawned child's process group, addressed by the leader's pid.
 ///
 /// Dropping the value kills and reclaims the group, mirroring
 /// `tokio::process::Command::kill_on_drop` but for the whole tree.
+#[derive(Debug)]
 pub struct ProcessGroup {
     pid: u32,
 }

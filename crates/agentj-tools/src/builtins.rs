@@ -592,7 +592,7 @@ mod tests {
 
     #[cfg(unix)]
     fn process_alive(pid: u32) -> bool {
-        unsafe { libc::kill(pid as i32, 0) == 0 }
+        agentj_core::process_group::alive(pid)
     }
 
     #[cfg(unix)]

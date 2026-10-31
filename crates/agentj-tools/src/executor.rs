@@ -2,6 +2,7 @@
 //! timeout kills the WHOLE group, drop reclaims orphans.
 
 use agentj_core::error::ToolError;
+use agentj_core::process_group::{isolate, ProcessGroup};
 use std::time::Duration;
 
 #[derive(Debug, Clone)]
@@ -52,13 +53,13 @@ pub struct ExecOutput {
 #[derive(Debug)]
 pub struct ChildGuard {
     child: Option<tokio::process::Child>,
-    pid: Option<u32>,
+    group: Option<ProcessGroup>,
     kill_on_drop: bool,
 }
 
 impl ChildGuard {
     pub fn pid(&self) -> u32 {
-        self.pid.unwrap_or(0)
+        self.group.as_ref().map(ProcessGroup::pid).unwrap_or(0)
     }
 
     /// Wait for completion (normal path). The Child is taken out; the guard keeps its
@@ -90,17 +91,17 @@ impl ChildGuard {
     /// Safe to call after `wait_with_output` consumed the Child: the pid is cached and
     /// reaping falls back to a raw `waitpid` when no Child handle remains.
     pub fn kill_group(&mut self) {
-        let Some(pid) = self.pid else {
+        let Some(pid) = self.group.as_ref().map(ProcessGroup::pid) else {
             return;
         };
-        #[cfg(unix)]
-        unsafe {
-            // negative pid = process group kill (child spawned with process_group(0))
-            let _ = libc::kill(-(pid as i32), libc::SIGKILL);
-        }
+        // `ProcessGroup::kill` is a no-op off unix, where the Child handle is the only
+        // lever left — hence the explicit `start_kill` on that path.
         #[cfg(not(unix))]
         if let Some(child) = self.child.as_mut() {
             let _ = child.start_kill();
+        }
+        if let Some(group) = self.group.as_ref() {
+            group.kill();
         }
         // SIGKILL delivery is async; retry until the child is reaped (waitpid) or the
         // budget expires. Without this, an unreaped zombie would still "exist" to
@@ -120,20 +121,11 @@ impl ChildGuard {
         if let Some(child) = self.child.as_mut() {
             return matches!(child.try_wait(), Ok(Some(_)));
         }
-        #[cfg(unix)]
-        unsafe {
-            let mut status: libc::c_int = 0;
-            let ret = libc::waitpid(pid as i32, &mut status, libc::WNOHANG);
-            // ECHILD = already reaped elsewhere (tokio reaper); treat as done.
-            if ret == pid as i32 {
-                return true;
-            }
-            ret == -1 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ECHILD)
-        }
-        #[cfg(not(unix))]
-        {
-            false
-        }
+        let _ = pid;
+        self.group
+            .as_ref()
+            .map(|group| group.reap(Duration::ZERO))
+            .unwrap_or(true)
     }
 }
 
@@ -180,10 +172,7 @@ impl ToolExecutor {
         if let Some(dir) = &spec.cwd {
             cmd.current_dir(dir);
         }
-        #[cfg(unix)]
-        {
-            cmd.process_group(0); // new process group with pgid = child pid
-        }
+        isolate(&mut cmd); // new process group with pgid = child pid
         let child = cmd.spawn().map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
                 RunFailure::ProgramMissing {
@@ -197,10 +186,10 @@ impl ToolExecutor {
                 })
             }
         })?;
-        let pid = child.id();
+        let group = child.id().map(ProcessGroup::of);
         Ok(ChildGuard {
             child: Some(child),
-            pid,
+            group,
             kill_on_drop: self.kill_on_drop,
         })
     }
@@ -425,7 +414,31 @@ mod tests {
 
     #[cfg(unix)]
     fn process_alive(pid: u32) -> bool {
-        // kill(pid, 0) returns Ok if the process exists (no signal sent).
-        unsafe { libc::kill(pid as i32, 0) == 0 }
+        agentj_core::process_group::alive(pid)
     }
+
+    #[cfg(unix)] // `process_alive` itself is `#[cfg(unix)]`; without the cfg this breaks on windows
+    #[tokio::test]
+    async fn guard_drop_kills_the_group_leader_and_is_idempotent() {
+        let executor = ToolExecutor::new(Duration::from_secs(5), true);
+        let spec = CommandSpec {
+            program: "sh".into(),
+            args: vec!["-c".into(), "sleep 30 & wait".into()],
+            cwd: None,
+        };
+        let guard = executor.spawn_guarded(spec).await.expect("sh spawns");
+        let pid = guard.pid();
+        assert!(process_alive(pid), "the leader must start alive");
+        drop(guard); // Drop → kill the group + reap
+        let mut gone = false;
+        for _ in 0..150 {
+            if !process_alive(pid) {
+                gone = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(gone, "Drop must reclaim the group leader {pid}");
+    }
+
 }
