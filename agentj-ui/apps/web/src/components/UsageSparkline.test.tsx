@@ -112,7 +112,7 @@ describe("UsageSparkline", () => {
       at: i,
       label: `w${i}`,
     }));
-    const { container } = render(<UsageSparkline points={points} kind="daily" />);
+    const { container } = render(<UsageSparkline points={points} />);
     const d = container.querySelector("path")?.getAttribute("d") ?? "";
     // y is the second coordinate of every `M{x},{y}` / `L{x},{y}` pair.
     expect(new Set(d.match(/,\d+\.\d+/g) ?? []).size).toBe(3);

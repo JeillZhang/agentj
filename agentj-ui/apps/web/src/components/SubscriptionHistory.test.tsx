@@ -8,8 +8,8 @@ describe("SubscriptionHistory", () => {
     const onRefresh = vi.fn();
     render(
       <SubscriptionHistory
-        usage={{ windows: [{ kind: "five_hour", percent: 42 }] } as never}
-        samples={[{ at: 0, percent: 42 }]}
+        usage={{ windows: [{ kind: "rolling", percent: 42, status: "ok" }] } as never}
+        samples={[{ at: 0, windows: [{ kind: "rolling", percent: 42, status: "ok" }] }]}
         historyAt={0}
         onRefresh={onRefresh}
       />,
