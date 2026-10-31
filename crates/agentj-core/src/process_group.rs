@@ -271,6 +271,25 @@ mod tests {
         std::fs::remove_file(&pidfile).ok();
     }
 
+    /// A live leader is never "reaped": the call gives up at its budget instead of
+    /// blocking, and must not overshoot it by more than one polling step.
+    #[tokio::test]
+    async fn reap_gives_up_at_its_budget_while_the_leader_lives() {
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.arg("-c").arg("sleep 5");
+        let mut child = cmd.spawn().unwrap();
+        let group = ProcessGroup::of(child.id().unwrap());
+        let started = Instant::now();
+        assert!(!group.reap(Duration::from_millis(100)));
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed >= Duration::from_millis(100) && elapsed < Duration::from_millis(300),
+            "reap must respect its budget, took {elapsed:?}"
+        );
+        let _ = child.kill().await;
+        let _ = child.wait().await;
+    }
+
     #[tokio::test]
     async fn reap_is_true_once_the_leader_is_gone() {
         let mut cmd = tokio::process::Command::new("sh");

@@ -77,6 +77,8 @@
   「不回收地探活」调用（`alive` 恒 `false`）；超时的子进程树可能留活口，是**既有平台缺口**。
   仍持有 `Child` 的调用方用 `start_kill()` 兜底，但 `wait_with_output` 取走句柄后已无处可兜——
   `process_group` 的模块文档按此如实描述，不再宣称调用方「必须」能满足。
+- **成功路径「存活」≠「立刻返回」**：命令若让后台子进程继续持有 stdout/stderr 管道，
+  `wait_with_output` 仍会等到 EOF 才收尾（与改动前一致）；要常驻必须自己重定向。
 - **`config_warnings` 只有启动时算一次**：运行期不会因配置热更新而变化；同理 gauge 值恒定。
 - **`/metrics` 的 `Zlib` 许可未被任何依赖遇到**（`deny.toml:27`）：`license-not-encountered`
   当前是 warning；若 `cargo deny` 将来把它升为 error，需删除该条目。
