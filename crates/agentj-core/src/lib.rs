@@ -13,6 +13,7 @@ pub mod module;
 pub mod paths;
 pub mod pending;
 pub mod permission;
+pub mod process_group;
 pub mod resolver;
 pub mod skills;
 pub mod sync;
