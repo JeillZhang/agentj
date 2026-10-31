@@ -43,6 +43,49 @@ pub struct ProviderCfg {
     pub api_key_env: Option<String>,
 }
 
+/// The provider `provider: null` resolves to.
+///
+/// `[model] provider` defaults to the legacy literal `"deepseek"`, which need not name any
+/// `[[model.providers]]` entry — taking it verbatim made every `provider: null` call answer
+/// `-32602 unknown_provider` (UI: usage unavailable, model list empty). An unusable name
+/// falls back to what the kernel itself would run: the registry default, then the linkable
+/// `opencode-go` entry, then the first name in sorted order so the answer is deterministic.
+fn resolve_default_provider(
+    configured: &str,
+    cfgs: &HashMap<String, ProviderCfg>,
+    registry: &ProviderRegistry,
+) -> String {
+    let configured = configured.trim();
+    if cfgs.contains_key(configured) {
+        return configured.to_string();
+    }
+    let mut names: Vec<&String> = cfgs.keys().collect();
+    names.sort();
+    let fallback = registry
+        .default_name()
+        .filter(|name| cfgs.contains_key(name.as_str()))
+        .or_else(|| {
+            names
+                .iter()
+                .copied()
+                .find(|name| {
+                    cfgs.get(name.as_str())
+                        .is_some_and(|cfg| cfg.kind == "opencode-go")
+                })
+                .map(|name| name.to_string())
+        })
+        .or_else(|| names.first().map(|name| (*name).clone()))
+        .unwrap_or_default();
+    if !configured.is_empty() {
+        tracing::warn!(
+            configured,
+            resolved = %fallback,
+            "model.provider 不是已配置的 provider，已回退到内核实际使用的默认 provider"
+        );
+    }
+    fallback
+}
+
 /// The service handle injected into the IPC server (design D4).
 pub struct CliProviderService {
     store: AuthStore,
@@ -66,9 +109,12 @@ impl CliProviderService {
         warn_percent: u8,
         registry: Arc<ProviderRegistry>,
     ) -> Self {
+        let cfgs: HashMap<String, ProviderCfg> =
+            cfgs.into_iter().map(|c| (c.name.clone(), c)).collect();
+        let default_provider = resolve_default_provider(&default_provider, &cfgs, &registry);
         Self {
             store,
-            cfgs: cfgs.into_iter().map(|c| (c.name.clone(), c)).collect(),
+            cfgs,
             default_provider,
             default_model: String::new(),
             console_base,
@@ -1443,6 +1489,70 @@ mod tests {
             serde_json::json!(["deepseek-chat", "opencode-go"])
         );
         assert!(server.received_requests().await.unwrap().is_empty());
+    }
+
+    /// BUG: `[model] provider` defaults to the legacy literal `"deepseek"`, which is not a
+    /// configured provider name. `provider: null` then answered `-32602 unknown_provider` on a
+    /// stock config, so the UI's `auth/status` + `provider/usage` + `model/list` all failed.
+    #[tokio::test]
+    async fn unconfigured_default_provider_falls_back_to_the_kernel_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = CliProviderService::new(
+            AuthStore::with_path(dir.path().join("auth.json")),
+            vec![
+                ProviderCfg {
+                    name: "deepseek-chat".into(),
+                    kind: "openai-compat".into(),
+                    base_url: "https://example.invalid".into(),
+                    api_key_env: None,
+                },
+                go_cfg("https://example.invalid"),
+            ],
+            // `ModelSection::default().provider`, present in no `[[model.providers]]` entry.
+            "deepseek".into(),
+            "https://example.invalid".into(),
+            80,
+            registry_with(&["opencode-go"]),
+        );
+        let hist = svc
+            .usage_history(ProviderUsageHistoryParams {
+                provider: None,
+                kind: None,
+                since: None,
+                limit: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(hist.provider, "opencode-go");
+    }
+
+    /// A kernel with no registered provider (fresh boot, no credential yet) must still answer
+    /// `auth/status` so the UI can offer the device-code link instead of `-32602`.
+    #[tokio::test]
+    async fn keyless_kernel_still_answers_with_the_linkable_provider() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = CliProviderService::new(
+            AuthStore::with_path(dir.path().join("auth.json")),
+            vec![
+                ProviderCfg {
+                    name: "deepseek-chat".into(),
+                    kind: "openai-compat".into(),
+                    base_url: "https://example.invalid".into(),
+                    api_key_env: None,
+                },
+                go_cfg("https://example.invalid"),
+            ],
+            "deepseek".into(),
+            "https://example.invalid".into(),
+            80,
+            empty_registry(),
+        );
+        let status = svc
+            .auth_status(AuthStatusParams { provider: None })
+            .await
+            .unwrap();
+        assert_eq!(status.provider, "opencode-go");
+        assert!(!status.authenticated);
     }
 
     #[tokio::test]
