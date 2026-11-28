@@ -10,13 +10,13 @@
   "dependencies": {
     "@agentj/sdk": "*",
     "@agentj/tokens": "*",
-    "@opentui/core": "^0.7.0",
-    "@opentui/react": "^0.7.0",
+    "@opentui/core": "^0.9.9",
+    "@opentui/react": "^0.9.9",
     "react": "^19.3.1"
   },
   "devDependencies": {
-    "@types/bun": "^1.4.3",
-    "@types/react": "^19.3.0",
+    "@types/bun": "^1.4.5",
+    "@types/react": "^19.3.1",
     "typescript": "^7.0.2"
   }
 }
